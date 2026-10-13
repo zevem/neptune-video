@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.5
+Type=Application
+Name=Aster
+GenericName=Video Editor
+Comment=Edit video on a timeline
+Exec="@ASTER_APP_RUN@" %F
+TryExec=@ASTER_APP_RUN_PATH@
+Icon=@ASTER_ICON@
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+Keywords=video;editor;timeline;film;clip;
+StartupWMClass=aster

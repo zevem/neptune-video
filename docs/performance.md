@@ -1,0 +1,943 @@
+# Performance contract
+
+This project targets responsive professional editing, not a benchmark inferred
+from Rust or GPU dependencies. Record actual results in
+[verification](verification.md) with raw artifacts and the tested workload.
+
+## Current performance acceptance
+
+The [measured handover](../artifacts/performance-acceptance/round1/REPORT.md),
+[predeclared budgets](../artifacts/performance-acceptance/round1/PLAN.md) and
+[recomputed acceptance](../artifacts/performance-acceptance/round1/acceptance.json)
+identify source `b09ea17e` and optimized Linux `aster` `9b9ff3f0`.
+The [build record](../artifacts/performance-acceptance/round1/final-build.json)
+passes 310 focused core/desktop tests, formatting, architecture, denied-warning
+core/desktop all-target Clippy, media preflight and locked release linking.
+Whole-workspace tests were not rerun for this source.
+
+At 100,000 clips / 1,000 tracks, three release processes measure move/undo
+p95 2.862–3.025 ms against 16.667 ms and warm active-query p95 44.644–45.877 µs
+against 200 µs. Immutable-root interval bounds avoid expired-prefix scans;
+membership-only UUID validation uses a pre-sized hash set. Exact rollback,
+overlap order, root replacement and complete undo remain covered. Two thousand
+retained edits stay below 98 MiB PSS against 512 MiB. Native text-timeline
+input, actual held move/undo, normal/narrow captures and repeated idle samples
+are retained; this fixture does not render 1,000 simultaneous text layers.
+
+Two 120-second five-source 1080p30 native controls meet every declared playback
+budget: each owner 29.808–29.900 observed changes/s against 29.5; worst trial
+exact-scrub p95 198.345 ms against 400 ms; sampled peak PSS below 1,368 MiB
+against 2 GiB, GPU process row 314 MiB against 512 MiB, five decoder limit,
+finite memory-growth budget and paused CPU below 1% of one core. Visible and
+native minimized idle samples also pass. These playback controls and the
+large-input control constrain task-owned children to CPUs 0–15 (eight P cores
+and their SMT siblings); Aster ships no CPU-affinity policy.
+
+**Default shared-host performance remains below budget.** Completed unpinned
+playback observations range from 23.067–25.233 to 29.192–29.733 changes/s;
+the slower trial also misses the seek and loop-gap budgets. One unpinned
+100,000-clip zoom tail is 211.809 ms against p95 50 / p99 100 ms. CPU placement
+and host variation are supported explanations, without attributing each stall
+to an observed core. Passing controlled runs do not close these failures.
+Physical display/audio, other platforms, codec diversity, large imports,
+concurrent storage/agent work and hours-long sessions remain unverified.
+
+## Preceding playback checkpoint
+
+The [playback performance findings](../artifacts/production-readiness/playback-performance-round1/FINDINGS.md)
+and [independent worker audit](../artifacts/production-readiness/playback-performance-round1/sustained-audit.md)
+belong to source `ebc9da4c` and optimized Linux `aster` `4b3128d8`.
+The [final build record](../artifacts/production-readiness/playback-performance-round1/final-build-attempt-03/build-record.json)
+passes 610 workspace tests, formatting, architecture checks, warning-denied
+workspace Clippy and locked release linking, with explicit FFmpeg 8.0.1.
+
+Three matched eight-second worker pairs use five independently encoded
+1080p30 H.264 sources. Median distinct frames per owner improve from
+46/43/38/36/35 to 238/237/237/236/236. Median per-trial request-to-poll p95s
+improve from approximately 221–244 ms to 5.6–22.6 ms. Updated delivery includes
+3,149 of 3,150 steady keys after the first second, with one recorded deadline
+miss; cold startup still fails the strict whole-window 240-key diagnostic.
+All returned pixel hashes, full-byte fences and cleanup checks pass.
+Median sampled peak PSS falls from 1,592 to 1,085 MiB; threads fall from 172 to
+54. Demand CPU, including verification, is approximately 2.22 CPU cores.
+
+The exact final native build also runs five full 1920×1080 decoder outputs in
+a 2400×1450 window on an owned Weston GL/NVIDIA RTX 4060/Xwayland session.
+Three eight-second 120 Hz framebuffer observations show approximately 30
+distinct source pictures per second for every owner. Normal and 760×560
+windows pass held-frame scrub controls. These are finite native framebuffer
+observations with occasional missing keys, not physical presentation callbacks
+or a zero-drop guarantee. Full-resolution software Xvfb rendering remains
+approximately 15 fps. Exact new-key seek and cached-target confirmation times,
+source gaps, CPU/memory, captures and observer limits are retained in the
+findings. A [40-second loop follow-up](../artifacts/production-readiness/playback-performance-round1/native-loop-after-accelerated/native.json)
+passes three legitimate restarts per owner, exact targets and unchanged history.
+Sampled playing PSS stays 1,195–1,224 MiB and decreases in the final ten-second
+bucket; peak threads stay 64. This resolves the short-window memory-growth
+concern for this finite workload, while preserving explicit cold-loop recovery
+and sampling limits. Audio, long sessions, natural-footage/codec diversity and other platforms
+remain outside this task's acceptance.
+
+The decoder now retains five pipes, overlaps bounded admitted startup, bounds
+raw-video output threads/packet queues, and keeps large frames demand-driven.
+Decoded/result caches and frontend viewer/poster budgets remain 64 MiB each.
+Aspect-fitted reservations allow five full-HD textures within the existing
+viewer budget; seek-time admission, texture reuse and rational repaint pacing
+preserve correct frames and paused sleep. Codec/driver working memory remains
+separate from logical caches; measured peaks do not impose a hard OS ceiling.
+
+## Core timeline measurement
+
+The [round-nine five-trial record](../artifacts/production-readiness/final/round9-timeline-repeated.json)
+uses source `b29ccb69` and a freshly built optimized benchmark executable
+(`4a76f329`), with its [build log](../artifacts/production-readiness/final/round9-timeline-build.log).
+Median per-trial means were **363.872 µs** move/undo (trial range
+**352.091–377.165 µs**) and **2.258 µs** active query (**2.183–2.309 µs**).
+Each trial used 5,000 text clips/20 tracks, 1,000 move/undo cycles and 100,000
+queries over 0–499.9 seconds. Owned Cargo, UI and device work had stopped before
+the five sequential trials; the shared host remained outside CPU isolation.
+These are per-trial averages, not individual-operation tails, native interaction
+latency or GPU/media throughput. The separate `b10f0422` digest in the record
+identifies the unchanged benchmark source file, not the workspace.
+
+The historical optimized [timeline benchmark](../crates/editor-core/benches/timeline.rs)
+recorded **421.812 µs** average per move-and-undo cycle and **2.451 µs** average
+per active-clip query. The fixture has 5,000 text clips across 20 tracks, 1,000
+move/undo cycles and 100,000 queries evenly sampling 0–499.9 seconds of its
+timeline; the queries found 1,000,000 total active layers. The raw result is
+[timeline.json](../artifacts/performance/timeline.json), with its
+[build log](../artifacts/performance/timeline-build.log).
+
+The host was an Intel Core i9-13900HX (32 logical CPUs), approximately 32 GB RAM,
+Linux x86_64 / Ubuntu 26.04.1 LTS and Rust 1.97.1. The optimized bench profile
+uses the repository's release settings: thin LTO and one codegen unit.
+
+```sh
+cargo bench --locked -p editor-core --bench timeline
+```
+
+This measures pure editing metadata on a synthetic timeline. It excludes
+decoding, audio, texture upload, native input and GPU/display presentation, and
+does not exercise growing long-term history. That initial single run has no
+repeated-run distribution and is not a CapCut/Palmier Pro or Neptune comparison. It replaces
+the earlier preliminary query run that sampled only the first 100 seconds.
+
+An earlier [five-trial sample](../artifacts/production-readiness/portable-fixture/timeline-repeated.json)
+used the same workload and benchmark source file, with its own executable hash
+recorded. Median per-trial means were **374.132 µs** move/undo
+(trial range **363.986–377.497 µs**) and **2.288 µs** active query
+(**2.215–2.425 µs**). These are averages within each trial, not individual-operation
+p95/p99 or native latency. The host was shared and not CPU-isolated; a brief
+Linux lint overlapped part of the direct runs. This is preliminary repeated
+metadata evidence; it remains separate from the quiet round-nine sample above.
+
+## Software preview measurement
+
+The accepted [round-thirteen checkpoint](../artifacts/production-readiness/final/round13-build-record.json)
+(`5cc20680` source / `6496d42f` Linux binary, 365 tests) corrects
+[finite paused-preview delivery loss](../.scratch/core-editor/issues/08-paused-preview-delivery.md).
+The [eleven owning regressions](../artifacts/production-readiness/preview-delivery/after-fix.log)
+and [review](../artifacts/production-readiness/preview-delivery-review-response.md)
+cover protected pending/in-flight identity and cancellable bounded-result
+backpressure. Shared pixel storage establishes logical byte accounting, not
+independent decode allocations; direct import/late-cleanup interleavings retain
+inspection limits. This correction has no new throughput measurement. The
+[accepted R13 native report](../artifacts/native/post-preview-delivery-round1/report.json)
+shows five paused layers in three fresh launches, stable across seven one-second
+reads, with correct seek/Home patterns and unchanged document/history. Native
+1920-square request sizes were inferred; publisher parking was unobserved.
+The [two independently verified public probes](../artifacts/production-readiness/final/round13-public-preview-root-verification.json)
+delivered five distinct 1920-square PNG payloads with exact pixels and distinct
+live storage addresses. These CI-library/opt-level-zero probes do not measure
+performance, and withholding poll for one second does not prove a completed
+fifth decode or parked publisher. Actual wait behavior remains owning-seam proof.
+These delivery results belong to R13; current editing-smoke acceptance is R15,
+cache/overlap workflows remain R14, audio R12 and measured native performance R9.
+
+The historical [raw preview record](../artifacts/performance/preview-final.json) and
+[build log](../artifacts/performance/preview-final-build.log) contain a single
+release software-decoder/worker run on 2026-10-12: 120 frames from one synthetic
+1080p H.264 source at 30 fps, decoded to 1280×720 RGBA. Throughput was
+**517.815 frames/s**; per-request latency was **1.753 ms p50**, **3.241 ms p95**
+and **3.803 ms p99**. The 120 requests took 0.231743 seconds. The host was an
+Intel Core i9-13900HX (32 logical CPUs), Linux x86_64 / Ubuntu 26.04.1 LTS,
+Rust 1.97.1 and FFmpeg 8.0.1.
+
+The run warms import/first-frame decoding before timing and includes subsequent
+software decoding and the worker roundtrip. It excludes GPU
+uploads, audio, native input, display presentation, random/cold seeks and
+multi-layer workloads. It is not a claim of 517.815 fps native editing or a
+cross-product performance comparison. Native presentation and A/V drift remain
+unmeasured release gates; paused CPU/RSS observations are recorded below.
+
+## Optimized distinct-video worker diagnostic
+
+The completed [R14 findings](../artifacts/production-readiness/multilayer-preview-round1/FINDINGS.md),
+[independent root verification](../artifacts/production-readiness/multilayer-preview-round1/root-verification-attempt-01.json)
+and [raw-data audit](../artifacts/production-readiness/multilayer-preview-round1/audit-attempt-01.md)
+cover 27 public-worker cases on Linux, using the exact optimized R14 media
+libraries (`f74d6560` source, release graph matching `8b446cca`). Three trials
+rotate request order across 1/4/5 distinct 320×180 H.264 sources on a 30 fps
+grid, with fresh processes/services/asset IDs and no same-lane supersession.
+
+Complete-batch milliseconds, **median of three per-trial p50s**:
+
+| Distinct videos | Cold first batch | Sequential new frame keys | Random new frame keys | Same cached frame |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 26.113 | 0.257 | 32.104 | 0.257 |
+| 4 | 119.718 | 0.764 | 134.510 | 0.256 |
+| 5 | 147.947 | 163.942 | 165.827 | 0.256 |
+
+The sequential four-to-five increase was approximately **214.6×**; all 96
+measured five-video sequential batches exceeded 33.333 ms. This is an observed
+worker-delivery limitation, not an exact decoder-start/dispatch explanation or
+native playback fps. A later
+[owning-manager regression](../artifacts/production-readiness/decoder-retention-round2/backend-root-verification.json)
+reproduces bounded-pipe churn and validates a protected-subset correction;
+it does not map exact starts/dispatch onto each older timed batch.
+
+All 2,370 completions across 711 batches (693 measured, 18 warmups) passed
+identity and full-byte checks against independent FFmpeg references. Successful
+payloads were transient, so root/audit verification checks executed comparisons,
+retained reference bytes and raw records rather than replaying every returned
+buffer. Root checked 75 source files, both binaries, three release libraries,
+206 fixture files, all distributions and no live recorded PID/TID identities.
+
+Roundtrip timing includes 200 µs consumer polling; approximately 0.256 ms cached
+results are not exact decode durations. Checks/logging between batches permit
+prefetch. Fresh services do not flush OS page caches; power and host activity
+were not controlled, and ordinary read-only work could coexist. Three cold
+samples do not establish useful tail estimates. These results exclude paced
+renewals/poster competition, same-asset different-time consumers, GPU/native
+presentation, audio, 1080p/4K workloads and macOS/Windows runtime. Do not turn
+timed-batch sums into sustained playback fps.
+
+## Optimized R15 legacy/explicit/protected comparison
+
+The [root-verified R15 run](../artifacts/production-readiness/multilayer-preview-round3/root-measurement-verification.json)
+passed all 81 cases against exact source `dfbb53e9`, release `362ba180` and its
+optimized Cargo dependency graph. It compares legacy, explicit-consumer and
+protected-three-consumer requests on the same audio-free 320×180 distinct-video
+workload. Medians of three per-trial five-video sequential batch p50s were:
+
+| Mode | Complete-batch p50, ms |
+| --- | ---: |
+| Legacy | 185.490 |
+| Explicit | 179.190 |
+| Protected | 67.395 |
+
+The ratio of legacy/protected medians is **2.7523×**. All 96 measured five-video
+sequential batches in **each** mode exceeded 33.333 ms. Protected sequential
+one/four-video medians were 0.254/0.763 ms and cached-five 0.257 ms; protected
+cold-five/random-five were 162.488/172.400 ms. No substantive cold/random
+benefit, native fps or real-time presentation claim follows.
+
+Across all modes, 7,110 requests and 2,133 batches include 180 requests/54
+warmup batches. Root recomputed 324 distribution fields (216 numeric, 108 null),
+checked 270 fresh asset IDs/180 explicit consumer IDs and 206 matching fixture
+files, and verified 2,387 sampled PID/start and 648 TID/start identities gone.
+Sampling is not an exact decoder-start count. Full returned RGBA checks ran
+while buffers were alive; records/reference bytes are audited, not replayed
+successful payloads. The [completed independent audit](../artifacts/production-readiness/multilayer-preview-round3/audit-attempt-01.md)
+agrees with build attribution, arithmetic and runtime comparison; all 3,040
+observed process/thread identities, including setup, were gone. Protected mode
+reduced this tiny five-video sequential median by approximately 64%, while
+every measured five-video sequential batch stayed above the diagnostic budget.
+
+The host remained shared; excluded validation/logging permits prefetch and
+200 µs polling sets an observation floor. This excludes GPU/native/audio,
+superseding/cohort changes, same-asset different-time streams and poster
+competition. It tests public worker modes; the frontend setter/restart bridge
+has separate evidence below. The earlier R14 baseline remains immutable.
+
+## GIF regression evidence
+
+A CI-profile diagnostic compared 60 requests for the same GIF before and after
+retaining sequential GIF decoder state and reusing unchanged display intervals.
+The raw [before](../artifacts/performance/GIF/before-ci.json) and
+[after](../artifacts/performance/GIF/after-ci.json) records report approximately
+21.15 and 674.22 requests/s respectively. A separate two-second paced worker
+regression reproduced frame 8 when frame 19 was expected before the fix and
+passed after it. Uniform source delays now expose their rational frame rate;
+variable delays still use exact display intervals.
+
+Both diagnostic records explicitly have `optimized: false` and exclude GPU
+presentation. They establish the reproduced software-worker regression and its
+fix, rather than a release/native playback rate or cross-product comparison.
+The rebuilt CI-profile native GIF monitor was also captured at 2.000 seconds
+showing its own frame-20 timestamp and 10 fps metadata; see
+[native evidence](verification.md#native-linux-evidence).
+
+The historical optimized [GIF record](../artifacts/performance/gif-release.json) and
+[build log](../artifacts/performance/gif-release-build.log) measured 60 requests
+for a 320×180 GIF with a native 10 fps display grid, requested at 30 fps. The
+warm worker handled **2,755.856 requests/s** in 0.021772 seconds, with
+**0.254 ms p50**, **0.744 ms p95** and **0.757 ms p99**. Requests inside the same
+native display interval reuse pixels: request throughput is therefore not a
+count of unique decoded GIF frames, native presentation fps or a GPU/audio result.
+
+## Physical-output callback clock evidence
+
+The [round-twelve healthy silence-only report](../artifacts/production-readiness/audio-device-probe/round12/report.json)
+and [source/library identities](../artifacts/production-readiness/audio-device-probe/round12/build.json)
+match source `2b43797d` and exact CI-profile components throughout the run;
+[root verification](../artifacts/production-readiness/final/round12-physical-clock-root-verification.json)
+independently checked zero PCM, phase results and exact owned PID cleanup.
+Direct pinned rustc compiled the artifact with `opt-level=0`; this is callback
+clock evidence, not an optimized audio performance benchmark. The public
+`AudioService` opened inherited CPAL ALSA default output, stereo F32 at 48 kHz,
+and read-only PipeWire 1.6.2 discovery attributed its stream to the default
+AD107 HDMI hardware sink. The 20-second generated source had only verified zero
+PCM. No route, volume or device configuration changed, and no audio was captured.
+
+After priming, each of four phases sampled 21 monotonic clock positions over
+about two seconds: **1.000387** timeline seconds/wall second at 1×,
+**0.999697** after seek, **0.500121** at 0.5× and **1.999157** at 2×. Sync
+immediately invalidated position, pause/stop kept clock position `None`, no
+public runtime errors appeared, and the diagnostic and four observed FFmpeg
+children stopped. Source, libraries and fingerprints remained unchanged.
+
+The clock advances even when underrun silence is inserted. These measurements
+establish callback-clock availability and slope on one actual default route;
+they establish no native fatal output callback, audible quality, sustained
+PCM/underrun correctness, hardware/DAC presentation timestamp, latency,
+pitch correctness or A/V sync.
+
+The historical [before-zero-gain report](../artifacts/production-readiness/audio-device-probe/before-zero-gain/report.json)
+and [build identities](../artifacts/production-readiness/audio-device-probe/before-zero-gain/build.json)
+belong to source `28259254` before the zero-gain fix. They measured the same
+default route with mathematical silence: **0.999873**, **0.999276**,
+**0.500545** and **1.998499** for the four respective phases. That earlier
+report remains immutable, with its own source/library scope and the same
+acoustic, underrun and A/V limitations.
+
+Latest accepted editing-smoke evidence is [thirteen R15 native input checks](../artifacts/native/round15-editing-smoke/root-verification.json),
+source `dfbb53e9` / binary `362ba180`: exact gesture reversals, clipboard, durable
+save, stale-plan refusal and transport/settings, with five viewed 1440×900
+captures and eleven sampled process identities gone. It establishes no
+multi-owner/cache/wake timing, hardware GPU, audio or display-latency result.
+Earlier R14 `f74d6560` / `8b446cca` [whole-project gesture/preview/narrow/cache checks](../artifacts/native/cache-culling-acceptance-round1/report.json)
+passed with audio unavailable, with [independent identity/cleanup verification](../artifacts/production-readiness/final/round14-native-editing-root-verification.json).
+No performance measurement or native fatal callback was exercised there.
+The measurements below belong exclusively to
+round nine's `b29ccb69` / `14435a4a`, 333-test checkpoint. Real-provider AI/GTK
+remains historical `28259254` / `2c596cb0`. R15's [three native startup captures](../artifacts/native/round15-window-captures/root-visual-verification.json)
+establish normal/compact presentation and separate Play/Speed controls, without
+input, wake/cache, performance or audio proof. The user deferred macOS/Windows
+execution. Their last verified [pack baseline](native-platform-tests.md) was R14:
+51 native cases `not_run` and [57 offline guards passed](../artifacts/native/backend-preparation/platform-pack-round8-root-tests.log).
+The pinned 64-case catalog passed 106 offline guards; all native cases remain
+`not_run`, with [independent preparation review complete](../artifacts/native/platform-regressions-integration-round1/review-round2/REVIEW.md).
+Ten fixture
+projects have verified Linux startup observations, without timings,
+as scoped in [verification](verification.md#platform-matrix). The
+[renewed paced-demand diagnostic](../artifacts/production-readiness/renewed-preview-demand-round1/FINDINGS.md)
+now has eighteen actual optimized R15 cases. All 3,301 returned demand frames
+and 60 final fences validated, but continuously renewed five-owner demand
+published nothing for two owners. A matched private four-versus-five-slot
+experiment changed only one source byte: distinct advancing publications
+changed from 13/13/12/0/0 to 82 per owner in three seconds. This identifies
+capacity-sensitive decoder churn; it does not select a larger product budget.
+The native R15 viewer reproduced the symptom with real Play/Pause input:
+two tiles stayed on frame zero throughout forty screen reads, then all five
+reached frame 119 after pause. Software Xvfb, ten reads per second and no
+audio device establish neither presentation frame rate nor A/V acceptance.
+The subsequent [playback-admission correction](../artifacts/production-readiness/playback-admission-round1/FINDINGS.md)
+keeps four pipes and distinguishes advancing playback from immediate seeks.
+The updated optimized build passes 538 workspace tests. Under the same
+three-second five-owner demand, the immediate control returned 10/12/12/0/0
+distinct frames and playback admission returned 23/23/22/12/12, with exact
+pixel validation and all final fences. The updated native window showed
+21/21/21/17/17 distinct stamped frames at forty finite screen reads, compared
+with two entirely frozen tiles before. No tile went backwards or lacked a
+readable frame code; all five reached frame 119 after pause. This establishes
+delivery progress in those runs, not 30 fps or sustained multi-layer throughput.
+
+The [earlier published-first read-ahead correction](../artifacts/production-readiness/publish-first-read-ahead-round1/FINDINGS.md)
+passes 549 workspace tests and keeps the same resource budgets. Three matched
+optimized trials use five independently encoded 1080p30 sources and 320×180
+previews, with exact continuous per-owner pixel oracles. Median distinct frames
+per owner during three seconds increase from **46/46/46/24/23** to
+**63/63/63/50/39**. Overflow-owner request-to-poll p95 improves from
+**140.46/130.18 ms** to **81.12/118.42 ms**; two protected-owner tails increase
+about 4–5%. Later cold pictures incur additional queue time. The unchanged
+native harness observes all five advancing on the rebuilt editor, without
+establishing improved native presentation rate. Sustained full-resolution
+performance, physical audio and hardware GPU acceptance remain open.
+
+The [subsequent larger-preview comparison](../artifacts/production-readiness/high-resolution-preview-round1/FINDINGS.md)
+passes all twelve exact-pixel cases. At 1280×720, median distinct source frames
+per owner during three seconds change from **24/20/19/15/15** to
+**26/24/24/16/15**. At 1920×1080 they change from **13/12/12/11/11** to
+**15/14/13/12/11**. Full-resolution p95 ranges approximately 241–350 ms under
+the R17 policy, with regressions on two owners. These outcomes do not meet
+source-rate playback; the stronger small-preview gain cannot establish the
+required sustained high-resolution performance.
+
+## Virtual callback-stall recovery
+
+The [round-ten reproduction](../artifacts/production-readiness/final/round10-virtual-stall-root-verification-v2.json)
+froze raw callbacks at 51,200 frames with zero errors; public audio and Playback
+remained at 1,045,333 µs for over 14 seconds. Failed earlier setups/controls are
+retained, and the final absolute-route missing-server control refused startup
+without a physical/default fallback.
+
+On exact round-twelve CI components, the [new virtual report](../artifacts/production-readiness/audio-device-probe/virtual-failure-round6/report.json)
+and [independent verification](../artifacts/production-readiness/final/round12-virtual-stall-root-verification.json)
+show raw CPAL still stalled without an error callback, but `AudioService`
+released its public clock, Playback continued monotonically and one unavailable
+notice was delivered. The decoder disappeared naturally at approximately
+1.81 seconds from session start, about 0.60 seconds after observed server loss,
+before explicit stop at approximately 17.1 seconds. A second service session
+also detected failure with five position reads omitted. All 15 recorded process
+identities stopped without forced cleanup; owned absolute routes, zero PCM and
+no `/dev/snd`/foreign sound access were independently checked. This single
+virtual experiment is correctness evidence, not acoustic output, physical
+hot-unplug, native fatal-callback, A/V or a performance guarantee.
+
+Active-clock expiry retains four **largest observed** callback periods per
+stream, with a 500 ms floor; later smaller buffers do not shorten that grace.
+Paused clocks are excluded. An already-observed genuine expiry may win against
+an overlapping reset, which does not recreate native output. The ordinary
+sample callback adds one `Instant::elapsed` monotonic read and bounded atomics;
+it adds no application lock, allocation, decoding or process operation. Its
+optimized cost is unmeasured, so it is not a strictly atomic-only callback claim.
+Heartbeat grace is not a universal cleanup bound: a blocked decoder still has
+its separate ten-second read watchdog.
+
+The [initial review](../artifacts/production-readiness/audio-device-probe/callback-liveness-source-review.md)
+found an actual period/heartbeat publication race after the preliminary
+353-test round-eleven build; it received no native acceptance. The ninth test
+exercised the real between-stores seam and failed with eight others passing.
+The [corrected nine-test log](../artifacts/production-readiness/audio-device-probe/liveness-period-race-after-fix.log)
+and [review response](../artifacts/production-readiness/audio-device-probe/callback-liveness-review-response.md)
+preserve the correction. Earlier red/green and failed setup/control evidence
+remain diagnostic records rather than successful native proof.
+
+## Native paused-window observations
+
+### Accepted Linux round one
+
+The [native report](../artifacts/native/performance-round1/report.json) and
+[independent verification](../artifacts/production-readiness/final/round9-native-performance-root-verification.json)
+identify source `b29ccb69`, optimized `aster` `14435a4a` and unchanged source/
+binaries throughout. All 48 recorded process entries were verified stopped.
+The host was an i9-13900HX, approximately 31 GiB RAM and NVIDIA RTX 4060 Laptop
+GPU/driver 595.99.02. It remained shared with the person's desktop; the task
+used owned fixtures/windows. Audio was disabled, so playback used wall time.
+Later rounds added device-free fatal-clock/wake/notice/liveness regressions and
+virtual-stall recovery. These performance figures were not repeated on round
+twelve and do not measure the added callback clock-read cost.
+
+Two rigs were measured: software Xvfb and NVIDIA-EGL headless Weston→Xwayland
+with DRI3/Present. Neither had physical scan-out/vblank. Forced NVIDIA-only,
+lavapipe-only and GL-only loader comparisons, per-PID GPU rows and driver thread
+signatures strongly support NVIDIA Vulkan rendering in the default runs;
+Aster did not log its chosen adapter. This does not establish hardware decoding.
+
+Paused trials used six seconds of warmup followed by about 15.2 seconds, three
+trials per case. No input, agent calls or screen polling occurred during those
+samples. CPU sums editor/decoder process time as percent of one core; RSS sums
+can double-count shared mappings and exclude GPU memory. PSS and the observed
+210–220 MiB per-editor GPU rows remain in the raw report.
+
+| Rig / paused workload | CPU median, % one core | Process-tree RSS range, MiB |
+| --- | --- | --- |
+| Xvfb, empty | 0.525 | 267.33–269.29 |
+| Xvfb, one 1080p clip + text | 0.525 | 540.75–541.50 |
+| Xvfb, 5,000 clips / 20 tracks | 0.460 | 556.90–566.86 |
+| Headless Xwayland, empty | 0.394 | 237.19–237.75 |
+| Headless Xwayland, one 1080p clip + text | 0.525 | 497.60–498.72 |
+| Headless Xwayland, 5,000 clips / 20 tracks | 0.591 | 506.76–515.93 |
+
+Three Openbox/Xvfb minimize trials confirmed hidden/unmapped state, unchanged
+document/resources and an identical restored capture. Minimized CPU was
+0.466–0.533% of one core, comparable to paused visible CPU. Post-restore click
+acceptance was not recorded. Paused NVIDIA-path voluntary context switches
+remained approximately 115/s versus approximately 2/s in a forced-lavapipe
+diagnostic; attributing these recurring wakeups remains follow-up work.
+
+The 5,000-clip project had 18 text and two video tracks; snapping/autosave were
+off. XTest events were timed to the first differing XGetImage timeline read.
+These are medians of observed framebuffer feedback, not physical-display
+latency, GPU fences, per-operation tail guarantees or frame-time p99.
+
+| Action | Xvfb median, ms | Headless Xwayland median, ms |
+| --- | --- | --- |
+| Zoom in | 40.66 | 14.54 |
+| Scroll right | 39.81 | 12.86 |
+| Selection press | 23.37 | 9.88 |
+| Drag step | 23.63 | 10.11 |
+| Drag release | 25.34 | 13.53 |
+| Undo key | 40.25 | 16.80 |
+
+Each successful held drag committed once and exact undo/redo restored the full
+project. Smoothed wheel changes settled around 183–244 ms; first-change timings
+do not represent completion. Limits/no-change counts and sample sizes remain in
+the report. Live 5,000-clip inspections cost about 0.23 s each outside timed spans.
+
+Seek timing read generated frame codes and matching timecode pixels. First
+visits opened new FFmpeg processes; cached revisits did not. Timeline first-visit
+medians were 204.02/186.88 ms on Xvfb/headless Xwayland; cached revisit medians
+were 54.34/9.22 ms. Fresh-position held-scrub medians were 188.89/165.05 ms.
+All 16 latest-wins bursts ended at the requested frame/label without a later
+older frame. Source-preview/editing state remained unchanged.
+
+Thirty-second framebuffer playback observations fitted approximately 30 frames/s
+against wall time. They cannot identify dropped frames or physical presentation;
+capture polling can miss replacements and itself consumed substantial CPU.
+Follow-up source playback without the image observer used 119.4%/70.8% of one
+core for the editor/decoder tree on Xvfb/headless Xwayland. Early playback CPU
+figures that omitted a newly started decoder must not be used. The report keeps
+observer/no-observer controls and raw samples, not an A/V or source-rate display
+guarantee.
+
+Other retained caveats: no creation-time hash was stored for the generated video,
+although in-run hashes matched; the narrow "selected" image is actually a ruler
+seek; Shift+Right harness auto-repeat prevents a step-size claim from those
+samples. Real-provider AI/GTK was not repeated. Physical display/audio, long
+sessions, other drivers and target-platform execution remain outside this run.
+
+### Historical core checkpoint
+
+The original core checkpoint's optimized [idle record](../artifacts/performance/native/idle.json)
+contains two Linux X11 observations on the same i9-13900HX/Ubuntu host, each
+with a 1440×900 visible paused window, six seconds of warmup and about twelve
+seconds of sampling. Process sets were stable during each sample.
+These observations predate the native AI and protected-recovery changes; they
+do not identify the current binary or measure an active model request.
+
+| Paused case | CPU, percent of one core | Peak process-tree RSS | Processes | Sample |
+| --- | --- | --- | --- | --- |
+| Empty project | 0.980% | 226.10 MiB | 1 | 12.241 s |
+| Loaded 1080p fixture | 0.901% | 503.54 MiB | 3 | 12.206 s |
+
+The loaded figure includes retained decoder children. Summed process RSS can
+count shared mappings more than once and excludes GPU memory. The graphics
+driver was not established for these samples, so the separate Wayland lavapipe
+run does not identify their driver. Captures are
+[empty](../artifacts/performance/native/empty/paused.png) and
+[loaded](../artifacts/performance/native/loaded/paused.png).
+
+The agent session descriptor became ready in approximately 0.24 seconds in each
+run; that measures descriptor availability, not display-ready startup latency.
+These are two host-local observations, not repeated-run CPU/memory distributions
+or proof of minimized behavior, wakeup budgets, GPU activity or native A/V timing.
+
+## Interactive path
+
+The [R13 native baseline](../artifacts/native/cache-culling-round1/baseline-root-verification.json)
+confirmed the long overlapping clip was not drawn in the scrolled view, though
+clicking the empty lane selected it,
+and observed all 480 distinct owned posters while browsing. It did not measure
+texture retention or GPU memory. The subsequent
+[R14 source/build checkpoint](../artifacts/production-readiness/final/round14-build-record.json)
+(`f74d6560` / `8b446cca`, 397 tests) corrects
+[retention/admission](../.scratch/core-editor/issues/09-thumbnail-retention.md) and
+[overlap culling](../.scratch/core-editor/issues/11-overlapping-timeline-culling.md).
+[Seven failing regressions/thirteen controls](../artifacts/native/cache-culling-round1/phase-a-root-verification.json)
+became [32 passing cache/timeline tests](../artifacts/native/cache-culling-round1/phase-b-executed-tests.json);
+the [frozen review](../artifacts/native/cache-culling-round1/phase-b-review-response.md)
+found no blocking defect. The [accepted R14 native report](../artifacts/native/cache-culling-acceptance-round1/report.json)
+now shows long-clip fill 1.0 normally and narrowly, versus R13's 0.0016 while
+remaining selectable in both. Its fitted normal timeline showed 256/480 own
+posters, with all 480 paged/revisited; narrow readable lanes covered 320 while
+the third was clipped and fitted centre pixels were inconclusive. One notch
+freed 43 normal/21 narrow new pictures without more input, not an exact repaint
+count. Five failed harness attempts remain retained. These observations do not
+measure private texture counts or GPU memory. After a startup notice dismissed
+itself, five-second idle diagnostics read 1–3 CPU ticks; initial 25–28-tick
+samples included that dismissal. Neither is a repeated performance benchmark.
+
+The current poster policy retains at most 256 posters and 64 MiB of logical
+RGBA texels, whichever binds first. It excludes upload staging, driver memory
+and viewer-layer textures. Demand follows visible library rows, the shared
+timeline interval/row/height predicates, and inspected/source assets. Unit
+controls cover one paused repaint when room returns and settling under steady
+oversubscription. Native inspector retrieval after eviction passed; source-monitor
+poster retrieval remains indirect because its solid still also matches a layer.
+The borrowing,
+allocation-free `Track::clips_overlapping` query partitions starts and filters
+ends for half-open ranges. Consumption costs O(log n + k), where k is the
+start-qualified prefix, not just returned clips; no interval index was added.
+
+The [dispatch-policy task](../.scratch/core-editor/issues/10-preview-dispatch-policy.md)
+now has a selected design: explicit poster demand, retained first-admission
+order, and at most two interactive bypasses before global-oldest dispatch.
+R14 does not contain the selected correction. The earlier 22-focused/76-media
+checks and the 96-test consumer stage remain historical. Follow-up source now
+passes [112 media tests and current package-only denied-warning Clippy](../artifacts/production-readiness/decoder-retention-round2/backend-root-verification.json).
+The [second backend review](../artifacts/production-readiness/preview-consumer-backend/review-round2.md)
+confirms corrected GIF-resize accounting and unrelated byte-blocked retirement:
+cleanup releases the queue mutex and publication rechecks currentness. Shared
+portrait pixels and same-consumer pipe continuity retain owning controls.
+These changes now belong to the [521-test R15 source/release checkpoint](../artifacts/production-readiness/final/round15-build-record.json),
+with whole-workspace/source-target checks and [exact optimized dependency attribution](../artifacts/production-readiness/final/round15-release-libraries.json).
+Native R15 dispatch/multi-owner/cache acceptance remains pending; the verified worker comparison above
+does not establish native timing. The changes are
+outside the measured R14 build. [R14 binaries/libraries were retained](../artifacts/production-readiness/final/round14-retained-release/record.json).
+The conditional bound
+of 96 dispatch opportunities establishes neither elapsed latency, successful
+publication nor throughput. The [optimized release-library graph](../artifacts/production-readiness/final/round14-release-libraries.json)
+and [original distinct-asset preparation record](../artifacts/production-readiness/multilayer-preview-round1/prepared-root-verification.json)
+remain historical provenance for the completed diagnostic above. The R14
+measurements do not verify or measure the follow-up scheduling correction.
+
+R15 introduced an optional normalized three-consumer protected subset
+within its four retained video pipes. Two actual manager failures (five streams
+making ten instead of seven total starts; eight making sixteen instead of thirteen)
+and nine controls became eleven passes. A real worker's generation/full-pixel
+control counted eight starts; a later warm-tag-pruning/maintenance extension
+kept that total after an uncached next frame. The
+[production review](../artifacts/production-readiness/decoder-retention-round2/backend-review-round1.md)
+found no P1/P2 blocker; that later test extension was separately executed,
+not included in the review. `clear()` is source-reviewed rather than isolated
+by the counter alone. R15 adds frontend selection controls; the later bridge
+below observes the nonempty call and restart reset, without native timing.
+The optimized worker comparison above does not exercise the frontend call.
+That four-pipe limit and 67-lane hint/latest union describe R15 resource policy,
+not throughput. The latest playback checkpoint raises the pipe limit to five
+while preserving the three-consumer hint and queue/cache limits.
+
+The [compatible legacy round-two probe](../artifacts/production-readiness/multilayer-preview-round2/PLAN.md),
+[static audit](../artifacts/production-readiness/multilayer-preview-round2/root-static-verification.json)
+and [driver hardening](../artifacts/production-readiness/multilayer-preview-round2/root-driver-hardening.json)
+remain prepared/unrun. The [three-mode comparison](../artifacts/production-readiness/multilayer-preview-round3/PLAN.md)
+prepared 81 `not_run` cases; its [static audit](../artifacts/production-readiness/multilayer-preview-round3/root-static-verification.json)
+checked byte copies, hashes, Python syntax and inventory only. Its later actual
+81-case execution passed root verification and the completed independent audit
+above. Those earlier static records remain preparation evidence, not runtime proof.
+
+The [consumer/controller source review](../artifacts/production-readiness/preview-consumer-identity-review-response.md)
+identified a transition identity gap in R14. [Its follow-up correction](../.scratch/core-editor/issues/12-preview-consumer-identity.md)
+now has [152 passing desktop tests](../artifacts/production-readiness/preview-consumer-phase-b/root-green-verification.json),
+including paint identity and transport pointer controls. Fixture-font failures
+and a real two-pixel Speed-slot failure are retained before correction;
+[formatting followed the green run](../artifacts/production-readiness/preview-consumer-phase-b/root-format-source-record.json).
+The later 177-test desktop proof records package-only denied-warning Clippy;
+final transition/compact-input/performance acceptance remains pending. R14's known 800×600
+Play/Speed overlap therefore retains its scope.
+
+[Viewer textures](../.scratch/core-editor/issues/13-viewer-texture-retention.md) in R14
+still lack a byte/count budget; 120 painted frames is not a paused wall-time
+bound, and poster limits do not constrain them. The selected next policy uses
+64 MiB logical RGBA, request-time `max(kept, granted_box)` reservations, a common
+active-set quality cap and eight inactive layers in spare room. The
+[173-test phase-A run](../artifacts/production-readiness/viewer-working-set-round1/phase-a/root-verification.json)
+reproduced thirteen budget assertions, with 160 controls passing (all prior
+152 plus eight new controls), no compile/fixture failures and no ignored tests.
+The [phase-B proof](../artifacts/production-readiness/viewer-working-set-round1/phase-b/root-green-verification.json)
+has 177 passing desktop tests and clean all-target package Clippy at that source, including
+twenty-five resource tests with the original twenty-one unchanged and added
+resize/audio/notice/failure controls. Logical budget accounting is implemented;
+GPU/upload/staging bounds and native idle behavior are not measured. The
+[completed review](../artifacts/production-readiness/viewer-working-set-round1/review-round1.md)
+found no P1/P2 ledger defect but confirmed a paused persistent-error cycle.
+The new [public-worker liveness filter](../artifacts/production-readiness/preview-request-liveness-round1/phase-a/root-red-verification.json)
+passed eleven controls and failed three assertions; all earlier 177 tests were
+filtered out. Missing clip/source demands reasked across four unchanged paused
+frames, and playing owners 32–39 received no picture in eighty controlled
+results. Exact PNG identity/pixels, retries, held picture/shrink and paused
+forty-owner controls passed without fixture/compile/timeout failures; owned
+temporary storage was empty. This proves the controlled request behavior,
+not native eframe wake delivery, cycle rate, video/GPU timing or presentation.
+[Failure/admission correction](../.scratch/core-editor/issues/16-preview-request-liveness.md)
+then passed [21 focused and all 198 desktop tests plus package lint](../artifacts/production-readiness/preview-request-liveness-round1/phase-b/root-green-verification.json).
+Paused unchanged failed time/box is suppressed; changed time/bounds/source and
+recovery retry, held/oversized failure and finite forty-playing-owner PNG
+admission have controls. The full R15 checkpoint above has 521 passing tests,
+source-target lint and optimized linking. The advancing-demand and native
+five-video diagnosis above now observes slow/in-flight delivery failure;
+corrected native wake/idle, poster bursts, GPU and real-time delivery remain
+unverified.
+
+The [completed correction review](../artifacts/production-readiness/preview-request-liveness-round1/review-round1.md)
+found no P1/P2 behavior defect but identified P2 evidence gap G1. Seven stable
+at-most-three VIDEO granted/drawn selection controls pass; six use no media
+service, and the real still-service control sends an empty set. Nonempty
+frontend effects were not observed by those tests. Six prepared bookkeeping
+tests were declined, not integrated or run. The [actual canonical frontend/service bridge](../artifacts/production-readiness/frontend-retention-bridge-round1/root-verification.json)
+and [independent review](../artifacts/production-readiness/frontend-retention-bridge-round1/review-round1.md)
+now verify a nonempty hint and its reset after `cancel`/`ask_again` at the frozen
+R15 source. Four controlled cases measured 7/10 and restart 14/20 decoder starts,
+with 60 transient full-pixel checks across twelve frames; all 51 logged decoders
+were gone. These are process-start observations, not timing or GPU/texture
+readback; the worker is deliberately held through composition. This artifact
+probe adds no standing guard or suite tests. Retire/clear/Closed, source/cut/
+reorder and playing remain unproved. Backend hint behavior has its separate
+112-test proof. Time-less errors can permit
+one extra retry; playing offline video still fails for new times and renews
+notices, and restored same-path media while paused needs a seek/resize retry.
+No complete missing-media UX or native performance is claimed; the optimized
+public-worker comparison above does not exercise the frontend setter.
+
+Measure command validation, timeline hit testing, preview scheduling, decode,
+texture upload, composition, audio and display latency separately. A fast pure
+model test does not establish scrubbing latency; an FFmpeg decode rate does not
+establish native playback throughput.
+
+Keep filesystem, codec and network calls outside the frame loop. Worker queues
+are bounded, frequent requests coalesce and superseded seeks cancel. Use
+request generations so a slow older frame cannot replace a newer scrub result.
+Publish owned results instead of holding decoder locks during rendering.
+
+Virtualize media-library entries and timeline rows. Query clips intersecting the
+visible time range rather than visiting every clip for every frame. Reuse
+thumbnail textures and layout; invalidate them by asset revision, size or
+display scale. Decode at preview resolution unless a workflow requires the
+original, and retain originals for final-quality processing.
+
+## Resource budgets
+
+Assign a byte budget to decoded frames, thumbnails, waveform storage and GPU
+textures, not just an item count. A single 8K frame can otherwise defeat a
+reasonable-looking cache length. Bound worker/subprocess concurrency and retain
+reservations until cancellation or teardown actually completes.
+
+Budget history separately from render caches. Repeated edits on a large project
+must not clone all media buffers or grow unchecked. Referenced source files and
+immutable metadata are shared where appropriate; undo policy preserves the
+documented history and checkpoint contract.
+
+Idle native windows should sleep between input and relevant deadlines. Pausing
+or minimizing a preview stops unnecessary decode and redraw work; queued saves
+and essential import work may finish. Repaint notifications coalesce and
+unchanged worker polls do not wake the window.
+
+Motion analysis has a lane of its own (`editor-media/src/analysis.rs`): one
+thread, started when a region is first tracked, with one FFmpeg process at a
+time and at most four jobs waiting. It reads luma no larger than 384 pixels a
+side, holds one such frame and one patch, and keeps a centre per frame until
+the path is thinned to 2048 keys at most. A job is given up by a flag and by
+killing its process; its answer, and the one progress figure that waits to be
+read, are dropped with it. The window is woken once for each whole percent and
+once for the answer, and an idle lane wakes nobody. How long a job takes has
+not been measured on an optimized build.
+
+Stabilization measures on the same lane and thread, queued with tracking: the
+whole video is read once as luma no larger than 384 pixels a side, two frames
+and their three-level pyramids are held, and four numbers a frame are kept
+(refused past 1,048,576 frames). The path is derived data: it is written to
+one file a media path under the user's cache directory, bounded to 64 MiB and
+256 files with the least lately read removed first, and read back on a second
+thread of the lane (sixteen questions waiting at most) so that a reading never
+waits behind a measuring. The window holds eight paths and about two million
+frames of them at most. A layer whose path is not held is drawn uncorrected in
+the same frame; a held path costs one interpolation and six floats in the
+place pass's uniform, and no further pass. On the unoptimized test build a
+320x240 fixture of 60 frames took 15 ms a frame, FFmpeg included; an optimized
+build and real footage have not been measured.
+
+## Advanced editing budgets
+
+These are the bounds the [advanced-editing](../.scratch/advanced-editing/spec.md)
+code enforces and the few figures measured for it. Every figure is from one
+Linux host (i9-13900HX, RTX 4060 Laptop, Ubuntu 26.04.1) on the unoptimized
+`ci` profile; none is an optimized-build, macOS, Windows or playback-rate
+measurement. Logical bytes count what was asked of the device or kept in main
+memory at four bytes a texel; what a graphics driver allocates for it was not
+measured.
+
+### Compositor
+
+A plan of plain layers costs what it did before: one quad a layer and no
+compositor state. Any other run of layers is drawn off screen by
+[`src/compose`](../src/compose/mod.rs).
+
+| Bound | Value | Where |
+| --- | --- | --- |
+| `ComposeBudget::PRODUCTION` | 96 MiB logical | Intermediate and published canvases and uploaded pictures at 4 bytes a texel, lookup tables at 8 bytes a texel (the table's colours and its texture), and the uniform records. Separate from the 64 MiB `ViewerBudget` and the poster budget |
+| Canvases a frame | 4 (`MAX_CANVASES`) | The runs that text clips part; a run past the fourth keeps the mesh path |
+| Passes a canvas | 1024 (`MAX_PASSES`) | A job of more is refused and drawn by the mesh path |
+| Lookup tables a frame | 4 (`MAX_LUTS`) | A frame naming more refuses all of its jobs |
+| Intermediate targets | 2 to blend between, plus 1 to 3 a layer's chain goes between; the two clips of a transition take the sum of both chains, 3 at least | All canvases of a frame share one size |
+| Longest canvas side | The device's `max_texture_dimension_2d`, and 16384 at most | |
+
+**Canvas sizing.** A canvas is composited at the screen pixels it covers, a
+texel to a pixel in the canvas's shape (`target_size`), so a composited layer
+is resampled once, as a quad is. It steps down only when the pictures, the
+targets and the outputs of the frame do not fit the budget at that size: to
+the largest of 1920, 1280, 960, 640, 480, 320 and 160 pixels on the longer
+side that fits (`CANVAS_STEPS`). If not even 160 fits, every job of the frame
+is refused, the mesh path draws its layers and the viewer says "Effects not
+shown". The price of exact sizing is that a window dragged through sizes makes
+and draws its canvases again at each one; that cost was not measured.
+
+**Nothing to redraw.** A canvas whose size, layers, placements, picture
+serials, plates, tables and stabilization sampling are what they were is
+skipped, and the compositor never asks for a repaint. `resolve` reads no
+clock, so a paused plan with grain, shake or glitch composes once.
+
+**Kept frames.** A layer a canvas shows keeps the decoded frame the worker
+produced, shared and not copied, and no texture of its own: it is uploaded
+once, by the compositor. The viewer asks for frames to be kept only while the
+plan has something to composite; a plan that stops being plain while paused
+asks for the frames it shows once more. Kept frames live in main memory
+outside `ViewerBudget`, which counts each layer's texels once, and their
+upload is counted in `ComposeBudget`. A clean plate is asked for in the same
+viewer budget as the layers and is kept as a decoded frame only.
+
+**Idle release.** Canvases, uploaded pictures, lookup tables and kept frames
+are given up three seconds (`COMPOSE_IDLE`) after the last frame that had
+something to composite, on the clock, with one scheduled wake to do it and
+none after. They are also given up after 120 painted frames without a job
+(`LAYER_IDLE_FRAMES`) and when the project is replaced. Whatever the device
+refuses while pipelines are built or a canvas is drawn (validation, an
+internal failure, memory) is caught: everything is released and the mesh path
+draws from then on.
+
+**Lookup tables.** A `.cube` file is read by the media worker, never in a
+frame: 2 to 65 points an edge and 32 MiB of file at most, eight reads waiting
+and four answers unread at most. Until a table has come the effect changes
+nothing.
+
+**Transitions and decoders.** The two clips of a transition each keep a layer
+and a decoder. Six live video consumers (a transition on each of three stacked
+tracks) are one more than the five retained decoder pipes and three more than
+the protected subset: the unprotected three start an FFmpeg process for each
+next frame until the transitions end. On 64x32 lossless fixtures every frame
+was pixel-exact with 6, 9, 10 and 10 process starts a round; no frame rate was
+measured at a real size. The incoming clip is not decoded ahead of its
+transition.
+
+Paused CPU of the editor and its decoder children over five seconds, after a
+composited frame was parked:
+
+| Run | State | CPU, % of one core |
+| --- | --- | --- |
+| [Wave 2](../artifacts/advanced-editing/wave2/README.md), one sample each | Masked, blended, keyed layer at 1440x900 | 0.2 lavapipe, 0.2 GL on llvmpipe, 0.8 NVIDIA |
+| [Wave 3](../artifacts/advanced-editing/wave3/README.md), `idle.jsonl` | Lane, graph editor, library tabs, clean plate, 760x560 | 0.0 to 0.2 in six samples; 3.18 in one sample taken seconds after a run of agent commands and not repeated |
+| Wave 4, session captures | Tracker paths drawn; stabilized clip | 0.0; 0.17 and 0.0 |
+
+These are single samples of process CPU on a virtual display. They do not
+count wakeups or repaints, and the three-second release with its one wake was
+not observed in the running app.
+
+Not measured: the cost of any pass or effect stack, the per-frame upload
+during playback, the one-time pipeline build on the first frame that
+composites, the scan of each track `resolve` makes every painted frame on a
+large project, GPU memory, and the frame rate of any effect, transition or
+stabilized clip in playback.
+
+### Speed and reverse
+
+A decoder pipe runs forwards only. A request a little behind its lane's pipe
+starts the replacement up to 24 frames early (`REVERSE_GROUP_FRAMES`), or two
+frames short of what half the frame cache holds, and keeps what it reads on the
+way in the 64 MiB frame cache: runs of 24 at 640x360, 14 at 960x540, 2 at
+1920x1080. A frame too large for a run of two is stepped one at a time as
+before.
+
+While one lane steps backwards, the preview worker starts the run before the
+one being shown after it has published a frame (`DecoderPool::look_behind`).
+An `aster-look-behind` thread owns that FFmpeg process and reads only as many
+frames as the pool has room to take, so the frames it holds, the pending
+frames and the cache together stay inside `FRAME_CACHE_BYTES`. It takes a
+decoder slot only when one of the five is free and gives it up when a request
+needs one. A step forwards, a jump, another source or size, a project change
+or `retain_lanes` ends it and drops what it read; a frame request that its
+run covers waits for it instead of starting a decoder, and stops waiting when
+the request is no longer current. A walk that is paused keeps one blocked
+FFmpeg process until one of those happens.
+
+| Workload | Before | After |
+| --- | --- | --- |
+| 30 single steps back through 640x360 H.264 with one keyframe, from frame 60, at `DecoderPool` | 30 decoder starts, 55.5 to 60.8 ms a frame | 3 starts, 6.4 to 6.8 ms a frame (no look-behind in this test) |
+| 90 thirtieths of a second walked back at 30 a second through 1920x1080 H.264 with one keyframe, previewed at 960x540, at `DecoderPool`, unoptimized | No look-behind: 45 or 46 frames shown, 7 starts on the frame path, longest step 242 to 269 ms | 72 to 75 frames shown, 2 starts on the frame path (the seek and the first run) and 6 behind it, longest step after those 35 to 63 ms |
+| Reversed 10 s clip of 1920x1080 30 fps H.264 (keyframe every 15 frames, `hd1080.mp4`) playing at 1x in the release build, 1440x900, RTX 4060 under headless Weston, screen sampled at 60 Hz for 6 s, three windows each | 144, 145 and 147 distinct pictures; 10 or 11 holds of 133 to 167 ms, one every 0.533 s | 180 distinct pictures in each window; longest time on one picture 50, 50 and 33 ms; no hold over 60 ms |
+
+The tests in [decode.rs](../crates/editor-media/src/decode.rs) print the first
+two rows as `MEASURE:` and assert the start counts, the five-decoder limit and
+the cache bound; the times are from a few runs on one machine. A third test
+walks 140 frames of 64x32 back in runs of 24, letting each look-behind finish
+before the next step, and asserts that no step after the first two starts a
+decoder on the frame path and that at least five runs were decoded behind it. Those are not
+measurements through `MediaService`, the viewer or the window.
+
+The last row is: the pictures and holds are counted from hashes of the viewer
+area ([figures](../artifacts/advanced-editing/final-fixes/reverse-pacing.txt));
+a paused control window gave one picture. It is one fixture, one adapter, one
+canvas size and a plain clip. Not measured: reversed playback with an effect
+stack or a transition, sources with distant keyframes (a run that takes longer
+to decode than its frames last on screen still holds the picture, as the
+second row's longest step shows), a preview frame of 1920x1080 or larger
+(runs of two, or single steps), more than one reversed lane at once (one lane
+has the look-behind at a time), other adapters, a windowed session and a
+physical display. Reverse preview still costs one process start for each run.
+Nine stills of a reversed clip playing on lavapipe showed the expected source
+frame at each timecode
+([wave 3](../artifacts/advanced-editing/wave3/README.md#reversed-playback)).
+
+Preview sound follows gain keyframes and splits a clip's chunk at the time
+map's segment boundaries. It plays straight forward stretches and is silent on
+a freeze, a reverse and a ramp.
+
+### Analysis lane and stabilization cache
+
+The two paragraphs under [Resource budgets](#resource-budgets) state the
+lane's bounds. In one table:
+
+| Bound | Value |
+| --- | --- |
+| Lane threads / FFmpeg processes at a time | 1 measuring thread and 1 cache-reading thread / 1 |
+| Jobs waiting / cache reads waiting | 4 (`ANALYSIS_QUEUE`) / 16 (`STEADY_LOADS`) |
+| Luma read | 384 pixels a side at most (`ANALYSIS_SIDE`) |
+| Tracker path | Thinned to 2048 keys at most; one `SetTracker` |
+| Stabilization, frames a video | 1,048,576 at most (`MAX_STEADY_FRAMES`), four numbers a frame |
+| Stabilization cache on disk | 64 MiB and 256 files, least lately read removed first; `<user cache>/stabilization`, or beside the settings file when `--settings` names one |
+| Stabilization paths held by the window | 8 paths and about two million frames |
+| Crop suggestion | Samples 2048 frames of a span at most |
+
+The desktop runs one tracking and one stabilization measurement at a time; a
+newer request gives the older up, although the lane itself queues four. A job
+is given up by a flag and by killing its process.
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| Tracking accuracy | 125 keys within 1.8 source pixels of the fixture's box | FFmpeg-generated moving box, MPEG-4, 1280x720, 30 fps, 5 s |
+| Tracking cost | About 220 to 240 % of one core while tracking | Native run on lavapipe, FFmpeg included |
+| Stabilization residual | 7.52 px RMS before, 0.10 px after | FFmpeg fixture, 320x240, 60 frames |
+| Stabilization residual | 2.379 px RMS before, 0.165 px after; the test asserts under 0.2 px | Synthetic shake |
+| Stabilization cost | 15 to 16 ms a frame, FFmpeg included | The 320x240 fixture |
+| Native marker step | 15.4 / 12.7 screen px RMS before, 0.58 / 0.00 after | Xvfb 1440x900 on lavapipe; the remainder is the fixture's pan |
+
+No real camera footage, optimized build or other host was measured, and the
+native stabilization figures predate the estimator's second fit guard.
+
+## Acceptance targets
+
+These are investigation targets, not achieved guarantees. Fix a host and
+workload before using them as regression budgets.
+
+| Workload | Target to investigate | Required observation |
+| --- | --- | --- |
+| Paused visible editor | Event-driven idle with negligible recurring work | Process CPU, wakeups, RSS and GPU activity after warmup |
+| Timeline interaction | Responsive at the display refresh rate | Native input-to-feedback latency and frame-time p50/p95/p99 |
+| 1080p30 preview | Sustained source-rate presentation | Actual presented frames, late/dropped frames and A/V drift |
+| Rapid random scrubbing | Latest requested frame wins without input stalls | Cold/warm seek latency distribution and cancelled resource cleanup |
+| 1,000 tracks / 100,000 clips | Visible-area cost rather than total project cost | Scroll/zoom latency, frame CPU and retained memory |
+| Large folder import | Responsive editing and bounded growth | Import throughput, queue depth, UI latency and peak process-tree RSS |
+| Long fractional-frame timeline | Deterministic frame positions | Frame-index timing at 30000/1001 and 60000/1001 |
+| Save during editing | Interactive input independent of storage | Slow-disk frame latency and exact saved-revision acknowledgement |
+
+Hardware decoding, proxy generation, waveform pyramids, GPU-native composition,
+zero-copy upload and indexed timeline lookup are opportunities to assess against
+profiles. They are not features merely because the architecture permits them.
+
+## Reproducible measurements
+
+Use optimized release builds with the pinned toolchain and lockfile. Record the
+source revision, build/features, OS/session type, CPU, RAM, GPU/backend, driver,
+display refresh/scale, window/preview size, power mode and competing workload.
+Fixtures record codec, resolution, frame rate, audio rate, duration and source
+storage; include at least still images, GIF, interframe video and audio.
+
+Separate startup and cache warmup from timed intervals, and retain cold-cache
+measurements where they represent the user flow. Repeat measurements and report
+distributions. Include decoder/subprocess CPU and memory when applicable;
+process RSS excludes GPU memory and can include shared mappings. Observe actual
+native input and presented output when claiming latency.
+
+Failed measurements remain diagnostic evidence. Neptune's parser/PTY/idle
+results belong to Neptune and are not an editor baseline. Cross-product
+comparisons require the same media, hardware, operation and observation method.

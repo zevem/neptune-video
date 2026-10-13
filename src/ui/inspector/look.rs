@@ -1,0 +1,615 @@
+//! The Look section: the looks a clip can be given and its effect stack.
+//!
+//! The rows of an effect are made from `look::spec`, one a parameter; what
+//! this file adds to that table is how a parameter is named and shown. Every
+//! change is the whole new stack, held in the draft and committed as one
+//! `SetEffects` for the clip the draft was made for.
+use super::{
+    card,
+    clip::{FIELD, Field, Pane},
+};
+use crate::{
+    icons::Icon,
+    theme,
+    ui::{
+        Action, ClipDraft,
+        widgets::{self, Kind, section},
+    },
+};
+use editor_core::{
+    AnimTarget, Command, Effect, EffectKind, LookPreset, MediaKind, ParamKey, ParamSpec,
+    ParamValue, look,
+};
+use eframe::egui::{self, Ui, WidgetInfo, WidgetType};
+use uuid::Uuid;
+
+pub(super) const PRESETS: [(LookPreset, &str); 7] = [
+    (LookPreset::Cinematic, "Cinematic"),
+    (LookPreset::TealOrange, "Teal & orange"),
+    (LookPreset::Vintage, "Vintage"),
+    (LookPreset::Faded, "Faded"),
+    (LookPreset::Noir, "Noir"),
+    (LookPreset::Warm, "Warm"),
+    (LookPreset::Cool, "Cool"),
+];
+
+/// What an effect does to the picture: the heading it is added under, and
+/// the section that adds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Family {
+    Stylize,
+    Blur,
+    Distort,
+    Key,
+    Color,
+    Motion,
+}
+
+impl Family {
+    /// Every family, in the order the library lists them.
+    pub(super) const ALL: [Self; 6] = [
+        Self::Stylize,
+        Self::Blur,
+        Self::Distort,
+        Self::Key,
+        Self::Color,
+        Self::Motion,
+    ];
+
+    /// The families the Look section adds, in the order of its menu. Colour
+    /// and motion effects are added by their own sections.
+    const LOOK: [Self; 4] = [Self::Stylize, Self::Blur, Self::Distort, Self::Key];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Stylize => "Stylize",
+            Self::Blur => "Blur and sharpen",
+            Self::Distort => "Distort",
+            Self::Key => "Key",
+            Self::Color => "Colour",
+            Self::Motion => "Motion",
+        }
+    }
+}
+
+pub(super) fn family(kind: EffectKind) -> Family {
+    match kind {
+        EffectKind::Glow
+        | EffectKind::Grain
+        | EffectKind::Vignette
+        | EffectKind::Glitch
+        | EffectKind::Shadow => Family::Stylize,
+        EffectKind::Blur | EffectKind::MotionBlur | EffectKind::Sharpen => Family::Blur,
+        EffectKind::Shake | EffectKind::Distort => Family::Distort,
+        EffectKind::ChromaKey | EffectKind::DifferenceMatte => Family::Key,
+        EffectKind::Grade
+        | EffectKind::HslBand
+        | EffectKind::CurveMaster
+        | EffectKind::CurveRed
+        | EffectKind::CurveGreen
+        | EffectKind::CurveBlue
+        | EffectKind::Lut => Family::Color,
+        EffectKind::Stabilize => Family::Motion,
+    }
+}
+
+/// Whether the Look section's menu adds this kind. A difference matte is
+/// not an effect until it has its clean plate: the Color section adds it,
+/// with the plate chosen there.
+pub(super) fn addable(kind: EffectKind) -> bool {
+    Family::LOOK.contains(&family(kind)) && kind != EffectKind::DifferenceMatte
+}
+
+pub(super) fn effect_name(kind: EffectKind) -> &'static str {
+    match kind {
+        EffectKind::Glow => "Glow",
+        EffectKind::Shake => "Shake",
+        EffectKind::Distort => "Wave",
+        EffectKind::MotionBlur => "Motion blur",
+        EffectKind::Grain => "Grain",
+        EffectKind::Sharpen => "Sharpen",
+        EffectKind::Shadow => "Shadow",
+        EffectKind::Blur => "Blur",
+        EffectKind::Vignette => "Vignette",
+        EffectKind::Glitch => "Glitch",
+        EffectKind::Grade => "Grade",
+        EffectKind::HslBand => "Hue band",
+        EffectKind::CurveMaster => "Curve",
+        EffectKind::CurveRed => "Red curve",
+        EffectKind::CurveGreen => "Green curve",
+        EffectKind::CurveBlue => "Blue curve",
+        EffectKind::Lut => "LUT",
+        EffectKind::ChromaKey => "Chroma key",
+        EffectKind::DifferenceMatte => "Difference matte",
+        EffectKind::Stabilize => "Stabilize",
+    }
+}
+
+/// The name a parameter's row has.
+pub(super) fn label(target: AnimTarget, key: ParamKey) -> &'static str {
+    use EffectKind::{Distort, Glitch, Grain, Stabilize, Vignette};
+    match (target, key) {
+        (AnimTarget::Effect(Stabilize), ParamKey::Smoothness) => "Strength",
+        (AnimTarget::Effect(Stabilize), ParamKey::CropZoom) => "Crop zoom",
+        (AnimTarget::Effect(Grain | Vignette), ParamKey::Radius) => "Size",
+        (AnimTarget::Effect(Distort), ParamKey::Frequency) => "Waves",
+        (AnimTarget::Effect(Distort), ParamKey::OffsetX) => "Phase",
+        (AnimTarget::Effect(Glitch), ParamKey::OffsetX) => "Shift",
+        (_, key) => match key {
+            ParamKey::PositionX => "Position X",
+            ParamKey::PositionY => "Position Y",
+            ParamKey::ScaleX => "Scale X",
+            ParamKey::ScaleY => "Scale Y",
+            ParamKey::Rotation => "Rotation",
+            ParamKey::Opacity => "Opacity",
+            ParamKey::CropLeft => "Crop left",
+            ParamKey::CropTop => "Crop top",
+            ParamKey::CropRight => "Crop right",
+            ParamKey::CropBottom => "Crop bottom",
+            ParamKey::Gain => "Volume",
+            ParamKey::Amount => "Amount",
+            ParamKey::Radius => "Radius",
+            ParamKey::Angle => "Angle",
+            ParamKey::Threshold => "Threshold",
+            ParamKey::Softness => "Softness",
+            ParamKey::Frequency => "Rate",
+            ParamKey::OffsetX => "Offset X",
+            ParamKey::OffsetY => "Offset Y",
+            ParamKey::Exposure => "Exposure",
+            ParamKey::Contrast => "Contrast",
+            ParamKey::Saturation => "Saturation",
+            ParamKey::Temperature => "Temperature",
+            ParamKey::Tint => "Tint",
+            ParamKey::Lift => "Lift",
+            ParamKey::Gamma => "Gamma",
+            ParamKey::GainLuma => "Gain",
+            ParamKey::Hue => "Hue",
+            ParamKey::HueWidth => "Range",
+            ParamKey::HueShift => "Hue shift",
+            ParamKey::SatShift => "Saturation shift",
+            ParamKey::LumShift => "Lightness shift",
+            ParamKey::KeyR => "Key red",
+            ParamKey::KeyG => "Key green",
+            ParamKey::KeyB => "Key blue",
+            ParamKey::Tolerance => "Tolerance",
+            ParamKey::Spill => "Spill",
+            ParamKey::Smoothness => "Smoothness",
+            ParamKey::CropZoom => "Zoom",
+            ParamKey::CenterX => "Centre X",
+            ParamKey::CenterY => "Centre Y",
+            ParamKey::Width => "Width",
+            ParamKey::Height => "Height",
+            ParamKey::Feather => "Feather",
+            ParamKey::Roundness => "Roundness",
+        },
+    }
+}
+
+/// How a parameter's value is shown: its unit, and from the table's range
+/// how fine its field is. A length or an amount is a part of something and
+/// is shown in hundredths of it.
+pub(super) fn presented(target: AnimTarget, spec: &ParamSpec) -> (&'static str, Field) {
+    use EffectKind::Distort;
+    let (scale, suffix) = match (target, spec.key) {
+        (
+            _,
+            ParamKey::Angle
+            | ParamKey::Rotation
+            | ParamKey::Hue
+            | ParamKey::HueWidth
+            | ParamKey::HueShift,
+        ) => (1.0, "°"),
+        (AnimTarget::Effect(Distort), ParamKey::Frequency | ParamKey::OffsetX) => (1.0, ""),
+        (_, ParamKey::Frequency) => (1.0, " Hz"),
+        (_, ParamKey::Exposure) => (1.0, " EV"),
+        (_, ParamKey::Gamma) => (1.0, ""),
+        (_, ParamKey::CropZoom) => (1.0, " ×"),
+        _ => (100.0, " %"),
+    };
+    let span = (spec.max - spec.min) * scale;
+    let decimals = match span {
+        span if span >= 100.0 => 0,
+        span if span >= 10.0 => 1,
+        _ => 2,
+    };
+    let field = Field {
+        scale,
+        min: spec.min,
+        max: spec.max,
+        suffix,
+        decimals,
+        // A field is dragged across its range in three hundred points, and
+        // no faster than its unit is told apart: a range of many turns is
+        // dragged half a degree at a time, as the clip's own rotation is.
+        speed: f64::from(span / 300.0).clamp(0.001, if suffix == "°" { 0.5 } else { 1.0 }),
+        width: FIELD,
+    };
+    (label(target, spec.key), field)
+}
+
+/// Whether a value is the one its parameter has when none is stored.
+pub(super) fn is_default(value: f32, spec: &ParamSpec) -> bool {
+    (value - spec.default).abs() <= 1e-5 * spec.default.abs().max(1.0)
+}
+
+pub(super) fn set_param(effect: &mut Effect, key: ParamKey, value: f32) {
+    match effect.params.iter_mut().find(|param| param.key == key) {
+        Some(param) => param.value = value,
+        None => effect.params.push(ParamValue { key, value }),
+    }
+}
+
+/// A change to the stack that is not to one effect's own values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Reorder {
+    Up(usize),
+    Down(usize),
+    Remove(usize),
+    Add(EffectKind),
+}
+
+pub(super) const KEY_COLOUR: [ParamKey; 3] = [ParamKey::KeyR, ParamKey::KeyG, ParamKey::KeyB];
+
+impl Pane<'_> {
+    /// A row for one parameter of an effect or a mask, with its keyframe
+    /// diamond, and a reset while the stored value is not the default. Hands
+    /// back the new stored value when that is what changed.
+    pub(super) fn param_row(
+        &mut self,
+        ui: &mut Ui,
+        id: Uuid,
+        target: AnimTarget,
+        spec: &ParamSpec,
+        stored: f32,
+        stored_of: &dyn Fn(&ClipDraft, ParamKey) -> f32,
+    ) -> Option<f32> {
+        let p = self.p;
+        let (label, field) = presented(target, spec);
+        let what = label.to_lowercase();
+        let keys = [spec.key];
+        let state = self.key_state(Some(id), &keys);
+        let mut changed = None;
+        let mut reset = false;
+        let row = widgets::keyed_row_with(
+            ui,
+            p,
+            label,
+            &what,
+            state,
+            |ui| changed = self.field(ui, Some(id), spec.key, stored, &field, label),
+            |ui| {
+                reset = state == widgets::KeyState::Off
+                    && !is_default(stored, spec)
+                    && widgets::small_icon_button(ui, p, Icon::Rotate, &format!("Reset {what}"))
+                        .clicked();
+            },
+        );
+        self.key_controls(ui, &row, Some(id), target, &keys, stored_of);
+        if reset { Some(spec.default) } else { changed }
+    }
+
+    pub(super) fn look(&mut self, ui: &mut Ui) {
+        let p = self.p;
+        let clip = self.clip;
+
+        // The look the clip has is read from its effects, so it is the same
+        // look after an undo, a save, or when the library or the agent gave
+        // it: adjusted or taken apart in the stack below, it is a look no
+        // longer.
+        let held = self.next.effects.take();
+        let stack: &[Effect] = held.as_deref().unwrap_or(&clip.effects);
+        let mut remade: Option<Option<Vec<Effect>>> = None;
+        let given = look::applied_look(stack);
+        let look_command = |label: &str, effects: Vec<Effect>| {
+            Action::Edit(Command::Batch {
+                label: label.to_owned(),
+                commands: vec![Command::SetEffects {
+                    clip_id: clip.id,
+                    effects,
+                }],
+            })
+        };
+
+        section(ui, p, "Looks");
+        card(ui, p, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                for (preset, name) in PRESETS {
+                    let chosen = given.is_some_and(|given| given.preset == preset);
+                    let kind = if chosen { Kind::Primary } else { Kind::Plain };
+                    let button =
+                        widgets::button(ui, p, None, name, kind).on_hover_text(if chosen {
+                            "The look the clip has"
+                        } else if given.is_some() {
+                            "Give the clip this look in place of the one it has"
+                        } else {
+                            "Give the clip this look: its effects are added below"
+                        });
+                    button.widget_info(|| {
+                        WidgetInfo::selected(WidgetType::Button, ui.is_enabled(), chosen, name)
+                    });
+                    if button.clicked() && !chosen {
+                        // One look at a time: this one's effects take the
+                        // place of the last one's in the stack, as strong as
+                        // that one was.
+                        let strength = given.map_or(self.state.strength, |given| given.strength);
+                        let effects = look::with_look(stack, Some((preset, strength)));
+                        self.actions.push(look_command("Apply look", effects));
+                    }
+                }
+            });
+            ui.add_space(2.0);
+            widgets::fitted_row(ui, p, "Strength", |ui| {
+                // Of the look the clip has, how much of it that is; with no
+                // look, how much of one the next brings.
+                let mut strength = given.map_or(self.state.strength, |given| given.strength);
+                ui.add_sized(
+                    [38.0, 18.0],
+                    egui::Label::new(
+                        egui::RichText::new(format!("{:.0} %", strength * 100.0))
+                            .font(theme::regular(12.0))
+                            .color(p.secondary),
+                    ),
+                );
+                let slider = widgets::slider(ui, p, &mut strength, 1.0, 112.0, "Look strength")
+                    .on_hover_text(if given.is_some() {
+                        "How much of its look the clip has"
+                    } else {
+                        "How much of a look the next one brings"
+                    });
+                if slider.changed() {
+                    // Weaker than this a look is no look that can be told.
+                    let strength = strength.clamp(look::MIN_LOOK_STRENGTH, 1.0);
+                    match given {
+                        // The look the clip has is made again at this
+                        // strength, as a draft: a drag of the slider is one
+                        // step.
+                        Some(given) => {
+                            let effects = look::with_look(stack, Some((given.preset, strength)));
+                            remade = Some((effects != clip.effects).then_some(effects));
+                        }
+                        None => self.state.strength = strength,
+                    }
+                }
+            });
+            if let Some(given) = given {
+                let name = (PRESETS.iter())
+                    .find(|(preset, _)| *preset == given.preset)
+                    .map_or("look", |(_, name)| name);
+                widgets::fitted_row(ui, p, name, |ui| {
+                    if widgets::button(ui, p, None, "Remove look", Kind::Plain).clicked() {
+                        let effects = look::with_look(stack, None);
+                        self.actions.push(look_command("Remove look", effects));
+                    }
+                });
+            }
+        });
+        self.next.effects = remade.unwrap_or(held);
+
+        // The stack is read where it is and copied only when it changes.
+        let held = self.next.effects.take();
+        let list: &[Effect] = held.as_deref().unwrap_or(&clip.effects);
+        let mut edited: Vec<(usize, Effect)> = Vec::new();
+        let mut reorder: Option<Reorder> = None;
+
+        section(ui, p, "Effects");
+        for (index, effect) in list.iter().enumerate() {
+            ui.push_id(effect.id, |ui| {
+                card(ui, p, |ui| {
+                    if let Some(effect) =
+                        self.effect_rows(ui, effect, index, list.len(), &mut reorder)
+                    {
+                        edited.push((index, effect));
+                    }
+                });
+            });
+        }
+        if list.is_empty() {
+            ui.label(
+                egui::RichText::new("No effects on this clip.")
+                    .font(theme::regular(12.0))
+                    .color(p.muted),
+            );
+        }
+        ui.add_enabled_ui(list.len() < look::MAX_EFFECTS, |ui| {
+            let add = widgets::button(ui, p, Some(Icon::Plus), "Add effect", Kind::Plain)
+                .on_disabled_hover_text("A clip holds sixteen effects at most");
+            egui::Popup::menu(&add).show(|ui| {
+                widgets::menu_style(ui, 190.0);
+                for family in Family::LOOK {
+                    ui.label(
+                        egui::RichText::new(family.label())
+                            .font(theme::medium(11.0))
+                            .color(p.muted),
+                    );
+                    for kind in EffectKind::ALL {
+                        if self::family(kind) == family
+                            && addable(kind)
+                            && widgets::menu_item(ui, p, None, effect_name(kind), "").clicked()
+                        {
+                            reorder = Some(Reorder::Add(kind));
+                        }
+                    }
+                }
+            });
+        });
+
+        self.next.effects = if edited.is_empty() && reorder.is_none() {
+            held
+        } else {
+            let mut stack = list.to_vec();
+            for (index, effect) in edited {
+                stack[index] = effect;
+            }
+            match reorder {
+                Some(Reorder::Up(index)) if index > 0 => stack.swap(index, index - 1),
+                Some(Reorder::Down(index)) if index + 1 < stack.len() => {
+                    stack.swap(index, index + 1);
+                }
+                Some(Reorder::Remove(index)) => {
+                    // What was being keyframed on it goes with it.
+                    let removed = stack.remove(index).id;
+                    self.next.keys.retain(|key| key.target != Some(removed));
+                }
+                Some(Reorder::Add(kind)) => {
+                    let effect = Effect::new(kind);
+                    self.state.effect = Some(effect.id);
+                    stack.push(effect);
+                }
+                _ => {}
+            }
+            // A stack back at the stored one is no draft.
+            (stack != clip.effects).then_some(stack)
+        };
+    }
+
+    /// One effect of the stack: its heading, and its rows while it is open.
+    /// Hands back the effect as edited, when it was.
+    fn effect_rows(
+        &mut self,
+        ui: &mut Ui,
+        effect: &Effect,
+        index: usize,
+        count: usize,
+        reorder: &mut Option<Reorder>,
+    ) -> Option<Effect> {
+        let p = self.p;
+        let name = effect_name(effect.kind);
+        let open = self.state.effect == Some(effect.id);
+        let mut edited: Option<Effect> = None;
+        let mut edit = |change: &dyn Fn(&mut Effect)| {
+            change(edited.get_or_insert_with(|| effect.clone()));
+        };
+
+        ui.horizontal(|ui| {
+            ui.set_min_height(widgets::SMALL_BUTTON);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let small = |ui: &mut Ui, icon, enabled, label: &str| {
+                    ui.add_enabled_ui(enabled, |ui| widgets::small_icon_button(ui, p, icon, label))
+                        .inner
+                        .clicked()
+                };
+                if small(ui, Icon::Trash, true, &format!("Remove {name}")) {
+                    *reorder = Some(Reorder::Remove(index));
+                }
+                if small(
+                    ui,
+                    Icon::ArrowDown,
+                    index + 1 < count,
+                    &format!("Move {name} down"),
+                ) {
+                    *reorder = Some(Reorder::Down(index));
+                }
+                if small(ui, Icon::ArrowUp, index > 0, &format!("Move {name} up")) {
+                    *reorder = Some(Reorder::Up(index));
+                }
+                let shown = widgets::small_icon_toggle(
+                    ui,
+                    p,
+                    Icon::Eye,
+                    effect.enabled,
+                    &format!("Show {name}"),
+                );
+                if shown.clicked() {
+                    edit(&|effect| effect.enabled = !effect.enabled);
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    if widgets::disclosure(ui, p, open, name, !effect.enabled).clicked() {
+                        self.state.effect = (!open).then_some(effect.id);
+                    }
+                });
+            });
+        });
+        if !open {
+            return edited;
+        }
+
+        widgets::hairline(ui, p);
+        widgets::fitted_row(ui, p, "Mix", |ui| {
+            let mut mix = effect.mix;
+            ui.add_sized(
+                [38.0, 18.0],
+                egui::Label::new(
+                    egui::RichText::new(format!("{:.0} %", mix * 100.0))
+                        .font(theme::regular(12.0))
+                        .color(p.secondary),
+                ),
+            );
+            if widgets::slider(ui, p, &mut mix, 1.0, 112.0, &format!("{name} mix")).changed() {
+                edit(&|effect| effect.mix = mix);
+            }
+        });
+
+        let target = AnimTarget::Effect(effect.kind);
+        let stored_of = |_: &ClipDraft, key: ParamKey| effect.param(key).unwrap_or(0.0);
+        // A key colour is one swatch, not three numbers.
+        if effect.kind == EffectKind::ChromaKey {
+            let state = self.key_state(Some(effect.id), &KEY_COLOUR);
+            let mut rgb =
+                KEY_COLOUR.map(|key| self.shown(Some(effect.id), key, stored_of(self.next, key)));
+            let mut picked = false;
+            let row = widgets::keyed_row(ui, p, "Key colour", "key colour", state, |ui| {
+                let swatch = ui.color_edit_button_rgb(&mut rgb);
+                swatch.widget_info(|| {
+                    WidgetInfo::labeled(WidgetType::ColorButton, true, "Key colour")
+                });
+                picked = swatch.changed();
+            });
+            if picked {
+                for (key, value) in KEY_COLOUR.into_iter().zip(rgb) {
+                    if let Some(value) = self.write(Some(effect.id), key, value.clamp(0.0, 1.0)) {
+                        edit(&|effect| set_param(effect, key, value));
+                    }
+                }
+            }
+            self.key_controls(ui, &row, Some(effect.id), target, &KEY_COLOUR, &stored_of);
+        }
+        for spec in look::spec(effect.kind) {
+            if KEY_COLOUR.contains(&spec.key) {
+                continue;
+            }
+            let stored = effect.param(spec.key).unwrap_or(spec.default);
+            if let Some(value) = self.param_row(ui, effect.id, target, spec, stored, &stored_of) {
+                edit(&|effect| set_param(effect, spec.key, value));
+            }
+        }
+        if effect.kind.is_curve() {
+            super::fact(ui, p, "Points", effect.points.len().to_string());
+        }
+        if effect.kind.needs_asset() {
+            // A lookup is done in a table, and a clean plate is a still.
+            let wanted = if effect.kind == EffectKind::Lut {
+                MediaKind::Lut
+            } else {
+                MediaKind::Image
+            };
+            let label = if effect.kind == EffectKind::Lut {
+                "Table"
+            } else {
+                "Clean plate"
+            };
+            let project = self.project;
+            let mut chosen = effect.asset_id;
+            widgets::fitted_row(ui, p, label, |ui| {
+                let current = (chosen.and_then(|id| project.assets.get(&id)))
+                    .map_or("Missing", |asset| asset.name.as_str());
+                egui::ComboBox::from_id_salt("effect-asset")
+                    .selected_text(current)
+                    .width(132.0)
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        for asset in project.assets.values().filter(|a| a.kind == wanted) {
+                            ui.selectable_value(&mut chosen, Some(asset.id), &asset.name);
+                        }
+                    })
+                    .response
+                    .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, label));
+            });
+            if chosen != effect.asset_id {
+                edit(&|effect| effect.asset_id = chosen);
+            }
+        }
+        edited
+    }
+}

@@ -1,0 +1,43 @@
+#!/usr/bin/python3
+"""Forward owned synthetic acceptance traffic; retain static diagnostics only."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import threading
+
+destination = Path(os.environ["ASTER_AI_DIAGNOSTICS"])
+lock = threading.Lock()
+process = subprocess.Popen(["/home/biggabo/.local/bin/codex", *sys.argv[1:]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr.buffer)
+
+def record(value, direction):
+    summary = {"direction":direction,"method":value.get("method"),"id":value.get("id")}
+    if direction == "output":
+        error = value.get("error") or value.get("params", {}).get("error")
+        if error:
+            message = str(error.get("message", "")).lower()
+            markers = ["schema","oneof","anyof","format","additionalproperties","prefixitems","not permitted","unsupported","authentication","billing","required","effort","reasoning","read-only","sandbox","model","tool"]
+            summary["error_classifications"] = {word:word in message for word in markers}
+            info = error.get("codexErrorInfo")
+            summary["error_info"] = info if isinstance(info,str) and info in ["badRequest","other","unauthorized","usageLimitExceeded","rateLimitExceeded","internalServerError"] else None
+            summary["will_retry"] = value.get("params", {}).get("willRetry")
+    with lock:
+        with destination.open("a") as output:
+            output.write(json.dumps(summary) + "\n")
+
+def inputs():
+    for line in sys.stdin.buffer:
+        value = json.loads(line)
+        record(value,"input")
+        process.stdin.write(line)
+        process.stdin.flush()
+    process.stdin.close()
+
+threading.Thread(target=inputs,daemon=True).start()
+for line in process.stdout:
+    value = json.loads(line)
+    record(value,"output")
+    sys.stdout.buffer.write(line)
+    sys.stdout.buffer.flush()
+sys.exit(process.wait())

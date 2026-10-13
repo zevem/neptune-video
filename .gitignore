@@ -1,0 +1,6 @@
+/target/
+/.tools/
+*.aster.recovery
+*.aster.checkpoints/
+artifacts/
+*.tmp

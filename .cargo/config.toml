@@ -1,0 +1,3 @@
+[build]
+# One compilation owner; keep native dependency compilation within host memory.
+jobs = 8

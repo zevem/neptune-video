@@ -1,0 +1,69 @@
+[workspace]
+members = ["crates/editor-core", "crates/editor-media", "crates/editor-store", "crates/editor-agent"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97.1"
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[package]
+name = "aster-editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "A native, agent-driven desktop video editor"
+default-run = "aster"
+
+[[bin]]
+name = "aster"
+path = "src/main.rs"
+
+[[bin]]
+name = "aster-agent"
+path = "src/bin/aster-agent.rs"
+
+[dependencies]
+editor-core = { path = "crates/editor-core" }
+editor-media = { path = "crates/editor-media" }
+editor-store = { path = "crates/editor-store" }
+editor-agent = { path = "crates/editor-agent" }
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11", "accesskit"] }
+rfd = "0.17.2"
+pollster = "1.0.1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+directories = "6"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+rustix = { version = "1", features = ["event", "fs"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.ci]
+inherits = "dev"
+opt-level = 0
+debug = 0
+incremental = false
+
+[profile.ci.package."*"]
+opt-level = 0

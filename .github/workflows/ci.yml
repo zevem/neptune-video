@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Formatting and architecture
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+      - run: python3 scripts/check-architecture.py
+      - run: python3 scripts/check-architecture.py --self-test
+      - run: python3 scripts/test-native-test-runner.py
+
+  native:
+    name: Rust (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install Linux window/audio dependencies and media tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pkg-config libxkbcommon-dev libwayland-dev libasound2-dev ffmpeg
+      - name: Install macOS media tools
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install Windows media tools
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.97.1
+          components: clippy
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: ci-${{ matrix.target }}
+          cache-on-failure: true
+      - name: Native backend correctness, lints and application link
+        run: python scripts/run-native-tests.py --run --target '${{ matrix.target }}' --output 'artifacts/native/backend-checks/${{ matrix.target }}'
+      - name: Retain native backend evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-backend-${{ matrix.target }}
+          path: artifacts/native/backend-checks/${{ matrix.target }}/
+          retention-days: 14
+          if-no-files-found: ignore

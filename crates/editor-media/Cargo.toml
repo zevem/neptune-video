@@ -1,0 +1,18 @@
+[package]
+name = "editor-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Bounded import, preview decoding and audio workers for Aster"
+
+[dependencies]
+editor-core = { path = "../editor-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+cpal = "0.18.1"
+
+[dev-dependencies]
+tempfile = "3.27"

@@ -1,0 +1,41 @@
+#!/bin/sh
+# Aster portable launcher: runs bin/aster from the bundle this file lives in.
+set -u
+
+self=$0
+case $self in
+    */*) ;;
+    *) self=./$self ;;
+esac
+
+# Follow symlinks to the launcher so the bundle is found from a link elsewhere.
+hops=0
+while [ -L "$self" ]; do
+    hops=$((hops + 1))
+    if [ "$hops" -gt 32 ]; then
+        printf '%s\n' "AppRun: too many symbolic links: $0" >&2
+        exit 1
+    fi
+    link_dir=$(CDPATH='' cd -- "$(dirname -- "$self")" && pwd -P) || exit 1
+    target=$(readlink -- "$self") || exit 1
+    case $target in
+        /*) self=$target ;;
+        *) self=$link_dir/$target ;;
+    esac
+done
+
+bundle=$(CDPATH='' cd -- "$(dirname -- "$self")" && pwd -P) || exit 1
+aster=$bundle/bin/aster
+
+if [ ! -f "$aster" ]; then
+    printf '%s\n' "AppRun: missing $aster" >&2
+    exit 127
+fi
+if [ ! -x "$aster" ]; then
+    printf '%s\n' "AppRun: not executable: $aster" >&2
+    exit 126
+fi
+
+# The working directory, PATH, ASTER_FFMPEG and ASTER_FFPROBE pass through
+# unchanged; Aster resolves ffmpeg and ffprobe from them itself.
+exec "$aster" "$@"
