@@ -145,7 +145,7 @@ pub enum MediaEvent {
 #[derive(Debug, thiserror::Error)]
 pub enum MediaError {
     #[error(
-        "{tool} was not found. Install FFmpeg and put ffmpeg and ffprobe on PATH, or set ASTER_FFMPEG and ASTER_FFPROBE to their executable paths."
+        "{tool} was not found beside Aster or on PATH. Reinstall Aster to restore the FFmpeg it comes with, or set ASTER_FFMPEG and ASTER_FFPROBE to executable paths."
     )]
     MissingTool { tool: String },
     #[error("{0}")]

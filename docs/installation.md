@@ -18,9 +18,11 @@ symlinks in the bundle path. It performs no installation, downloads or updates.
 It was built before titles, captions, speech recognition, export and proxies
 were added, so it has none of them; build from source for those.
 
-FFmpeg and ffprobe must be installed on normal `PATH`, or selected with
-`ASTER_FFMPEG` and `ASTER_FFPROBE`. Native graphics/audio libraries and desktop
-services remain host dependencies. This bundle was verified on the current Linux
+That trial bundle predates bundled media tools: it needs FFmpeg and ffprobe on
+normal `PATH`, or selected with `ASTER_FFMPEG` and `ASTER_FFPROBE`. Bundles
+packaged with `--media-tools` carry them in `bin/` (see
+[media executables](#media-executables)). Native graphics/audio libraries and
+desktop services remain host dependencies. This bundle was verified on the current Linux
 host, including thirteen native editing checks through its extracted launcher;
 it does not establish a minimum supported distribution or clean-machine release
 acceptance. `Aster.desktop.in` is a template, not an installed menu entry.
@@ -33,9 +35,11 @@ To reproduce it from this checkout after a verified release build:
 
 ```sh
 cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-unknown-linux-gnu > /absolute/path/cargo-metadata.json
+python3 scripts/fetch-media-tools.py
 python3 scripts/package-release.py --build-record /absolute/path/build-record.json \
   --cargo-metadata /absolute/path/cargo-metadata.json --target x86_64-unknown-linux-gnu \
-  --output artifacts/packaging/new-trial --frontend-assets packaging/linux
+  --output artifacts/packaging/new-trial --frontend-assets packaging/linux \
+  --media-tools .tools/media/linux-x86_64
 ```
 
 The packager checks the matching host, executable architecture, exact current
@@ -43,12 +47,13 @@ source/binary identity and notice inputs. It refuses existing output directories
 and retains failed attempts. macOS and Windows layouts remain preparation work;
 their host/header checks cannot establish native execution on Linux.
 
-On Debian/Ubuntu, install the native window/audio development dependencies and
-the media tools:
+On Debian/Ubuntu, install the native window/audio development dependencies,
+fetch the FFmpeg Aster ships, and build:
 
 ```sh
-sudo apt-get install pkg-config libxkbcommon-dev libwayland-dev libasound2-dev ffmpeg \
+sudo apt-get install pkg-config libxkbcommon-dev libwayland-dev libasound2-dev \
   build-essential cmake libclang-dev
+python3 scripts/fetch-media-tools.py
 cargo build --release --locked --bins
 ./target/release/aster
 ```
@@ -57,11 +62,10 @@ cargo build --release --locked --bins
 [speech recognition](#speech-recognition)); the first build compiles it from
 source and takes a few minutes longer.
 
-For this prepared Linux checkout, use `./scripts/run-local.sh` once the optimized
-binary exists. The script forwards project/media arguments, preserves explicit
-media-tool overrides and selects `.tools/ffmpeg/usr/bin` executables when they
-are available; otherwise the app resolves normal `PATH`. It performs no
-downloads or rebuilds. Rebuild after source changes with
+Alternatively, use `./scripts/run-local.sh` once the optimized binary exists.
+The script forwards project/media arguments and runs `fetch-media-tools.py`
+first, which downloads only when `.tools/media/` lacks the pinned build;
+explicit media-tool overrides skip it. It performs no rebuilds. Rebuild after source changes with
 `cargo build --release --locked --bins`; when the binary is missing, the script
 prints that build command and exits.
 
@@ -73,30 +77,54 @@ real file-manager drops before declaring Linux release support.
 ## macOS and Windows
 
 On macOS, install Rust, the Xcode command-line tools and CMake
-(`brew install cmake`), then build with
-`cargo build --release --locked --bins`. The executable is `target/release/aster`.
-FFmpeg/ffprobe must be available to the app's environment. Native Metal, audio,
+(`brew install cmake`), run `python3 scripts/fetch-media-tools.py`, then build
+with `cargo build --release --locked --bins`. The executable is
+`target/release/aster`. Native Metal, audio,
 Retina/IME, Intel/Apple Silicon support policy and notarized packaging remain
 acceptance work.
 
 On Windows, use Rust's MSVC toolchain with Visual Studio C++ build tools, their
 CMake component, the Windows SDK and LLVM's libclang (set `LIBCLANG_PATH` to its
 `bin` directory if it is not found), then run the same Cargo build. Executables are
-`target/release/aster.exe` and `target/release/aster-agent.exe`. Make FFmpeg/ffprobe
-available to the launched app. Native GPU/audio, Unicode paths, DPI, file dialogs,
+`target/release/aster.exe` and `target/release/aster-agent.exe`. Run
+`python scripts/fetch-media-tools.py` once for the FFmpeg the app runs. Native GPU/audio, Unicode paths, DPI, file dialogs,
 clipboard and installer signing remain acceptance work.
 
 ## Media executables
 
 The Rust application decodes PNG/JPEG/WebP/BMP/GIF natively. Video/audio probing
-and software processing use external `ffprobe` and `ffmpeg`, resolved from
-`PATH` or `ASTER_FFPROBE` / `ASTER_FFMPEG` executable-path overrides. The verified
-Linux fixture run used FFmpeg 8.0.1. Missing tools report errors; they are not
-downloaded or installed automatically by Aster.
+and software processing run `ffprobe` and `ffmpeg` as separate processes. Aster
+ships them, so a person installing it installs no FFmpeg. Each is resolved, in
+order, from:
 
-Codecs are therefore a runtime dependency, rather than a pure-Rust codec stack
-or a bundled installer guarantee. Supported formats depend on the installed
-FFmpeg build. Deployment, codec licensing and notices need a release policy.
+1. `ASTER_FFMPEG` / `ASTER_FFPROBE`, an explicit executable path;
+2. the copy in the same folder as the `aster` executable (symlinks to `aster`
+   followed), where a package puts it;
+3. for a build inside a source checkout (an executable below `target/`),
+   `.tools/media/<os>-<arch>/` in that checkout;
+4. `PATH`.
+
+A tool found nowhere reports an error naming these places. Aster itself never
+downloads FFmpeg.
+
+[`scripts/fetch-media-tools.py`](../scripts/fetch-media-tools.py) fetches the
+pinned build for a platform, checks it against a pinned SHA-256 before reading
+it, and writes `ffmpeg`, `ffprobe`, the build's license and a provenance record
+(`media-tools.json`) to `.tools/media/<os>-<arch>`. `package-release.py
+--media-tools` copies those into the package's `bin/` and `notices/ffmpeg/`.
+The pins are static GPL builds, because export uses libx264 and libx265:
+
+| Platform | Build | Source |
+| --- | --- | --- |
+| `linux-x86_64`, `linux-aarch64`, `windows-x86_64`, `windows-aarch64` | FFmpeg 8.1.3-9-g29e619e767 | [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) `autobuild-2026-09-30-13-08`, a month-end build that project keeps |
+| `macos-aarch64`, `macos-x86_64` | FFmpeg 9.0.2 | [martin-riedl.de](https://ffmpeg.martin-riedl.de/) release builds, with the GNU GPLv3 text |
+
+The Linux builds need glibc 2.28 or later and link nothing else from the host.
+Only `linux-x86_64` has been fetched, run and tested (on Ubuntu 26.04); the other
+pins are verified against their published digests only. Shipping GPL FFmpeg
+executables beside proprietary Aster also obliges the publisher to offer the
+corresponding FFmpeg source; that, codec patent licensing, and macOS signing
+and notarization of the bundled executables, remain release work.
 
 Sound editing runs FFmpeg filters as well: `aresample`, `asetrate` and
 `atempo` for speed and pitch; `highpass`, `equalizer`, `acompressor`,

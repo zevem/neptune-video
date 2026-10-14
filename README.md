@@ -55,23 +55,26 @@ including actual provider requests and protected save/recovery behavior.
 
 Use the pinned Rust 1.97.1 toolchain, plus CMake, a C/C++ compiler and libclang
 to build the speech recognizer. A graphical desktop and graphics driver are
-required. FFmpeg/ffprobe must be installed for video/audio processing; still-image
+required. Video/audio processing runs FFmpeg, which Aster ships with itself:
+fetch the pinned, checksum-verified build for this computer once, and a build
+in this checkout finds it in `.tools/media/` with nothing installed. Still-image
 decoding is native to the Rust media adapter. Speech models are downloaded on
 request with the system's `curl`, or chosen as files.
 
 ```sh
+python3 scripts/fetch-media-tools.py
 cargo run --release --locked --bin aster
 ```
 
-For this prepared Linux checkout, the local launcher uses the existing optimized
-binary and task-local FFmpeg tools when available:
+The local launcher runs the existing optimized binary and fetches FFmpeg first
+when it is missing:
 
 ```sh
 ./scripts/run-local.sh
 ```
 
-It preserves explicit `ASTER_FFMPEG` / `ASTER_FFPROBE` overrides and does not
-download, rebuild or install anything. After editing source, rebuild with
+Explicit `ASTER_FFMPEG` / `ASTER_FFPROBE` overrides still win. It does not
+rebuild or install anything. After editing source, rebuild with
 `cargo build --release --locked --bins` before using it.
 
 Open a project or import sources at launch:
@@ -82,7 +85,8 @@ cargo run --release --locked --bin aster -- /absolute/film.aster /absolute/media
 
 See [installation](docs/installation.md) for platform prerequisites and media
 tools, and [development](docs/development.md) for focused checks. The deliverable
-is a source build; signed installers and codec bundling remain release work.
+is a source build; packages carry FFmpeg beside `aster`, and signed installers
+remain release work.
 
 ## Project structure
 

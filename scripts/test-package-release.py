@@ -73,13 +73,26 @@ class PackageTests(unittest.TestCase):
         self.record_path.write_text(json.dumps(self.record))
         self.metadata_path.write_text(json.dumps(self.metadata))
 
-    def run_package(self, output=None, assets=None):
+    def run_package(self, output=None, assets=None, media=None):
         with patch.object(PACKAGER.platform, "system", return_value="Linux"), patch.object(PACKAGER.platform, "machine", return_value="x86_64"):
-            return PACKAGER.package(self.root, self.record_path, self.metadata_path, TARGET, output or self.output, assets)
+            return PACKAGER.package(self.root, self.record_path, self.metadata_path, TARGET, output or self.output, assets, media)
 
-    def assert_failure(self, message, assets=None):
+    def media_tools(self, platform="linux-x86_64", machine=62):
+        """A folder shaped as fetch-media-tools.py writes it."""
+        folder = self.root / ".tools/media" / platform
+        folder.mkdir(parents=True)
+        (folder / "ffmpeg").write_bytes(elf(machine))
+        (folder / "ffprobe").write_bytes(elf(machine) + b"probe")
+        (folder / "LICENSE.txt").write_text("GPL fixture\n")
+        record = {"schema": "aster-media-tools-v1", "platform": platform, "version": "8.1.3", "license": "GPL-3.0-or-later",
+                  "source": "fixture", "downloads": [{"url": "https://example.invalid/ffmpeg.tar.xz", "sha256": "0" * 64}],
+                  "files": {name: PACKAGER.digest(folder / name) for name in ("ffmpeg", "ffprobe", "LICENSE.txt")}}
+        (folder / "media-tools.json").write_text(json.dumps(record))
+        return folder
+
+    def assert_failure(self, message, assets=None, media=None):
         with self.assertRaisesRegex(ValueError, message):
-            self.run_package(assets=assets)
+            self.run_package(assets=assets, media=media)
         report = json.loads((self.output / "package-report.json").read_text())
         self.assertEqual(report["status"], "failed")
         self.assertIn(message.split("|")[0], report["failure"])
@@ -105,6 +118,30 @@ class PackageTests(unittest.TestCase):
             manifest = json.load(archive.extractfile(next(m for m in members if m.name.endswith("/manifest.json"))))
             self.assertIn("external ffmpeg", manifest["runtime_dependencies"]["codecs"])
             self.assertEqual(manifest["frontend_assets"], [])
+
+    def test_fetched_media_tools_ship_beside_aster_with_their_license(self):
+        result = self.run_package(media=self.media_tools())
+        with tarfile.open(self.output / result["archive"], "r:gz") as archive:
+            names = {m.name.split("/", 1)[1]: m for m in archive.getmembers() if "/" in m.name}
+            for tool in ("ffmpeg", "ffprobe"):
+                self.assertEqual(names[f"bin/{tool}"].mode, 0o755)
+            self.assertEqual(names["notices/ffmpeg/LICENSE.txt"].mode, 0o644)
+            self.assertIn("notices/ffmpeg/media-tools.json", names)
+            manifest = json.load(archive.extractfile(names["manifest.json"]))
+        self.assertIn("bundled FFmpeg 8.1.3", manifest["runtime_dependencies"]["codecs"])
+        self.assertEqual(set(manifest["media_tools"]["executables"]), {"ffmpeg", "ffprobe"})
+        self.assertEqual(result["media_tools"]["version"], "8.1.3")
+
+    def test_media_tools_for_another_platform_are_refused(self):
+        self.assert_failure("not the linux-x86_64 build", media=self.media_tools("macos-aarch64"))
+
+    def test_media_tools_for_another_machine_are_refused(self):
+        self.assert_failure("Wrong native ELF", media=self.media_tools(machine=183))
+
+    def test_media_tool_changed_after_fetching_is_refused(self):
+        folder = self.media_tools()
+        (folder / "ffprobe").write_bytes(elf() + b"changed")
+        self.assert_failure("Media tool changed", media=folder)
 
     def test_missing_embedded_tabler_notice_prevents_packaging(self):
         (self.root / "assets/icons/tabler/LICENSE.txt").unlink()

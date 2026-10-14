@@ -3,7 +3,9 @@
 Frontend-owned assets for the Linux portable bundle. The packager
 (`scripts/package-release.py --frontend-assets packaging/linux`) copies them to
 the bundle root beside `bin/`, `licenses/`, `manifest.json` and
-`build-record.json`.
+`build-record.json`. `--media-tools` puts the FFmpeg that
+`scripts/fetch-media-tools.py` fetched in `bin/` beside `aster`, with its
+license in `notices/ffmpeg/`, so the bundle needs no FFmpeg on the host.
 
 Status: prepared from source reading. The launcher has not been run, the desktop
 entry has not been validated or installed, and the icon has not been rasterized
@@ -18,8 +20,9 @@ POSIX `sh` launcher; mode `0755` must survive packaging and extraction.
   then `exec`s `<bundle>/bin/aster` with every argument unchanged.
 - Leaves the working directory, `PATH`, `ASTER_FFMPEG` and `ASTER_FFPROBE`
   untouched, so relative path arguments resolve as typed and codec discovery is
-  Aster's own: explicit override first, then `PATH`. It adds nothing to `PATH`,
-  reads no settings and installs or downloads nothing.
+  Aster's own: explicit override first, then the `ffmpeg` and `ffprobe` in
+  `bin/` beside `aster`, then `PATH`. It adds nothing to `PATH`, reads no
+  settings and installs or downloads nothing.
 - Silent on success. Exits `127` with `AppRun: missing <path>` when `bin/aster`
   is absent, `126` with `AppRun: not executable: <path>` when its mode is wrong,
   and `1` when the bundle directory cannot be resolved.
@@ -29,7 +32,7 @@ Not handled: a bundle directory whose name ends in a newline.
 Root checks worth running on the extracted bundle: a path with spaces and
 non-ASCII characters, a symlink to `AppRun` from another directory, a relative
 symlink, `sh AppRun` from inside the bundle, arguments containing spaces, `--`
-and empty strings, and both the override and `PATH` codec routes.
+and empty strings, and the override, bundled and `PATH` codec routes.
 
 ## `linux/Aster.desktop.in`
 

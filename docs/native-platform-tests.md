@@ -225,7 +225,7 @@ downloads nothing.
 | Checkout | The frozen checkout copied without newline or content conversion; the runner recomputes the source digest and reports a mismatch | Same (disable `core.autocrlf` if Git is used) | Host owner |
 | Build | `cargo build --release --locked --bins` with Rust 1.97.1 and Xcode command-line tools | Same, MSVC toolchain with the Visual Studio C++ tools and Windows SDK | Build owner, before the run, from the frozen checkout. The runner hashes the result and cannot tell what it was built from |
 | Build record | Optional JSON with `source_sha256` and `binaries.<name>.sha256`, as [record-build.py](../artifacts/production-readiness/final/record-build.py) writes | Same | Build owner. Passed as `--build-record`; compared, never treated as proof |
-| Media tools | `ffmpeg` and `ffprobe` on `PATH` or `ASTER_FFMPEG` / `ASTER_FFPROBE` | Same | Host owner |
+| Media tools | `ffmpeg` and `ffprobe` from `scripts/fetch-media-tools.py`, `PATH` or `ASTER_FFMPEG` / `ASTER_FFPROBE` | Same | Host owner |
 | Input permission | Accessibility for the terminal that runs Python | Python at the same integrity level as Aster | **The person**, in System Settings. The pack only asks whether it is granted |
 | Capture permission | Screen Recording for that terminal | Unlocked desktop | **The person** |
 | Folder prompts | Files and Folders prompts for Aster, if macOS shows them | None | **The person** answers; note each under MAC-01 |

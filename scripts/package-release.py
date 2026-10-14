@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create an unpublished, codec-external portable bundle from verified native bytes.
+"""Create an unpublished portable bundle, with its FFmpeg, from verified native bytes.
 
 No executables are launched. Cargo metadata must be captured separately with
 `cargo metadata --locked --offline --filter-platform TARGET --format-version 1`.
@@ -31,6 +31,13 @@ TARGETS = {
     "x86_64-pc-windows-msvc": ("Windows", "x86_64", "pe", 0x8664),
 }
 NOTICE_PATTERNS = ("LICENSE*", "LICENCE*", "COPYING*", "NOTICE*", "COPYRIGHT*")
+# The `<os>-<arch>` folder `fetch-media-tools.py` writes for each target.
+MEDIA_PLATFORMS = {
+    "x86_64-unknown-linux-gnu": "linux-x86_64",
+    "aarch64-apple-darwin": "macos-aarch64",
+    "x86_64-apple-darwin": "macos-x86_64",
+    "x86_64-pc-windows-msvc": "windows-x86_64",
+}
 
 
 def regular(path: Path) -> Path:
@@ -208,6 +215,32 @@ def dependencies(root: Path, metadata: dict, stage: Path, inputs: dict) -> list:
     return result
 
 
+def media_tools(folder: Path, target: str, stage: Path, inputs: dict) -> dict:
+    """Ship the fetched ffmpeg and ffprobe beside bin/aster, where Aster looks first."""
+    folder = Path(os.path.abspath(folder))
+    record = json.loads(regular(folder / "media-tools.json").read_text())
+    if record.get("schema") != "aster-media-tools-v1" or record.get("platform") != MEDIA_PLATFORMS[target]:
+        raise ValueError(f"Media tools are not the {MEDIA_PLATFORMS[target]} build fetch-media-tools.py writes")
+    suffix = ".exe" if TARGETS[target][0] == "Windows" else ""
+    executables = {f"ffmpeg{suffix}", f"ffprobe{suffix}"}
+    if set(record.get("files", {})) != executables | {"LICENSE.txt"}:
+        raise ValueError("Media tools record names unexpected files")
+    tools = {}
+    for name, expected in sorted(record["files"].items()):
+        source = folder / relative_name(name)
+        if digest(source) != expected:
+            raise ValueError(f"Media tool changed since it was fetched: {name}")
+        if name in executables:
+            identity = native_identity(source, target)
+            put(source, stage / "bin" / name, inputs, executable=True)
+            tools[name] = {"path": f"bin/{name}", "sha256": expected, "bytes": source.stat().st_size, **identity}
+        else:
+            put(source, stage / "notices/ffmpeg/LICENSE.txt", inputs)
+    put(folder / "media-tools.json", stage / "notices/ffmpeg/media-tools.json", inputs)
+    return {"version": record["version"], "license": record["license"], "source": record["source"],
+            "downloads": record["downloads"], "executables": tools}
+
+
 def archive(stage: Path, destination: Path) -> None:
     """Fixed ordering, permissions, owner and gzip/tar times; no host metadata."""
     with destination.open("xb") as output, gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
@@ -251,7 +284,7 @@ def verify_archive(stage: Path, destination: Path) -> None:
 
 
 def package(root: Path, build_record: Path, cargo_metadata: Path, target: str,
-            output: Path, frontend_assets: Path | None = None) -> dict:
+            output: Path, frontend_assets: Path | None = None, media_tools_folder: Path | None = None) -> dict:
     root, output = Path(os.path.abspath(root)), Path(os.path.abspath(output))
     if not any(output.is_relative_to(root / parent) and output != root / parent for parent in ("artifacts", "dist")):
         raise ValueError("Output must be a fresh directory below artifacts/ or dist/")
@@ -289,6 +322,7 @@ def package(root: Path, build_record: Path, cargo_metadata: Path, target: str,
             put(source, stage / "bin" / filename, inputs, executable=True)
             binaries[name] = {"path": f"bin/{filename}", "sha256": entry["sha256"], "bytes": entry["bytes"], **identity}
         put(build_record, stage / "build-record.json", inputs)
+        media = media_tools(media_tools_folder, target, stage, inputs) if media_tools_folder is not None else None
         dependency_records = dependencies(root, json.loads(cargo_metadata.read_text()), stage, inputs)
         save(stage / "dependencies.json", {"scope": "target-filtered Cargo normal/build graph; includes build-time dependencies, not an exact linked-code SBOM",
                                             "packages": dependency_records})
@@ -328,9 +362,10 @@ def package(root: Path, build_record: Path, cargo_metadata: Path, target: str,
                     "project_license": project_license, "source": before,
                     "inputs": {"build_record_sha256": digest(build_record), "cargo_metadata_sha256": digest(cargo_metadata),
                                "packager_sha256": digest(Path(__file__))},
-                    "binaries": binaries, "files": files, "frontend_assets": frontend_files,
+                    "binaries": binaries, "media_tools": media, "files": files, "frontend_assets": frontend_files,
                     "desktop_integration": "portable assets only; no desktop installation or native acceptance" if frontend_files else "absent; launch bin/aster directly",
-                    "runtime_dependencies": {"codecs": "external ffmpeg and ffprobe through PATH or ASTER_FFMPEG/ASTER_FFPROBE; no codecs bundled",
+                    "runtime_dependencies": {"codecs": (f"bundled FFmpeg {media['version']} ({media['license']}) in bin/, see notices/ffmpeg; ASTER_FFMPEG/ASTER_FFPROBE override it"
+                                                        if media else "external ffmpeg and ffprobe through PATH or ASTER_FFMPEG/ASTER_FFPROBE; no codecs bundled"),
                                              "graphics_audio_desktop": "host-owned; linked dependencies above exclude dynamically loaded services"},
                     "update_policy": "manual side-by-side extraction; no automatic updates or changes to user storage",
                     "native_acceptance": "not_run by this packager"}
@@ -348,7 +383,7 @@ def package(root: Path, build_record: Path, cargo_metadata: Path, target: str,
                       archive_bytes=destination.stat().st_size, manifest_sha256=digest(stage / "manifest.json"),
                       source_sha256=before["source_sha256"], binaries=binaries,
                       license_texts_missing=sum(not p["license_files"] for p in dependency_records),
-                      project_license=project_license, frontend_assets=frontend_files)
+                      project_license=project_license, frontend_assets=frontend_files, media_tools=media)
     except (OSError, ValueError, KeyError, TypeError, struct.error) as error:
         report["failure"] = f"{type(error).__name__}: {error}"
         raise
@@ -364,10 +399,12 @@ def main() -> int:
     parser.add_argument("--target", choices=TARGETS, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--frontend-assets", type=Path)
+    parser.add_argument("--media-tools", type=Path, required=True,
+                        help="folder written by fetch-media-tools.py for the target's platform")
     arguments = parser.parse_args()
     try:
         report = package(ROOT, arguments.build_record, arguments.cargo_metadata,
-                         arguments.target, arguments.output, arguments.frontend_assets)
+                         arguments.target, arguments.output, arguments.frontend_assets, arguments.media_tools)
     except (OSError, ValueError, KeyError, TypeError, struct.error) as error:
         print(json.dumps({"status": "failed", "failure": f"{type(error).__name__}: {error}"}))
         return 1

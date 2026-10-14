@@ -3,9 +3,10 @@
 use crate::{MediaError, io};
 use std::{
     io::{Read, Write},
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
-        Arc, Condvar, Mutex, Weak,
+        Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
     thread,
@@ -436,16 +437,57 @@ pub(crate) fn tool_command(tool: &str) -> Command {
     Command::new(tool_program(tool))
 }
 
-/// The executable run for `tool`: the one its variable names, else the
-/// tool's name, looked for on `PATH`. The stem separator, `demucs`, is named
-/// by `ASTER_SEPARATOR`.
+/// The executable run for `tool`: the one its variable names; else the copy
+/// shipped with Aster (see `shipped_tool`); else the tool's name, looked for
+/// on `PATH`. The stem separator, `demucs`, is named by `ASTER_SEPARATOR` and
+/// is never shipped.
 pub(crate) fn tool_program(tool: &str) -> std::ffi::OsString {
-    let variable = match tool {
-        "ffmpeg" => "ASTER_FFMPEG",
-        "demucs" => "ASTER_SEPARATOR",
-        _ => "ASTER_FFPROBE",
+    static SHIPPED_FFMPEG: OnceLock<Option<PathBuf>> = OnceLock::new();
+    static SHIPPED_FFPROBE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    let (variable, shipped) = match tool {
+        "ffmpeg" => ("ASTER_FFMPEG", Some(&SHIPPED_FFMPEG)),
+        "demucs" => ("ASTER_SEPARATOR", None),
+        _ => ("ASTER_FFPROBE", Some(&SHIPPED_FFPROBE)),
     };
-    std::env::var_os(variable).unwrap_or_else(|| tool.into())
+    if let Some(program) = std::env::var_os(variable) {
+        return program;
+    }
+    let shipped = shipped.and_then(|found| {
+        found
+            .get_or_init(|| {
+                let executable = std::env::current_exe().ok()?;
+                // A symlink to Aster (`/usr/bin/aster`) leads to its install.
+                let executable = executable.canonicalize().unwrap_or(executable);
+                shipped_tool(&executable, tool)
+            })
+            .clone()
+    });
+    shipped.map_or_else(|| tool.into(), PathBuf::into_os_string)
+}
+
+/// The folder, below a source checkout, that `scripts/fetch-media-tools.py`
+/// fills with this platform's FFmpeg.
+fn fetched_tools() -> PathBuf {
+    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    Path::new(".tools").join("media").join(platform)
+}
+
+/// The copy of `tool` that comes with the Aster at `executable`: the one in
+/// the same folder, where a package puts it; else, for a build in a source
+/// checkout (`<checkout>/target/…/aster`), the one fetched into
+/// `<checkout>/.tools/media/<os>-<arch>`.
+fn shipped_tool(executable: &Path, tool: &str) -> Option<PathBuf> {
+    let name = format!("{tool}{}", std::env::consts::EXE_SUFFIX);
+    let folder = executable.parent()?;
+    let beside = folder.join(&name);
+    if beside.is_file() {
+        return Some(beside);
+    }
+    let target = folder
+        .ancestors()
+        .find(|ancestor| ancestor.file_name() == Some("target".as_ref()))?;
+    let fetched = target.parent()?.join(fetched_tools()).join(name);
+    fetched.is_file().then_some(fetched)
 }
 pub(crate) fn capture(
     tool: &str,
@@ -492,6 +534,54 @@ pub(crate) fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn place(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"").unwrap();
+    }
+
+    #[test]
+    fn shipped_tools_are_found_beside_the_executable_first() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("Aster/bin/aster");
+        place(&executable);
+        assert_eq!(shipped_tool(&executable, "ffmpeg"), None);
+
+        let ffprobe = format!("ffprobe{}", std::env::consts::EXE_SUFFIX);
+        let beside = root.path().join("Aster/bin").join(&ffprobe);
+        place(&beside);
+        assert_eq!(shipped_tool(&executable, "ffprobe"), Some(beside));
+        // Each tool is looked for by its own name.
+        assert_eq!(shipped_tool(&executable, "ffmpeg"), None);
+    }
+
+    #[test]
+    fn checkout_builds_find_the_fetched_tools() {
+        let root = tempfile::tempdir().unwrap();
+        let ffmpeg = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
+        let fetched = root.path().join(fetched_tools()).join(&ffmpeg);
+        place(&fetched);
+        for executable in [
+            "target/release/aster",
+            "target/x86_64-unknown-linux-gnu/release/aster",
+            "target/debug/deps/editor_media-0123",
+        ] {
+            let executable = root.path().join(executable);
+            place(&executable);
+            assert_eq!(shipped_tool(&executable, "ffmpeg"), Some(fetched.clone()));
+        }
+
+        // An install outside a `target` folder never looks above itself.
+        let installed = root.path().join("opt/aster/bin/aster");
+        place(&installed);
+        assert_eq!(shipped_tool(&installed, "ffmpeg"), None);
+
+        // A copy beside the executable wins over the fetched one.
+        let release = root.path().join("target/release/aster");
+        let beside = root.path().join("target/release").join(&ffmpeg);
+        place(&beside);
+        assert_eq!(shipped_tool(&release, "ffmpeg"), Some(beside));
+    }
 
     #[test]
     fn expired_reads_cannot_be_disarmed_or_rearmed_before_the_os_kill() {

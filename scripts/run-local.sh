@@ -1,5 +1,5 @@
 #!/bin/sh
-# Launch this checkout's optimized build with optional task-local media tools.
+# Launch this checkout's optimized build with the FFmpeg Aster ships.
 set -eu
 
 aster_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -9,13 +9,12 @@ if [ ! -x "$aster_binary" ]; then
     exit 1
 fi
 
-if [ -z "${ASTER_FFMPEG:-}" ] && [ -x "$aster_root/.tools/ffmpeg/usr/bin/ffmpeg" ]; then
-    ASTER_FFMPEG="$aster_root/.tools/ffmpeg/usr/bin/ffmpeg"
-    export ASTER_FFMPEG
-fi
-if [ -z "${ASTER_FFPROBE:-}" ] && [ -x "$aster_root/.tools/ffmpeg/usr/bin/ffprobe" ]; then
-    ASTER_FFPROBE="$aster_root/.tools/ffmpeg/usr/bin/ffprobe"
-    export ASTER_FFPROBE
+# A build in this checkout runs the FFmpeg fetched into .tools/media by itself;
+# fetch it once. Explicit ASTER_FFMPEG / ASTER_FFPROBE overrides still win.
+if [ -z "${ASTER_FFMPEG:-}" ] || [ -z "${ASTER_FFPROBE:-}" ]; then
+    if ! python3 "$aster_root/scripts/fetch-media-tools.py" >/dev/null; then
+        printf '%s\n' 'Could not fetch FFmpeg; Aster will look for it on PATH.' >&2
+    fi
 fi
 
 exec "$aster_binary" "$@"

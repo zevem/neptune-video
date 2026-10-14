@@ -843,6 +843,28 @@ Open:
   through a device.
 - **Free space, an interrupted machine and a killed editor** during a job.
 
+## Bundled media tools
+
+Aster now runs the `ffmpeg` and `ffprobe` beside its executable, or in a checkout
+build the ones `scripts/fetch-media-tools.py` placed in `.tools/media/<os>-<arch>`,
+before `PATH` ([media executables](installation.md#media-executables)). Measured
+on 2026-10-14 on the export host above (Ubuntu 26.04.1, Linux 7.0.0-38-generic,
+no FFmpeg on `PATH`):
+
+| Check | Result |
+| --- | --- |
+| `python3 scripts/fetch-media-tools.py` | Downloaded and digest-checked the `linux-x86_64` pin in 22 s; both tools report `n8.1.3-9-g29e619e767`. Linked: glibc libraries and `libgcc_s` only. Every encoder and audio filter Aster names is listed by `-encoders` / `-filters` |
+| `cargo test -p editor-media --locked`, no override | 446 passed after one fixture fix: FFmpeg 8.1's ffprobe reports a WebM Opus file's start as 0 where 8.0.1 reported -0.007 s, so `opus_with_its_lead_in_keeps_the_files_time_from_any_point` now accepts both; its timing checks pass with 8.0.1 and 8.1.3 |
+| `cargo test -p aster-editor --locked`, `ASTER_FFMPEG` / `ASTER_FFPROBE` naming the fetched tools | 1104 + 13 passed, 0 failed |
+| `python3 scripts/test-package-release.py` | 18 passed, including the bundled-tools cases |
+| `cargo clippy -p editor-media --all-targets --locked -- -D warnings`, `check-architecture.py` | Clean, passed |
+| Release `aster` `c21e8a531b607a3c93ac557c036a16736e724ac643bf4e27e49d81f570a05d13` on private Xvfb displays, fresh HOME/XDG and `--settings`, `PATH=/usr/bin:/bin` | From `target/release`, and copied into a `bin/` with only the two tools beside it: `clip.mp4` imported with its poster at 1440x900 and 760x560; dragged to the timeline by XTest and played with Space, frames decoded and no FFmpeg error showed. Copied alone into a `bin/`, the same import found no tool and the library stayed empty |
+
+Not verified: the other five pins beyond their published digests, any package
+built with `--media-tools` (no build record was made), audible sound (the
+isolated session had no audio device), macOS Gatekeeper with unsigned bundled
+tools, and the GPL source offer a published package needs.
+
 ## Native Linux evidence
 
 The unchanged smoke harness passed [all thirteen R15 native editing/input controls](../artifacts/native/round15-editing-smoke/run/report.json),

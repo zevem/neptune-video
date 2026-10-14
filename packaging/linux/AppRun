@@ -37,5 +37,5 @@ if [ ! -x "$aster" ]; then
 fi
 
 # The working directory, PATH, ASTER_FFMPEG and ASTER_FFPROBE pass through
-# unchanged; Aster resolves ffmpeg and ffprobe from them itself.
+# unchanged; Aster finds the ffmpeg and ffprobe in bin/ beside it itself.
 exec "$aster" "$@"

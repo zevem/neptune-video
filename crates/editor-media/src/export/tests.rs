@@ -1005,7 +1005,9 @@ fn opus_with_its_lead_in_keeps_the_files_time_from_any_point() {
         ],
     );
     let lead = start_of(&source, None);
-    assert!(lead < 0.0, "the file starts at {lead}");
+    // FFmpeg 8.0's ffprobe starts this file before zero; 8.1's starts it after
+    // the dropped samples, at zero. The sound keeps the file's time either way.
+    assert!(lead <= 0.0, "the file starts at {lead}");
     // Matroska keeps milliseconds: allow 2 ms.
     assert_step_onsets(
         &stepped_asset(source),

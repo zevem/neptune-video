@@ -102,7 +102,8 @@ Before headless correctness, every native CI job runs
 `ffmpeg` and `ffprobe` to complete `-version` successfully within ten seconds
 each, and records their resolved executable paths and actual version banners.
 Explicit `ASTER_FFMPEG` / `ASTER_FFPROBE` overrides select those executables;
-otherwise resolution uses `PATH`. Missing, broken or empty overrides fail the
+otherwise it takes the build `scripts/fetch-media-tools.py` placed in
+`.tools/media/<os>-<arch>`, as a build in the checkout does, and then `PATH`. Missing, broken or empty overrides fail the
 preflight instead of falling back to another tool. Run the same preflight
 before claiming local FFmpeg integration coverage. Some local media fixtures
 return early when tools are unavailable, so a successful test count with zero
