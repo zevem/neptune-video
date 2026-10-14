@@ -626,21 +626,19 @@ pub fn show(
         );
     }
 
-    // Wheel, trackpad and pinch over the timeline.
-    if ui.rect_contains_pointer(body) {
-        let (scroll, zoom, pointer) = ui.input(|i| {
-            (
-                i.smooth_scroll_delta(),
-                i.zoom_delta(),
-                i.pointer.hover_pos(),
-            )
+    // Wheel, trackpad and pinch over the timeline. A wheel turned with Cmd
+    // or Ctrl held, or a pinch, zooms about the time under the pointer
+    // anywhere over the panel, its tool strip included.
+    let zoom = ui.input(|i| i.zoom_delta());
+    if zoom != 1.0 && ui.rect_contains_pointer(rect) {
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let anchor = pointer.map_or(state.lane_width * 0.5, |pos| {
+            (pos.x - lanes.left()).clamp(0.0, state.lane_width)
         });
-        if zoom != 1.0 {
-            let anchor = pointer.map_or(state.lane_width * 0.5, |pos| {
-                (pos.x - lanes.left()).clamp(0.0, state.lane_width)
-            });
-            state.zoom_about(zoom, anchor);
-        } else if scroll != Vec2::ZERO {
+        state.zoom_about(zoom, anchor);
+    } else if ui.rect_contains_pointer(body) {
+        let (scroll, pointer) = ui.input(|i| (i.smooth_scroll_delta(), i.pointer.hover_pos()));
+        if scroll != Vec2::ZERO {
             state.scroll.x -= scroll.x;
             if state.keys.graph {
                 // Over the graph the wheel moves the values it shows.
@@ -751,7 +749,7 @@ fn tool_strip(
             ui,
             p,
             Icon::ZoomIn,
-            &format!("Zoom in ({})", shortcut("Cmd+=")),
+            &format!("Zoom in ({})", shortcut("Cmd+Scroll, =")),
         )
         .clicked()
         {
@@ -772,7 +770,7 @@ fn tool_strip(
             ui,
             p,
             Icon::ZoomOut,
-            &format!("Zoom out ({})", shortcut("Cmd+-")),
+            &format!("Zoom out ({})", shortcut("Cmd+Scroll, -")),
         )
         .clicked()
         {

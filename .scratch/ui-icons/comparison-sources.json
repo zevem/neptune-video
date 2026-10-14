@@ -1,0 +1,310 @@
+{
+  "revisions": {
+    "phosphor": "2b75f3ad12b420c9504ef05df8d2564a28f8500e",
+    "lucide": "dab294f313897bacaa968b725b3259fa37c17bd1",
+    "iconoir": "195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67",
+    "tabler": "a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d"
+  },
+  "assets": [
+    {
+      "library": "Phosphor Regular",
+      "action": "Search",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/regular/magnifying-glass.svg"
+    },
+    {
+      "library": "Phosphor Regular",
+      "action": "Folder",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/regular/folder.svg"
+    },
+    {
+      "library": "Phosphor Regular",
+      "action": "Split",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/regular/scissors.svg"
+    },
+    {
+      "library": "Phosphor Regular",
+      "action": "Delete",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/regular/trash.svg"
+    },
+    {
+      "library": "Phosphor Regular",
+      "action": "Settings",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/regular/gear-six.svg"
+    },
+    {
+      "library": "Phosphor Regular",
+      "action": "Visible",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/regular/eye.svg"
+    },
+    {
+      "library": "Phosphor Regular",
+      "action": "Locked",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/regular/lock.svg"
+    },
+    {
+      "library": "Phosphor Regular",
+      "action": "Snap",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/regular/magnet.svg"
+    },
+    {
+      "library": "Phosphor Regular",
+      "action": "Speech",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/regular/microphone.svg"
+    },
+    {
+      "library": "Phosphor Regular",
+      "action": "Undo",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/regular/arrow-counter-clockwise.svg"
+    },
+    {
+      "library": "Phosphor Regular",
+      "action": "Play",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/fill/play-fill.svg"
+    },
+    {
+      "library": "Phosphor Regular",
+      "action": "Pause",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/fill/pause-fill.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Search",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/light/magnifying-glass-light.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Folder",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/light/folder-light.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Split",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/light/scissors-light.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Delete",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/light/trash-light.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Settings",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/light/gear-six-light.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Visible",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/light/eye-light.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Locked",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/light/lock-light.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Snap",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/light/magnet-light.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Speech",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/light/microphone-light.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Undo",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/light/arrow-counter-clockwise-light.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Play",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/fill/play-fill.svg"
+    },
+    {
+      "library": "Phosphor Light",
+      "action": "Pause",
+      "source": "https://raw.githubusercontent.com/phosphor-icons/core/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/fill/pause-fill.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Search",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/search.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Folder",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/folder.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Split",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/scissors.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Delete",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/trash.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Settings",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/settings.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Visible",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/eye.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Locked",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/lock.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Snap",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/magnet.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Speech",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/mic.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Undo",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/undo-2.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Play",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/play.svg"
+    },
+    {
+      "library": "Lucide",
+      "action": "Pause",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/dab294f313897bacaa968b725b3259fa37c17bd1/icons/pause.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Search",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/regular/search.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Folder",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/regular/folder.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Split",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/regular/scissor.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Delete",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/regular/trash.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Settings",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/regular/settings.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Visible",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/regular/eye.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Locked",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/regular/lock.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Snap",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/regular/magnet.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Speech",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/regular/microphone.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Undo",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/regular/undo.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Play",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/solid/play.svg"
+    },
+    {
+      "library": "Iconoir",
+      "action": "Pause",
+      "source": "https://raw.githubusercontent.com/iconoir-icons/iconoir/195a8b2b7ecb3c1cdebf7d4e3c1290633795fa67/icons/solid/pause.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Search",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/search.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Folder",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/folder.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Split",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/scissors.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Delete",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/trash.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Settings",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/settings.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Visible",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/eye.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Locked",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/lock.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Snap",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/magnet.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Speech",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/microphone.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Undo",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/arrow-back-up.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Play",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/filled/player-play.svg"
+    },
+    {
+      "library": "Tabler",
+      "action": "Pause",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/filled/player-pause.svg"
+    }
+  ]
+}

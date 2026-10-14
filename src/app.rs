@@ -14,7 +14,7 @@ use crate::{
     pacing,
     presets::{self, Presets},
     rules,
-    settings::Settings,
+    settings::{INTERFACE_SCALE, Scale, Settings},
     speech::{self, Inventory, ModelChoice, SpeechRequest, SpeechView},
     speed,
     textures::{self, Textures, Viewing},
@@ -68,6 +68,8 @@ const EXIT_WAIT: Duration = Duration::from_secs(2);
 const LEASE_WAIT: Duration = Duration::from_secs(1);
 const NOTICE_SECONDS: f64 = 3.2;
 const PROBLEM_SECONDS: f64 = 7.0;
+/// What the notice of a new interface scale begins with.
+const SCALE_NOTICE: &str = "Interface size";
 const PROJECT_EXTENSION: &str = "aster";
 /// The narrowest content the library is shown beside.
 const LIBRARY_FITS: f32 = 760.0;
@@ -835,6 +837,10 @@ impl App {
         let palette = Palette::new(settings.appearance, settings.accent);
         theme::install_fonts(ctx);
         theme::apply(ctx, &palette);
+        // The interface's scale is the person's and is kept with their
+        // settings: egui's own chords would neither keep it nor say it.
+        ctx.options_mut(|options| options.zoom_with_keyboard = false);
+        ctx.set_zoom_factor(settings.interface_scale.min(ui::largest_scale(ctx)));
 
         let wake = |ctx: &egui::Context| {
             let ctx = ctx.clone();
@@ -3487,6 +3493,23 @@ impl App {
             Action::ToggleLoop => self.looping = !self.looping,
 
             Action::ZoomTimeline(factor) => self.timeline.zoom_centered(factor),
+            Action::ScaleInterface(asked) => {
+                let asked = asked.clamp(*INTERFACE_SCALE.start(), *INTERFACE_SCALE.end());
+                // No larger than leaves the editor the least room it is
+                // laid out for in this window.
+                let room = ui::largest_scale(ctx);
+                let scale = asked.min(room);
+                self.settings.interface_scale = scale;
+                ctx.set_zoom_factor(scale);
+                // One notice says the size, however many steps were taken.
+                self.notices
+                    .retain(|notice| !notice.text.starts_with(SCALE_NOTICE));
+                let mut said = format!("{SCALE_NOTICE} {:.0}%", scale * 100.0);
+                if asked > room {
+                    said.push_str(", the largest this window has room for");
+                }
+                self.notify(ctx, said, false);
+            }
             Action::FitTimeline => self.timeline.fit = true,
             Action::ToggleSnapping => self.settings.snapping = !self.settings.snapping,
             // A panel that is on but has given its room to the other one in
@@ -4043,9 +4066,6 @@ impl App {
             (shifted(Key::K), 17),
             (command(Key::K), 13),
             (command(Key::L), 14),
-            (command(Key::Equals), 15),
-            (command(Key::Plus), 15),
-            (command(Key::Minus), 16),
             (command(Key::T), 18),
         ];
         let typing = ctx.text_edit_focused();
@@ -4083,7 +4103,6 @@ impl App {
                 }
                 14 if self.source.is_some() => Action::Source(Transport::ToggleLoop),
                 14 => Action::ToggleLoop,
-                15 => Action::ZoomTimeline(1.4),
                 // The selected clips and the playhead of this press: each
                 // clip's edge nearer the playhead.
                 18 => Action::AddTransitions {
@@ -4094,8 +4113,14 @@ impl App {
                     ),
                     kind: None,
                 },
-                _ => Action::ZoomTimeline(1.0 / 1.4),
+                _ => continue,
             });
+        }
+        // The interface's scale answers wherever the keyboard is, in a
+        // field or over a sheet, as a browser's does.
+        let scale = self.settings.interface_scale.min(ui::largest_scale(ctx));
+        if let Some(scaled) = ctx.input_mut(|i| scaled_by_keys(i, scale)) {
+            actions.push(Action::ScaleInterface(scaled));
         }
         // An Escape in a field gives up what was typed into it and not yet
         // committed, as it gives up a drag below, and does no more than
@@ -4364,6 +4389,13 @@ impl App {
         if with_shift(Key::Z) {
             actions.push(Action::FitTimeline);
         }
+        // With Cmd or Ctrl these scale the interface; alone, the timeline.
+        if pressed(Key::Equals) || pressed(Key::Plus) {
+            actions.push(Action::ZoomTimeline(1.4));
+        }
+        if pressed(Key::Minus) {
+            actions.push(Action::ZoomTimeline(1.0 / 1.4));
+        }
         if (with_shift(Key::Delete) || with_shift(Key::Backspace))
             && !self.selection.clips.is_empty()
         {
@@ -4416,7 +4448,8 @@ impl App {
         let ctx = ui.ctx().clone();
         let p = self.palette;
         let full = ui.max_rect();
-        ui.painter().rect_filled(full, 0, p.chrome);
+        ui.painter()
+            .rect_filled(full, ui::window::corner_radius(&ctx), p.chrome);
         let project = self.editor.snapshot();
         self.query
             .get_or_insert_with(|| ProjectQuery::new(Arc::clone(&project)))
@@ -4430,9 +4463,11 @@ impl App {
 
         let toolbar = Rect::from_min_size(full.min, vec2(full.width(), metrics::TOOLBAR_HEIGHT));
         let (show_library, show_right) = self.side_panels(full.width() - 2.0 * metrics::GUTTER);
+        ui::window::drag_region(ui, toolbar);
+        ui::window::controls(ui, pos2(full.left() + 16.0, toolbar.center().y), &p);
         ui::toolbar::show(
             ui,
-            toolbar,
+            toolbar.with_min_x(full.left() + ui::window::LEADING),
             &ToolbarInput {
                 p: &p,
                 name: self.project_draft.name.as_deref().unwrap_or(&project.name),
@@ -4958,8 +4993,10 @@ impl FrameEnd for App {
 }
 
 impl eframe::App for App {
+    /// The window paints its own rounded material; what lies outside its
+    /// corners is left clear.
     fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
-        self.palette.chrome.to_normalized_gamma_f32()
+        egui::Rgba::TRANSPARENT.to_array()
     }
 
     /// Runs before every `ui`, and alone while the window is hidden, so the
@@ -5125,8 +5162,13 @@ impl eframe::App for App {
             self.notify(&ctx, problem, true);
         }
 
+        // A scale the window has no room for is held down to the one it
+        // has, and given back as the window grows.
+        ctx.set_zoom_factor(self.settings.interface_scale.min(ui::largest_scale(&ctx)));
         self.shortcuts(&ctx, &mut actions);
+        let bounds = ui.max_rect();
         self.window_ui(ui, &mut actions);
+        ui::window::frame(ui, bounds, &self.palette);
         end_frame(self, &ctx, actions);
     }
 
@@ -5356,6 +5398,27 @@ fn strikes(events: &[egui::Event], key: Key, held: Held) -> usize {
 /// Whether `key` went down among `events` held as `held`.
 fn struck(events: &[egui::Event], key: Key, held: Held) -> bool {
     strikes(events, key, held) > 0
+}
+
+/// The interface scale the Cmd or Ctrl chords with plus, minus and 0 among
+/// this frame's keys step `scale` to, taking those chords; `None` without
+/// one. Either modifier serves on every system. `=` is plus without Shift,
+/// as browsers have it.
+fn scaled_by_keys(input: &mut egui::InputState, scale: f32) -> Option<f32> {
+    let mut scaled = None;
+    for (key, step) in [
+        (Key::Equals, Scale::Larger),
+        (Key::Plus, Scale::Larger),
+        (Key::Minus, Scale::Smaller),
+        (Key::Num0, Scale::Actual),
+    ] {
+        let presses = input.count_and_consume_key(Modifiers::COMMAND, key)
+            + input.count_and_consume_key(Modifiers::CTRL, key);
+        for _ in 0..presses {
+            scaled = Some(step.applied_to(scaled.unwrap_or(scale)));
+        }
+    }
+    scaled
 }
 
 /// Whether `key` is the application's to act on. The arrows and the two
@@ -5692,6 +5755,66 @@ mod tests {
         assert_eq!(side_panels(748.0, true, false, false), (true, false));
         assert_eq!(side_panels(748.0, false, true, true), (false, true));
         assert_eq!(side_panels(748.0, false, false, true), (false, false));
+    }
+
+    #[test]
+    fn cmd_or_ctrl_with_plus_minus_and_0_scale_the_interface() {
+        let press = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        // Ctrl as Linux and Windows send it, and Cmd and Ctrl as macOS does.
+        let ctrl = Modifiers {
+            ctrl: true,
+            command: true,
+            ..Modifiers::NONE
+        };
+        let cmd = Modifiers {
+            mac_cmd: true,
+            command: true,
+            ..Modifiers::NONE
+        };
+        let scaled = |events: Vec<egui::Event>, scale: f32| {
+            let ctx = egui::Context::default();
+            let mut scaled = None;
+            let mut left = Vec::new();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    scaled = ui.input_mut(|i| scaled_by_keys(i, scale));
+                    left = ui.input(|i| i.events.clone());
+                },
+            );
+            output.textures_delta.clear();
+            (scaled, left)
+        };
+        for modifiers in [ctrl, cmd, Modifiers::CTRL] {
+            assert_eq!(
+                scaled(vec![press(Key::Equals, modifiers)], 1.0).0,
+                Some(1.1)
+            );
+            assert_eq!(scaled(vec![press(Key::Minus, modifiers)], 1.0).0, Some(0.9));
+            assert_eq!(scaled(vec![press(Key::Num0, modifiers)], 1.7).0, Some(1.0));
+        }
+        // Plus as most layouts type it, with Shift, and once for each press
+        // a frame is handed.
+        let plus = press(Key::Plus, ctrl | Modifiers::SHIFT);
+        let (twice, left) = scaled(vec![plus.clone(), plus], 1.0);
+        assert_eq!(twice, Some(1.2));
+        assert!(left.is_empty(), "the chords are taken: {left:?}");
+        // The keys alone are the timeline's, and are left for it.
+        let (alone, left) = scaled(vec![press(Key::Equals, Modifiers::NONE)], 1.0);
+        assert_eq!(alone, None);
+        assert_eq!(left.len(), 1);
+        // At either end the size stays where it is.
+        assert_eq!(scaled(vec![press(Key::Equals, ctrl)], 3.0).0, Some(3.0));
+        assert_eq!(scaled(vec![press(Key::Minus, ctrl)], 0.5).0, Some(0.5));
     }
 
     #[test]

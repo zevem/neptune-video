@@ -7,7 +7,7 @@ use super::{
 use crate::{
     ai::{Effort, Provider},
     icons::{self, Icon},
-    settings::Settings,
+    settings::{Scale, Settings},
     theme::{self, Accent, Appearance, Palette, metrics},
 };
 use eframe::egui::{
@@ -210,6 +210,48 @@ pub fn settings(
                                 }
                             }
                         });
+                        row(ui, p, "Interface size", |ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            // The scale as shown, which the window may hold
+                            // below the one asked for.
+                            let room = super::largest_scale(ui.ctx());
+                            let scale = settings.interface_scale.min(room);
+                            // A step that would change nothing is not offered.
+                            let step = |ui: &mut Ui, step: Scale, icon, label: &str| {
+                                let to = step.applied_to(scale).min(room);
+                                let label = shortcut(label);
+                                let button = ui
+                                    .add_enabled_ui(to != scale, |ui| {
+                                        icon_button(ui, p, icon, &label)
+                                    })
+                                    .inner;
+                                button.clicked().then_some(to)
+                            };
+                            let larger = step(ui, Scale::Larger, Icon::ZoomIn, "Larger (Cmd+=)");
+                            // The size itself, which goes back to 100%.
+                            let size = format!("{:.0}%", scale * 100.0);
+                            let actual = ui
+                                .add_enabled_ui(scale != 1.0, |ui| {
+                                    ui.add_sized(
+                                        [48.0, metrics::CONTROL_HEIGHT],
+                                        egui::Button::new(
+                                            egui::RichText::new(size)
+                                                .font(theme::regular(12.0))
+                                                .color(p.fg),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .on_hover_text(shortcut("Actual size (Cmd+0)"))
+                                })
+                                .inner
+                                .clicked()
+                                .then(|| Scale::Actual.applied_to(scale));
+                            let smaller =
+                                step(ui, Scale::Smaller, Icon::ZoomOut, "Smaller (Cmd+-)");
+                            if let Some(to) = larger.or(actual).or(smaller) {
+                                actions.push(Action::ScaleInterface(to));
+                            }
+                        });
                     });
 
                     section(ui, p, "Agent");
@@ -298,7 +340,7 @@ pub fn settings(
     close || response.should_close()
 }
 
-const SHORTCUTS: [(&str, &str); 30] = [
+const SHORTCUTS: [(&str, &str); 31] = [
     ("Play or pause", "Space"),
     ("Previous or next frame", "← →"),
     ("Back or forward one second", "Shift+← →"),
@@ -323,12 +365,13 @@ const SHORTCUTS: [(&str, &str); 30] = [
     ("Keyframes of the clip", "U"),
     ("Graph editor", "G"),
     ("Snapping", "N"),
-    ("Zoom timeline", "Cmd+= Cmd+-"),
+    ("Zoom timeline", "Cmd+Scroll, = -"),
     ("Fit timeline", "Shift+Z"),
     ("Ask the agent", "Shift+Cmd+K"),
     ("Command line", "Cmd+K"),
     ("Save", "Cmd+S"),
     ("Import media", "Cmd+I"),
+    ("Interface size", "Cmd+= Cmd+- Cmd+0"),
 ];
 
 fn group(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {

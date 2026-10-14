@@ -10,8 +10,14 @@ flows and remaining platform/media gates.
 The project menu creates, opens, saves and duplicates `.aster` documents.
 Duplicate writes a new file with a fresh project identity and keeps the original
 file unchanged; a duplicate cannot replace its own source path. Preferences
-persist the window's library/inspector layout, appearance, recent projects,
-snapping, autosave and library sort mode.
+persist the window's library/inspector layout, appearance, interface size,
+recent projects, snapping, autosave and library sort mode.
+
+Interface size (Settings, or Command/Ctrl+Plus / Minus / 0) scales the whole
+window from 50% to 300% in 10% steps. A size larger than leaves the editor its
+720 × 520 point layout is held to the largest the window has room for: about
+150% at 1280 × 800 and 200% at 1920 × 1080. The chosen size returns as the
+window grows.
 
 Autosave retains recoverable editing state. The ordinary `.aster` file stores
 the current project; its `.aster.recovery` sidecar preserves undo/redo chains.
@@ -561,7 +567,8 @@ Linux only; the Alt chords are untested as Option on macOS.
 | J / K / L | Step back one second / Pause / Play, then double the speed up to 8× |
 | Command/Ctrl+L | Toggle loop |
 | Delete / Shift+Delete | Delete / Ripple delete |
-| Command/Ctrl+Plus / Minus | Timeline zoom |
+| Command/Ctrl+scroll, pinch, or = / - | Timeline zoom about the pointer |
+| Command/Ctrl+Plus / Minus / 0 | Interface size larger / smaller / 100% |
 | Shift+Z | Fit timeline |
 | Command/Ctrl+K | Open local command panel |
 | Command/Ctrl+Shift+K | Open native AI Ask panel |

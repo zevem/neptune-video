@@ -13,6 +13,7 @@ pub mod toolbar;
 pub mod transitions;
 pub mod viewer;
 pub mod widgets;
+pub mod window;
 
 use crate::{
     ai::{Effort, Provider},
@@ -138,6 +139,8 @@ pub enum Action {
 
     ZoomTimeline(f32),
     FitTimeline,
+    /// Scale the whole interface to this size, 1 being as designed.
+    ScaleInterface(f32),
     ToggleSnapping,
     ToggleLibrary,
     ToggleInspector,
@@ -739,6 +742,14 @@ pub fn icon_of_track(kind: TrackKind) -> crate::icons::Icon {
 }
 
 /// The platform's name for the command modifier, for tooltips and menus.
+/// The largest interface scale this window has room for: see
+/// [`crate::settings::largest_scale`].
+pub fn largest_scale(ctx: &eframe::egui::Context) -> f32 {
+    // The window's size at 100%, whatever the scale now.
+    let size = ctx.content_rect().size() * ctx.zoom_factor();
+    crate::settings::largest_scale([size.x, size.y])
+}
+
 pub fn shortcut(keys: &str) -> String {
     if cfg!(target_os = "macos") {
         keys.replace("Cmd+", "⌘")

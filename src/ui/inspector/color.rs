@@ -641,6 +641,7 @@ impl Pane<'_> {
                     Some(id) => (project.assets.get(&id)).map_or("Missing", |a| a.name.as_str()),
                 };
                 egui::ComboBox::from_id_salt("color-lut")
+                    .icon(widgets::combo_icon)
                     .selected_text(current)
                     .width(118.0)
                     .truncate()
@@ -758,6 +759,7 @@ impl Pane<'_> {
                             }
                         };
                         egui::ComboBox::from_id_salt("color-plate")
+                            .icon(widgets::combo_icon)
                             .selected_text(current)
                             .width(118.0)
                             .truncate()

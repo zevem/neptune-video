@@ -22,6 +22,17 @@ pub fn truncated(ui: &Ui, text: &str, font: FontId, color: Color32, width: f32) 
     ui.painter().layout_job(job)
 }
 
+/// The same dropdown chevron as our menus, in egui's existing icon slot.
+pub fn combo_icon(ui: &Ui, rect: Rect, visuals: &egui::style::WidgetVisuals, _is_open: bool) {
+    let side = rect.width().min(rect.height()).min(14.0);
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(rect.center(), Vec2::splat(side)),
+        Icon::ChevronDown,
+        visuals.fg_stroke.color,
+    );
+}
+
 /// The fill behind a hovered or pressed control, faded over 120 ms. A press
 /// also scales the control to 0.96 so that it answers the finger.
 fn feedback(ui: &Ui, response: &Response, rect: Rect, p: &Palette, radius: u8) -> Rect {
@@ -516,14 +527,6 @@ pub fn key_toggle(ui: &mut Ui, p: &Palette, state: KeyState, label: &str) -> Res
     });
     if ui.is_rect_visible(rect) {
         let rect = feedback(ui, &response, rect, p, 6);
-        let reach = 4.5;
-        let centre = rect.center();
-        let points = vec![
-            centre + vec2(0.0, -reach),
-            centre + vec2(reach, 0.0),
-            centre + vec2(0.0, reach),
-            centre + vec2(-reach, 0.0),
-        ];
         let ink = if !ui.is_enabled() {
             p.muted.gamma_multiply(0.5)
         } else if animated {
@@ -534,11 +537,16 @@ pub fn key_toggle(ui: &mut Ui, p: &Palette, state: KeyState, label: &str) -> Res
             p.muted
         };
         let on_key = matches!(state, KeyState::Animated { on_key: true, .. });
-        ui.painter().add(egui::Shape::convex_polygon(
-            points,
-            if on_key { ink } else { Color32::TRANSPARENT },
-            Stroke::new(1.5, ink),
-        ));
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(rect.center(), Vec2::splat(14.0)),
+            if on_key {
+                Icon::DiamondFilled
+            } else {
+                Icon::Diamond
+            },
+            ink,
+        );
     }
     response
         .on_hover_cursor(CursorIcon::Default)

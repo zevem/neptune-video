@@ -99,6 +99,7 @@ fn choice<T: PartialEq + Copy>(
 ) {
     fitted_row(ui, p, label, |ui| {
         egui::ComboBox::from_id_salt(salt)
+            .icon(widgets::combo_icon)
             .selected_text(name_of(options, *value))
             .width(128.0)
             .height(options.len() as f32 * 40.0)
@@ -337,6 +338,7 @@ pub(super) fn font_rows(
 ) {
     fitted_row(ui, p, "Font", |ui| {
         egui::ComboBox::from_id_salt(("family", salt))
+            .icon(widgets::combo_icon)
             .selected_text(font.family.as_str())
             .width(150.0)
             .height(320.0)
@@ -391,6 +393,7 @@ pub(super) fn font_rows(
             .min_by_key(|(weight, _)| weight.abs_diff(font.weight))
             .map_or("", |(_, name)| name);
         egui::ComboBox::from_id_salt(("weight", salt))
+            .icon(widgets::combo_icon)
             .selected_text(current)
             .width(128.0)
             .height(WEIGHTS.len() as f32 * 40.0)
@@ -568,6 +571,7 @@ fn animation_card(
             let mut kind = animation.map(|animation| animation.kind);
             ui.add_enabled_ui(fits || animation.is_some(), |ui| {
                 egui::ComboBox::from_id_salt(("animation", salt))
+                    .icon(widgets::combo_icon)
                     .selected_text(kind.map_or(none, kind_name))
                     .width(128.0)
                     .height(10.0 * 40.0)

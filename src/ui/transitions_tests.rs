@@ -1301,3 +1301,50 @@ fn the_handle_of_a_transition_as_long_as_its_clip_leaves_both_grips_alone() {
     assert_eq!(bench.steps(), steps + 1, "{:?}", bench.refused);
     assert_eq!(bench.last(), "Trim clip");
 }
+
+#[test]
+fn a_wheel_turned_with_ctrl_zooms_the_timeline_about_the_pointer() {
+    let (mut bench, _, _) = Bench::new();
+    bench.frame(Vec::new());
+    let wheel = |delta: f32, modifiers| Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, delta),
+        phase: egui::TouchPhase::Move,
+        modifiers,
+    };
+    let settle = |bench: &mut Bench| {
+        for _ in 0..12 {
+            bench.frame(Vec::new());
+        }
+    };
+    // Up over a marking: it stays under the pointer while the time spreads.
+    let marked = bench.at(SHOT_START);
+    let zoom = bench.timeline.zoom;
+    bench.move_to(marked);
+    bench.frame(vec![wheel(60.0, Modifiers::CTRL | Modifiers::COMMAND)]);
+    settle(&mut bench);
+    assert!(
+        bench.timeline.zoom > zoom * 1.2,
+        "{} from {zoom}",
+        bench.timeline.zoom
+    );
+    assert!((bench.at(SHOT_START).x - marked.x).abs() < 1.0);
+
+    // Down over the tool strip, which is the timeline's too.
+    let zoomed = bench.timeline.zoom;
+    bench.move_to(bench.at("Fit timeline to window (Shift+Z)"));
+    bench.frame(vec![wheel(-60.0, Modifiers::CTRL | Modifiers::COMMAND)]);
+    settle(&mut bench);
+    assert!(
+        bench.timeline.zoom < zoomed / 1.2,
+        "{} from {zoomed}",
+        bench.timeline.zoom
+    );
+
+    // Without the modifier the wheel scrolls and leaves the scale alone.
+    let zoom = bench.timeline.zoom;
+    bench.move_to(marked);
+    bench.frame(vec![wheel(-60.0, Modifiers::NONE)]);
+    settle(&mut bench);
+    assert_eq!(bench.timeline.zoom, zoom);
+}

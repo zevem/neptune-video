@@ -10,7 +10,7 @@
 //! written yet is [`Pane::placeholder`], and filling it is replacing that arm.
 use super::{InspectorInput, InspectorState, ProjectDraft, Section, card, fact, title};
 use crate::{
-    icons::Icon,
+    icons::{self, Icon},
     speed::{self, Curve},
     theme::{self, Palette},
     timefmt,
@@ -256,22 +256,16 @@ impl Layout {
         to
     }
 
-    /// The part of the canvas the layout fills, as the glyph draws it: left,
-    /// top, width and height in parts of the canvas.
-    fn cell(self) -> [f32; 4] {
+    /// The icon for this layout's position in the canvas.
+    fn icon(self) -> Icon {
         match self {
-            Self::Fill => [0.0, 0.0, 1.0, 1.0],
-            Self::Left => [0.0, 0.0, 0.5, 1.0],
-            Self::Right => [0.5, 0.0, 0.5, 1.0],
-            _ => {
-                let [x, y] = self.corner().unwrap_or([0.0, 0.0]);
-                [
-                    if x < 0.0 { 0.08 } else { 0.5 },
-                    if y < 0.0 { 0.12 } else { 0.46 },
-                    0.42,
-                    0.42,
-                ]
-            }
+            Self::Fill => Icon::LayoutFill,
+            Self::TopLeft => Icon::LayoutTopLeft,
+            Self::TopRight => Icon::LayoutTopRight,
+            Self::BottomLeft => Icon::LayoutBottomLeft,
+            Self::BottomRight => Icon::LayoutBottomRight,
+            Self::Left => Icon::LayoutLeft,
+            Self::Right => Icon::LayoutRight,
         }
     }
 }
@@ -300,21 +294,10 @@ fn layout_button(ui: &mut Ui, p: &Palette, layout: Layout, on: bool) -> Response
         } else {
             p.secondary
         };
-        let canvas = Rect::from_center_size(rect.center(), vec2(20.0, 13.0));
-        painter.rect_stroke(
-            canvas,
-            CornerRadius::same(2),
-            Stroke::new(1.0, ink.gamma_multiply(0.7)),
-            StrokeKind::Inside,
-        );
-        let [x, y, width, height] = layout.cell();
-        let inner = canvas.shrink(2.0);
-        painter.rect_filled(
-            Rect::from_min_size(
-                inner.min + vec2(x * inner.width(), y * inner.height()),
-                vec2(width * inner.width(), height * inner.height()),
-            ),
-            CornerRadius::same(1),
+        icons::paint(
+            painter,
+            Rect::from_center_size(rect.center(), vec2(20.0, 20.0)),
+            layout.icon(),
             ink,
         );
     }
@@ -967,6 +950,7 @@ impl<'a> Pane<'a> {
                             .map_or("Normal", |(_, name)| name)
                     };
                     egui::ComboBox::from_id_salt("blend-mode")
+                        .icon(widgets::combo_icon)
                         .selected_text(name(*blend))
                         .width(118.0)
                         // Every mode at once: nine rows are few enough that

@@ -663,6 +663,7 @@ impl Pane<'_> {
                 let mut picked = None;
                 ui.add_enabled_ui(piece.is_some() && !held, |ui| {
                     egui::ComboBox::from_id_salt("speed-easing")
+                        .icon(widgets::combo_icon)
                         .selected_text(name)
                         .width(104.0)
                         .show_ui(ui, |ui| {

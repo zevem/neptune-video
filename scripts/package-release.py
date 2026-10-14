@@ -293,6 +293,7 @@ def package(root: Path, build_record: Path, cargo_metadata: Path, target: str,
         save(stage / "dependencies.json", {"scope": "target-filtered Cargo normal/build graph; includes build-time dependencies, not an exact linked-code SBOM",
                                             "packages": dependency_records})
         put(root / "assets/fonts/Geist-LICENSE.txt", stage / "notices/fonts/Geist-LICENSE.txt", inputs)
+        put(root / "assets/icons/tabler/LICENSE.txt", stage / "notices/icons/Tabler-LICENSE.txt", inputs)
         project_license = "NOASSERTION"
         if (root / "LICENSE").exists():
             put(root / "LICENSE", stage / "notices/PROJECT-LICENSE", inputs)

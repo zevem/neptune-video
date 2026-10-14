@@ -849,6 +849,7 @@ fn project_pane(ui: &mut Ui, p: &Palette, project: &Project, draft: &mut Project
                     |(_, _, label)| (*label).to_owned(),
                 );
             egui::ComboBox::from_id_salt("frame-rate")
+                .icon(widgets::combo_icon)
                 .selected_text(format!("{current} fps"))
                 .width(96.0)
                 .show_ui(ui, |ui| {

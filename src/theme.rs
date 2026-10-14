@@ -32,6 +32,8 @@ pub fn mono(size: f32) -> FontId {
 /// Shared geometry. Radii are concentric: a panel's corner equals the corner
 /// of what sits inside it plus the inset between them.
 pub mod metrics {
+    /// The window's corner: a panel's corner plus the gutter around it.
+    pub const WINDOW_RADIUS: u8 = 18;
     pub const GUTTER: f32 = 6.0;
     pub const PANEL_RADIUS: u8 = 12;
     pub const TOOLBAR_HEIGHT: f32 = 46.0;
@@ -373,6 +375,7 @@ pub fn install_fonts(ctx: &egui::Context) {
             .families
             .insert(FontFamily::Name(family.into()), fonts);
     }
+    crate::icons::register_fonts(&mut definitions);
     ctx.set_fonts(definitions);
 }
 

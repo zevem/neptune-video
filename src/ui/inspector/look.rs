@@ -595,6 +595,7 @@ impl Pane<'_> {
                 let current = (chosen.and_then(|id| project.assets.get(&id)))
                     .map_or("Missing", |asset| asset.name.as_str());
                 egui::ComboBox::from_id_salt("effect-asset")
+                    .icon(widgets::combo_icon)
                     .selected_text(current)
                     .width(132.0)
                     .truncate()

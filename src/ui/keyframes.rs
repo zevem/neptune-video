@@ -2283,11 +2283,10 @@ fn solo_toggle(ui: &mut Ui, p: &Palette, on: bool, label: &str) -> Response {
                 StrokeKind::Inside,
             );
         }
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            "S",
-            theme::semibold(10.5),
+        icons::paint(
+            painter,
+            Rect::from_center_size(rect.center(), Vec2::splat(14.0)),
+            Icon::Solo,
             if on { p.accent } else { p.muted },
         );
     }

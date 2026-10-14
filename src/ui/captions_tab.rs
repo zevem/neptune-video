@@ -1336,11 +1336,10 @@ fn cue_row(
             times.push(label);
         }
         if edge == Edge::Start {
-            ui.painter().text(
-                pos2(x + width + 2.0, times_top + 8.0),
-                egui::Align2::LEFT_CENTER,
-                "→",
-                theme::regular(11.0),
+            icons::paint(
+                ui.painter(),
+                Rect::from_center_size(pos2(x + width + 7.0, times_top + 8.0), Vec2::splat(11.0)),
+                Icon::ArrowRight,
                 p.muted,
             );
         }

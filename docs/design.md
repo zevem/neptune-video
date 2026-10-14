@@ -20,6 +20,13 @@ appropriate. Keep text for meaningful names, values, errors and unfamiliar
 operations. Avoid decorative labels, promotional copy and repeated headings
 inside the editor.
 
+Use the pinned [Tabler icon subset](../assets/icons/tabler/README.md) for UI
+glyphs, including dropdowns, layout presets and window controls. Outline is the
+default; transport controls and the on-key diamond use Tabler's filled style.
+Keep the library's optical spacing inside its 24-point grid and recolor glyphs
+for state. Timeline marks, curve handles and effect previews describe editing
+content and retain their own geometry.
+
 Distinguish hover, focus, selection, disabled, pressed and busy states using a
 consistent surface and contrast hierarchy. Track lock, visibility and mute
 controls show their actual state. Focused fields own text input and IME;
