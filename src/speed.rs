@@ -650,7 +650,7 @@ pub fn timed(project: &Project, track: &Track, clip: &Clip) -> bool {
         && match &clip.content {
             ClipContent::Media { asset_id } => (project.assets.get(asset_id))
                 .is_some_and(|asset| matches!(asset.kind, MediaKind::Video | MediaKind::Gif)),
-            ClipContent::Text { .. } => false,
+            ClipContent::Text { .. } | ClipContent::Graphic { .. } => false,
         }
 }
 

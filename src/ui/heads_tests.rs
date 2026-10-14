@@ -299,10 +299,16 @@ impl Bench {
     }
 
     /// What the head of this track writes, top down.
+    /// The words in a head, top first. Icons are glyphs of a font in the
+    /// private use area and are not words.
     fn written_in(&self, track: &str) -> Vec<(&str, Rect)> {
         let head = self.head(track);
+        let icon = |text: &str| {
+            text.chars()
+                .all(|c| matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{10ffff}'))
+        };
         let mut found: Vec<(&str, Rect)> = (self.written.iter())
-            .filter(|(_, rect)| head.contains_rect(*rect))
+            .filter(|(text, rect)| head.contains_rect(*rect) && !icon(text))
             .map(|(text, rect)| (text.as_str(), *rect))
             .collect();
         found.sort_by(|a, b| a.1.top().total_cmp(&b.1.top()));

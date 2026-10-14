@@ -16,7 +16,7 @@ use super::{
 use crate::{
     textures::Textures,
     theme::{self, Accent, Appearance, Palette},
-    ui::{Action, ClipDraft, DraftHold, EASINGS, Selection, with_key},
+    ui::{Action, ClipDraft, DraftHold, EASINGS, PresetChange, Selection, with_key},
 };
 use editor_core::{
     AnimTarget, Asset, BlendMode, Clip, ClipId, Command, Ease, Editor, Effect, EffectKind,
@@ -104,6 +104,11 @@ struct Bench {
     /// The audio kinds the session's FFmpeg is said not to run; `None`
     /// while its probe has not finished.
     missing: Option<Vec<EffectKind>>,
+    /// The font families the title lane has said, if it has.
+    families: Option<Vec<String>>,
+    /// The person's brand colours, and the presets the inspector kept.
+    brand: Vec<[u8; 4]>,
+    kept: Vec<PresetChange>,
 }
 
 impl Bench {
@@ -156,6 +161,9 @@ impl Bench {
             normalized: Vec::new(),
             ducked: Vec::new(),
             missing: None,
+            families: None,
+            brand: Vec::new(),
+            kept: Vec::new(),
         }
     }
 
@@ -246,6 +254,8 @@ impl Bench {
                     playhead: self.playhead,
                     transition: None,
                     missing: self.missing.as_deref(),
+                    families: self.families.as_deref(),
+                    brand: &self.brand,
                 },
                 &mut actions,
             );
@@ -296,6 +306,7 @@ impl Bench {
                 Action::Normalize(clips) => self.normalized.push(clips),
                 Action::Duck { clips, depth } => self.ducked.push((clips, depth)),
                 Action::CancelDuck => self.cancels += 1,
+                Action::Presets(change) => self.kept.push(change),
                 other => panic!("FIXTURE: the inspector asked for {other:?}"),
             }
         }
@@ -1081,6 +1092,8 @@ fn a_keyframe_is_made_for_the_clip_and_playhead_of_the_click() {
                 playhead: bench.playhead,
                 transition: None,
                 missing: None,
+                families: None,
+                brand: &[],
             },
             &mut actions,
         );
@@ -1100,6 +1113,76 @@ fn a_keyframe_is_made_for_the_clip_and_playhead_of_the_click() {
     assert_eq!(*clip_id, clip);
     assert_eq!(*key, ParamKey::Rotation);
     assert_eq!(keys.as_slice(), [key_at_one_second()]);
+}
+
+#[test]
+fn a_field_another_panel_focuses_as_a_click_ends_keeps_the_keyboard() {
+    // The captions list gives a caption's words the keyboard in the frame
+    // its click ends, and the inspector's rows are drawn after it.
+    let (mut bench, _) = Bench::new();
+    let inspector = Rect::from_min_size(Pos2::ZERO, bench.size - egui::vec2(120.0, 0.0));
+    let away = Pos2::new(bench.size.x - 60.0, 20.0);
+    let place = Rect::from_min_size(
+        Pos2::new(bench.size.x - 110.0, 200.0),
+        egui::vec2(100.0, 24.0),
+    );
+    let field = egui::Id::new("another panel's field");
+    let mut text = String::from("Words");
+    let mut asked = false;
+    let releases = [
+        vec![Event::PointerMoved(away)],
+        vec![Bench::button(away, PointerButton::Primary, true)],
+        vec![Bench::button(away, PointerButton::Primary, false)],
+        Vec::new(),
+        Vec::new(),
+    ];
+    for (frame, events) in releases.into_iter().enumerate() {
+        let ctx = bench.ctx.clone();
+        let project = bench.editor.snapshot();
+        let mut actions: Vec<Action> = Vec::new();
+        bench.time += 0.05;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, bench.size)),
+            time: Some(bench.time),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            if frame >= 2 {
+                let edit = ui.put(place, egui::TextEdit::singleline(&mut text).id(field));
+                // Once, as a click asks: a frame may be drawn twice.
+                if frame == 2 && !asked {
+                    edit.request_focus();
+                    asked = true;
+                }
+            }
+            show(
+                ui,
+                inspector,
+                &mut bench.state,
+                &bench.selection,
+                &mut bench.draft,
+                &mut bench.project_draft,
+                &InspectorInput {
+                    p: &bench.palette,
+                    project: &project,
+                    textures: &bench.textures,
+                    playhead: bench.playhead,
+                    transition: None,
+                    missing: None,
+                    families: None,
+                    brand: &[],
+                },
+                &mut actions,
+            );
+        });
+        output.textures_delta.clear();
+        assert!(actions.is_empty(), "{actions:?}");
+        if frame >= 2 {
+            let focused = bench.ctx.memory(|memory| memory.focused());
+            assert_eq!(focused, Some(field), "frame {frame}");
+        }
+    }
 }
 
 fn key_at_one_second() -> Keyframe {
@@ -1289,7 +1372,14 @@ fn a_title_and_a_sound_are_offered_only_what_the_project_accepts() {
     bench.selection.only(title);
     bench.state.section = Section::Look;
     bench.frame(Vec::new());
-    for offered in ["Video", "Motion", "Animate opacity", "Animate position"] {
+    for offered in [
+        "Video",
+        "Text",
+        "Animate",
+        "Motion",
+        "Animate opacity",
+        "Animate position",
+    ] {
         assert!(bench.has(offered), "a title has {offered}");
     }
     for refused in [
@@ -1331,7 +1421,16 @@ fn a_title_and_a_sound_are_offered_only_what_the_project_accepts() {
 
     let project = bench.editor.project();
     for (id, expected) in [
-        (title, [Section::Video, Section::Motion].as_slice()),
+        (
+            title,
+            [
+                Section::Video,
+                Section::Text,
+                Section::Animate,
+                Section::Motion,
+            ]
+            .as_slice(),
+        ),
         (voice, &[Section::Audio]),
     ] {
         let (track, clip) = project.clip(id).expect("the clip exists");
@@ -1905,6 +2004,9 @@ mod steady;
 
 #[path = "typing_tests.rs"]
 mod typing;
+
+#[path = "text_tests.rs"]
+mod text;
 
 /// The times of the keys of one of the clip's own values.
 fn key_times(bench: &Bench, clip: ClipId, key: ParamKey) -> Vec<Time> {

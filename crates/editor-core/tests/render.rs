@@ -78,7 +78,7 @@ fn source(plan: &RenderPlan, index: usize) -> (AssetId, Time, f64) {
             source_time,
             speed,
         } => (asset_id, source_time, speed),
-        LayerSource::Text { .. } => panic!("layer {index} is text"),
+        _ => panic!("layer {index} is not media"),
     }
 }
 
@@ -122,7 +122,7 @@ fn layer_order_matches_the_active_clips_of_visual_tracks() {
     assert_eq!(plan.background, project.settings.background);
     assert!(matches!(
         &plan.layers[3].source,
-        LayerSource::Text { text, font_size, color }
+        LayerSource::Text { text, font_size, color, enter: None, exit: None, words: None, .. }
             if text == "Title" && *font_size == 64.0 && *color == [255; 4]
     ));
 }
@@ -289,6 +289,7 @@ fn a_draft_replaces_stored_values_and_animation_plays_over_it() {
         blend: Some(BlendMode::Screen),
         animation: None,
         reading: None,
+        content: None,
     };
     let plan = resolve(&project, seconds(5.0), std::slice::from_ref(&draft));
     let layer = &plan.layers[0];

@@ -90,10 +90,13 @@ stems.
 Parsing `ffmpeg -filters` was set aside because a filter that is listed can
 still refuse an option.
 
-The file is schema version 3: the new fields read through serde defaults, and
-a build that knows only version 2 refuses a file that may hold an audio kind
-through its future-schema protection instead of reading it as damaged.
-Versions 1 and 2 are read and never written.
+The file is schema version 4: the new fields read through serde defaults, and
+a build that knows only version 3 or older refuses a file that may hold an
+audio kind through its future-schema protection instead of reading it as
+damaged. Versions 1 to 3 are read and never written. (This work was built as
+version 3; titles and captions, [ADR 0007](0007-titles-and-captions-are-clips-drawn-off-the-frame.md),
+reached main first with that number, so sound took 4 when the two were merged
+on 2026-10-14.)
 
 The binding rules, the owner decisions taken on the owner's behalf and the
 dated changes made during implementation are in

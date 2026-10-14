@@ -35,13 +35,15 @@ class PackageTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="aster-package-guards-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        for name in ("src", "crates", ".cargo", "target/release", "assets/fonts", "artifacts", "registry/fixture-dep"):
+        for name in ("src", "crates", ".cargo", "target/release", "assets/fonts", "assets/icons/tabler", "artifacts", "registry/fixture-dep"):
             (self.root / name).mkdir(parents=True)
         (self.root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.1.0"\n[package]\nname = "aster-editor"\nversion = "0.1.0"\n')
         (self.root / "Cargo.lock").write_text('version = 4\n[[package]]\nname = "aster-editor"\nversion = "0.1.0"\n[[package]]\nname = "fixture-dep"\nversion = "1.0.0"\nsource = "registry+https://example.invalid/index"\n')
         for name in ("src/main.rs", ".cargo/config.toml", "rust-toolchain.toml"):
             (self.root / name).write_text("owned source fixture\n")
         (self.root / "assets/fonts/Geist-LICENSE.txt").write_text("font notice fixture\n")
+        self.tabler_notice = (Path(__file__).resolve().parents[1] / "assets/icons/tabler/LICENSE.txt").read_bytes()
+        (self.root / "assets/icons/tabler/LICENSE.txt").write_bytes(self.tabler_notice)
         dependency = self.root / "registry/fixture-dep"
         (dependency / "Cargo.toml").write_text('[package]\nname = "fixture-dep"\nversion = "1.0.0"\nlicense = "MIT"\n')
         (dependency / "LICENSE-MIT").write_text("dependency notice fixture\n")
@@ -97,9 +99,16 @@ class PackageTests(unittest.TestCase):
             self.assertEqual({Path(m.name).name for m in binaries}, {"aster", "aster-agent"})
             self.assertTrue(all(m.mode == 0o755 for m in binaries))
             self.assertFalse(any("personal" in m.name or "ffmpeg" in m.name for m in members))
+            notice = next(m for m in members if m.name.endswith("/notices/icons/Tabler-LICENSE.txt"))
+            self.assertEqual(notice.mode, 0o644)
+            self.assertEqual(archive.extractfile(notice).read(), self.tabler_notice)
             manifest = json.load(archive.extractfile(next(m for m in members if m.name.endswith("/manifest.json"))))
             self.assertIn("external ffmpeg", manifest["runtime_dependencies"]["codecs"])
             self.assertEqual(manifest["frontend_assets"], [])
+
+    def test_missing_embedded_tabler_notice_prevents_packaging(self):
+        (self.root / "assets/icons/tabler/LICENSE.txt").unlink()
+        self.assert_failure("Expected a regular file")
 
     def test_existing_output_is_preserved(self):
         self.output.mkdir()

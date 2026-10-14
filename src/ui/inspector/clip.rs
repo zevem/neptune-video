@@ -10,7 +10,7 @@
 //! written yet is [`Pane::placeholder`], and filling it is replacing that arm.
 use super::{InspectorInput, InspectorState, ProjectDraft, Section, card, fact, title};
 use crate::{
-    icons::Icon,
+    icons::{self, Icon},
     normalize,
     speed::{self, Curve},
     theme::{self, Palette},
@@ -118,7 +118,18 @@ const BLENDS: [(BlendMode, &str); 9] = [
 pub(super) fn sections(track: &Track, clip: &Clip) -> &'static [Section] {
     match (track.kind, &clip.content) {
         (TrackKind::Audio, _) => &[Section::Audio],
-        (_, ClipContent::Text { .. }) => &[Section::Video, Section::Motion],
+        (_, ClipContent::Text { .. }) => &[
+            Section::Video,
+            Section::Text,
+            Section::Animate,
+            Section::Motion,
+        ],
+        (_, ClipContent::Graphic { .. }) => &[
+            Section::Video,
+            Section::Graphic,
+            Section::Animate,
+            Section::Motion,
+        ],
         _ => &[
             Section::Video,
             Section::Look,
@@ -254,22 +265,16 @@ impl Layout {
         to
     }
 
-    /// The part of the canvas the layout fills, as the glyph draws it: left,
-    /// top, width and height in parts of the canvas.
-    fn cell(self) -> [f32; 4] {
+    /// The icon for this layout's position in the canvas.
+    fn icon(self) -> Icon {
         match self {
-            Self::Fill => [0.0, 0.0, 1.0, 1.0],
-            Self::Left => [0.0, 0.0, 0.5, 1.0],
-            Self::Right => [0.5, 0.0, 0.5, 1.0],
-            _ => {
-                let [x, y] = self.corner().unwrap_or([0.0, 0.0]);
-                [
-                    if x < 0.0 { 0.08 } else { 0.5 },
-                    if y < 0.0 { 0.12 } else { 0.46 },
-                    0.42,
-                    0.42,
-                ]
-            }
+            Self::Fill => Icon::LayoutFill,
+            Self::TopLeft => Icon::LayoutTopLeft,
+            Self::TopRight => Icon::LayoutTopRight,
+            Self::BottomLeft => Icon::LayoutBottomLeft,
+            Self::BottomRight => Icon::LayoutBottomRight,
+            Self::Left => Icon::LayoutLeft,
+            Self::Right => Icon::LayoutRight,
         }
     }
 }
@@ -298,21 +303,10 @@ fn layout_button(ui: &mut Ui, p: &Palette, layout: Layout, on: bool) -> Response
         } else {
             p.secondary
         };
-        let canvas = Rect::from_center_size(rect.center(), vec2(20.0, 13.0));
-        painter.rect_stroke(
-            canvas,
-            CornerRadius::same(2),
-            Stroke::new(1.0, ink.gamma_multiply(0.7)),
-            StrokeKind::Inside,
-        );
-        let [x, y, width, height] = layout.cell();
-        let inner = canvas.shrink(2.0);
-        painter.rect_filled(
-            Rect::from_min_size(
-                inner.min + vec2(x * inner.width(), y * inner.height()),
-                vec2(width * inner.width(), height * inner.height()),
-            ),
-            CornerRadius::same(1),
+        icons::paint(
+            painter,
+            Rect::from_center_size(rect.center(), vec2(20.0, 20.0)),
+            layout.icon(),
             ink,
         );
     }
@@ -324,7 +318,12 @@ fn layout_button(ui: &mut Ui, p: &Palette, layout: Layout, on: bool) -> Response
 pub(super) struct Pane<'a> {
     pub p: &'a Palette,
     pub project: &'a Project,
+    pub track: &'a Track,
     pub clip: &'a Clip,
+    /// The font families a title may name, once they are known.
+    pub families: Option<&'a [String]>,
+    /// The person's brand colours, offered in every colour.
+    pub brand: &'a [[u8; 4]],
     pub asset: Option<&'a Asset>,
     /// The playhead, which may be off the clip.
     pub playhead: Time,
@@ -421,7 +420,10 @@ pub(super) fn rows(
     let mut pane = Pane {
         p,
         project,
+        track,
         clip,
+        families: input.families,
+        brand: input.brand,
         asset: clip.asset_id().and_then(|id| project.assets.get(&id)),
         playhead: input.playhead,
         local: (input.playhead - clip.start).clamp(Time::ZERO, clip.duration),
@@ -439,6 +441,9 @@ pub(super) fn rows(
         Some(Section::Speed) => pane.speed(ui),
         Some(Section::Color) => pane.color(ui),
         Some(Section::Motion) => pane.motion(ui),
+        Some(Section::Text) => pane.text(ui),
+        Some(Section::Graphic) => pane.graphic(ui),
+        Some(Section::Animate) => pane.animate(ui),
     });
 
     if matches!(section, None | Some(Section::Video | Section::Audio)) {
@@ -839,26 +844,6 @@ impl<'a> Pane<'a> {
 
     fn video(&mut self, ui: &mut Ui) {
         let p = self.p;
-        if let Some((text, size, color)) = &mut self.next.text {
-            section(ui, p, "Text");
-            card(ui, p, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(text)
-                        .desired_rows(2)
-                        .desired_width(f32::INFINITY)
-                        .frame(egui::Frame::NONE)
-                        .font(theme::regular(13.0))
-                        .hint_text("Text"),
-                );
-                widgets::hairline(ui, p);
-                row(ui, p, "Size", |ui| {
-                    widgets::number(ui, size, 1.0..=4096.0, 1.0, " px", 0)
-                });
-                row(ui, p, "Colour", |ui| {
-                    ui.color_edit_button_srgba_unmultiplied(color);
-                });
-            });
-        }
         if self.asset.is_some() {
             self.layouts(ui);
         }
@@ -986,6 +971,7 @@ impl<'a> Pane<'a> {
                             .map_or("Normal", |(_, name)| name)
                     };
                     egui::ComboBox::from_id_salt("blend-mode")
+                        .icon(widgets::combo_icon)
                         .selected_text(name(*blend))
                         .width(118.0)
                         // Every mode at once: nine rows are few enough that

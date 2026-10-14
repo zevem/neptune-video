@@ -20,6 +20,13 @@ appropriate. Keep text for meaningful names, values, errors and unfamiliar
 operations. Avoid decorative labels, promotional copy and repeated headings
 inside the editor.
 
+Use the pinned [Tabler icon subset](../assets/icons/tabler/README.md) for UI
+glyphs, including dropdowns, layout presets and window controls. Outline is the
+default; transport controls and the on-key diamond use Tabler's filled style.
+Keep the library's optical spacing inside its 24-point grid and recolor glyphs
+for state. Timeline marks, curve handles and effect previews describe editing
+content and retain their own geometry.
+
 Distinguish hover, focus, selection, disabled, pressed and busy states using a
 consistent surface and contrast hierarchy. Track lock, visibility, mute and
 solo controls show their actual state: a soloed track's headphones take the
@@ -80,6 +87,26 @@ lacks and where. The Effects tab's last heading, Audio, lists the audio kinds, w
 only to clips on audio tracks; a picture is told in words why it takes none.
 "Audio effect" names these filters everywhere in the interface; "sound
 effect" means an imported sound clip and names nothing here.
+
+picture, Video, Text, Animate and Motion for a title, Video, Graphic, Animate
+and Motion for a graphic, none for sound. The clip's name and the section
+control stay above the scrolled rows. Rows for an effect, a mask or a
+transition are generated from the core's parameter tables, so a new parameter
+needs no panel of its own. The library has Media, Text, Captions, Effects,
+Transitions and Looks tabs; a tile is given by double-click or Return to the
+selected clips and by drag to the clip under it. When the tab names would
+touch they shrink, then become icons named on hover.
+
+Text tiles are drawn by the title lane at their own size, so a tile shows the
+real font, outline and colour emoji, and it plays its entrance only while the
+pointer rests on it; an untouched tab asks for no repaints. Outline, shadow
+and background are switch cards whose rows appear when switched on, and
+lengths kept in ems are shown in pixels at the title's size. The Captions tab
+is a list first: a caption's words and times are edited where they are shown,
+and the row follows the playhead except while it is being typed into. Speech
+and translation say where the work happens: the speech panel says nothing is
+uploaded, and an AI action is marked "AI" and opens a plan for review rather
+than editing.
 
 An animatable row carries a diamond: hollow with no keyframe at the playhead,
 filled on one, and filled for a paired row when either value is keyed there.

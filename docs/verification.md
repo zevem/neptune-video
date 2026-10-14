@@ -282,6 +282,7 @@ establish native platform acceptance.
 | Looks, animation and motion | Keyframes, transitions, effects, looks, speed, masks, blend, colour, keying, tracking, stabilization as preview | See [advanced editing](#advanced-editing): Linux headless tests, device readback on two adapters and native captures on virtual displays; no playback rate, export or other platform |
 | Audio editing | Waveforms, fades, track volume and solo, detached audio, background music, voiceover recording, audio effects, keep pitch, loudness normalization, ducking, beats, Save audio as and stem separation, as preview | See [audio editing](#audio-editing): macOS headless tests, mixer and lane readback, launch captures and native acceptance captures of the driven release build on one host; nothing listened to, no device opened, no Linux or Windows run |
 | Native AI | Claude/Codex CLI planning, captured/focused metadata, review/apply/discard/cancel and exact prepared-state commits | Exact reviewed split IDs verified through the public runtime; `2c596cb0` both real-provider split/undo/redo and owned no-op/stale fixtures passed. Prior db30 cancel/reopen evidence stays scoped. Metadata only; no audiovisual semantic analysis |
+| Titles, captions and graphics | Styled titles, text animation, captions from speech with word times, karaoke, caption editing, SRT/VTT, caption languages and AI translation, lower thirds, title cards, callouts, stickers, emoji, editable templates, kept looks and brand colours, as preview | See [titles, captions and motion graphics](#titles-captions-and-motion-graphics): Linux headless tests, a real Whisper model on synthetic English speech and native captures on a virtual display; no export, playback rate, real provider translation or other platform |
 
 The [user guide](usage.md) explains controls and current limits. Local agent
 commands and the authenticated live/headless protocol use the same reducer;
@@ -381,7 +382,7 @@ Waveforms, fades, track volume and solo, detached audio, background music,
 voiceover recording, audio effects, pitch-keeping speed, loudness
 normalization, ducking, beats, Save audio as and stem separation from
 [the audio-editing design](../.scratch/audio-editing/spec.md) are implemented
-as preview features ([ADR 0007](adr/0007-sound-is-levels-in-the-mixer-and-filters-in-the-decoder.md)).
+as preview features ([ADR 0008](adr/0008-sound-is-levels-in-the-mixer-and-filters-in-the-decoder.md)).
 This section states what evidence exists for each. **Nothing was listened
 to**, no test opened an output device or a microphone, and nothing records
 platform acceptance, real-time playback or export: there is no export, and the
@@ -399,6 +400,16 @@ separator; neural denoise and speech detection
 ([21b](../.scratch/audio-editing/issues/21b-neural-denoise.md),
 [21c](../.scratch/audio-editing/issues/21c-speech-detection-for-ducking.md))
 not built and left as research.
+
+## Titles, captions and motion graphics
+
+The features of [the titles and captions design](../.scratch/titles-and-captions/spec.md)
+are implemented as preview features: titles and graphics are drawn in the
+viewer, and captions leave the editor only as SubRip or WebVTT files. There is
+no export, so nothing is burned into a video. This section states what
+evidence exists for each feature and what was not tried. The tickets'
+comments in [`.scratch/titles-and-captions/issues/`](../.scratch/titles-and-captions/issues)
+list every capture and test by name.
 
 ### Where the evidence comes from
 
@@ -420,8 +431,8 @@ that column is unmeasured.
 
 | Feature | Headless tests | Readback | Native capture | Measured | Known limits and unverified |
 | --- | --- | --- | --- | --- | --- |
-| Model, commands, schema v3 | Fade and track bounds, NaN and infinity, reversal, atomic failure, trim, split, rate and retime clamps, `sounds` and `audible_at` over mute, solo, volume 0, an owned picture and freeze, reverse and ramp, every audio kind's ranges and placement, sixteen and not seventeen ([sound](../crates/editor-core/tests/sound.rs)); v1 and v2 files, checkpoints and recovery load and the next save writes 3, v4 refused and left at every entry, round trips with the new fields and audio kinds ([schema](../crates/editor-store/tests/schema.rs)); clipboard text 3, reading 1 to 3 and refusing 0 and 4 ([clipboard](../src/clipboard.rs)) | n/a | n/a | No | No build that knows only v2 was run against a v3 file; the v2 fixtures were written by this tree before the version was raised. Validation keeps fades legal on an owned picture clip. Cost of `Sounding` over a large project |
-| Agent surface | Context sends fades, track volume and solo and omits their defaults; serialized `set_fades`, `set_track_state` and the seven kinds validated, inspected and undone as JSON text ([protocol](../crates/editor-agent/tests/protocol.rs)); planned and committed; units sentence and the kinds' place in the text ([planner.rs](../crates/editor-agent/src/planner.rs)) | n/a | n/a | Planner instructions 5,377 bytes of `MAX_SYSTEM_BYTES` (6 KiB), schema 21,859 of `MAX_SCHEMA_BYTES` (23 KiB), printed by the planner tests on 2026-10-14 for this documentation | No real Claude or Codex request with the new text; Windows command-line headroom for 29 KiB. One provider test fails on this host's filesystem before the code under test runs (a non-UTF-8 directory name) |
+| Model, commands, schema v4 | Fade and track bounds, NaN and infinity, reversal, atomic failure, trim, split, rate and retime clamps, `sounds` and `audible_at` over mute, solo, volume 0, an owned picture and freeze, reverse and ramp, every audio kind's ranges and placement, sixteen and not seventeen ([sound](../crates/editor-core/tests/sound.rs)); v1 and v2 files, checkpoints and recovery load and the next save writes 4 (3 before the merge with titles and captions), v5 refused and left at every entry, round trips with the new fields and audio kinds ([schema](../crates/editor-store/tests/schema.rs)); clipboard text 3, reading 1 to 3 and refusing 0 and 4 ([clipboard](../src/clipboard.rs)) | n/a | n/a | No | No build that knows only v2 was run against a v3 file; the v2 fixtures were written by this tree before the version was raised. Validation keeps fades legal on an owned picture clip. Cost of `Sounding` over a large project |
+| Agent surface | Context sends fades, track volume and solo and omits their defaults; serialized `set_fades`, `set_track_state` and the seven kinds validated, inspected and undone as JSON text ([protocol](../crates/editor-agent/tests/protocol.rs)); planned and committed; units sentence and the kinds' place in the text ([planner.rs](../crates/editor-agent/src/planner.rs)) | n/a | n/a | After the merge with titles and captions: planner instructions 5,793 bytes of `MAX_SYSTEM_BYTES` (6 KiB), schema 22,062 of `MAX_SCHEMA_BYTES` (23 KiB), and the Windows-escaped command line under 31 KiB, printed and asserted by the planner tests on 2026-10-14 | No real Claude or Codex request with the new text; the Windows bound is asserted, not run on Windows, and has about a hundred characters to spare. One provider test fails on this host's filesystem before the code under test runs (a non-UTF-8 directory name) |
 | Mixer: level, solo, master limiter | Plan admission equals `sounds` over nine tracks and five solo choices; seventeen clips fit once a track is soloed out | 100 ms fade on its curve within 1e-4; track volume and keys exact; solo and mute admission; two full-scale tones never above 1.0; a mix within ±1.0 and the source monitor bit for bit | No device opened | The gain's return to 1 after a peak (1.42 s at twice the ceiling) | No lookahead; sample peaks, not true peaks; the 17th voice still stops the mix; CPU and underruns; nothing listened to |
 | Voice filter chain and probe | Strings at defaults and extremes, stack order, disabled and unavailable kinds left out; probe with a fake runner and against the host's FFmpeg (a refused option marks that kind alone); a `sync` does not cancel it | EQ band -24.00 dB on its tone and -0.34 dB at 100 Hz; high-pass; limiter at its ceiling; compressor; centre reduction; noise between bursts 16.3 dB lower at the defaults; `afftdn` and `alimiter` delays removed to within 70 us at two rates | No | Delays (24,979 and 4,979 us at 48 kHz); the probe's eight runs, 297 ms once | Filters start cold at every seek and edit; a value FFmpeg refuses after passing the probe stops all preview sound; centre reduction is left out on a one-channel device; the last 25 ms of a file are lost through noise reduction; FFmpeg 8.1.2 only, no minimum version |
 | Pitch and Keep pitch | Strings at six speeds and three shifts; the switch is one `SetEffects` entry each way; phrases | 440.0 Hz kept at speed 2, 880.0 Hz at +12; burst onsets early, never late | No | Sound early by 8.0 to 58.5 ms under `atempo`, by factor | Lead not compensated; pitch held only while speed over the pitch ratio is 0.5 to 2; no formant preservation; rough on music is expected, not heard; held, reversed and ramped stretches silent; a picture clip keeps pitch only after Detach audio |
@@ -474,6 +485,51 @@ that column is unmeasured.
 - **Optimized builds.** Captures are of release builds; every measurement is
   from the `dev` test profile, which is partly optimized (opt-level 1,
   dependencies at 2) and not a release build, or from the unoptimized `ci`.
+
+| Headless tests | Core, store, media, agent and desktop tests at the owning seam. Desktop benches run real egui passes over the inspector, library tabs and speech panel and find controls through AccessKit | One Linux container: 4 vCPU Intel Xeon at 2.8 GHz, 15 GiB, Ubuntu 24.04.5, Rust 1.97.1, `dev` profile with dependencies at `opt-level` 2. Final runs: editor-core 165, editor-store 78, editor-agent 86 with the provider fixture, desktop 672 and `aster-agent` 12 passed; editor-media 247 of 248, the one failure being `decode::tests::a_paced_walk_backwards_at_preview_size_is_measured`, which fails the same way on the base commit and is outside this work |
+| Real speech model | A test that runs only when `ASTER_WHISPER_MODEL` and `ASTER_SPEECH_SAMPLE` are set: words, their timeline times and a cancel during recognition | Same host, Tiny q5_1, `talk.wav` (8.5 s of English synthesized by Flite) |
+| Native captures | The running debug build driven by XTest pointer and keyboard and looked at, with task-owned settings, presets, models and projects | Xvfb with lavapipe (software Vulkan), no window manager, at 1440x900 and at 760x560 or 760x700. Kept in the session's scratch directory, not in the repository |
+| Optimized build | `cargo build --release --locked --bin aster` of the final source | Built on the same host in 7 min 44 s from clean. The `aster` binary is 34,147,232 bytes, about 1.7 MB of it whisper.cpp and ggml. Run under the same Xvfb: the Karaoke box look drawn, and captions from speech with Tiny and the language detected appeared between 4.2 and 4.9 s after the click. That run found two caption tracks with one name. After the fix, the rebuilt binary (34,148,904 bytes, 3 min 9 s incremental) named the second "English captions 2" in the track chooser at 1440x900 and at 760x700 |
+
+### Feature matrix
+
+"Native" is a capture of the running build that was looked at. "Measured" is
+a number with its conditions in
+[performance](performance.md#titles-captions-and-speech-budgets); everything
+else in that column is unmeasured.
+
+| Feature | Headless tests | Native capture | Measured | Known limits and unverified |
+| --- | --- | --- | --- | --- |
+| Model, commands, schema v3 | Bounds, NaN, defaults, realignment, split/trim/rate rebasing, reversal and atomic failure ([titles](../crates/editor-core/tests/titles.rs)); a version 2 title loads plain, titles, graphics, captions and fonts round-trip, the next save writes the current version (4 since the audio work was merged) and version 5 is refused ([schema](../crates/editor-store/tests/schema.rs)) | n/a | No | No build that knows only version 2 was run against a version 3 file; the refusal is shown for version 4 through the same path |
+| Text overlays: fonts, colours, outlines, shadows, backgrounds | Picture tests with the bundled font: ink bounds, outline grows ink, shadow offset, background box, wrap, per-character fallback ([text tests](../crates/editor-media/src/text/tests.rs)); eight inspector tests ([text_tests](../src/ui/inspector/text_tests.rs)) | Text section at both sizes; lower third, titles and outlines drawn in the viewer from lane pictures | No | Time to draw a picture; right-to-left, vertical and complex-script layout not reviewed; synthetic bold is a stroke; the emoji test prints `SKIP` on a host without a colour emoji face |
+| Text animation presets | Progress per kind and edge, unit spread and frame snapping in the plan; per-unit motion in the picture | In style list and Typewriter chosen; a Pop entrance correctly invisible at its first frame; `animate in pop` from the command panel | No | No animation was watched at a measured frame rate; whether the lane keeps up with 30 or 60 fps is unknown |
+| Captions from speech with word times | 23 speech tests: catalog, model header shapes, languages, quiet cuts, word times, the one-job lane with cancel, downloads through a fake `curl` (checked, resumed, damaged, missing, cancelled); the real-model test above; 5 speech-panel benches | Tiny already present: six captions in about 5.5 s and one undo; Stop; Base downloaded through the proxy and its SHA-256 matched; captions waiting behind a redo; `generate captions` by command | Model load, mix, detector, recognition and cancel with Tiny | English synthetic speech only; Small, Medium and Large v3 Turbo never run; no music, noise, accents or long recordings; whisper.cpp's word times were not compared with hand-timed words; no GPU |
+| Animated karaoke captions | Word state in the plan; word, box and fill highlights in the picture | A Box-highlighted caption with colour emoji; a karaoke look dropped on a caption; the current-cue bar with a karaoke caption | No | Never watched during playback at a measured rate |
+| Manual caption editing, timing and styling | 18 Captions tab tests, including a bench of 2000 captions that draws 5 to 40 rows | Typing a caption, typed times, row, track, language, style and export menus, the empty state, at both sizes | No | Screen reader; caption editing on a locked track natively. The timeline's track heads cut long names, so "English captions" and "English captions 2" both read "English ca…" there; the chooser shows them whole |
+| SRT and VTT import and export | Round trips through files written and read back, malformed files refused whole, VTT word tags, encodings, the 8 MiB cap, language tags in file names | Export menu only | No | The system file pickers were not driven: there is no portal service on Xvfb, so a real import or export through the window was not done |
+| Caption languages and translation | Language names and BCP 47 shapes; `copy_captions` in the core; the translation request and its refusals; the track menu choosing and typing a language; command phrases | `pt-br` typed into a new track; Translate into Spanish against a fake provider, the plan, Apply (Spanish track above the hidden English one, "[es] …" in the viewer) and one Undo at 1440; Translate into German at 760 | Provider command line: 30,499 of 31,744 characters | No real Claude or Codex model translated anything; Whisper's translate-to-English was not run on speech in another language |
+| Lower thirds, title cards, callouts, stickers, emoji | 13 Text tab tests: adding, placement, canvas scaling, restyling, refusals, search, drops, idle repaint ([text_tab_tests](../src/ui/text_tab_tests.rs)) | Tiles drawn by the lane, scrolled to lower thirds, title cards and emoji; a tile dragged to a track with its ghost; a rotated colour-emoji sticker in the viewer | No | Emoji need a colour emoji face on the system; graphics have no image elements |
+| Motion graphics templates with editable parameters | Graphic section tests: texts, shared colours, one font, staggered animation | Graphic section at 1440 | No | Parts cannot be moved or resized in the inspector; only their texts, shared colours, font and animation |
+| Kept looks, templates and brand colours | 3 preset-file tests (a round trip without word times, a newer or damaged file moved aside before a save, what a preset cannot hold refused) and 2 inspector tests | Keep popup, Yours after keeping, brand colours in the picker, presets read back after a restart | No | Typing a preset name and Return were not delivered to the window in that session; covered by benches |
+| Command panel and native planner | Phrases parse and plan; the schema stays under 23 KiB (`MAX_SCHEMA_BYTES` since the merge with the audio work) and the command line under 31 KiB; planner text names the new commands | `generate captions` and `animate in pop` at 1440 | No | Real provider requests with the new planner text; `translate captions to …` was driven through the track menu, not typed |
+
+### Unverified for every row
+
+- **macOS and Windows.** Nothing here was built or run there. CI runs on pull
+  requests and `main`, and this work has not been through it, so the
+  whisper.cpp build with Xcode or MSVC, `curl` on those systems, their system
+  font folders and colour emoji fonts are untried.
+- **Playback.** No animated title, karaoke caption or graphic has a measured
+  presentation rate, and the time to draw one picture was not measured.
+- **A hardware GPU, a window manager, a physical display and HiDPI.** Every
+  capture is a private virtual display at scale 1 on software Vulkan.
+- **Real speech.** The only speech heard was synthesized English. Accuracy in
+  other languages, with music or noise, and on recordings longer than one
+  five-minute piece is unknown.
+- **File dialogs.** Font import, subtitle import and export, and model file
+  choice open system pickers that were not driven.
+- **Accessibility.** Controls are reachable by AccessKit names in the benches;
+  no screen reader was used.
 
 ## Native Linux evidence
 

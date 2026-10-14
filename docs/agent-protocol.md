@@ -252,6 +252,56 @@ enforced by `Project::validate`; a refused command leaves the document unchanged
   whose last carries its `fade_out`. Peaks and beat grids are not part of the
   project a client inspects.
 
+### Title, caption and graphic commands
+
+A title is a clip whose content is `{"type": "text", ...}`; a graphic's is
+`{"type": "graphic", "size": [w, h], "elements": [...]}`. Add either with
+`add_clip` on a text track. A text track with a `language` is a caption track,
+and each title on it is one caption.
+
+| Command | Fields | Rule |
+| --- | --- | --- |
+| `set_text` | `clip_id`, `text`, `font_size`, `color` | Keeps the style and animations. Word times are realigned to the new words: kept words keep their times and new ones share the time between their neighbours. |
+| `set_text_style` | `clip_id`, `style` | Titles only. Replaces the whole style. |
+| `set_text_animation` | `clip_id`, `edge`, `animation` | `edge` is `in` or `out`; `animation: null` removes it. |
+| `set_words` | `clip_id`, `words` | One `{at, end}` per word of the text, or `[]`. At most 4096. |
+| `set_graphic` | `clip_id`, `size`, `elements` | Graphics only. Replaces the design box and every element. |
+| `set_track_language` | `track_id`, `language` | Text tracks only; `null` makes it a plain text track. |
+| `copy_captions` | `from_track_id`, `track_id`, `name`, `language`, `texts` | Adds caption track `track_id` directly above `from_track_id` with one title per source title, in timeline order, fresh IDs and the source's times, and each text replaced by the one at its index; the source is hidden. `texts` has exactly one entry per clip of the source, which must hold only titles. Word times are spread over the new words by length. |
+
+- **Styles** name a font `family`, `weight` (100–900) and `italic`, never a
+  file. `outline.width`, `shadow.offset`, `shadow.blur`, `background.padding`
+  and `background.radius` are fractions of the font size. `wrap` is canvas
+  pixels and 0 means no wrap. `highlight` (karaoke) has `mode` `word`, `box` or
+  `fill`, a `color`, `scale` 1–2 and `upcoming` opacity 0–1.
+- **Animations** are `{kind, unit, duration, delay}`. `kind` is `fade`, `pop`,
+  `bounce`, `typewriter`, `slide_up`, `slide_down`, `slide_left`,
+  `slide_right` or `wipe`; `unit` is `whole`, `line`, `word` or `letter`.
+  `duration` is one canvas frame to `min(10 s, clip duration)`, `delay +
+  duration` fits the clip, and an entrance and exit may not overlap.
+- **Word times** are microseconds from the clip's start, with
+  `0 <= at <= end <= duration` and `at` never decreasing. A word is a run
+  between spaces, and each Han, Hiragana or Katakana character is a word.
+- **Graphics** hold 1–32 elements with unique IDs. An element's `kind` is
+  `text`, `rect`, `ellipse` or `line`, with a `frame` of `[left, top, width,
+  height]` in design pixels from the box's top left, `rotation` in degrees,
+  `opacity` and its own `enter` and `exit`. A line runs from the frame's top
+  left to its bottom right, and either side may be negative.
+- **Split, trim and rate.** `split_clip` on a title with words gives the words
+  before the cut, and their text, to the left and the rest to the right; a
+  title without words keeps its whole text on both sides. The entrance goes
+  to the left and the exit to the right.
+  `trim_clip` keeps every word and holds times and animations inside the clip.
+  `set_playback_rate` scales word times and animations with the duration.
+- **The native planner** offers a narrower set. Its `proposal_schema` leaves out
+  `set_text_style`, `set_words` and `set_graphic`, and a proposed title has no
+  style, animation or words, because styles and graphics are designed by hand,
+  words come from speech and the schema shares the provider's command line
+  with the planner text. Full protocol clients may send every command above.
+- **Fonts** are assets of kind `font`, imported like media and never placed on
+  a track. Captions from speech and subtitle files have no protocol operation:
+  a client can write captions and their word times with the commands above.
+
 Use a `batch` command to apply a multi-step edit as one all-or-nothing history
 entry. Capture stable asset, track and clip IDs from inspection instead of
 retargeting from whichever item the desktop currently selects.

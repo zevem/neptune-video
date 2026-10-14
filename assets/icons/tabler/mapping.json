@@ -1,0 +1,815 @@
+{
+  "schema_version": 1,
+  "library": "Tabler Icons",
+  "repository": "https://github.com/tabler/tabler-icons",
+  "version": "3.49.0",
+  "revision": "a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d",
+  "license": {
+    "spdx": "MIT",
+    "file": "LICENSE.txt",
+    "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/LICENSE",
+    "sha256": "b740a1d46122672da62833e97f7e7c8a13fa85cbc7445b584b297cc00dde93db"
+  },
+  "icons": [
+    {
+      "icon": "Play",
+      "style": "filled",
+      "name": "player-play",
+      "file": "filled/player-play.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/filled/player-play.svg",
+      "sha256": "f9a3ef8e8925e405ae74a8bf855757942cb18adfff8321e3c8b6d96337657ee1",
+      "upstream_icon_version": "2.0",
+      "unicode": "f691"
+    },
+    {
+      "icon": "Pause",
+      "style": "filled",
+      "name": "player-pause",
+      "file": "filled/player-pause.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/filled/player-pause.svg",
+      "sha256": "42845a326ef1a16c99edaab761f82df388b22aa4b447a81e96cd452859eca64c",
+      "upstream_icon_version": "2.0",
+      "unicode": "f690"
+    },
+    {
+      "icon": "SkipStart",
+      "style": "filled",
+      "name": "player-skip-back",
+      "file": "filled/player-skip-back.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/filled/player-skip-back.svg",
+      "sha256": "cbfa67c2178147119b05dd74fae947bd25054327aebe253180bdc3d1300afee7",
+      "upstream_icon_version": "2.0",
+      "unicode": "f693",
+      "meaning": "Beginning of project: bar before the left-pointing filled triangle."
+    },
+    {
+      "icon": "SkipEnd",
+      "style": "filled",
+      "name": "player-skip-forward",
+      "file": "filled/player-skip-forward.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/filled/player-skip-forward.svg",
+      "sha256": "cc0a5cc4cbc57c9799ff58c0126c848e46aa6ac6ec5336889115acc24d9669fc",
+      "upstream_icon_version": "2.0",
+      "unicode": "f694",
+      "meaning": "End of project: bar after the right-pointing filled triangle."
+    },
+    {
+      "icon": "StepBack",
+      "style": "outline",
+      "name": "chevron-left",
+      "file": "outline/chevron-left.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/chevron-left.svg",
+      "sha256": "889174801ca4213379fe4e6a574546793a72ab22be35bc2f177e3d8d24576dbd",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea60",
+      "meaning": "Previous frame: one left chevron, distinct from the filled go-to-start control."
+    },
+    {
+      "icon": "StepForward",
+      "style": "outline",
+      "name": "chevron-right",
+      "file": "outline/chevron-right.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/chevron-right.svg",
+      "sha256": "83733bb6e03e1d20fd2674d06a493642c8ea6eef76c44ebb2239b9ef17dedff7",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea61",
+      "meaning": "Next frame: one right chevron, distinct from the filled go-to-end control."
+    },
+    {
+      "icon": "Loop",
+      "style": "outline",
+      "name": "repeat",
+      "file": "outline/repeat.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/repeat.svg",
+      "sha256": "c018576502a5f4c2e3738d5537ef514ceb88ace4ae3b3b85ce98fe7eebcbc711",
+      "upstream_icon_version": "1.2",
+      "unicode": "eb72"
+    },
+    {
+      "icon": "Scissors",
+      "style": "outline",
+      "name": "scissors",
+      "file": "outline/scissors.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/scissors.svg",
+      "sha256": "a2e396becae03724ba9272489b293c94f96d3583e7a2c16c79c139cfe8427659",
+      "upstream_icon_version": "1.1",
+      "unicode": "eb1b"
+    },
+    {
+      "icon": "Trash",
+      "style": "outline",
+      "name": "trash",
+      "file": "outline/trash.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/trash.svg",
+      "sha256": "4b90fa07a6d980736951d9e83b91432972b2bcecf81be4578608a0983f2ebc9d",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb41"
+    },
+    {
+      "icon": "Undo",
+      "style": "outline",
+      "name": "arrow-back-up",
+      "file": "outline/arrow-back-up.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/arrow-back-up.svg",
+      "sha256": "42a20a833068ac155cc2e3a4176a9e80a918cc62c8bf48d3f826a2c47bde739d",
+      "upstream_icon_version": "1.3",
+      "unicode": "eb77"
+    },
+    {
+      "icon": "Redo",
+      "style": "outline",
+      "name": "arrow-forward-up",
+      "file": "outline/arrow-forward-up.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/arrow-forward-up.svg",
+      "sha256": "fd66d62f72c9c638108fbb97738d9ca1f969b4cf2cb54ece6f79b44d586409ad",
+      "upstream_icon_version": "1.3",
+      "unicode": "eb78"
+    },
+    {
+      "icon": "Copy",
+      "style": "outline",
+      "name": "copy",
+      "file": "outline/copy.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/copy.svg",
+      "sha256": "3a455a299db4ec939fd0473d15c81c1d3f30f65dec81a7de816317c989b06073",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea7a"
+    },
+    {
+      "icon": "Clipboard",
+      "style": "outline",
+      "name": "clipboard-text",
+      "file": "outline/clipboard-text.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/clipboard-text.svg",
+      "sha256": "1d1b34197245aacb2e503ae55d67e1dc082b17a1bb2204f115c7acd98253d542",
+      "upstream_icon_version": "1.60",
+      "unicode": "f089"
+    },
+    {
+      "icon": "Plus",
+      "style": "outline",
+      "name": "plus",
+      "file": "outline/plus.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/plus.svg",
+      "sha256": "9cc497d4cc1eb38cf9daae18f41ffdc1a5e2a8431d70247b0854978f303f28d6",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb0b"
+    },
+    {
+      "icon": "Close",
+      "style": "outline",
+      "name": "x",
+      "file": "outline/x.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/x.svg",
+      "sha256": "9350785360414c39450c3505f17d1745e55a7534edace8548e30cf49e3727d43",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb55"
+    },
+    {
+      "icon": "Check",
+      "style": "outline",
+      "name": "check",
+      "file": "outline/check.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/check.svg",
+      "sha256": "e206067a7d570997b5b3a7d30ab287c0b15a492787649a8b96dff8fad2862fbe",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea5e"
+    },
+    {
+      "icon": "ChevronDown",
+      "style": "outline",
+      "name": "chevron-down",
+      "file": "outline/chevron-down.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/chevron-down.svg",
+      "sha256": "5a2e5c2a155ce06264a3f7299073ed636142dfd0b324b747387d9cfbf9fb5e3e",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea5f"
+    },
+    {
+      "icon": "ChevronRight",
+      "style": "outline",
+      "name": "chevron-right",
+      "file": "outline/chevron-right.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/chevron-right.svg",
+      "sha256": "83733bb6e03e1d20fd2674d06a493642c8ea6eef76c44ebb2239b9ef17dedff7",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea61"
+    },
+    {
+      "icon": "ChevronLeft",
+      "style": "outline",
+      "name": "chevron-left",
+      "file": "outline/chevron-left.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/chevron-left.svg",
+      "sha256": "889174801ca4213379fe4e6a574546793a72ab22be35bc2f177e3d8d24576dbd",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea60"
+    },
+    {
+      "icon": "Search",
+      "style": "outline",
+      "name": "search",
+      "file": "outline/search.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/search.svg",
+      "sha256": "3dd53b9606283dfa0adcb0b10a7d9a4432369d4bebcfacf67f80fbe358381c34",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb1c"
+    },
+    {
+      "icon": "Folder",
+      "style": "outline",
+      "name": "folder",
+      "file": "outline/folder.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/folder.svg",
+      "sha256": "acdf398775addb8104673e5a8ef29d01d40184c6a5b3c62a93f10309cf9ef253",
+      "upstream_icon_version": "1.0",
+      "unicode": "eaad"
+    },
+    {
+      "icon": "FolderPlus",
+      "style": "outline",
+      "name": "folder-plus",
+      "file": "outline/folder-plus.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/folder-plus.svg",
+      "sha256": "29cca183967b0384a48ada6638c72bc0258086b76e3ae497f12d402b2c7b36d5",
+      "upstream_icon_version": "1.0",
+      "unicode": "eaab"
+    },
+    {
+      "icon": "Import",
+      "style": "outline",
+      "name": "download",
+      "file": "outline/download.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/download.svg",
+      "sha256": "c13f6f9cf87deee99e331622169efd59cd764b376994540347e50d6bb5e2e0ef",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea96",
+      "meaning": "Media arriving into the app: down arrow entering a tray."
+    },
+    {
+      "icon": "Save",
+      "style": "outline",
+      "name": "device-floppy",
+      "file": "outline/device-floppy.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/device-floppy.svg",
+      "sha256": "332fb64778e96e0de3ef6a4262baa8bf2c1983d478bb14d284c4a2450f9e0130",
+      "upstream_icon_version": "1.2",
+      "unicode": "eb62"
+    },
+    {
+      "icon": "Film",
+      "style": "outline",
+      "name": "movie",
+      "file": "outline/movie.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/movie.svg",
+      "sha256": "c060349bd89cf44c1542de982d06c61f81240868a336eb5ce670d048f564554f",
+      "upstream_icon_version": "1.0",
+      "unicode": "eafa"
+    },
+    {
+      "icon": "Image",
+      "style": "outline",
+      "name": "photo",
+      "file": "outline/photo.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/photo.svg",
+      "sha256": "67d9b3ec02867e98ad17739380919a2d82287d15d3463161f450e17047ed319b",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb0a"
+    },
+    {
+      "icon": "Music",
+      "style": "outline",
+      "name": "wave-sine",
+      "file": "outline/wave-sine.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/wave-sine.svg",
+      "sha256": "6ba787e7fdaa706e91a800e753f69b735261fcd017f90fbf1b8cbcc82de1ec48",
+      "upstream_icon_version": "1.19",
+      "unicode": "ecd4",
+      "meaning": "Audio clip: the wave-sine icon retains a waveform metaphor rather than a musical-note category."
+    },
+    {
+      "icon": "Text",
+      "style": "outline",
+      "name": "typography",
+      "file": "outline/typography.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/typography.svg",
+      "sha256": "dbd02a0c7c4794f692ee17139b9c1b9672a9bf873bcf28d14caa5f2a3dbab896",
+      "upstream_icon_version": "1.5",
+      "unicode": "ebc5"
+    },
+    {
+      "icon": "Layers",
+      "style": "outline",
+      "name": "stack-2",
+      "file": "outline/stack-2.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/stack-2.svg",
+      "sha256": "fbe45033ef093505d88dd56cc421290aebc51a5e9dd6c49b68bda588f4d952d9",
+      "upstream_icon_version": "1.39",
+      "unicode": "eef7"
+    },
+    {
+      "icon": "Magnet",
+      "style": "outline",
+      "name": "magnet",
+      "file": "outline/magnet.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/magnet.svg",
+      "sha256": "6ff886aee9b391868d78db5b979354fcdfc27afbf82fe54f92e760ee7c3f2f7a",
+      "upstream_icon_version": "1.0",
+      "unicode": "eae3"
+    },
+    {
+      "icon": "Flag",
+      "style": "outline",
+      "name": "flag",
+      "file": "outline/flag.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/flag.svg",
+      "sha256": "91c224b828fd0716ef8617633a714ef6764a16618fe222becbcf0a4b83b35b9e",
+      "upstream_icon_version": "1.0",
+      "unicode": "eaa6"
+    },
+    {
+      "icon": "ZoomIn",
+      "style": "outline",
+      "name": "zoom-in",
+      "file": "outline/zoom-in.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/zoom-in.svg",
+      "sha256": "b361e358c8d0035b2b822b2b497f83b60a00c31a6300b502838292c706070c4e",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb56"
+    },
+    {
+      "icon": "ZoomOut",
+      "style": "outline",
+      "name": "zoom-out",
+      "file": "outline/zoom-out.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/zoom-out.svg",
+      "sha256": "ada8ed3ab671ad3161e032a0f2f0e8c57b75632cc7c03d0fef270b44c81baeed",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb57"
+    },
+    {
+      "icon": "Fit",
+      "style": "outline",
+      "name": "maximize",
+      "file": "outline/maximize.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/maximize.svg",
+      "sha256": "30569ec638ceb190575521f2246fee32e50ff8d26bf1f71b0ac46964cc26a039",
+      "upstream_icon_version": "1.0",
+      "unicode": "eaea"
+    },
+    {
+      "icon": "Eye",
+      "style": "outline",
+      "name": "eye",
+      "file": "outline/eye.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/eye.svg",
+      "sha256": "45bdbd35bb18e9997a86dad8db6eb90931d1d53884484baf2c65e34d6f6e4f93",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea9a"
+    },
+    {
+      "icon": "EyeOff",
+      "style": "outline",
+      "name": "eye-off",
+      "file": "outline/eye-off.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/eye-off.svg",
+      "sha256": "7fd56939026b76c23b64597bab2ad0b6aab824eef4e0edd772626126b8b20433",
+      "upstream_icon_version": "1.22",
+      "unicode": "ecf0"
+    },
+    {
+      "icon": "Lock",
+      "style": "outline",
+      "name": "lock",
+      "file": "outline/lock.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/lock.svg",
+      "sha256": "407856048124fdd63239f75a3640ca8f20a9acbc1f49cac9de0bcdb1cb42ec5f",
+      "upstream_icon_version": "1.0",
+      "unicode": "eae2"
+    },
+    {
+      "icon": "Unlock",
+      "style": "outline",
+      "name": "lock-open",
+      "file": "outline/lock-open.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/lock-open.svg",
+      "sha256": "f1b1ef8aa7cdaad103e0062298ba5bf26c698b9f8a5c142cddeff19ab20b271c",
+      "upstream_icon_version": "1.0",
+      "unicode": "eae1"
+    },
+    {
+      "icon": "Volume",
+      "style": "outline",
+      "name": "volume",
+      "file": "outline/volume.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/volume.svg",
+      "sha256": "1c2d4ffadf15616b7d27fcc66d28df9d5a43f34537ffc4da35c9d4c84c406450",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb51"
+    },
+    {
+      "icon": "VolumeOff",
+      "style": "outline",
+      "name": "volume-off",
+      "file": "outline/volume-off.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/volume-off.svg",
+      "sha256": "2cb9e81af317a9884c5fdc059f55dba2ec67a55b471a5448fe5a381eefc02156",
+      "upstream_icon_version": "1.67",
+      "unicode": "f1c3"
+    },
+    {
+      "icon": "Sparkles",
+      "style": "outline",
+      "name": "sparkles",
+      "file": "outline/sparkles.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/sparkles.svg",
+      "sha256": "fb229226d919ddddc8c09d3269b748f437b5f0dd46072209cb8f3046e84b38fe",
+      "upstream_icon_version": "2.1",
+      "unicode": "f6d7"
+    },
+    {
+      "icon": "ArrowUp",
+      "style": "outline",
+      "name": "arrow-up",
+      "file": "outline/arrow-up.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/arrow-up.svg",
+      "sha256": "c0a58436629c59996826b7980b0cbdfff51bfa289eefb2cceee494a964c5105e",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea25"
+    },
+    {
+      "icon": "ArrowDown",
+      "style": "outline",
+      "name": "arrow-down",
+      "file": "outline/arrow-down.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/arrow-down.svg",
+      "sha256": "34efc2d5737ffa3f29f8056e6d861ea8218d8f40858539a959a9482811f6bd05",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea16"
+    },
+    {
+      "icon": "Settings",
+      "style": "outline",
+      "name": "settings",
+      "file": "outline/settings.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/settings.svg",
+      "sha256": "ef9cf42d822c00b4fad5bc5eeceddd4e1ec3774bb7ddd09891d0fba274bc3e95",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb20"
+    },
+    {
+      "icon": "Sidebar",
+      "style": "outline",
+      "name": "layout-sidebar",
+      "file": "outline/layout-sidebar.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/layout-sidebar.svg",
+      "sha256": "52ada36bb39b40e45be8f14750af4b4881df326fa9ff796b622dd494de412074",
+      "upstream_icon_version": "1.0",
+      "unicode": "eada"
+    },
+    {
+      "icon": "PanelRight",
+      "style": "outline",
+      "name": "layout-sidebar-right",
+      "file": "outline/layout-sidebar-right.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/layout-sidebar-right.svg",
+      "sha256": "fd2aa6ae63ca7d64f37d69053cbb9e2b39b2735d005767d6ece5a749b4167fdb",
+      "upstream_icon_version": "1.0",
+      "unicode": "ead9"
+    },
+    {
+      "icon": "Grid",
+      "style": "outline",
+      "name": "layout-grid",
+      "file": "outline/layout-grid.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/layout-grid.svg",
+      "sha256": "91f923bcca6e9201ccedd2a10bb5d5a7eb3dbb5fa5a26af394d362f35c935237",
+      "upstream_icon_version": "1.0",
+      "unicode": "edba"
+    },
+    {
+      "icon": "List",
+      "style": "outline",
+      "name": "list",
+      "file": "outline/list.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/list.svg",
+      "sha256": "79565264d22054914ebbe856931325cb5118fabd6fc75409628d7f4bd2f623a0",
+      "upstream_icon_version": "1.2",
+      "unicode": "eb6b"
+    },
+    {
+      "icon": "Warning",
+      "style": "outline",
+      "name": "alert-triangle",
+      "file": "outline/alert-triangle.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/alert-triangle.svg",
+      "sha256": "25b1f0c39f34647017df84a0cdc9e691c697737094a5956c360ab448a7fd5bef",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea06"
+    },
+    {
+      "icon": "Link",
+      "style": "outline",
+      "name": "link",
+      "file": "outline/link.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/link.svg",
+      "sha256": "27e34930284da308ed31c4ddc9c14fc333db08be5b6c42bcbf99f77ec5bad626",
+      "upstream_icon_version": "1.0",
+      "unicode": "eade"
+    },
+    {
+      "icon": "Rotate",
+      "style": "outline",
+      "name": "rotate-clockwise",
+      "file": "outline/rotate-clockwise.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/rotate-clockwise.svg",
+      "sha256": "df4126db6c4a8ef7fc713b2497e21d3b8c70bac9a9fb45db1f58e5dd486f467d",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb15"
+    },
+    {
+      "icon": "FlipHorizontal",
+      "style": "outline",
+      "name": "flip-horizontal",
+      "file": "outline/flip-horizontal.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/flip-horizontal.svg",
+      "sha256": "c6198c8f73b56df2665950edc8300da66921a5b43ecd616d41e9bc326f7cff60",
+      "upstream_icon_version": "1.0",
+      "unicode": "eaa7"
+    },
+    {
+      "icon": "FlipVertical",
+      "style": "outline",
+      "name": "flip-vertical",
+      "file": "outline/flip-vertical.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/flip-vertical.svg",
+      "sha256": "c493a000a2618c98acae4642a7e929cb1381ba6d44c817657fa7d28aaab7c7a9",
+      "upstream_icon_version": "1.0",
+      "unicode": "eaa8"
+    },
+    {
+      "icon": "Pointer",
+      "style": "outline",
+      "name": "pointer",
+      "file": "outline/pointer.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/pointer.svg",
+      "sha256": "811735d187eaf6c8a7b7f06053140b8284cf4b1b2ea7ba1c8f340f1fbafbac24",
+      "upstream_icon_version": "1.76",
+      "unicode": "f265"
+    },
+    {
+      "icon": "File",
+      "style": "outline",
+      "name": "file",
+      "file": "outline/file.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/file.svg",
+      "sha256": "c3995cdcfc6b74ff439efd5a8817c14ac4f821ae4435c0d2e6c021e3f39a6808",
+      "upstream_icon_version": "1.0",
+      "unicode": "eaa4"
+    },
+    {
+      "icon": "History",
+      "style": "outline",
+      "name": "history",
+      "file": "outline/history.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/history.svg",
+      "sha256": "5f8a5a975a8136a4755380c18db1fe533acf7dc4e34250ceae0272c5d2cb7312",
+      "upstream_icon_version": "1.7",
+      "unicode": "ebea"
+    },
+    {
+      "icon": "Sort",
+      "style": "outline",
+      "name": "arrows-up-down",
+      "file": "outline/arrows-up-down.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/arrows-up-down.svg",
+      "sha256": "0fe5d572d27c487eeeab0e8e00421c820098bc6b25654de570509b9b3035d0f0",
+      "upstream_icon_version": "1.35",
+      "unicode": "edb6"
+    },
+    {
+      "icon": "Stop",
+      "style": "filled",
+      "name": "player-stop",
+      "file": "filled/player-stop.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/filled/player-stop.svg",
+      "sha256": "9fdd02782b295185b89cfc1514fb149eb1f633c8d1bcd9bb4035c3dd559cdbac",
+      "upstream_icon_version": "2.0",
+      "unicode": "f695"
+    },
+    {
+      "icon": "Cube",
+      "style": "outline",
+      "name": "cube",
+      "file": "outline/cube.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/cube.svg",
+      "sha256": "c4a7861461d49cd1d60538f68f206b884580d9de32fc68fac6f1b7e23994781f",
+      "upstream_icon_version": "2.20",
+      "unicode": "fa97"
+    },
+    {
+      "icon": "Pipette",
+      "style": "outline",
+      "name": "color-picker",
+      "file": "outline/color-picker.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/color-picker.svg",
+      "sha256": "0d6c5fcd1a27bff803d73b439c9badaca2265ce0a87311686c970d50d7929f27",
+      "upstream_icon_version": "1.7",
+      "unicode": "ebe6"
+    },
+    {
+      "icon": "Diamond",
+      "style": "outline",
+      "name": "keyframe",
+      "file": "outline/keyframe.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/keyframe.svg",
+      "sha256": "23888dccf7a5cd00ecba01d9e6490e70a248d417dc435462a7136188b8b99213",
+      "upstream_icon_version": "1.107",
+      "unicode": "f576",
+      "meaning": "Animation keyframe: official rounded keyframe diamond."
+    },
+    {
+      "icon": "Curve",
+      "style": "outline",
+      "name": "ease-in-out-control-points",
+      "file": "outline/ease-in-out-control-points.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/ease-in-out-control-points.svg",
+      "sha256": "2456a82b1e4c41f74ce85ef7918523b866e4327f5ede690698a3761ed65eec92",
+      "upstream_icon_version": "1.107",
+      "unicode": "f571",
+      "meaning": "Graph editor: official eased curve with its control points."
+    },
+    {
+      "icon": "FitValues",
+      "style": "outline",
+      "name": "viewport-tall",
+      "file": "outline/viewport-tall.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/viewport-tall.svg",
+      "sha256": "3545159f5a38953e4b79192c785ff2f51cff6cfdd8c98473fd2d9df579fca1b6",
+      "upstream_icon_version": "3.5",
+      "unicode": "fee8",
+      "meaning": "Fit the graph value axis: vertical viewport resize glyph."
+    },
+    {
+      "icon": "Transition",
+      "style": "outline",
+      "name": "transition-right",
+      "file": "outline/transition-right.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/transition-right.svg",
+      "sha256": "316861ae50a70e1551c561d14b6b2a8d0ae10e18e9f048cde8d518bff267c702",
+      "upstream_icon_version": "1.80",
+      "unicode": "f2b4",
+      "meaning": "Clip transition: official animation transition glyph."
+    },
+    {
+      "icon": "Captions",
+      "style": "outline",
+      "name": "subtitles",
+      "file": "outline/subtitles.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/subtitles.svg",
+      "sha256": "06ed290d22b6d464e055f41b7be7196029984b8d20644912c444d3da3f000e56",
+      "upstream_icon_version": "3.36",
+      "unicode": "101a1"
+    },
+    {
+      "icon": "Export",
+      "style": "outline",
+      "name": "upload",
+      "file": "outline/upload.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/upload.svg",
+      "sha256": "8e6f247503da3f943a6751c2859c63cac81d8f2f6b66cf3baac6beb57a33ca01",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb47",
+      "meaning": "Rendered media leaving the app: up arrow leaving a tray."
+    },
+    {
+      "icon": "Speech",
+      "style": "outline",
+      "name": "microphone",
+      "file": "outline/microphone.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/microphone.svg",
+      "sha256": "21aacc5c6cc7b28b03a179053a7aaf69eb6d23d333ab4b40504f2873fb07a5f8",
+      "upstream_icon_version": "1.0",
+      "unicode": "eaf0"
+    },
+    {
+      "icon": "Minus",
+      "style": "outline",
+      "name": "minus",
+      "file": "outline/minus.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/minus.svg",
+      "sha256": "a6556d9c556316b946c28af277be016b4d56ad8618dc2a731ce455100438c0ea",
+      "upstream_icon_version": "1.0",
+      "unicode": "eaf2"
+    },
+    {
+      "icon": "ArrowRight",
+      "style": "outline",
+      "name": "arrow-right",
+      "file": "outline/arrow-right.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/arrow-right.svg",
+      "sha256": "7e602a26d53e78ceb788f38cb89ec1d1091130c56d7829ca294b7ed0642277c6",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea1f"
+    },
+    {
+      "icon": "DiamondFilled",
+      "style": "filled",
+      "name": "keyframe",
+      "file": "filled/keyframe.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/filled/keyframe.svg",
+      "sha256": "8c06e1ae19f7fd776c271f41c639b2273a9da5692973a4fc74a738448355bbd1",
+      "upstream_icon_version": "2.30",
+      "unicode": "fc33",
+      "meaning": "Keyframe at the current playhead: official filled keyframe diamond."
+    },
+    {
+      "icon": "Solo",
+      "style": "outline",
+      "name": "letter-s",
+      "file": "outline/letter-s.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/letter-s.svg",
+      "sha256": "d45194c8e72b2919a815316254e1bfa140dedddc77400d2fd2af1d8111973c15",
+      "upstream_icon_version": "1.12",
+      "unicode": "ec62",
+      "meaning": "Solo track: an official letter-S glyph retains the established S control."
+    },
+    {
+      "icon": "LayoutFill",
+      "style": "outline",
+      "name": "aspect-ratio",
+      "file": "outline/aspect-ratio.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/aspect-ratio.svg",
+      "sha256": "9b05028beb4719d9df2116f5fb177f548579b325a35499c37ae5e8e3d609065c",
+      "upstream_icon_version": "1.27",
+      "unicode": "ed30",
+      "meaning": "Fill the canvas: framed aspect-ratio glyph."
+    },
+    {
+      "icon": "LayoutTopLeft",
+      "style": "outline",
+      "name": "align-box-top-left",
+      "file": "outline/align-box-top-left.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/align-box-top-left.svg",
+      "sha256": "4514189d6c61f7195312cf25ef8e3c4dffcc1640141956bd294a5685bd387483",
+      "upstream_icon_version": "1.104",
+      "unicode": "f53a",
+      "meaning": "Picture-in-picture inset at the top-left corner."
+    },
+    {
+      "icon": "LayoutTopRight",
+      "style": "outline",
+      "name": "align-box-top-right",
+      "file": "outline/align-box-top-right.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/align-box-top-right.svg",
+      "sha256": "d2e30e03e0c1c822749a52b9f46d2102305a7584263dd0807120aa0eb56b681a",
+      "upstream_icon_version": "1.104",
+      "unicode": "f53b",
+      "meaning": "Picture-in-picture inset at the top-right corner."
+    },
+    {
+      "icon": "LayoutBottomLeft",
+      "style": "outline",
+      "name": "align-box-bottom-left",
+      "file": "outline/align-box-bottom-left.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/align-box-bottom-left.svg",
+      "sha256": "de0e242e4476cf0ea59f899e16ae5f61c2072ad7517dd1edb28d68697085f58f",
+      "upstream_icon_version": "1.104",
+      "unicode": "f531",
+      "meaning": "Picture-in-picture inset at the bottom-left corner."
+    },
+    {
+      "icon": "LayoutBottomRight",
+      "style": "outline",
+      "name": "align-box-bottom-right",
+      "file": "outline/align-box-bottom-right.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/align-box-bottom-right.svg",
+      "sha256": "5668b8c27f849df896d82e6fc46cfeb820ef863ebaf17c51fb7b319be968af07",
+      "upstream_icon_version": "1.104",
+      "unicode": "f532",
+      "meaning": "Picture-in-picture inset at the bottom-right corner."
+    },
+    {
+      "icon": "LayoutLeft",
+      "style": "outline",
+      "name": "align-box-left-stretch",
+      "file": "outline/align-box-left-stretch.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/align-box-left-stretch.svg",
+      "sha256": "f77db8298d694edd5df7f716632319f5d051624ead6473fd43fecbdd351fc43d",
+      "upstream_icon_version": "2.22",
+      "unicode": "face",
+      "meaning": "Picture-in-picture left half: left-aligned stretch glyph."
+    },
+    {
+      "icon": "LayoutRight",
+      "style": "outline",
+      "name": "align-box-right-stretch",
+      "file": "outline/align-box-right-stretch.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/align-box-right-stretch.svg",
+      "sha256": "c6b905f7287f0a3f46e21fa49c32240ae4e67b9e12cd8705d523bdf55f94a4d2",
+      "upstream_icon_version": "2.22",
+      "unicode": "facf",
+      "meaning": "Picture-in-picture right half: right-aligned stretch glyph."
+    }
+  ]
+}

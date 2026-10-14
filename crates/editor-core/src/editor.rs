@@ -563,9 +563,19 @@ fn crop_local(clip: &mut Clip, from: Time, to: Time) -> Result<(), EditError> {
         clip.source_in = clip.source_in + shift;
         clip.retime = Some(map);
     }
+    // A title keeps every word: one cut off is held at the edge it crossed.
+    if let ClipContent::Text { words, .. } = &mut clip.content {
+        let length = to - from;
+        for word in words {
+            word.at = (word.at - from).clamp(Time::ZERO, length);
+            word.end = (word.end - from).clamp(word.at, length);
+        }
+    }
     Ok(())
 }
 // A transition never outlasts its clip; one shorter than a frame is dropped.
+// A title's or a graphic's animations are held inside the clip too, at a
+// frame or more, and its word times inside the clip.
 fn fit_transitions(clip: &mut Clip, frame: Time) {
     let duration = clip.duration;
     for slot in [&mut clip.transition_in, &mut clip.transition_out] {
@@ -575,6 +585,37 @@ fn fit_transitions(clip: &mut Clip, frame: Time) {
                 *slot = None;
             }
         }
+    }
+    match &mut clip.content {
+        ClipContent::Text {
+            enter, exit, words, ..
+        } => {
+            (*enter, *exit) = title::fit_animations(*enter, *exit, frame, duration);
+            for word in words {
+                word.at = word.at.clamp(Time::ZERO, duration);
+                word.end = word.end.clamp(word.at, duration);
+            }
+        }
+        ClipContent::Graphic { elements, .. } => {
+            for element in elements {
+                (element.enter, element.exit) =
+                    title::fit_animations(element.enter, element.exit, frame, duration);
+            }
+        }
+        ClipContent::Media { .. } => {}
+    }
+}
+// Whether a title's or graphic's animation is shorter than `frame`.
+fn short_animation(clip: &Clip, frame: Time) -> bool {
+    let short = |animation: &Option<TextAnimation>| {
+        animation.is_some_and(|animation| animation.duration < frame)
+    };
+    match &clip.content {
+        ClipContent::Text { enter, exit, .. } => short(enter) || short(exit),
+        ClipContent::Graphic { elements, .. } => elements
+            .iter()
+            .any(|element| short(&element.enter) || short(&element.exit)),
+        ClipContent::Media { .. } => false,
     }
 }
 // A fade never outlasts its clip: each is cut to the clip, then the fade out
@@ -593,11 +634,39 @@ fn lengthen_transitions(clip: &mut Clip, frame: Time) {
     }
     fit_transitions(clip, frame);
 }
-// Stretches animation key times after the clip's duration changed from `old`.
+// Stretches animation key times after the clip's duration changed from `old`,
+// and a title's word times and text animations with them.
 fn rescale_local(clip: &mut Clip, old: Time, frame: Time) {
     let duration = clip.duration;
     for track in &mut clip.animation {
         track.rescale(old, duration);
+    }
+    if old > Time::ZERO && old != duration {
+        let factor = duration.0 as f64 / old.0 as f64;
+        let stretch = |time: Time| Time(scale(time.0, duration.0, old.0));
+        match &mut clip.content {
+            ClipContent::Text {
+                enter, exit, words, ..
+            } => {
+                for word in words {
+                    (word.at, word.end) = (stretch(word.at), stretch(word.end));
+                }
+                for animation in [enter, exit].into_iter().flatten() {
+                    *animation = animation.scaled(factor, frame);
+                }
+            }
+            ClipContent::Graphic { elements, .. } => {
+                for element in elements {
+                    for animation in [&mut element.enter, &mut element.exit]
+                        .into_iter()
+                        .flatten()
+                    {
+                        *animation = animation.scaled(factor, frame);
+                    }
+                }
+            }
+            ClipContent::Media { .. } => {}
+        }
     }
     fit_transitions(clip, frame);
 }
@@ -987,6 +1056,13 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
                 if right.retime.is_none() {
                     right.source_in = clip.source_time(at);
                 }
+                // A timed title gives the words said before the cut, and
+                // their text, to the left and the rest to the right.
+                let parted = parted_words(&clip.content, local);
+                if let Some((_, half)) = &parted {
+                    half.give(&mut right);
+                }
+                split_animations(&mut right.content, false);
                 crop_local(&mut right, local, total)?;
                 right.start = at;
                 right.duration = clip.end() - at;
@@ -1000,6 +1076,10 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
                     right.linked_id = Some(new_link);
                 }
                 let left = clip_mut(project, *id)?;
+                if let Some((half, _)) = &parted {
+                    half.give(left);
+                }
+                split_animations(&mut left.content, true);
                 crop_local(left, Time::ZERO, local)?;
                 left.duration = local;
                 left.transition_out = None;
@@ -1054,15 +1134,108 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
             color,
         } => {
             let clip = clip_mut(project, clip_id)?;
-            if !matches!(clip.content, ClipContent::Text { .. }) {
+            let duration = clip.duration;
+            let ClipContent::Text {
+                text: stored,
+                font_size: stored_size,
+                color: stored_color,
+                words,
+                ..
+            } = &mut clip.content
+            else {
                 return Err(EditError::Invalid("clip is not text".into()));
-            }
-            clip.name = text.clone();
-            clip.content = ClipContent::Text {
-                text,
-                font_size,
-                color,
             };
+            *words = title::realign(stored, words, &text, duration);
+            *stored = text.clone();
+            *stored_size = font_size;
+            *stored_color = color;
+            clip.name = text;
+        }
+        Command::SetTextStyle { clip_id, style } => {
+            let clip = clip_mut(project, clip_id)?;
+            match &mut clip.content {
+                ClipContent::Text { style: stored, .. } => *stored = style,
+                _ => return Err(EditError::Invalid("clip is not text".into())),
+            }
+        }
+        Command::SetTextAnimation {
+            clip_id,
+            edge,
+            animation,
+        } => {
+            let clip = clip_mut(project, clip_id)?;
+            let ClipContent::Text { enter, exit, .. } = &mut clip.content else {
+                return Err(EditError::Invalid("clip is not text".into()));
+            };
+            match edge {
+                TransitionEdge::In => *enter = animation,
+                TransitionEdge::Out => *exit = animation,
+            }
+        }
+        Command::SetWords { clip_id, words } => {
+            let clip = clip_mut(project, clip_id)?;
+            match &mut clip.content {
+                ClipContent::Text { words: stored, .. } => *stored = words,
+                _ => return Err(EditError::Invalid("clip is not text".into())),
+            }
+        }
+        Command::SetGraphic {
+            clip_id,
+            size,
+            elements,
+        } => {
+            let clip = clip_mut(project, clip_id)?;
+            if !matches!(clip.content, ClipContent::Graphic { .. }) {
+                return Err(EditError::Invalid("clip is not a graphic".into()));
+            }
+            clip.content = ClipContent::Graphic { size, elements };
+        }
+        Command::SetTrackLanguage { track_id, language } => {
+            track_mut(project, track_id, false)?.language = language;
+        }
+        Command::CopyCaptions {
+            from_track_id,
+            track_id,
+            name,
+            language,
+            texts,
+        } => {
+            let index = project
+                .tracks
+                .iter()
+                .position(|track| track.id == from_track_id)
+                .ok_or(EditError::Missing(from_track_id))?;
+            let source = &project.tracks[index];
+            if source.kind != TrackKind::Text || texts.len() != source.clips.len() {
+                return Err(EditError::Invalid(
+                    "captions need one text for each title of the track".into(),
+                ));
+            }
+            let mut track = Track::new(name, TrackKind::Text);
+            track.id = track_id;
+            track.language = Some(language);
+            for (clip, text) in source.clips.iter().zip(texts) {
+                let ClipContent::Text { words, .. } = &clip.content else {
+                    return Err(EditError::Invalid(
+                        "captions need a track of titles only".into(),
+                    ));
+                };
+                let timed = (words.first().zip(words.last()))
+                    .map(|(first, last)| title::spread(&text, first.at, last.end));
+                let mut copy = clip.clone();
+                copy.id = Uuid::new_v4();
+                copy.linked_id = None;
+                copy.group_id = None;
+                TitleHalf {
+                    text,
+                    words: timed.unwrap_or_default(),
+                }
+                .give(&mut copy);
+                track.clips.push(copy);
+            }
+            // One language shows at a time: the copy takes the source's place.
+            Arc::make_mut(&mut project.tracks[index]).hidden = true;
+            project.tracks.insert(index + 1, Arc::new(track));
         }
         Command::LinkClips { clip_ids } => {
             set_relationship(project, &clip_ids, true, Some(Uuid::new_v4()))?
@@ -1142,7 +1315,7 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
                     .unwrap_or_else(|| Retime::constant(old, clip.playback_rate));
                 clip.duration = fit(duration);
                 // A linked title cannot carry a map; it only changes length.
-                let plain = id != clip_id && matches!(clip.content, ClipContent::Text { .. });
+                let plain = id != clip_id && clip.content.is_generated();
                 clip.retime = retime.clone().filter(|_| !plain);
                 if let Some(map) = &mut clip.retime {
                     // The map arrives in the clip's own rate; bake it into the sources.
@@ -1191,7 +1364,7 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
             }
             for id in clip_ids.into_iter().collect::<BTreeSet<_>>() {
                 let clip = clip_mut(project, id)?;
-                if matches!(clip.content, ClipContent::Text { .. }) {
+                if clip.content.is_generated() {
                     return Err(EditError::Invalid("text clip look".into()));
                 }
                 // One look to a clip: it takes the place of the one held.
@@ -1235,6 +1408,7 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
                     .into_iter()
                     .flatten()
                     .any(|transition| transition.duration < frame)
+                    || short_animation(clip, frame)
             };
             // A lower frame rate must not strand a transition under one frame.
             for track in project.tracks.iter_mut().filter(|_| valid) {
@@ -1255,6 +1429,66 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
         }
     }
     Ok(())
+}
+// A title's text and word times, given to a clip of a split or a copy.
+struct TitleHalf {
+    text: String,
+    words: Vec<WordTime>,
+}
+impl TitleHalf {
+    fn give(&self, clip: &mut Clip) {
+        if let ClipContent::Text { text, words, .. } = &mut clip.content {
+            text.clone_from(&self.text);
+            words.clone_from(&self.words);
+            clip.name.clone_from(&self.text);
+        }
+    }
+}
+// A timed title parted at clip time `local`: the words said before it, with
+// their text, and the rest. `None` for anything else, or when every word
+// falls to one side, so both halves keep all of it.
+fn parted_words(content: &ClipContent, local: Time) -> Option<(TitleHalf, TitleHalf)> {
+    let ClipContent::Text { text, words, .. } = content else {
+        return None;
+    };
+    let before = words.partition_point(|word| word.at < local);
+    if before == 0 || before == words.len() {
+        return None;
+    }
+    let cut = title::word_ranges(text).get(before)?.start;
+    Some((
+        TitleHalf {
+            text: text[..cut].trim_end().to_owned(),
+            words: words[..before].to_vec(),
+        },
+        TitleHalf {
+            text: text[cut..].trim_start().to_owned(),
+            words: words[before..].to_vec(),
+        },
+    ))
+}
+// What each half of a split keeps of a title's or graphic's animations: the
+// left half its entrances, the right half its exits.
+fn split_animations(content: &mut ClipContent, left: bool) {
+    match content {
+        ClipContent::Text { enter, exit, .. } => {
+            if left {
+                *exit = None;
+            } else {
+                *enter = None;
+            }
+        }
+        ClipContent::Graphic { elements, .. } => {
+            for element in elements {
+                if left {
+                    element.exit = None;
+                } else {
+                    element.enter = None;
+                }
+            }
+        }
+        ClipContent::Media { .. } => {}
+    }
 }
 fn set_relationship(
     project: &mut Project,

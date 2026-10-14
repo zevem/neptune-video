@@ -94,18 +94,57 @@ pub enum Command {
         clip_id: ClipId,
         gain: f32,
     },
-    /// Both fades of one clip, as timeline lengths from its edges. Linked
-    /// clips keep their own.
+    // Both fades of one clip, as timeline lengths from its edges; linked clips
+    // keep their own. A plain comment: the planner text describes fades.
     SetFades {
         clip_id: ClipId,
         fade_in: Time,
         fade_out: Time,
     },
+    /// Set a title's text, size and colour. Its style and animations stay;
+    /// word times follow the words the old and new text share.
     SetText {
         clip_id: ClipId,
         text: String,
         font_size: f32,
         color: [u8; 4],
+    },
+    SetTextStyle {
+        clip_id: ClipId,
+        style: TextStyle,
+    },
+    /// Set or remove a title's entrance (`in`) or exit (`out`).
+    SetTextAnimation {
+        clip_id: ClipId,
+        edge: TransitionEdge,
+        animation: Option<TextAnimation>,
+    },
+    /// Replace a title's word times: one per word of its text, or none.
+    SetWords {
+        clip_id: ClipId,
+        words: Vec<WordTime>,
+    },
+    /// Replace a graphic's design box and elements.
+    SetGraphic {
+        clip_id: ClipId,
+        size: [f32; 2],
+        elements: Vec<Element>,
+    },
+    /// Make a text track a caption track in `language`, or a plain text
+    /// track with `null`.
+    SetTrackLanguage {
+        track_id: TrackId,
+        language: Option<String>,
+    },
+    /// A new caption track `track_id` directly above `from_track_id`, its
+    /// titles copied in order with `texts` in place of theirs: a
+    /// translation. The source track is hidden.
+    CopyCaptions {
+        from_track_id: TrackId,
+        track_id: TrackId,
+        name: String,
+        language: String,
+        texts: Vec<String>,
     },
     LinkClips {
         clip_ids: Vec<ClipId>,
@@ -211,6 +250,15 @@ impl Command {
             Self::SetGain { .. } => "Change clip volume",
             Self::SetFades { .. } => "Change fades",
             Self::SetText { .. } => "Edit text",
+            Self::SetTextStyle { .. } => "Style text",
+            Self::SetTextAnimation {
+                animation: None, ..
+            } => "Remove text animation",
+            Self::SetTextAnimation { .. } => "Animate text",
+            Self::SetWords { .. } => "Time words",
+            Self::SetGraphic { .. } => "Edit graphic",
+            Self::SetTrackLanguage { .. } => "Set caption language",
+            Self::CopyCaptions { .. } => "Translate captions",
             Self::LinkClips { .. } => "Link clips",
             Self::UnlinkClips { .. } => "Unlink clips",
             Self::GroupClips { .. } => "Group clips",

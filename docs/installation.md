@@ -15,6 +15,8 @@ contains the verified native binaries and a launcher. Extract it into a director
 you own and run `AppRun` from that directory. The launcher preserves project/media
 arguments and the current working directory, and supports spaces, Unicode and
 symlinks in the bundle path. It performs no installation, downloads or updates.
+It was built before titles, captions and speech recognition were added, so it
+has none of them; build from source for those.
 
 FFmpeg and ffprobe must be installed on normal `PATH`, or selected with
 `ASTER_FFMPEG` and `ASTER_FFPROBE`. Native graphics/audio libraries and desktop
@@ -45,10 +47,15 @@ On Debian/Ubuntu, install the native window/audio development dependencies and
 the media tools:
 
 ```sh
-sudo apt-get install pkg-config libxkbcommon-dev libwayland-dev libasound2-dev ffmpeg
+sudo apt-get install pkg-config libxkbcommon-dev libwayland-dev libasound2-dev ffmpeg \
+  build-essential cmake libclang-dev
 cargo build --release --locked --bins
 ./target/release/aster
 ```
+
+`build-essential`, `cmake` and `libclang-dev` build the speech recognizer (see
+[speech recognition](#speech-recognition)); the first build compiles it from
+source and takes a few minutes longer.
 
 For this prepared Linux checkout, use `./scripts/run-local.sh` once the optimized
 binary exists. The script forwards project/media arguments, preserves explicit
@@ -65,14 +72,16 @@ real file-manager drops before declaring Linux release support.
 
 ## macOS and Windows
 
-On macOS, install Rust and Xcode command-line tools, then build with
+On macOS, install Rust, the Xcode command-line tools and CMake
+(`brew install cmake`), then build with
 `cargo build --release --locked --bins`. The executable is `target/release/aster`.
 FFmpeg/ffprobe must be available to the app's environment. Native Metal, audio,
 Retina/IME, Intel/Apple Silicon support policy and notarized packaging remain
 acceptance work.
 
-On Windows, use Rust's MSVC toolchain with Visual Studio C++ build tools and the
-Windows SDK, then run the same Cargo build. Executables are
+On Windows, use Rust's MSVC toolchain with Visual Studio C++ build tools, their
+CMake component, the Windows SDK and LLVM's libclang (set `LIBCLANG_PATH` to its
+`bin` directory if it is not found), then run the same Cargo build. Executables are
 `target/release/aster.exe` and `target/release/aster-agent.exe`. Make FFmpeg/ffprobe
 available to the launched app. Native GPU/audio, Unicode paths, DPI, file dialogs,
 clipboard and installer signing remain acceptance work.
@@ -156,6 +165,35 @@ there says its metadata is tagged MIT, which was not checked.
 Whether a given use of the weights is allowed is for the person who installs
 the tool to judge; Aster recommends Demucs as a tool to install, not its
 weights for any particular use.
+
+## Speech recognition
+
+Captions from speech use [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
+1.8.3, compiled into the binary through `whisper-rs` 0.16. Nothing else is
+installed to run it: no Python, PyTorch, ONNX Runtime or GPU runtime.
+
+- **Build**: CMake, a C and C++ compiler, and libclang for the generated
+  bindings. `.cargo/config.toml` builds whisper.cpp for a CPU family rather
+  than for the build machine: AVX2, FMA, F16C and BMI2 on x86-64 (processors
+  from 2013 onwards), NEON on 64-bit ARM. On an older x86-64 processor the
+  recognizer cannot run, and its static setup code may stop the binary from
+  starting; no such processor was tried. GPU back-ends are not enabled.
+- **Models**: none is bundled. The speech panel downloads the chosen model
+  once, on request, from the whisper.cpp model repository on Hugging Face, and
+  keeps it only when its size and SHA-256 sum match the built-in list. Sizes
+  run from 33 MB (Tiny) to 575 MB (Large v3 Turbo), with the 0.9 MB speech
+  detector. A computer without a network can use **Model file…** with any
+  whisper.cpp `.bin` model.
+- **Download tool**: the system's `curl`, which ships with current Linux
+  distributions, macOS and Windows 10 1803 and later; `ASTER_CURL` names
+  another executable. Without it the panel says so and a model file can still
+  be chosen by hand. Aster links no TLS library of its own.
+- **Translation** into languages other than English uses the native AI
+  provider (see [native AI editing](native-ai.md)); no translation model is
+  installed.
+
+Only the Linux build was compiled and run with speech recognition; the macOS
+and Windows builds, and `curl` on them, have not been tried.
 
 ## Launch options
 

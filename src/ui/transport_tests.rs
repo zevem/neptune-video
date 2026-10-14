@@ -389,12 +389,12 @@ fn play_reads_as_pause_while_playing_and_still_asks_to_toggle() {
     });
 }
 
-/// Where the record control's disc was painted, if it was: the one disc in
-/// the palette's red.
-fn record_disc(pane: &Pane, painted: &Painted) -> Option<Pos2> {
-    let mut found = (painted.discs.iter()).filter(|(_, _, fill)| *fill == pane.palette.red);
-    let first = found.next().map(|(centre, _, _)| *centre);
-    assert!(found.next().is_none(), "FIXTURE: more than one red disc");
+/// Where the record control's icon was painted, if it was: the one
+/// microphone (`Icon::Speech`, Tabler's `microphone` glyph) in the pane.
+fn record_disc(_pane: &Pane, painted: &Painted) -> Option<Pos2> {
+    let mut found = (painted.texts.iter()).filter(|(text, _)| text == "\u{eaf0}");
+    let first = found.next().map(|(_, rect)| rect.center());
+    assert!(found.next().is_none(), "FIXTURE: more than one microphone");
     first
 }
 

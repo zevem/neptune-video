@@ -11,18 +11,22 @@ mod duck;
 mod extract;
 mod file_drop;
 mod icons;
+mod languages;
 mod normalize;
 mod pacing;
 mod peaks;
+mod presets;
 mod record;
 mod rules;
 mod settings;
+mod speech;
 mod speed;
 mod steady;
 mod stems;
 mod textures;
 mod theme;
 mod timefmt;
+mod titles;
 mod ui;
 
 use app::{App, Launch};
@@ -104,22 +108,19 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(Launch, [f32; 2]), S
     Ok((launch, size))
 }
 
-fn main() -> std::process::ExitCode {
-    let (launch, size) = match parse(std::env::args().skip(1)) {
-        Ok(parsed) => parsed,
-        Err(problem) => {
-            eprintln!("aster: {problem}");
-            return std::process::ExitCode::from(2);
-        }
-    };
-
+/// The window draws its own titlebar and frame, so the system adds none.
+fn native_options(size: [f32; 2]) -> eframe::NativeOptions {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Aster")
             .with_app_id("aster")
             .with_inner_size(size)
-            .with_min_inner_size([720.0, 520.0])
-            .with_drag_and_drop(true),
+            .with_min_inner_size(settings::LEAST_WINDOW)
+            .with_drag_and_drop(true)
+            // Windows rounds and outlines the window itself; elsewhere the
+            // window paints its corners over a clear surface.
+            .with_transparent(!cfg!(target_os = "windows"))
+            .with_decorations(false),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
@@ -136,7 +137,19 @@ fn main() -> std::process::ExitCode {
             ..eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY
         },
     );
+    options
+}
 
+fn main() -> std::process::ExitCode {
+    let (launch, size) = match parse(std::env::args().skip(1)) {
+        Ok(parsed) => parsed,
+        Err(problem) => {
+            eprintln!("aster: {problem}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+
+    let options = native_options(size);
     let run = eframe::run_native(
         "Aster",
         options,
@@ -148,5 +161,20 @@ fn main() -> std::process::ExitCode {
             eprintln!("aster: the window could not be opened: {error}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::native_options;
+
+    #[test]
+    fn the_window_draws_its_own_frame_over_clear_corners() {
+        let options = native_options([1440.0, 900.0]);
+        assert_eq!(options.viewport.decorations, Some(false));
+        assert_eq!(
+            options.viewport.transparent,
+            Some(!cfg!(target_os = "windows"))
+        );
     }
 }

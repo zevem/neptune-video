@@ -21,6 +21,7 @@ use crate::{
     textures::{Textures, Viewing, Wanted},
     theme::{self, Palette, metrics},
     timefmt,
+    titles::Titles,
 };
 use editor_core::{
     AnimTarget, Asset, AssetId, Clip, ClipId, ClipOverride, EffectKind, FrameRate, Layer,
@@ -30,13 +31,11 @@ use editor_core::{
 // The tests below build their clips from it.
 #[cfg(test)]
 use editor_core::ClipContent;
-use editor_media::{MediaService, Sampling};
+use editor_media::{MediaService, Sampling, text::TitlePicture};
 use eframe::{
     egui::{
-        self, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Mesh, Pos2, Rect, Sense,
-        Shape, Stroke, StrokeKind, Ui, Vec2,
-        epaint::{RectShape, TextShape},
-        pos2, vec2,
+        self, Align2, Color32, CornerRadius, CursorIcon, Id, Mesh, Pos2, Rect, Sense, Shape,
+        Stroke, StrokeKind, Ui, Vec2, epaint::RectShape, pos2, vec2,
     },
     egui_wgpu::RenderState,
 };
@@ -112,6 +111,8 @@ pub struct ViewerState {
     pub steady: Steadies,
     /// How each steadied layer of the last frame read its picture.
     readings: Vec<ClipOverride>,
+    /// The pictures titles and graphics are drawn from.
+    pub titles: Titles,
 }
 
 impl ViewerState {
@@ -121,6 +122,11 @@ impl ViewerState {
             composer: Composer::new(state),
             ..Self::default()
         }
+    }
+
+    /// A viewer that draws its titles with `titles`.
+    pub fn with_titles(self, titles: Titles) -> Self {
+        Self { titles, ..self }
     }
 
     pub fn cancel(&mut self) -> bool {
@@ -184,6 +190,7 @@ impl ViewerState {
         self.composer.begin_frame();
         self.luts.begin_frame();
         self.steady.begin_frame();
+        self.titles.begin_frame();
         self.composited = false;
         // The plates are those of the frame drawn last: a frame the viewer
         // is not drawn in composites nothing that could be stale.
@@ -641,6 +648,7 @@ pub fn show(
 
     // ---- Layers, bottom track first ---------------------------------------
     let layer_painter = painter.with_clip_rect(canvas.intersect(stage));
+    state.titles.set_fonts(project.assets.values());
     let pixels = ui.pixels_per_point();
     // What the canvas shows now, with a value being dragged or typed in the
     // place of the stored one.
@@ -958,64 +966,35 @@ pub fn show(
     let mut effects_hidden = false;
     for ((run, given), canvas_texture) in runs.iter().zip(given).zip(canvas_of) {
         match run {
-            Run::Text(index) => {
+            Run::Title(index) => {
                 let layer = &plan.layers[*index];
-                let (
-                    Some(staged),
-                    LayerSource::Text {
-                        text,
-                        font_size,
-                        color,
-                    },
-                ) = (staged[*index].as_ref(), &layer.source)
-                else {
+                let Some(staged) = staged[*index].as_ref() else {
                     continue;
                 };
                 let transform = &layer.transform;
-                let angle = transform.rotation.to_radians();
-                let center =
+                // Drawn as many picture pixels as it covers on screen.
+                let reach = transform.scale[0].abs().max(transform.scale[1].abs());
+                (state.titles).want(layer.clip, &layer.source, reach * view * pixels);
+                let Some((picture, texture)) = state.titles.picture(layer.clip) else {
+                    continue;
+                };
+                let anchor =
                     canvas.center() + vec2(transform.position[0], transform.position[1]) * view;
-                let (text, font_size, color) = draft
-                    .as_ref()
-                    .filter(|draft| draft.clip == layer.clip)
-                    .and_then(|draft| draft.text.as_ref())
-                    .map_or(
-                        (text.as_str(), *font_size, *color),
-                        |(text, size, color)| (text.as_str(), *size, *color),
-                    );
-                // Glyphs are rasterised at the size drawn; a size cap
-                // keeps one huge title from filling the glyph atlas.
-                let points = (font_size * transform.scale[1] * view).clamp(1.0, 480.0);
-                let [r, g, b, a] = color;
-                let ink = Color32::from_rgba_unmultiplied(r, g, b, a);
-                let mut job = egui::text::LayoutJob::simple(
-                    text.to_owned(),
-                    FontId::new(points, egui::FontFamily::Name(theme::SEMIBOLD.into())),
-                    ink,
-                    f32::INFINITY,
-                );
-                job.halign = egui::Align::Center;
-                let galley = layer_painter.layout_job(job);
-                let half = (galley.size() * 0.5).max(vec2(4.0, 4.0));
-                // The galley is laid out around x = 0; place its centre.
-                let pos = center - galley.rect.center().to_vec2();
-                layer_painter.add(
-                    TextShape::new(pos, galley, ink)
-                        .with_angle_and_anchor(angle, Align2::CENTER_CENTER)
-                        // Text is drawn by no compositor: its transition is
-                        // a fade, whatever its kind.
-                        .with_opacity_factor(
-                            transform.opacity.clamp(0.0, 1.0) * fade_weight(layer, None),
-                        ),
-                );
+                // Titles are drawn by no compositor: a transition is a fade,
+                // whatever its kind.
+                let opacity = transform.opacity.clamp(0.0, 1.0) * fade_weight(layer, None);
+                layer_painter.add(title_mesh(
+                    anchor, view, transform, picture, texture, opacity,
+                ));
                 if !staged.held {
-                    placed.push(Placed {
-                        clip: layer.clip,
-                        center,
-                        half,
-                        angle,
-                        locked: staged.track.locked,
-                    });
+                    placed.push(title_place(
+                        layer.clip,
+                        anchor,
+                        view,
+                        transform,
+                        picture.bounds,
+                        staged.track.locked,
+                    ));
                 }
             }
             Run::Plain(range) | Run::Composite(range) => {
@@ -1196,6 +1175,7 @@ fn media_kind_name(kind: MediaKind) -> &'static str {
         MediaKind::Image => "Image",
         MediaKind::Gif => "GIF",
         MediaKind::Lut => "LUT",
+        MediaKind::Font => "Font",
     }
 }
 
@@ -1537,7 +1517,7 @@ impl<'a> Staged<'a> {
             })?;
         let asset = match &layer.source {
             LayerSource::Media { asset_id, .. } => project.assets.get(asset_id),
-            LayerSource::Text { .. } => None,
+            LayerSource::Text { .. } | LayerSource::Graphic { .. } => None,
         };
         Some(Self {
             track,
@@ -1661,6 +1641,71 @@ fn pick_colour(
 }
 
 /// A textured quad with the clip's rotation, crop, flips and opacity.
+/// Where a point of a title is on screen: `x` and `y` canvas pixels from its
+/// anchor at the layer's scale 1, which is at `anchor`.
+fn title_point(anchor: Pos2, view: f32, transform: &Transform, x: f32, y: f32) -> Pos2 {
+    let flip = |flipped: bool| if flipped { -1.0 } else { 1.0 };
+    let local = vec2(
+        x * transform.scale[0] * flip(transform.flip_x),
+        y * transform.scale[1] * flip(transform.flip_y),
+    ) * view;
+    let (sin, cos) = transform.rotation.to_radians().sin_cos();
+    anchor + vec2(local.x * cos - local.y * sin, local.x * sin + local.y * cos)
+}
+
+/// A title's picture as one quad through the layer's transform.
+fn title_mesh(
+    anchor: Pos2,
+    view: f32,
+    transform: &Transform,
+    picture: &TitlePicture,
+    texture: egui::TextureId,
+    opacity: f32,
+) -> Shape {
+    let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let tint = Color32::from_rgba_premultiplied(alpha, alpha, alpha, alpha);
+    let [left, top] = picture.origin;
+    let [width, height] = picture.size();
+    let mut mesh = Mesh::with_texture(texture);
+    for (u, v) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: title_point(anchor, view, transform, left + u * width, top + v * height),
+            uv: pos2(u, v),
+            color: tint,
+        });
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    Shape::mesh(mesh)
+}
+
+/// A title on screen by its text or design box, `bounds` from its anchor:
+/// what is selected and dragged, whatever its shadow or outline reach.
+fn title_place(
+    clip: ClipId,
+    anchor: Pos2,
+    view: f32,
+    transform: &Transform,
+    bounds: [f32; 4],
+    locked: bool,
+) -> Placed {
+    let [left, top, right, bottom] = bounds;
+    let center = (left + right) * 0.5;
+    let middle = (top + bottom) * 0.5;
+    let half = vec2(
+        (right - left) * 0.5 * transform.scale[0].abs(),
+        (bottom - top) * 0.5 * transform.scale[1].abs(),
+    ) * view;
+    Placed {
+        clip,
+        center: title_point(anchor, view, transform, center, middle),
+        // A title with nothing in it can still be taken hold of.
+        half: half.max(vec2(4.0, 4.0)),
+        angle: transform.rotation.to_radians(),
+        locked,
+    }
+}
+
 fn layer_mesh(layer: &Placed, texture: egui::TextureId, transform: &Transform) -> Shape {
     let [left, top, right, bottom] = transform.crop;
     let (mut u0, mut u1) = (left, 1.0 - right);
@@ -2276,7 +2321,7 @@ fn draw_record(ui: &mut Ui, p: &Palette, place: Rect, view: RecordView, actions:
     };
     control.add_enabled_ui(enabled, |ui| {
         let pressed =
-            widgets::icon_button_tinted(ui, p, Icon::Record, &label, Some(tint)).clicked();
+            widgets::icon_button_tinted(ui, p, Icon::Speech, &label, Some(tint)).clicked();
         if pressed {
             actions.push(match view {
                 RecordView::Idle => Action::Record,

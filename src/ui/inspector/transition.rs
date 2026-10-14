@@ -129,6 +129,7 @@ pub(super) fn pane(
                 let mut kind = shown.kind;
                 // Tall enough for every kind: none is under a scroll.
                 egui::ComboBox::from_id_salt("transition-kind")
+                    .icon(widgets::combo_icon)
                     .selected_text(transitions::name(kind))
                     .width(118.0)
                     .height(540.0)
@@ -169,6 +170,7 @@ pub(super) fn pane(
             widgets::fitted_row(ui, p, "Easing", |ui| {
                 let mut ease = shown.ease;
                 egui::ComboBox::from_id_salt("transition-easing")
+                    .icon(widgets::combo_icon)
                     .selected_text(ease_name(ease))
                     .width(118.0)
                     .show_ui(ui, |ui| {

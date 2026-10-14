@@ -498,6 +498,7 @@ impl Pane<'_> {
             let mut pick = chosen;
             widgets::fitted_row(ui, p, "Tracker", |ui| {
                 egui::ComboBox::from_id_salt("follow-tracker")
+                    .icon(widgets::combo_icon)
                     .selected_text(name(chosen))
                     .width(118.0)
                     .show_ui(ui, |ui| {

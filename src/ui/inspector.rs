@@ -14,6 +14,7 @@ mod motion;
 mod speed;
 #[cfg(test)]
 mod tests;
+mod text;
 mod transition;
 
 pub use color::{Channel, key_colour_command};
@@ -59,6 +60,10 @@ pub struct InspectorInput<'a> {
     /// answered; `None` while it has not, and every kind is shown as one
     /// that runs.
     pub missing: Option<&'a [EffectKind]>,
+    /// The font families a title may name, once the title lane has said.
+    pub families: Option<&'a [String]>,
+    /// The person's brand colours, offered in every colour of a title.
+    pub brand: &'a [[u8; 4]],
 }
 
 /// The parts a clip's values are shown in, one at a time. A clip is offered
@@ -73,6 +78,9 @@ pub enum Section {
     Motion,
     /// A clip on an audio track's: its playback and its audio effects.
     Audio,
+    Text,
+    Graphic,
+    Animate,
 }
 
 impl Section {
@@ -84,6 +92,9 @@ impl Section {
             Self::Speed => "Speed",
             Self::Motion => "Motion",
             Self::Audio => "Audio",
+            Self::Text => "Text",
+            Self::Graphic => "Graphic",
+            Self::Animate => "Animate",
         }
     }
 }
@@ -189,6 +200,12 @@ pub struct InspectorState {
     steady: Option<SteadyShown>,
     /// How the steadied layers of the canvas read their pictures.
     readings: Vec<editor_core::ClipOverride>,
+    /// A section that names fonts was shown: the families are wanted.
+    families_wanted: bool,
+    /// What is typed in the search of a list of fonts.
+    font_filter: String,
+    /// The name a title's look or a graphic is about to be kept under.
+    keeping: String,
 }
 
 impl Default for InspectorState {
@@ -217,11 +234,20 @@ impl Default for InspectorState {
             rename: None,
             steady: None,
             readings: Vec::new(),
+            families_wanted: false,
+            font_filter: String::new(),
+            keeping: String::new(),
         }
     }
 }
 
 impl InspectorState {
+    /// Whether a section that names fonts was shown since this was last
+    /// asked: the families are then asked of the title lane.
+    pub fn take_families_wanted(&mut self) -> bool {
+        std::mem::take(&mut self.families_wanted)
+    }
+
     /// Whether an Escape has a value to give up that the pointer holds. The
     /// pointer's button says so, not what egui is dragging: egui has let go
     /// of its own drag by the time a frame with an Escape in it is drawn.
@@ -549,8 +575,11 @@ fn scrolled(
                         });
                         let by_pointer =
                             ui.input(|i| i.pointer.any_down() || i.pointer.any_released());
-                        if let Some(row) = focused.and_then(|id| ui.ctx().read_response(id))
-                            && !by_pointer
+                        // Reading a response is egui's test of a click
+                        // elsewhere: on a click it would take the keyboard
+                        // from a control another panel has just focused.
+                        if !by_pointer
+                            && let Some(row) = focused.and_then(|id| ui.ctx().read_response(id))
                             && ui.min_rect().contains(row.rect.center())
                         {
                             ui.scroll_to_rect(row.rect.expand2(vec2(0.0, 10.0)), None);
@@ -683,6 +712,7 @@ fn asset_pane(
                 MediaKind::Image => "Image",
                 MediaKind::Gif => "GIF",
                 MediaKind::Lut => "LUT",
+                MediaKind::Font => "Font",
             },
         );
         // A still has no length of its own, and a lookup table no time,
@@ -838,6 +868,7 @@ fn project_pane(ui: &mut Ui, p: &Palette, project: &Project, draft: &mut Project
                     |(_, _, label)| (*label).to_owned(),
                 );
             egui::ComboBox::from_id_salt("frame-rate")
+                .icon(widgets::combo_icon)
                 .selected_text(format!("{current} fps"))
                 .width(96.0)
                 .show_ui(ui, |ui| {

@@ -83,9 +83,11 @@ saving it back without the new data.
 ([planner.rs](../../crates/editor-agent/src/planner.rs)): 29 KiB between them
 on the Claude command line, as before. The audio-editing work set this split
 on the owner's behalf (its owner decision 1) because its seven audio kinds
-did not fit 5 KiB of instructions. The file is schema version 3 since the
-same work; versions 1 and 2 are read and never written. See
-[ADR 0007](0007-sound-is-levels-in-the-mixer-and-filters-in-the-decoder.md).
+did not fit 5 KiB of instructions. Titles and captions also check that the
+escaped schema and instructions stay under 31 KiB for Windows. The file is
+schema version 4 since the same work (3 since titles and captions); versions
+1 to 3 are read and never written. See
+[ADR 0008](0008-sound-is-levels-in-the-mixer-and-filters-in-the-decoder.md).
 
 The binding rules, and the dated changes made to them during implementation,
 are in [the advanced-editing design](../../.scratch/advanced-editing/spec.md).

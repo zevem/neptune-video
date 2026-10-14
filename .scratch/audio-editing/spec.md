@@ -6,7 +6,7 @@ Type: task
 
 Built, on one macOS host (macOS 26.5.2, Apple M1, Rust 1.97.1, Homebrew
 FFmpeg 8.1.2): tickets 01 to 21a, and their documents (ticket 22,
-[ADR 0007](../../docs/adr/0007-sound-is-levels-in-the-mixer-and-filters-in-the-decoder.md)).
+[ADR 0008](../../docs/adr/0008-sound-is-levels-in-the-mixer-and-filters-in-the-decoder.md)).
 Every owner decision below was delegated and was taken on the owner's behalf
 on 2026-10-14; each is marked, the build follows it, and the owner may
 reverse any of them.
@@ -588,7 +588,7 @@ letter, so earlier references stay readable.
 | 21a | Separate stems with an external tool | 03, 17 | L |
 | 21b | Neural denoise (research) | – | S |
 | 21c | Speech detection for ducking (research) | – | S |
-| 22 | ADR 0007, glossary, usage, design, performance and verification docs | all | M |
+| 22 | ADR 0008, glossary, usage, design, performance and verification docs | all | M |
 
 Tickets 02, 03 and 17 can start at once. 05b is the only ticket that changes
 the store's version; 10 is the only other one that changes what a file may
@@ -1491,7 +1491,7 @@ decisions above, and the build and the documents follow it:
   decision written in each.
 - *13.* No stock library: the editor ships, fetches and generates no sound.
 
-Ticket 22 wrote ADR 0007 and brought the glossary, usage, design,
+Ticket 22 wrote ADR 0008 and brought the glossary, usage, design,
 architecture, performance, verification, agent-protocol, native-AI and
 installation documents, and ADR 0006's caps, to the code as it stands. Where
 this file's body is now older than the code, the dated entries above say
@@ -1553,3 +1553,19 @@ the name's row, a name that would not fit beside it is not drawn at all
 `on_a_tile_too_narrow_for_its_name_beside_it_the_held_percent_is_said_alone`
 (`src/ui/volume_tests.rs`), which fails with the guard taken out. Not
 captured natively; the release build named above predates it.
+
+2026-10-14: Merged with titles and captions, which reached main first.
+Decided on the owner's behalf. The project file is schema version 4 (titles
+took 3): read 1 to 4, write 4, and version 5 is the future refused
+everywhere. This design's ADR is 0008 (titles took 0007). The planner text is
+the titles text with this work's audio sentences and ticket 01's rewordings
+applied to it, 5,793 bytes; the schema is 22,062 bytes. Both caps stay (6 KiB
+and 23 KiB), and the titles work's Windows bound also holds: the escaped
+schema and instructions stay under 31 KiB. To fit it, the schema no longer
+carries descriptions for fades, track volume and solo (the planner text
+states them; the Rust comments remain). The icons moved to a Tabler font
+subset: track solo uses its `Solo` glyph and the record button its microphone
+(`Speech`), red as before; the hand-drawn headphones and record dot are gone.
+A title look dropped on the timeline snaps to beats as media does. The tab
+strip is the titles work's (icons when the names do not fit); the kind
+filter keeps its own segmented control.

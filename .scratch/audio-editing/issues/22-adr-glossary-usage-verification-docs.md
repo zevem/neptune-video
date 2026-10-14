@@ -1,4 +1,4 @@
-# ADR 0007, glossary, usage, design, performance and verification docs
+# ADR 0008, glossary, usage, design, performance and verification docs
 
 Status: ready-for-agent
 Progress: resolved
@@ -178,7 +178,7 @@ profile unoptimized; `Cargo.toml` gives it opt-level 1 and its dependencies
 2, and only `ci` is unoptimized. Both now say so. (2) The spec header and the
 verification list of claimed tickets left out 03, which waits on a person's
 reading rather than a capture; both now name it, so the header matches every
-ticket's Progress field. (3) ADR 0007 said the only files the editor writes
+ticket's Progress field. (3) ADR 0008 said the only files the editor writes
 are a copy, takes and stems, though it writes peak files; it now says sound
 files, as `usage.md` does. (4) The glossary's Media folder said `<document
 name> media`; `media_folder` uses the file stem, and the entry now says

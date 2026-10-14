@@ -15,9 +15,9 @@ Work on a project together with its undo/redo history and saved-state boundary.
 An interrupted editing session can be restored from recovery.
 
 **Asset**:
-A source video, image, animated image, audio item or colour lookup table in the
-media library. One asset can be used by several clips without changing the
-source media.
+A source video, image, animated image, audio item, colour lookup table or font
+in the media library. One asset can be used by several clips without changing
+the source media.
 _Avoid_: Clip, footage item
 
 **Media library**:
@@ -373,6 +373,102 @@ The bounded background worker that reads peaks, measures loudness, finds
 beats, writes a sound to a file and runs the stem separator. Its results name
 the project, request and media they were made for.
 _Avoid_: Analysis lane, which tracks and stabilizes pictures
+
+## Titles and captions
+
+**Title**:
+A clip of generated text drawn on the canvas, with a style and optional enter
+and exit animations. A title on a caption track is a caption.
+_Avoid_: Text layer, caption for a title on a plain text track
+
+**Title style**:
+How a title's text looks: font family, weight and slant, alignment, line
+height, letter spacing, wrap width, case, and optional outline, shadow,
+background and karaoke highlight. Its lengths are fractions of the font size,
+so it scales with the title.
+
+**Font asset**:
+A font file imported into the media library and named for its family. It is
+never placed on a track; a title naming its family is drawn with it.
+
+**Text animation**:
+A named preset that brings a title or graphic element in or takes it out:
+fade, pop, bounce, typewriter, a slide or a wipe, with a duration and a delay.
+It is not built from keyframes.
+_Avoid_: Keyframe, transition
+
+**Animation unit**:
+The part of the text a text animation moves at a time: the whole text, each
+line, each word or each letter, each starting a little after the one before.
+
+**Caption track**:
+A text track with a language. Each title on it is one caption, and the
+Captions tab edits it as a list.
+_Avoid_: Subtitle track
+
+**Caption**:
+One timed piece of a caption track's text, shown from its start to its end.
+_Avoid_: Cue in the interface; subtitle for one caption
+
+**Word times**:
+The start and end of each word of a caption, counted from the caption's own
+start, so moving the caption does not change them. Captions made from speech
+have them; typed or imported captions usually do not.
+
+**Karaoke highlight**:
+A part of a title style that marks the word being spoken, by colour, by a box
+behind it or by a fill sweeping through it. It needs word times.
+
+**Graphic**:
+A clip made of named elements in a design box: a lower third, title card,
+callout or vector sticker. Its editable parameters are its texts and the
+colours and font its elements share.
+_Avoid_: Template for a graphic already on the timeline
+
+**Graphic element**:
+One named text, rectangle, ellipse or line inside a graphic, with its own
+frame and animations.
+
+**Template**:
+A graphic kept outside the project, built in or kept by the person. Adding it
+copies it into the project.
+
+**Kept look**:
+A title kept by the person under a name: its size, colour, style and
+animations, with its text and place on the canvas but no word times. It can be
+added as a new title or given to other titles. Giving it copies its values, so
+the project does not depend on the preset file.
+_Avoid_: Look preset, which is a set of effects
+
+**Brand colours**:
+Colours the person keeps in the preset file, offered above every colour picker
+in the inspector.
+
+**Preset file**:
+`presets.json` beside the settings, holding kept looks, templates and brand
+colours. It is never part of a project.
+
+**Title lane**:
+The worker that draws titles, graphics and Text tab tiles to pictures from
+their resolved layers. The viewer shows the newest picture it holds.
+
+**Captions from speech**:
+Captions made on this computer from the timeline's sound by a speech model,
+with word times, added as one new caption track in one history entry.
+_Avoid_: Transcription service, auto-subtitles
+
+**Speech model**:
+A Whisper model file used for captions from speech, downloaded on request from
+a fixed list and checked against its SHA-256 sum, or chosen by hand.
+
+**Caption translation**:
+A copy of a caption track in another language, written by the native AI
+provider, reviewed as an edit proposal and added as one history entry above
+the source, which is hidden.
+
+**Subtitle file**:
+A SubRip (`.srt`) or WebVTT (`.vtt`) file. Importing one makes a caption track;
+exporting writes the caption track in view.
 
 ## History and agents
 

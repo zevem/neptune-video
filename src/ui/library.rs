@@ -7,25 +7,31 @@
 use super::{
     Action, Selection,
     browser::{self, BrowserInput, BrowserState},
+    captions_tab::{self, CaptionsTabInput, CaptionsTabState},
     icon_of_media, shortcut,
+    text_tab::{self, TextTabInput, TextTabState},
     timeline::AssetDrag,
     tone_of_media,
     widgets::{self, Kind, icon_button, menu_item, menu_style},
 };
 use crate::{
     icons::{self, Icon},
+    presets::Presets,
     textures::Textures,
     theme::{self, Palette, metrics},
     timefmt,
+    titles::Titles,
 };
-use editor_core::{Asset, Command, FolderId, MediaFolder, MediaKind, Project, Time};
+use editor_core::{
+    Asset, Command, FolderId, MediaFolder, MediaKind, Project, Time, captions::SubtitleFormat,
+};
 use editor_media::MediaService;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, Vec2,
     epaint::RectShape, pos2, vec2,
 };
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
+use std::{cmp::Ordering, sync::Arc};
 
 const TILE_MIN: f32 = 112.0;
 const TILE_GAP: f32 = 10.0;
@@ -66,6 +72,7 @@ fn kind_rank(kind: MediaKind) -> u8 {
         MediaKind::Image => 2,
         MediaKind::Gif => 3,
         MediaKind::Lut => 4,
+        MediaKind::Font => 5,
     }
 }
 
@@ -100,26 +107,50 @@ pub fn sort_assets(assets: &mut Vec<&Asset>, sort: LibrarySort) {
 pub enum Tab {
     #[default]
     Media,
+    Text,
+    Captions,
     Effects,
     Transitions,
     Looks,
 }
 
 impl Tab {
-    pub const ALL: [Self; 4] = [Self::Media, Self::Effects, Self::Transitions, Self::Looks];
+    pub const ALL: [Self; 6] = [
+        Self::Media,
+        Self::Text,
+        Self::Captions,
+        Self::Effects,
+        Self::Transitions,
+        Self::Looks,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Media => "Media",
+            Self::Text => "Text",
+            Self::Captions => "Captions",
             Self::Effects => "Effects",
             Self::Transitions => "Transitions",
             Self::Looks => "Looks",
         }
     }
 
+    fn icon(self) -> Icon {
+        match self {
+            Self::Media => Icon::Film,
+            Self::Text => Icon::Text,
+            Self::Captions => Icon::Captions,
+            Self::Effects => Icon::Sparkles,
+            Self::Transitions => Icon::Transition,
+            Self::Looks => Icon::Image,
+        }
+    }
+
     fn hint(self) -> &'static str {
         match self {
             Self::Media => "Search media",
+            Self::Text => "Search titles, stickers and emoji",
+            Self::Captions => "Search captions",
             Self::Effects => "Search effects",
             Self::Transitions => "Search transitions",
             Self::Looks => "Search looks",
@@ -254,6 +285,91 @@ fn segments<T: Copy + PartialEq + std::hash::Hash + std::fmt::Debug + 'static, c
     }
 }
 
+/// The library's parts on one track, each as wide as its name needs and a
+/// share of what is left over. When the names do not fit even small, each
+/// part is its icon, named on hover.
+fn tabs(ui: &mut Ui, p: &Palette, rect: Rect, tab: &mut Tab) {
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(metrics::CONTROL_RADIUS), p.control);
+    let inner = rect.shrink(2.0);
+    let names = |font: egui::FontId| {
+        Tab::ALL.map(|tab| {
+            ui.painter()
+                .layout_no_wrap(tab.label().to_owned(), font.clone(), p.fg)
+        })
+    };
+    let needed = |galleys: &[std::sync::Arc<egui::Galley>]| {
+        galleys.iter().map(|galley| galley.size().x).sum::<f32>()
+    };
+    let mut galleys = names(theme::medium(12.0));
+    if needed(&galleys) + 8.0 * Tab::ALL.len() as f32 > inner.width() {
+        galleys = names(theme::medium(11.0));
+    }
+    // Names that would touch give way to icons.
+    let iconic = needed(&galleys) + 6.0 * Tab::ALL.len() as f32 > inner.width();
+    let widths = (galleys.each_ref()).map(|galley| if iconic { 0.0 } else { galley.size().x });
+    let spare = ((inner.width() - widths.iter().sum::<f32>()) / Tab::ALL.len() as f32).max(0.0);
+    let mut left = inner.left();
+    for ((option, galley), width) in Tab::ALL.into_iter().zip(galleys).zip(widths) {
+        let cell =
+            Rect::from_min_size(pos2(left, inner.top()), vec2(width + spare, inner.height()))
+                .intersect(inner);
+        left = cell.right();
+        let response = ui.interact(cell, Id::new(("library-tab", option)), Sense::click());
+        let selected = *tab == option;
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::RadioButton,
+                true,
+                selected,
+                option.label(),
+            )
+        });
+        if selected {
+            ui.painter().rect_filled(
+                cell,
+                CornerRadius::same(metrics::CONTROL_RADIUS - 2),
+                if p.dark { p.pressed } else { p.elevated },
+            );
+        }
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                cell,
+                CornerRadius::same(metrics::CONTROL_RADIUS - 2),
+                Stroke::new(1.5, p.accent),
+                StrokeKind::Inside,
+            );
+        }
+        let ink = if selected || response.hovered() {
+            p.fg
+        } else {
+            p.secondary
+        };
+        if iconic {
+            icons::paint(
+                ui.painter(),
+                Rect::from_center_size(cell.center(), Vec2::splat(14.0)),
+                option.icon(),
+                ink,
+            );
+        } else {
+            ui.painter().galley_with_override_text_color(
+                cell.center() - galley.size() * 0.5,
+                galley,
+                ink,
+            );
+        }
+        let response = if iconic {
+            response.on_hover_text(option.label())
+        } else {
+            response
+        };
+        if response.clicked() {
+            *tab = option;
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct LibraryState {
     /// Which part is in view: the media, or what a clip can be given.
@@ -268,6 +384,8 @@ pub struct LibraryState {
     /// The name being typed for a folder that is about to be made.
     pub new_folder: Option<String>,
     focus_new_folder: bool,
+    pub text: TextTabState,
+    pub captions: CaptionsTabState,
 }
 
 impl LibraryState {
@@ -314,6 +432,10 @@ pub struct LibraryInput<'a> {
     pub previewing: Option<editor_core::AssetId>,
     /// Where a transition given from here goes: the nearer edge of a clip.
     pub playhead: Time,
+    /// The person's kept looks and brand colours.
+    pub presets: &'a Arc<Presets>,
+    /// Captions from speech: their choices and the worker's progress.
+    pub speech: captions_tab::SpeechInput<'a>,
 }
 
 enum Item<'a> {
@@ -328,15 +450,18 @@ fn kind_name(kind: MediaKind) -> &'static str {
         MediaKind::Image => "Image",
         MediaKind::Gif => "GIF",
         MediaKind::Lut => "LUT",
+        MediaKind::Font => "Font",
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "the application's one call")]
 pub fn show(
     ui: &mut Ui,
     rect: Rect,
     state: &mut LibraryState,
     selection: &mut Selection,
     textures: &mut Textures,
+    titles: &mut Titles,
     input: &LibraryInput,
     actions: &mut Vec<Action>,
 ) -> (bool, LibrarySort) {
@@ -375,8 +500,54 @@ pub fn show(
         );
     }
     let media = state.tab == Tab::Media;
+    let text = state.tab == Tab::Text;
+    let captions = state.tab == Tab::Captions;
+    let caption_track = captions_tab::in_view(project, state.captions.track, selection);
     // What imports, sorts and lays out media is the media's.
     head.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if text {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if icon_button(ui, p, Icon::Import, "Import fonts").clicked() {
+                actions.push(Action::ImportFonts);
+            }
+            return;
+        }
+        if captions {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if let Some(track) = caption_track {
+                let export = icon_button(ui, p, Icon::Export, "Export captions");
+                egui::Popup::menu(&export).show(|ui| {
+                    menu_style(ui, 200.0);
+                    for (format, name) in [
+                        (SubtitleFormat::Srt, "SubRip (.srt)…"),
+                        (SubtitleFormat::Vtt, "WebVTT (.vtt)…"),
+                    ] {
+                        if menu_item(ui, p, None, name, "").clicked() {
+                            actions.push(Action::ExportCaptions { track, format });
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            if icon_button(ui, p, Icon::Import, "Import SRT or VTT").clicked() {
+                actions.push(Action::ImportCaptions);
+            }
+            let open = state.captions.speech_open;
+            let speech = widgets::icon_button_tinted(
+                ui,
+                p,
+                Icon::Speech,
+                "Captions from speech",
+                open.then_some(p.accent),
+            );
+            if speech.clicked() {
+                state.captions.speech_open = !open;
+                if !open {
+                    actions.push(Action::LookAtModels);
+                }
+            }
+            return;
+        }
         if !media {
             return;
         }
@@ -439,14 +610,7 @@ pub fn show(
         pos2(rect.left() + 10.0, header.bottom()),
         vec2(rect.width() - 20.0, metrics::CONTROL_HEIGHT),
     );
-    segments(
-        ui,
-        p,
-        switch,
-        "library-tab",
-        Tab::ALL.map(|tab| (tab, tab.label(), tab.label())),
-        &mut state.tab,
-    );
+    tabs(ui, p, switch, &mut state.tab);
     let media = state.tab == Tab::Media;
 
     // Search.
@@ -486,6 +650,41 @@ pub fn show(
     );
 
     let mut top = search.bottom() + 8.0;
+    if text {
+        text_tab::show(
+            ui,
+            Rect::from_min_max(pos2(rect.left(), top), rect.max),
+            &state.browser.search,
+            &mut state.text,
+            selection,
+            titles,
+            &TextTabInput {
+                p,
+                project,
+                presets: input.presets,
+            },
+            actions,
+        );
+        return (grid, sort);
+    }
+    if captions {
+        captions_tab::show(
+            ui,
+            Rect::from_min_max(pos2(rect.left(), top), rect.max),
+            &state.browser.search,
+            &mut state.captions,
+            selection,
+            &CaptionsTabInput {
+                p,
+                project,
+                playhead: input.playhead,
+                presets: input.presets,
+                speech: input.speech,
+            },
+            actions,
+        );
+        return (grid, sort);
+    }
     if !media {
         browser::show(
             ui,
@@ -1266,6 +1465,7 @@ mod tests {
                     &mut state,
                     &mut selection,
                     &mut textures,
+                    &mut Titles::default(),
                     &LibraryInput {
                         p: &palette,
                         project,
@@ -1276,6 +1476,12 @@ mod tests {
                         problem: None,
                         previewing: None,
                         playhead: Time::ZERO,
+                        presets: &Arc::default(),
+                        speech: captions_tab::SpeechInput {
+                            view: &crate::speech::SpeechView::Idle,
+                            settings: &crate::speech::SpeechSettings::default(),
+                            inventory: None,
+                        },
                     },
                     &mut Vec::new(),
                 );
@@ -1516,6 +1722,8 @@ mod tests {
                 events,
                 ..Default::default()
             };
+            let mut titles = crate::titles::Titles::default();
+            let presets = std::sync::Arc::<crate::presets::Presets>::default();
             let (state, selection, actions) =
                 (&mut self.state, &mut self.selection, &mut self.actions);
             let mut output = self.ctx.run_ui(input, |ui| {
@@ -1526,6 +1734,7 @@ mod tests {
                     state,
                     selection,
                     &mut textures,
+                    &mut titles,
                     &LibraryInput {
                         p: &palette,
                         project,
@@ -1536,6 +1745,12 @@ mod tests {
                         problem: None,
                         previewing: None,
                         playhead: Time::ZERO,
+                        presets: &presets,
+                        speech: captions_tab::SpeechInput {
+                            view: &crate::speech::SpeechView::Idle,
+                            settings: &crate::speech::SpeechSettings::default(),
+                            inventory: None,
+                        },
                     },
                     actions,
                 );

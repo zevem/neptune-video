@@ -4,8 +4,9 @@
 //! plans mean there is nothing to repaint.
 use crate::{
     AnimTrack, AssetId, BlendMode, Clip, ClipContent, ClipId, Effect, EffectKind, Mask, MediaKind,
-    ParamKey, ParamSpec, ParamValue, Project, Time, Track, TrackId, TrackKey, TrackKind, Tracker,
-    Transform, Transition, TransitionKind, look,
+    ParamKey, ParamSpec, ParamValue, Project, TextStyle, Time, Track, TrackId, TrackKey, TrackKind,
+    Tracker, Transform, Transition, TransitionKind, look,
+    title::{self, ElementLayer, Motion, WordState},
 };
 use uuid::Uuid;
 
@@ -26,6 +27,9 @@ pub struct ClipOverride {
     /// layer of the clip's own; a point tracked on the clip's media is put
     /// where this reading shows it.
     pub reading: Option<Reading>,
+    /// What a title or graphic says and how it looks, while being edited. A
+    /// media clip keeps its own content whatever this holds.
+    pub content: Option<ClipContent>,
 }
 
 /// How a layer's box reads its picture when it does not read it as it is:
@@ -147,10 +151,21 @@ pub enum LayerSource {
         /// Signed source seconds per timeline second; 0 while a frame is held.
         speed: f64,
     },
+    /// A title as it shows at the layer's frame-snapped time.
     Text {
         text: String,
         font_size: f32,
         color: [u8; 4],
+        style: TextStyle,
+        enter: Option<Motion>,
+        exit: Option<Motion>,
+        /// Where speech is in a timed title with a highlight.
+        words: Option<WordState>,
+    },
+    /// A graphic's design box and its elements, each with its motions.
+    Graphic {
+        size: [f32; 2],
+        elements: Vec<ElementLayer>,
     },
 }
 
@@ -330,7 +345,11 @@ impl Context<'_> {
     ) -> Layer {
         let draft = self.overrides.iter().find(|o| o.clip == clip.id);
         let local = self.at - clip.start;
-        let source = match &clip.content {
+        let content = draft
+            .and_then(|o| o.content.as_ref())
+            .filter(|content| content.is_generated() && clip.content.is_generated())
+            .unwrap_or(&clip.content);
+        let source = match content {
             ClipContent::Media { asset_id } => {
                 let wanted = clip.source_time(self.at);
                 let limit = self
@@ -354,11 +373,41 @@ impl Context<'_> {
                 text,
                 font_size,
                 color,
-            } => LayerSource::Text {
-                text: text.clone(),
-                font_size: *font_size,
-                color: *color,
-            },
+                style,
+                enter,
+                exit,
+                words,
+            } => {
+                // Steps once a frame: a paused viewer has nothing to redraw.
+                let at = self.frame_local(clip);
+                LayerSource::Text {
+                    text: text.clone(),
+                    font_size: *font_size,
+                    color: *color,
+                    style: style.clone(),
+                    enter: title::entering(enter.as_ref(), at),
+                    exit: title::leaving(exit.as_ref(), at, clip.duration),
+                    words: style
+                        .highlight
+                        .as_ref()
+                        .filter(|_| !words.is_empty())
+                        .map(|highlight| title::word_state(words, highlight, at)),
+                }
+            }
+            ClipContent::Graphic { size, elements } => {
+                let at = self.frame_local(clip);
+                LayerSource::Graphic {
+                    size: *size,
+                    elements: elements
+                        .iter()
+                        .map(|element| ElementLayer {
+                            element: element.clone(),
+                            enter: title::entering(element.enter.as_ref(), at),
+                            exit: title::leaving(element.exit.as_ref(), at, clip.duration),
+                        })
+                        .collect(),
+                }
+            }
         };
         let tracks = draft
             .and_then(|o| o.animation.as_deref())
@@ -387,8 +436,13 @@ impl Context<'_> {
                 .collect(),
             transition,
             seed: seed(clip.id, self.frame),
-            time: self.project.settings.frame_rate.frame_time(self.frame) - clip.start,
+            time: self.frame_local(clip),
         }
+    }
+
+    // The start of the canvas frame, from the clip's start.
+    fn frame_local(&self, clip: &Clip) -> Time {
+        self.project.settings.frame_rate.frame_time(self.frame) - clip.start
     }
 
     // The clip's transform now: its draft or stored one, animated, moved with

@@ -56,6 +56,10 @@ pub(crate) fn supported(path: &Path) -> bool {
                     | "aif"
                     | "wma"
                     | "cube"
+                    | "ttf"
+                    | "otf"
+                    | "ttc"
+                    | "otc"
             )
         })
 }
@@ -220,6 +224,13 @@ pub(crate) fn probe(
         // asset may have, and its points along an edge where a width goes.
         let mut asset = Asset::new(path.to_owned(), MediaKind::Lut, Time(1));
         asset.width = cube.size;
+        asset
+    } else if crate::text::is_font_file(path) {
+        // A font is read whole and must draw, and is named for its family:
+        // the name a title's style gives.
+        let family = crate::text::font_family(path)?;
+        let mut asset = Asset::new(path.to_owned(), MediaKind::Font, Time(1));
+        asset.name = family;
         asset
     } else if matches!(
         ext.as_str(),
@@ -465,6 +476,35 @@ mod tests {
         assert!(said[1].contains("outside 2 to 65"), "{said:?}");
         assert!(said[2].contains("three finite numbers"), "{said:?}");
         assert!(said[3].contains("fewer rows"), "{said:?}");
+    }
+
+    #[test]
+    fn a_font_file_is_imported_by_its_family_and_a_broken_one_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let good = temp.path().join("Geist-Regular.TTF");
+        fs::write(
+            &good,
+            include_bytes!("../../../assets/fonts/Geist-Regular.ttf"),
+        )
+        .unwrap();
+        let broken = temp.path().join("broken.otf");
+        fs::write(&broken, b"OTTO and nothing else").unwrap();
+        let imported = import_paths(vec![good.clone(), broken], &Processes::default(), || false);
+        assert_eq!(imported.assets.len(), 1);
+        let asset = &imported.assets[0];
+        assert_eq!(asset.kind, MediaKind::Font);
+        assert_eq!(asset.name, "Geist");
+        assert_eq!(asset.duration, Time(1));
+        assert_eq!(asset.file_size, fs::metadata(&good).unwrap().len());
+        let mut project = editor_core::Project::new("Fonts");
+        std::sync::Arc::make_mut(&mut project.assets).insert(asset.id, asset.clone());
+        project.validate().unwrap();
+        assert_eq!(imported.errors.len(), 1);
+        assert!(
+            imported.errors[0].message.contains("not a font"),
+            "{:?}",
+            imported.errors
+        );
     }
 
     #[test]

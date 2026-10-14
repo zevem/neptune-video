@@ -32,6 +32,19 @@ fn text() -> editor_core::Layer {
         text: "Title".to_owned(),
         font_size: 48.0,
         color: [255; 4],
+        style: Default::default(),
+        enter: None,
+        exit: None,
+        words: None,
+    };
+    layer
+}
+
+fn graphic() -> editor_core::Layer {
+    let mut layer = plain();
+    layer.source = LayerSource::Graphic {
+        size: [400.0, 120.0],
+        elements: Vec::new(),
     };
     layer
 }
@@ -45,7 +58,7 @@ fn a_plain_plan_is_all_quads() {
     );
     assert_eq!(
         runs(&plan(vec![plain(), text(), plain()])),
-        vec![Run::Plain(0..1), Run::Text(1), Run::Plain(2..3)]
+        vec![Run::Plain(0..1), Run::Title(1), Run::Plain(2..3)]
     );
 }
 
@@ -68,21 +81,21 @@ fn a_run_is_composited_up_to_its_highest_layer_that_is_not_plain() {
 }
 
 #[test]
-fn text_parts_the_layers_into_runs_of_their_own() {
+fn titles_and_graphics_part_the_layers_into_runs_of_their_own() {
     assert_eq!(
         runs(&plan(vec![
             plain(),
             blended(),
             text(),
             plain(),
-            text(),
+            graphic(),
             blended()
         ])),
         vec![
             Run::Composite(0..2),
-            Run::Text(2),
+            Run::Title(2),
             Run::Plain(3..4),
-            Run::Text(4),
+            Run::Title(4),
             Run::Composite(5..6),
         ]
     );

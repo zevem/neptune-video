@@ -12,6 +12,8 @@ mod process;
 mod record;
 mod service;
 mod sound;
+pub mod speech;
+pub mod text;
 
 pub use analysis::{
     ANALYSIS_QUEUE, ANALYSIS_SIDE, AnalysisEvent, AnalysisService, Fix, LOST_BELOW,

@@ -2,17 +2,20 @@
 //! here mutates the project or touches a worker.
 pub mod agent;
 pub mod browser;
+pub mod captions_tab;
 pub mod fades;
 pub mod inspector;
 pub mod keyframes;
 pub mod library;
 pub mod sheets;
+pub mod text_tab;
 pub mod timeline;
 pub mod toolbar;
 pub mod tracks;
 pub mod transitions;
 pub mod viewer;
 pub mod widgets;
+pub mod window;
 
 use crate::{
     ai::{Effort, Provider},
@@ -25,6 +28,22 @@ use editor_core::{
 };
 use std::path::PathBuf;
 use uuid::Uuid;
+
+/// A change to the person's presets: kept looks and brand colours. They
+/// are not the project's and are not undone.
+#[derive(Debug, Clone)]
+pub enum PresetChange {
+    /// Keep a title's look or a graphic under a name, and where it is.
+    Keep {
+        name: String,
+        content: Box<ClipContent>,
+        position: Option<[f32; 2]>,
+    },
+    Rename(Uuid, String),
+    Remove(Uuid),
+    AddColor([u8; 4]),
+    RemoveColor([u8; 4]),
+}
 
 /// What a widget asks the application to do. Every target is captured when
 /// the action is created, so a later change of selection cannot retarget it.
@@ -49,6 +68,15 @@ pub enum Action {
     RestoreCheckpoint(String),
     ImportFiles,
     ImportFolder,
+    /// Import font files only.
+    ImportFonts,
+    /// Read subtitle files, each onto a caption track of its own.
+    ImportCaptions,
+    /// Write a caption track to a subtitle file.
+    ExportCaptions {
+        track: TrackId,
+        format: editor_core::captions::SubtitleFormat,
+    },
     OpenSettings,
 
     /// One document change, undone as one step.
@@ -83,6 +111,16 @@ pub enum Action {
     AddMarker,
     AddTrack(TrackKind),
     AddText,
+    /// Add a clip of a look of the Text tab: on `track` from `at` when that
+    /// is a text track, else at `at` (the playhead when not given) on a
+    /// text track with room.
+    AddLook {
+        look: std::sync::Arc<text_tab::Look>,
+        track: Option<TrackId>,
+        at: Option<Time>,
+    },
+    /// A change to the person's presets, which are not the project's.
+    Presets(PresetChange),
     /// Put an asset on the timeline. Without a place it goes after the last
     /// clip of the first track that can hold it.
     InsertAsset {
@@ -153,6 +191,8 @@ pub enum Action {
 
     ZoomTimeline(f32),
     FitTimeline,
+    /// Scale the whole interface to this size, 1 being as designed.
+    ScaleInterface(f32),
     ToggleSnapping,
     ToggleLibrary,
     ToggleInspector,
@@ -192,6 +232,29 @@ pub enum Action {
     Stabilize(AssetId),
     /// Give up the measuring under way.
     CancelStabilize,
+    /// Make captions from the timeline's sound on the speech worker, after
+    /// downloading the model when it is not there. Nothing is edited until
+    /// the words come back.
+    GenerateCaptions(crate::speech::SpeechRequest),
+    /// Stop the download or transcription under way.
+    CancelSpeech,
+    /// Add the captions that came and wait, or give them up.
+    AddHeardCaptions,
+    DiscardHeardCaptions,
+    /// The person's choices for captions from speech.
+    SetSpeech(crate::speech::SpeechSettings),
+    /// Choose a Whisper model file by hand.
+    PickSpeechModel,
+    /// Look at which models are downloaded, on a worker.
+    LookAtModels,
+    /// Captions from speech over the whole timeline, as last chosen.
+    CaptionsFromSpeech,
+    /// Ask the AI provider for a copy of a caption track in another
+    /// language: one proposal, reviewed before it is applied.
+    TranslateCaptions {
+        track_id: editor_core::TrackId,
+        language: String,
+    },
 }
 
 /// What a transport asks of the clock it belongs to: the timeline's, or the
@@ -385,8 +448,8 @@ pub struct ClipDraft {
     pub fade_in: Time,
     pub fade_out: Time,
     pub rate: f64,
-    /// Text, size and colour of a text clip.
-    pub text: Option<(String, f32, [u8; 4])>,
+    /// What a title or graphic says and how it looks; none for media.
+    pub content: Option<ClipContent>,
     pub blend: BlendMode,
     /// The effect stack and the masks, while they differ from the stored
     /// ones. An untouched list is not copied.
@@ -413,14 +476,7 @@ impl ClipDraft {
             fade_in: clip.fade_in,
             fade_out: clip.fade_out,
             rate: clip.playback_rate,
-            text: match &clip.content {
-                ClipContent::Text {
-                    text,
-                    font_size,
-                    color,
-                } => Some((text.clone(), *font_size, *color)),
-                ClipContent::Media { .. } => None,
-            },
+            content: clip.content.is_generated().then(|| clip.content.clone()),
             blend: clip.blend,
             effects: None,
             masks: None,
@@ -487,6 +543,7 @@ impl ClipDraft {
                 .filter(|_| !self.keys.is_empty())
                 .map(|clip| self.animation(clip)),
             reading: None,
+            content: self.content.clone(),
         }
     }
 
@@ -557,15 +614,8 @@ impl ClipDraft {
                 track, clip, retime, *duration,
             ));
         }
-        if let Some((text, font_size, color)) = &self.text
-            && Self::of(clip).text.as_ref() != self.text.as_ref()
-        {
-            commands.push(Command::SetText {
-                clip_id: clip.id,
-                text: text.clone(),
-                font_size: *font_size,
-                color: *color,
-            });
+        if let Some(held) = &self.content {
+            commands.extend(content_commands(clip, held));
         }
         if self.blend != clip.blend {
             commands.push(Command::SetBlendMode {
@@ -624,6 +674,78 @@ impl ClipDraft {
     }
 }
 
+/// The commands that make a title or graphic what `held` is, field by field
+/// so each part stays its own validated change: none for what is unchanged
+/// or of another kind. Word times are not held: a new text carries them
+/// over by the words it shares with the old.
+fn content_commands(clip: &Clip, held: &ClipContent) -> Vec<Command> {
+    let mut commands = Vec::new();
+    match (&clip.content, held) {
+        (
+            ClipContent::Text {
+                text,
+                font_size,
+                color,
+                style,
+                enter,
+                exit,
+                ..
+            },
+            ClipContent::Text {
+                text: new_text,
+                font_size: new_size,
+                color: new_color,
+                style: new_style,
+                enter: new_enter,
+                exit: new_exit,
+                ..
+            },
+        ) => {
+            if (text, font_size, color) != (new_text, new_size, new_color) {
+                commands.push(Command::SetText {
+                    clip_id: clip.id,
+                    text: new_text.clone(),
+                    font_size: *new_size,
+                    color: *new_color,
+                });
+            }
+            if style != new_style {
+                commands.push(Command::SetTextStyle {
+                    clip_id: clip.id,
+                    style: new_style.clone(),
+                });
+            }
+            for (edge, stored, animation) in [
+                (TransitionEdge::In, enter, new_enter),
+                (TransitionEdge::Out, exit, new_exit),
+            ] {
+                if stored != animation {
+                    commands.push(Command::SetTextAnimation {
+                        clip_id: clip.id,
+                        edge,
+                        animation: *animation,
+                    });
+                }
+            }
+        }
+        (
+            ClipContent::Graphic { size, elements },
+            ClipContent::Graphic {
+                size: new_size,
+                elements: new_elements,
+            },
+        ) if (size, elements) != (new_size, new_elements) => {
+            commands.push(Command::SetGraphic {
+                clip_id: clip.id,
+                size: *new_size,
+                elements: new_elements.clone(),
+            });
+        }
+        _ => {}
+    }
+    commands
+}
+
 /// `keys` with `value` at `at`: the key that is there keeps its easing, and a
 /// new one leaves in a straight line.
 pub fn with_key(keys: &[Keyframe], at: Time, value: f32) -> Vec<Keyframe> {
@@ -664,6 +786,8 @@ pub fn tone_of_media(kind: MediaKind) -> Tone {
         MediaKind::Audio => Tone::Audio,
         // A table changes pictures, and is filed with them.
         MediaKind::Image | MediaKind::Gif | MediaKind::Lut => Tone::Image,
+        // A font is what titles are set in.
+        MediaKind::Font => Tone::Text,
     }
 }
 
@@ -682,6 +806,7 @@ pub fn icon_of_media(kind: MediaKind) -> crate::icons::Icon {
         MediaKind::Audio => Icon::Music,
         MediaKind::Image | MediaKind::Gif => Icon::Image,
         MediaKind::Lut => Icon::Cube,
+        MediaKind::Font => Icon::Text,
     }
 }
 
@@ -695,6 +820,14 @@ pub fn icon_of_track(kind: TrackKind) -> crate::icons::Icon {
 }
 
 /// The platform's name for the command modifier, for tooltips and menus.
+/// The largest interface scale this window has room for: see
+/// [`crate::settings::largest_scale`].
+pub fn largest_scale(ctx: &eframe::egui::Context) -> f32 {
+    // The window's size at 100%, whatever the scale now.
+    let size = ctx.content_rect().size() * ctx.zoom_factor();
+    crate::settings::largest_scale([size.x, size.y])
+}
+
 pub fn shortcut(keys: &str) -> String {
     if cfg!(target_os = "macos") {
         keys.replace("Cmd+", "⌘")

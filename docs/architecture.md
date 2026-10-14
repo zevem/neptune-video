@@ -14,8 +14,13 @@ the evidence in
 | `editor-store` | Versioned documents, protected document sessions, atomic replacement, autosave, recovery bindings and the project's media folder for takes and stems | Immutable project/history snapshots and explicit destination ownership in, load/save/conflict results out |
 | `editor-media` | File/folder import, source probing, image/GIF/video decoding, cached frames, PCM audio mixing with the voice filter chain and its probe, voiceover capture to WAV, `.cube` table reading, the analysis lane (region tracking, camera-motion measurement and its on-disk cache) and the sound lane (peaks and their on-disk cache, loudness, beats, a sound written to a file, stem separation) | Owned metadata, frame/audio results and analysis results carrying project, request and source identity; codec and live worker details remain private |
 | Desktop composition | Controller integration, worker scheduling, clipboard, file dialogs, input and playback clock | Converts UI actions and completions into targeted commands |
+
+| `editor-core` | Project settings, assets, folders, tracks, clips, markers, effects, masks, animation tracks, time maps, transitions, trackers, title styles, text animations, word times, graphics, caption languages, SubRip/WebVTT text, edit validation, history, frame timing and the pure `resolve` to a render plan | No windows, filesystem, font files, decoder handles, GPU or live workers |
+| `editor-store` | Versioned documents, protected document sessions, atomic replacement, autosave and recovery bindings | Immutable project/history snapshots and explicit destination ownership in, load/save/conflict results out |
+| `editor-media` | File/folder import, source probing, image/GIF/video decoding, cached frames, PCM audio mixing, `.cube` table reading, the analysis lane (region tracking, camera-motion measurement and its on-disk cache), the text renderer and title lane (fonts, shaping, title pictures) and the speech lane (model downloads, offline 16 kHz mix, whisper.cpp) | Owned metadata, frame/audio results, title pictures, words and analysis results carrying project, request and source identity; codec, font and live worker details remain private |
+| Desktop composition | Controller integration, worker scheduling, clipboard, file dialogs, input, playback clock, title textures, the preset file and subtitle file reads and writes | Converts UI actions and completions into targeted commands |
 | Compositor (`src/compose`) | Off-screen wgpu passes, WGSL pixel math, `ComposeBudget`, lookup-table textures | Draws a render plan's non-plain runs into one canvas texture while the interface is drawn; never asks for a repaint; falls back to the mesh path |
-| Native UI | Media library with effects/transitions/looks tabs, preview, timeline with keyframe lane and graph editor, sectioned inspector, dialogs and accessible controls | Draws prepared state and emits actions |
+| Native UI | Media library with text, captions, effects, transitions and looks tabs, preview, timeline with keyframe lane and graph editor, sectioned inspector, dialogs and accessible controls | Draws prepared state and emits actions |
 | `editor-agent` | Command/schema discovery, guarded local transport, native provider processes, captured planning context and edit proposals | Providers return data; reviewed application uses the same validated reducer as the UI |
 
 The root desktop package is `aster-editor`, with `aster` and `aster-agent`
@@ -164,8 +169,8 @@ one command, or one batch, when the gesture ends. A time-map draft is the
 exception: `ClipOverride` carries no map, so a speed-curve drag is shown in
 the graph and the duration only until release.
 
-A text clip is not composited: it is interface geometry and parts the plan
-into runs, each composited on a canvas of its own. A blended layer above a
+A title is not composited: it is drawn from its title-lane picture as one
+quad and parts the plan into runs, each composited on a canvas of its own. A blended layer above a
 title therefore blends only with the media between the two. The mesh path
 blends in gamma space and the compositor in linear light, so a
 half-transparent layer changes shade when its plan stops being plain. Both
@@ -186,7 +191,7 @@ the window's bounded table, and the project holds only the `Stabilize` effect.
 
 ## Audio editing
 
-[ADR 0007](adr/0007-sound-is-levels-in-the-mixer-and-filters-in-the-decoder.md)
+[ADR 0008](adr/0008-sound-is-levels-in-the-mixer-and-filters-in-the-decoder.md)
 records the decision; [the design](../.scratch/audio-editing/spec.md) holds the
 binding rules, the owner decisions and their dated changes. This section says
 where things live; how the mixer, the chain and the recorder work is under
@@ -232,6 +237,63 @@ nothing is offered to the project that came after.
 A person starts every one of these jobs and the recording; none is a command,
 so an agent and the headless CLI can write their results and cannot start
 them. Bounds are in [performance](performance.md#audio-editing-budgets).
+
+## Titles, captions and speech
+
+[ADR 0007](adr/0007-titles-and-captions-are-clips-drawn-off-the-frame.md)
+records the decision; [the design](../.scratch/titles-and-captions/spec.md)
+holds the binding rules. This section says where things live.
+
+| Concern | Owner |
+| --- | --- |
+| `TextStyle`, `TextAnimation`, `WordTime`, `Element`, the word count, realignment and the spread of a progress over units | [title.rs](../crates/editor-core/src/title.rs) |
+| SubRip and WebVTT parsing and formatting, cue grouping of spoken words | [captions.rs](../crates/editor-core/src/captions.rs) |
+| `SetText`, `SetTextStyle`, `SetTextAnimation`, `SetWords`, `SetGraphic`, `SetTrackLanguage`, `CopyCaptions`; split, trim and rate rebasing of words and animations | The reducer in [editor.rs](../crates/editor-core/src/editor.rs) |
+| Motions and karaoke word state in the plan (`LayerSource::Text`, `LayerSource::Graphic`) | [render.rs](../crates/editor-core/src/render.rs) |
+| Font book, shaping, layout, the picture, graphic elements | [editor-media/src/text](../crates/editor-media/src/text) |
+| The title lane (`aster-titles`) | [text/lane.rs](../crates/editor-media/src/text/lane.rs) |
+| Model catalog, downloads through `curl`, the offline mix, whisper.cpp and the speech lane (`aster-speech`) | [editor-media/src/speech.rs](../crates/editor-media/src/speech.rs) |
+| Title textures the window holds | [src/titles.rs](../src/titles.rs) |
+| Speech choices, the one command captions become, and when they wait | [src/speech.rs](../src/speech.rs) |
+| Kept looks and brand colours | [src/presets.rs](../src/presets.rs) |
+| Language names and tags | [src/languages.rs](../src/languages.rs) |
+| Inspector Text, Graphic and Animate sections | [src/ui/inspector/text.rs](../src/ui/inspector/text.rs) |
+| Library Text tab and its built-in catalog | [src/ui/text_tab.rs](../src/ui/text_tab.rs), [text_tab/catalog.rs](../src/ui/text_tab/catalog.rs) |
+| Library Captions tab, the speech panel and caption translation requests | [src/ui/captions_tab.rs](../src/ui/captions_tab.rs), [captions_tab/generate.rs](../src/ui/captions_tab/generate.rs) |
+
+The core holds styles as data and never reads a font: a style names a family,
+and the media crate looks it up in the project's font assets, the bundled Geist
+faces and the system's faces, in that order. The system's faces are listed
+once, on the lane's thread: the first time a title needs a family or a
+character that the project and bundled faces lack, or a Text section asks for
+the families.
+
+A title reaches the screen in four steps. `resolve` gives its layer the text,
+style, motions and word state at the frame-snapped time. The window asks the
+lane for a picture when that layer, its quantized on-screen scale or the
+project's fonts change. The lane draws the newest request per title and
+answers with the clip, the exact layer and a serial. The window keeps the last
+picture of each title on screen and draws it as one quad until a newer one
+comes. An answer for a layer no longer asked for is dropped, and a replaced
+project clears every texture.
+
+Drafts work as they do for clips: the inspector hands `resolve` a
+`ClipOverride::content`, the lane draws the draft's picture, and releasing the
+pointer or leaving the field commits one command, or one batch when several
+parts changed.
+
+Speech enters like analysis. The window renders the chosen range of the
+timeline mix offline at 16 kHz on the speech lane, which runs one job at a
+time: a model download or a transcription. Words come back with the project
+and request they were made for, and `speech::generated` turns them into one
+command that adds a caption track. When the project changed meanwhile, or a
+redo or an open plan would be lost, the captions wait in the panel until the
+person adds or discards them. A translation is an ordinary
+[native AI](native-ai.md) proposal whose one command is `CopyCaptions`.
+
+Presets are desktop state, not project state. `presets.json` is read at start,
+written atomically on a worker after a change and again on exit, and moved
+aside rather than overwritten when this build cannot read it.
 
 ## Asynchronous work
 
@@ -332,9 +394,11 @@ undo/redo, unchanged/current baselines and safe unsaved restoration. Headless
 integration evidence is linked in the [agent protocol](agent-protocol.md).
 
 Project documents are versioned independently of live runtime handles. The
-writer emits schema version 3; versions 1 and 2 are read as strict subsets
+writer emits schema version 4; versions 1 to 3 are read as strict subsets
 through serde defaults and are not written, so a build that knows only an
-older version refuses a version 3 file through its future-schema protection.
+older version refuses a version 4 file through its future-schema protection.
+Version 3 added titles, graphics and captions; version 4 added fades, track
+volume and solo, and audio effects.
 The clipboard text follows the same rule. Derived stabilization data is not in the document.
 Loading passes through core validation. A future schema, damaged or unreadable document
 is protected from replacement; restore available recovery as unsaved work and
