@@ -2,8 +2,8 @@
 //! cancellation kills only registered children, and the UI never joins workers.
 use crate::{MediaError, io};
 use std::{
-    io::Read,
-    process::{Child, ChildStdout, Command, Stdio},
+    io::{Read, Write},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Arc, Condvar, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
@@ -95,6 +95,9 @@ pub(crate) struct Process {
     pub child: Arc<Mutex<Child>>,
     pub stdout: ChildStdout,
     stderr: Arc<Mutex<Vec<u8>>>,
+    /// Set only by `spawn_writer`: the child's input pipe until closed.
+    stdin: Option<ChildStdin>,
+    stderr_reader: Option<thread::JoinHandle<()>>,
     monitor: Monitor,
     tool: String,
 }
@@ -104,9 +107,40 @@ impl Process {
         command: &mut Command,
         processes: &Processes,
     ) -> Result<Self, MediaError> {
+        Self::spawn_with(tool, command, processes, Stdio::null())
+    }
+
+    /// Like `spawn`, with the child's input a pipe this process writes with
+    /// `write_until`. Each write arms the same deadline monitor reads use, so
+    /// a child that stops reading is killed rather than blocking its writer.
+    /// A writer that stops writing (a paused export) arms nothing.
+    pub fn spawn_writer(
+        tool: &str,
+        command: &mut Command,
+        processes: &Processes,
+    ) -> Result<Self, MediaError> {
+        let mut process = Self::spawn_with(tool, command, processes, Stdio::piped())?;
+        process.stdin = process
+            .child
+            .lock()
+            .map_err(|_| MediaError::Closed)?
+            .stdin
+            .take();
+        if process.stdin.is_none() {
+            return Err(MediaError::Decode(format!("{tool} has no input pipe")));
+        }
+        Ok(process)
+    }
+
+    fn spawn_with(
+        tool: &str,
+        command: &mut Command,
+        processes: &Processes,
+        stdin: Stdio,
+    ) -> Result<Self, MediaError> {
         let epoch = processes.epoch.load(Ordering::Acquire);
         command
-            .stdin(Stdio::null())
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(windows)]
@@ -130,10 +164,12 @@ impl Process {
         };
         let error_pipe = child.stderr.take();
         let child = Arc::new(Mutex::new(child));
-        let instance = Self {
+        let mut instance = Self {
             child,
             stdout,
             stderr: Arc::new(Mutex::new(Vec::new())),
+            stdin: None,
+            stderr_reader: None,
             monitor: Arc::new((Mutex::new(Deadline::default()), Condvar::new())),
             tool: tool.into(),
         };
@@ -147,7 +183,7 @@ impl Process {
         }
         if let Some(mut pipe) = error_pipe {
             let tail = Arc::clone(&instance.stderr);
-            thread::Builder::new()
+            let reader = thread::Builder::new()
                 .name("aster-media-stderr".into())
                 .spawn(move || {
                     let mut bytes = [0; 1024];
@@ -165,6 +201,7 @@ impl Process {
                     }
                 })
                 .map_err(|error| io("Cannot start media error reader", error))?;
+            instance.stderr_reader = Some(reader);
         }
         let monitor_child = Arc::clone(&instance.child);
         let monitor = Arc::clone(&instance.monitor);
@@ -236,6 +273,84 @@ impl Process {
         self.monitor.1.notify_all();
         completed
     }
+    /// Writes all of `bytes` to the child's input, killing the child if the
+    /// write has not finished by `at`. A failed or late write leaves this
+    /// process unusable: the caller discards it.
+    pub fn write_until(&mut self, bytes: &[u8], at: Instant) -> Result<(), MediaError> {
+        let Some(stdin) = self.stdin.as_mut() else {
+            return Err(MediaError::Invalid(format!(
+                "{} input is already closed",
+                self.tool
+            )));
+        };
+        if !self
+            .monitor
+            .0
+            .lock()
+            .is_ok_and(|mut deadline| deadline.arm(at, Instant::now()))
+        {
+            self.monitor.1.notify_all();
+            return Err(self.failure("could not be given more input"));
+        }
+        self.monitor.1.notify_all();
+        let written = stdin.write_all(bytes);
+        let completed = self.end_read_checked();
+        match written {
+            Ok(()) if completed => Ok(()),
+            Ok(()) => Err(self.failure("did not take its input in time")),
+            Err(error) => Err(self.failure(&format!("stopped taking input ({error})"))),
+        }
+    }
+
+    /// Closes the child's input so it sees the end of its stream.
+    pub fn close_input(&mut self) {
+        self.stdin = None;
+    }
+
+    /// Waits up to `until` for the child to exit. The child mutex is never
+    /// held while sleeping: cancellation and the watchdog need it.
+    pub fn wait_until(
+        &self,
+        until: Instant,
+    ) -> Result<Option<std::process::ExitStatus>, MediaError> {
+        let mut pause = Duration::from_millis(2);
+        loop {
+            if let Some(status) = self
+                .child
+                .lock()
+                .map_err(|_| MediaError::Closed)?
+                .try_wait()
+                .map_err(|error| io(format!("Cannot wait for {}", self.tool), error))?
+            {
+                return Ok(Some(status));
+            }
+            let now = Instant::now();
+            if now >= until {
+                return Ok(None);
+            }
+            // A long encode's end is waited for without spinning.
+            thread::sleep(pause.min(until - now));
+            pause = (pause * 2).min(Duration::from_millis(50));
+        }
+    }
+
+    /// Everything the child has written to its error output, up to its last
+    /// 8 KiB, once that output has closed or `until` has passed.
+    pub fn stderr_until(&mut self, until: Instant) -> String {
+        if let Some(reader) = self.stderr_reader.take() {
+            while !reader.is_finished() && Instant::now() < until {
+                thread::sleep(Duration::from_millis(2));
+            }
+            if !reader.is_finished() {
+                self.stderr_reader = Some(reader);
+            }
+        }
+        self.stderr
+            .lock()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default()
+    }
+
     pub fn failure(&self, detail: &str) -> MediaError {
         let tail = self
             .stderr
@@ -468,5 +583,59 @@ mod tests {
             assert!(Instant::now() < until, "cancelled decoder did not exit");
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn a_write_deadline_kills_a_child_that_stops_reading_its_input() {
+        if !tool_command("ffmpeg")
+            .arg("-version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            eprintln!("FFmpeg is unavailable; subprocess write deadline fixture skipped");
+            return;
+        }
+        let processes = Processes::default();
+        let mut command = tool_command("ffmpeg");
+        // This child never reads its input, so a large write fills the pipe.
+        command.args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-f",
+            "null",
+            "-",
+        ]);
+        let mut process = Process::spawn_writer("ffmpeg", &mut command, &processes).unwrap();
+        let started = Instant::now();
+        let written = process.write_until(&vec![0; 8 << 20], started + Duration::from_millis(200));
+        assert!(written.is_err());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let status = process
+            .wait_until(Instant::now() + Duration::from_secs(3))
+            .unwrap();
+        assert!(status.is_some_and(|status| !status.success()));
+        // A dead writer takes nothing more.
+        assert!(
+            process
+                .write_until(&[0; 4], Instant::now() + Duration::from_secs(1))
+                .is_err()
+        );
+        // Plain children still get no input pipe.
+        let mut command = tool_command("ffmpeg");
+        command.arg("-version");
+        let mut plain = Process::spawn("ffmpeg", &mut command, &processes).unwrap();
+        assert!(
+            plain
+                .write_until(&[0; 4], Instant::now() + Duration::from_secs(1))
+                .is_err()
+        );
     }
 }

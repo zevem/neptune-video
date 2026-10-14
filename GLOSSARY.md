@@ -34,7 +34,10 @@ out-point.
 
 **Proxy**:
 A lower-cost representation of an asset used for interactive editing while its
-original source remains authoritative.
+original source remains authoritative. Here it is a smaller copy of a video
+without sound, kept in a cache outside the project; only the preview's pictures
+read it, and an export never does. A video with transparency has none.
+_Avoid_: Optimized media, preview file
 
 **Offline asset**:
 An asset whose source media is currently unavailable. Its clips and editing
@@ -387,7 +390,85 @@ the source, which is hidden.
 
 **Subtitle file**:
 A SubRip (`.srt`) or WebVTT (`.vtt`) file. Importing one makes a caption track;
-exporting writes the caption track in view.
+exporting writes the caption track in view. An export can also write one
+beside its video file.
+
+## Export and rendering
+
+**Export**:
+A file made from the timeline, or a range of it: the picture the preview
+composes, drawn from the original media at the chosen size, with the
+timeline's sound. It reads a snapshot of the project taken when it was queued
+and changes nothing in the project.
+_Avoid_: Save, render when meaning the file
+
+**Export preset**:
+A named set of export settings, such as Recommended, YouTube 1080p or Audio
+(WAV). Built-in presets come with the editor; the person's own are kept beside
+the settings, never in a project. Choosing one copies its settings into the
+export dialog.
+_Avoid_: Look preset, template
+
+**Export range**:
+The part of the timeline an export covers: the whole timeline, from zero to
+the end of its last clip, or a span from a start to an end. A span is widened
+to whole output frames.
+_Avoid_: Selection when meaning the exported span; the selection of clips is
+one way to choose it
+
+**Render job**:
+One export waiting in, running in or finished in the render queue: its
+project snapshot, settings, destination, state and progress. Retry renders the
+same snapshot again.
+_Avoid_: Task, export when meaning the queued work
+
+**Render queue**:
+The list of render jobs, run one at a time in list order in the background.
+Jobs can be paused, resumed, cancelled, retried, reordered while waiting and
+removed once finished. Two unfinished jobs never write the same file.
+
+**Held job**:
+A render job queued with Add to queue, or paused before its turn. It waits
+until the person starts it, while the jobs after it render. A job paused
+after it started is not held: it keeps the jobs after it waiting.
+_Avoid_: Queued or waiting, which are jobs that will start on their own
+
+**Hardware encoder**:
+A video encoder in a graphics or media chip (NVIDIA NVENC, AMD AMF, Intel Quick
+Sync, Apple VideoToolbox, VA-API or Media Foundation), driven through FFmpeg.
+It is offered only when it encoded a test picture on this computer. Export
+still decodes its sources in software.
+_Avoid_: Hardware acceleration, which also suggests decoding
+
+**Capabilities**:
+What this computer's FFmpeg was found able to write: the containers whose
+muxer exists and the encoders that encoded a test picture, with the reason for
+each that did not. The editor checks them in the background and offers nothing
+else.
+_Avoid_: Supported formats, which suggests a fixed list
+
+**Part file**:
+The hidden file, `.<name>.<job>.part`, that an export is written to in its
+destination folder. It is renamed over the destination only after FFmpeg
+finished and the file was checked, and removed if the job fails or is
+cancelled. Its job's working files, the rendered sound among them, are in a
+hidden working folder, `.aster-render-<job>`, beside it.
+_Avoid_: Temporary file, which is the job's working folder
+
+**Preview quality**:
+The person's choice of how much detail the viewer decodes and composites:
+Auto, Full, Half or Quarter. Auto is Full until frames come late during
+playback, then Half until playback stops. It never changes an export.
+_Avoid_: Resolution, which is the export's output size
+
+**Proxy switching**:
+The viewer reading a video's proxy instead of the original for one layer's
+pictures, when proxies are not off, a proxy of the file as it is now is ready,
+and it has at least the pixels the layer is drawn at, after the viewer's
+budget and, while playing, the size already granted. Otherwise the layer
+reads the original, as it does for a proxy file that failed to decode until
+that proxy is removed or made again. A layer that switches asks for its frames afresh and keeps
+its picture until the first one comes.
 
 ## History and agents
 

@@ -7,6 +7,7 @@ pub mod animate;
 pub mod captions;
 mod command;
 mod editor;
+pub mod export;
 pub mod look;
 mod model;
 mod playback;

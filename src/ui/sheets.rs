@@ -7,7 +7,8 @@ use super::{
 use crate::{
     ai::{Effort, Provider},
     icons::{self, Icon},
-    settings::{Scale, Settings},
+    proxies::Cache,
+    settings::{PreviewQuality, PreviewSettings, ProxyMode, Scale, Settings},
     theme::{self, Accent, Appearance, Palette, metrics},
 };
 use eframe::egui::{
@@ -33,6 +34,15 @@ pub enum Overlay {
     Unsaved(Pending),
     /// A save was refused because another writer has the file.
     Conflict(Conflict),
+    /// The export sheet; its state is the application's while it is open.
+    Export,
+    /// An export would replace this file, which is there: asked over the
+    /// export sheet, which keeps its state.
+    ReplaceExport(String),
+    /// The render queue.
+    RenderQueue,
+    /// Quitting would stop exports that are rendering or waiting.
+    StopRendering,
 }
 
 /// A save that was not made, so that another writer's work is not replaced.
@@ -96,7 +106,7 @@ pub struct Notice {
     pub until: f64,
 }
 
-fn sheet(p: &Palette) -> egui::Frame {
+pub(crate) fn sheet(p: &Palette) -> egui::Frame {
     egui::Frame::NONE
         .fill(p.elevated)
         .stroke(Stroke::new(1.0, p.border))
@@ -129,11 +139,130 @@ fn switch(ui: &mut Ui, p: &Palette, on: bool, label: &str) -> bool {
     response.clicked()
 }
 
-/// The settings sheet. Returns whether it should close.
+/// The proxy cache sizes offered, in GiB.
+const PROXY_BUDGETS: [u32; 7] = [5, 10, 20, 50, 100, 200, 500];
+
+/// What a note under a control says of each quality.
+fn quality_note(quality: PreviewQuality) -> &'static str {
+    match quality {
+        PreviewQuality::Auto => "Full detail, and half while playback cannot keep up.",
+        PreviewQuality::Full => "Every pixel the screen shows, decoded and composited.",
+        PreviewQuality::Half => "Half the detail, for smoother playback.",
+        PreviewQuality::Quarter => "A quarter of the detail, for the smoothest playback.",
+    }
+}
+
+/// How much the proxy cache holds of its budget, as "3.2 GB of 20 GB".
+/// Gigabytes here are those of the budget: 2³⁰ bytes.
+pub(crate) fn cache_usage(bytes: u64, budget_gib: u32) -> String {
+    const MIB: f64 = (1u64 << 20) as f64;
+    const GIB: f64 = (1u64 << 30) as f64;
+    let held = bytes as f64;
+    let used = if bytes == 0 {
+        "Nothing".to_owned()
+    } else if held >= GIB / 10.0 {
+        format!("{:.1} GB", held / GIB)
+    } else {
+        format!("{:.0} MB", (held / MIB).max(1.0))
+    };
+    format!("{used} of {budget_gib} GB")
+}
+
+/// A line of muted text under a control, wrapped.
+fn note(ui: &mut Ui, p: &Palette, text: &str) {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .font(theme::regular(11.5))
+                .color(p.muted),
+        )
+        .wrap(),
+    );
+}
+
+/// The rows of the settings sheet's Preview section.
+fn preview(
+    ui: &mut Ui,
+    p: &Palette,
+    preview: &PreviewSettings,
+    cache: Cache,
+    actions: &mut Vec<Action>,
+) {
+    row(ui, p, "Quality", |ui| {
+        let mut quality = preview.quality;
+        let options = PreviewQuality::ALL.map(|quality| (quality, quality.name()));
+        if widgets::segmented(ui, p, &mut quality, &options, 236.0) {
+            actions.push(Action::SetPreviewQuality(quality));
+        }
+    });
+    note(ui, p, quality_note(preview.quality));
+    row(ui, p, "Proxies", |ui| {
+        let mut mode = preview.proxies;
+        let options = ProxyMode::ALL.map(|mode| (mode, mode.name()));
+        if widgets::segmented(ui, p, &mut mode, &options, 180.0) {
+            actions.push(Action::SetProxyMode(mode));
+        }
+    });
+    note(
+        ui,
+        p,
+        "Proxies are smaller copies used only for preview; exports always use the \
+         original media.",
+    );
+    if !cache.available {
+        note(ui, p, "Proxies are unavailable on this computer.");
+        return;
+    }
+    row(ui, p, "Cache size", |ui| {
+        let chosen = preview.proxy_budget_gib;
+        let mut pick = chosen;
+        egui::ComboBox::from_id_salt("proxy-budget")
+            .icon(widgets::combo_icon)
+            .selected_text(format!("{chosen} GB"))
+            .width(96.0)
+            .show_ui(ui, |ui| {
+                // A size kept from elsewhere stays offered.
+                if !PROXY_BUDGETS.contains(&chosen) {
+                    ui.selectable_value(&mut pick, chosen, format!("{chosen} GB"));
+                }
+                for gib in PROXY_BUDGETS {
+                    ui.selectable_value(&mut pick, gib, format!("{gib} GB"));
+                }
+            })
+            .response
+            .widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Proxy cache size")
+            });
+        if pick != chosen {
+            actions.push(Action::SetProxyBudget(pick));
+        }
+    });
+    let usage = cache_usage(cache.bytes, preview.proxy_budget_gib);
+    row(ui, p, &usage, |ui| {
+        let empty = cache.proxies == 0;
+        let clear = ui
+            .add_enabled_ui(!empty, |ui| {
+                widgets::button(ui, p, Some(Icon::Trash), "Clear proxies", Kind::Plain)
+            })
+            .inner
+            .on_hover_text(
+                "Remove every proxy. None is made again until you ask for one or reopen the \
+                 project.",
+            )
+            .on_disabled_hover_text("There are no proxies to clear");
+        if clear.clicked() {
+            actions.push(Action::ClearProxies);
+        }
+    });
+}
+
+/// The settings sheet. `cache` is what the proxy cache holds now. Returns
+/// whether it should close.
 pub fn settings(
     ctx: &egui::Context,
     p: &Palette,
     settings: &Settings,
+    cache: Cache,
     actions: &mut Vec<Action>,
 ) -> bool {
     let mut close = false;
@@ -323,6 +452,11 @@ pub fn settings(
                         });
                     });
 
+                    section(ui, p, "Preview");
+                    group(ui, p, |ui| {
+                        preview(ui, p, &settings.preview, cache, actions)
+                    });
+
                     section(ui, p, "Keyboard");
                     group(ui, p, |ui| {
                         for (what, keys) in SHORTCUTS {
@@ -340,7 +474,7 @@ pub fn settings(
     close || response.should_close()
 }
 
-const SHORTCUTS: [(&str, &str); 31] = [
+const SHORTCUTS: [(&str, &str); 33] = [
     ("Play or pause", "Space"),
     ("Previous or next frame", "← →"),
     ("Back or forward one second", "Shift+← →"),
@@ -371,10 +505,12 @@ const SHORTCUTS: [(&str, &str); 31] = [
     ("Command line", "Cmd+K"),
     ("Save", "Cmd+S"),
     ("Import media", "Cmd+I"),
+    ("Export", "Cmd+E"),
+    ("Render queue", "Shift+Cmd+E"),
     ("Interface size", "Cmd+= Cmd+- Cmd+0"),
 ];
 
-fn group(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
+pub(crate) fn group(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
     egui::Frame::NONE
         .fill(p.control)
         .corner_radius(CornerRadius::same(metrics::CONTROL_RADIUS + 2))
@@ -427,6 +563,149 @@ pub fn unsaved(ctx: &egui::Context, p: &Palette, name: &str, pending: &Pending) 
         answer = Some(Answer::Cancel);
     }
     answer
+}
+
+/// How a short question was answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Choice {
+    /// The primary button, on the right.
+    Primary,
+    /// The button on the left that gives something up.
+    GiveUp,
+    /// The plain button, Escape or the backdrop.
+    Dismissed,
+}
+
+/// A short question with a primary answer on the right, an optional plain
+/// one beside it and an optional one on the left that gives something up.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each question names its own words; a struct would only rename them"
+)]
+fn question(
+    ctx: &egui::Context,
+    p: &Palette,
+    id: &str,
+    title: &str,
+    body: &str,
+    give_up: Option<&str>,
+    primary: &str,
+    plain: Option<&str>,
+) -> Option<Choice> {
+    let mut answer = None;
+    let response = egui::Modal::new(Id::new(id))
+        .backdrop_color(p.scrim)
+        .frame(sheet(p))
+        .show(ctx, |ui| {
+            ui.set_width(380.0f32.min(ui.ctx().content_rect().width() - 64.0));
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(title)
+                        .font(theme::semibold(15.0))
+                        .color(p.fg),
+                )
+                .wrap(),
+            );
+            ui.add_space(2.0);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(body)
+                        .font(theme::regular(12.5))
+                        .color(p.secondary),
+                )
+                .wrap(),
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if let Some(text) = give_up
+                    && widgets::button(ui, p, None, text, Kind::Destructive).clicked()
+                {
+                    answer = Some(Choice::GiveUp);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::button(ui, p, None, primary, Kind::Primary).clicked() {
+                        answer = Some(Choice::Primary);
+                    }
+                    if let Some(text) = plain
+                        && widgets::button(ui, p, None, text, Kind::Plain).clicked()
+                    {
+                        answer = Some(Choice::Dismissed);
+                    }
+                });
+            });
+        });
+    if answer.is_none() && response.should_close() {
+        answer = Some(Choice::Dismissed);
+    }
+    answer
+}
+
+/// Asks before an export replaces `file`, which is in `folder`, and `also`,
+/// its caption file, when that is there too. `true` replaces them; Cancel,
+/// Escape and the backdrop answer `false`.
+pub fn replace_export(
+    ctx: &egui::Context,
+    p: &Palette,
+    file: &str,
+    also: Option<&str>,
+    folder: &str,
+) -> Option<bool> {
+    let (title, body) = match also {
+        None => (
+            format!("Replace “{file}”?"),
+            format!(
+                "A file with this name is already in “{folder}”. It is replaced once the \
+                 export has finished; until then it stays as it is."
+            ),
+        ),
+        Some(also) => (
+            format!("Replace “{file}” and “{also}”?"),
+            format!(
+                "Files with these names, the export and its caption file, are already in \
+                 “{folder}”. They are replaced once the export has finished; until then \
+                 they stay as they are."
+            ),
+        ),
+    };
+    let choice = question(
+        ctx,
+        p,
+        "replace-export-sheet",
+        &title,
+        &body,
+        None,
+        "Replace",
+        Some("Cancel"),
+    );
+    choice.map(|choice| choice == Choice::Primary)
+}
+
+/// Asks before quitting stops the `jobs` exports rendering or waiting.
+/// `true` cancels them at once and goes on to quit; Keep rendering, Escape
+/// and the backdrop answer `false`.
+pub fn stop_rendering(ctx: &egui::Context, p: &Palette, jobs: usize) -> Option<bool> {
+    let body = match jobs {
+        1 => "An export is rendering or waiting. Stop and quit cancels it now and \
+              removes its unfinished file; a file it would replace is left as it is. \
+              If you then stay, it can be rendered again from the render queue."
+            .to_owned(),
+        n => format!(
+            "{n} exports are rendering or waiting. Stop and quit cancels them now and \
+             removes their unfinished files; files they would replace are left as they \
+             are. If you then stay, they can be rendered again from the render queue."
+        ),
+    };
+    let choice = question(
+        ctx,
+        p,
+        "stop-rendering-sheet",
+        "Rendering will stop",
+        &body,
+        Some("Stop and quit"),
+        "Keep rendering",
+        None,
+    );
+    choice.map(|choice| choice == Choice::GiveUp)
 }
 
 /// Says that a save was refused for another writer's sake, and asks what to
@@ -707,8 +986,18 @@ fn checkpoint_row(
 }
 
 /// Notices at the top of the viewer, newest last: over the picture's
-/// margin, where they cover no control. They take no input.
-pub fn notices(ctx: &egui::Context, p: &Palette, notices: &[Notice], viewer: Rect) {
+/// margin, where they cover no control. While a sheet is open
+/// (`over_sheet`, or any modal egui knows of) they go to the bottom of the
+/// window, under the sheet, so that they cover neither it nor its
+/// controls: as many as fit there, the newest nearest the edge. They take
+/// no input.
+pub fn notices(
+    ctx: &egui::Context,
+    p: &Palette,
+    notices: &[Notice],
+    viewer: Rect,
+    over_sheet: bool,
+) {
     if notices.is_empty() {
         return;
     }
@@ -717,21 +1006,60 @@ pub fn notices(ctx: &egui::Context, p: &Palette, notices: &[Notice], viewer: Rec
         Id::new("notices"),
     ));
     let now = ctx.input(|i| i.time);
-    let mut y = viewer.top() + 10.0;
-    for notice in notices {
+    let sheet = ctx
+        .memory(|memory| (memory.top_modal_layer()).and_then(|layer| memory.area_rect(layer.id)));
+    let screen = ctx.content_rect();
+    let under = over_sheet || sheet.is_some();
+    let area = if under { screen } else { viewer };
+    let width = (area.width() - 20.0).clamp(160.0, 360.0);
+    let laid: Vec<_> = (notices.iter())
+        .map(|notice| {
+            let galley = painter.layout(
+                notice.text.clone(),
+                theme::regular(12.5),
+                p.fg,
+                width - 46.0,
+            );
+            let height = (galley.size().y + 18.0).max(36.0);
+            (notice, galley, height)
+        })
+        .collect();
+    let at = |top: f32, height: f32| {
+        Rect::from_min_size(
+            pos2(area.center().x - width * 0.5, top),
+            vec2(width, height),
+        )
+    };
+    let mut placed = Vec::with_capacity(laid.len());
+    if under {
+        // Up from the window's edge, newest first, while they stay under
+        // the sheet; the newest is shown even where there is no room.
+        let newest = laid.last().map_or(36.0, |(.., height)| *height);
+        let floor = match sheet {
+            Some(sheet) => ((screen.bottom() - sheet.bottom() - newest) * 0.5).clamp(0.0, 8.0),
+            None => 8.0,
+        };
+        let ceiling = sheet.map_or(screen.top(), |sheet| sheet.bottom());
+        let mut bottom = screen.bottom() - floor;
+        for (notice, galley, height) in laid.into_iter().rev() {
+            let rect = at(bottom - height, height);
+            if rect.top() < ceiling && !placed.is_empty() {
+                break;
+            }
+            bottom = rect.top() - 8.0;
+            placed.push((notice, galley, rect));
+        }
+    } else {
+        let mut top = viewer.top() + 10.0;
+        for (notice, galley, height) in laid {
+            let rect = at(top, height);
+            top = rect.bottom() + 8.0;
+            placed.push((notice, galley, rect));
+        }
+    }
+    for (notice, galley, rect) in placed {
         // The last 200 ms fade the notice out.
         let alpha = ((notice.until - now) / 0.2).clamp(0.0, 1.0) as f32;
-        let width = (viewer.width() - 20.0).clamp(160.0, 360.0);
-        let galley = painter.layout(
-            notice.text.clone(),
-            theme::regular(12.5),
-            p.fg,
-            width - 46.0,
-        );
-        let rect = Rect::from_min_size(
-            pos2(viewer.center().x - width * 0.5, y),
-            vec2(width, (galley.size().y + 18.0).max(36.0)),
-        );
         painter.rect_filled(
             rect,
             CornerRadius::same(metrics::MENU_RADIUS),
@@ -761,7 +1089,6 @@ pub fn notices(ctx: &egui::Context, p: &Palette, notices: &[Notice], viewer: Rec
             galley,
             p.fg.gamma_multiply(alpha),
         );
-        y = rect.bottom() + 8.0;
     }
 }
 
@@ -795,3 +1122,11 @@ pub fn drop_target(ctx: &egui::Context, p: &Palette) {
         p.fg,
     );
 }
+
+#[cfg(test)]
+#[path = "settings_sheet_tests.rs"]
+mod settings_sheet_tests;
+
+#[cfg(test)]
+#[path = "notices_tests.rs"]
+mod notices_tests;

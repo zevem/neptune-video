@@ -3,9 +3,9 @@
 //! The plan depends on the project, the time and the drafts alone, so equal
 //! plans mean there is nothing to repaint.
 use crate::{
-    AnimTrack, AssetId, BlendMode, Clip, ClipContent, ClipId, Effect, EffectKind, Mask, MediaKind,
-    ParamKey, ParamSpec, ParamValue, Project, TextStyle, Time, Track, TrackId, TrackKey, TrackKind,
-    Tracker, Transform, Transition, TransitionKind, look,
+    AnimTrack, Asset, AssetId, BlendMode, Clip, ClipContent, ClipId, Effect, EffectKind, FrameRate,
+    Mask, MediaKind, ParamKey, ParamSpec, ParamValue, Project, TextStyle, Time, Track, TrackId,
+    TrackKey, TrackKind, Tracker, Transform, Transition, TransitionKind, look,
     title::{self, ElementLayer, Motion, WordState},
 };
 use uuid::Uuid;
@@ -234,6 +234,59 @@ impl RenderPlan {
     pub fn is_plain(&self) -> bool {
         self.layers.iter().all(Layer::is_plain)
     }
+}
+
+// Which source frame a timeline frame shows. Preview and export both read
+// sources through these, so they cannot pick different frames.
+
+/// Where the segment of its time map that `clip` is in at `playhead` ends on
+/// the timeline, when it runs back through the source there: it ends earlier
+/// in the source than it starts. A clip without a map never does, and a
+/// freeze goes neither way.
+pub fn backwards_until(clip: &Clip, playhead: Time) -> Option<Time> {
+    let retime = clip.retime.as_ref()?;
+    let last = retime.keys.len().checked_sub(2)?;
+    let index = retime
+        .keys
+        .partition_point(|key| key.at <= playhead - clip.start)
+        .saturating_sub(1)
+        .min(last);
+    let (from, to) = (&retime.keys[index], &retime.keys[index + 1]);
+    (from.ease != crate::Ease::Hold && to.source < from.source).then(|| clip.start + to.at)
+}
+
+/// What a source time is let fall short of the frame it is on. The times of
+/// the timeline are whole microseconds, each rounded down from a frame grid,
+/// and a clip's rate multiplies what its start and the playhead lost by up to
+/// sixteen: the source time of a frame can come out that much before the
+/// frame's own, which would show the one before it.
+pub const SOURCE_SLACK: Time = Time(18);
+
+/// The source time to show, on the asset's own frame grid so that a paused
+/// playhead asks for one frame once, and never past the asset's last frame:
+/// a freeze on the end of a source holds that one.
+///
+/// A frame of the timeline shows the source frame its start is in, and a clip
+/// stops short of the source time it ends on. Played backwards that is the
+/// time it starts on, so there a frame of the timeline shows the source it
+/// has run back to by its own end: the frames of a span reversed are the
+/// frames it shows forwards, last first, and none from past its end.
+pub fn source_frame(project: &Project, asset: &Asset, clip: &Clip, playhead: Time) -> Time {
+    let rate = asset.frame_rate.unwrap_or(project.settings.frame_rate);
+    let at = backwards_until(clip, playhead).map_or(playhead, |end| {
+        (playhead + project.settings.frame_rate.frame_time(1)).min(end)
+    });
+    source_frame_time(asset, rate, clip.source_time(at) + SOURCE_SLACK)
+}
+
+/// The frame of a source to show at `playhead`: on its own grid, and never
+/// past its last one.
+pub fn source_frame_time(asset: &Asset, rate: FrameRate, playhead: Time) -> Time {
+    if asset.kind == MediaKind::Image {
+        return Time::ZERO;
+    }
+    let last = rate.frame_at(Time((asset.duration.0 - 1).max(0)));
+    rate.frame_time(rate.frame_at(playhead.max(Time::ZERO)).min(last))
 }
 
 /// The clip's gain at `playhead`, with its animation applied.

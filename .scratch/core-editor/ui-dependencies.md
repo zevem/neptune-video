@@ -272,3 +272,11 @@ warnings denied and 169 tests (66 frontend, 103 backend), with actual task-local
 FFmpeg/ffprobe enabled. Independent read-only review traced eframe/calloop
 teardown and found no normal Wayland lifetime or protocol blocker. Native
 release evidence and remaining platform gates live in `docs/verification.md`.
+
+## Export and render queue — 2026-10-14
+
+The "Export/render. No API" gap and the "still open: … export" lines above are
+answered by [export and rendering](../export-and-rendering/spec.md): the
+export dialog, render queue panel, preview quality and proxies are specified
+there, and the export draws the same plan the preview draws, through the
+compositor. Window integration is its ticket 09.

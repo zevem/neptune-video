@@ -274,6 +274,8 @@ enum Pick {
     ImportCaptions,
     ExportCaptions(editor_core::TrackId, SubtitleFormat),
     SpeechModel,
+    /// The folder the export sheet writes into.
+    ExportFolder,
 }
 
 /// A subtitle file's cues and the language it names, or why it was not
@@ -460,6 +462,8 @@ pub struct App {
     analysis: Option<AnalysisService>,
     /// Where camera paths are kept between sessions.
     steady_cache: SteadyCache,
+    /// The smaller copies of videos the viewer reads in their place.
+    proxies: crate::proxies::Proxies,
     /// The region being tracked there: one at a time.
     tracking: Option<Tracking>,
     /// The speech worker, started when captions are first made from speech.
@@ -488,6 +492,37 @@ pub struct App {
     dialog: rfd::AsyncFileDialog,
     exit_approved: bool,
     screenshot: Option<(PathBuf, Instant, bool)>,
+
+    /// Exports waiting, rendering and finished, one at a time on a thread
+    /// of their own.
+    renders: crate::export::queue::RenderQueue,
+    /// The export sheet's state while it is open, or while a question is
+    /// asked over it, and as it was left when closed unfinished: opened
+    /// again for the same project, it is shown as it was.
+    export: Option<crate::ui::export_sheet::ExportSheetState>,
+    /// The export sheet's picture of the output at the playhead, drawn on a
+    /// thread of its own while the sheet is open.
+    poster: crate::export::poster::PosterService,
+    /// An export that waits for the answer to "Replace …?": its settings,
+    /// destination, whether it starts now, and the name of a second file
+    /// it replaces (its caption file, when the destination is there too).
+    export_replace: Option<(
+        editor_core::export::ExportSettings,
+        PathBuf,
+        bool,
+        Option<String>,
+    )>,
+    /// The person's saved export presets and the file they are kept in.
+    export_presets: crate::export::presets::ExportPresets,
+    export_presets_path: Option<PathBuf>,
+    /// The newest write of the presets asked for, and the writes made: a
+    /// write that lands after a newer one leaves the file alone, and a file
+    /// that could not be read is moved aside before the first write that
+    /// succeeds.
+    export_presets_asked: u64,
+    export_presets_written: Arc<std::sync::Mutex<crate::export::presets::Writes>>,
+    /// Stopping the exports was agreed to for the quit being asked about.
+    stop_renders: bool,
 }
 
 /// A region the analysis worker is following.
@@ -821,13 +856,12 @@ impl App {
         let ctx = &cc.egui_ctx;
         // A window told where its settings are keeps what it derives beside
         // them, and not with the user's own.
-        let steady_cache = SteadyCache::at(
-            (launch.settings.as_deref())
-                .and_then(Path::parent)
-                .map_or_else(crate::steady::cache_dir, |beside| {
-                    beside.join("stabilization")
-                }),
-        );
+        let steady_dir = (launch.settings.as_deref())
+            .and_then(Path::parent)
+            .map_or_else(crate::steady::cache_dir, |beside| {
+                beside.join("stabilization")
+            });
+        let steady_cache = SteadyCache::at(steady_dir.clone());
         let told_settings = launch.settings.clone();
         let settings_path = launch.settings.or_else(Settings::default_path);
         let settings = settings_path
@@ -878,6 +912,36 @@ impl App {
             _ => (Presets::default(), false),
         };
         let presets = Arc::new(presets);
+        // The saved export presets live beside them, in a file of their own.
+        let export_presets_path =
+            (settings_path.as_deref()).and_then(crate::export::presets::ExportPresets::path_beside);
+        let (export_presets, export_presets_unread) = match export_presets_path
+            .as_deref()
+            .map(crate::export::presets::ExportPresets::read)
+        {
+            Some(crate::export::presets::Read::Presets(presets)) => (presets, false),
+            Some(crate::export::presets::Read::Unreadable(why)) => {
+                problem(format!(
+                    "Your export presets were not read: {why}. The file is kept as it is."
+                ));
+                (crate::export::presets::ExportPresets::default(), true)
+            }
+            _ => (crate::export::presets::ExportPresets::default(), false),
+        };
+        // Exports, and the export sheet's poster, draw on the window's
+        // device, and keep to the camera paths the viewer keeps. Without
+        // FFmpeg the queue says so when asked.
+        let poster = crate::export::poster::PosterService::new(
+            (cc.wgpu_render_state.as_ref())
+                .map(|state| (state.device.clone(), state.queue.clone())),
+            Some(steady_dir.clone()),
+        );
+        let renders = crate::export::queue::RenderQueue::new(
+            wake(ctx),
+            (cc.wgpu_render_state.as_ref())
+                .map(|state| (state.device.clone(), state.queue.clone())),
+            Some(steady_dir),
+        );
         let audio = match AudioService::new(wake(ctx)) {
             Ok(audio) => Some(audio),
             Err(error) => {
@@ -885,6 +949,20 @@ impl App {
                 None
             }
         };
+        // Without proxies the preview reads every original, as it can: said
+        // quietly.
+        let proxies = crate::proxies::Proxies::start(
+            wake(ctx),
+            crate::proxies::Proxies::dir(told_settings.as_deref()),
+            &settings.preview,
+        );
+        if let Some(text) = proxies.problem() {
+            notices.push(Notice {
+                text: text.to_owned(),
+                problem: false,
+                until: NOTICE_SECONDS,
+            });
+        }
         // The live session an external agent connects to.
         let (host, session_path, session_problem) = match AgentHost::new(wake(ctx)) {
             Ok(mut host) => {
@@ -980,6 +1058,7 @@ impl App {
             imports: VecDeque::new(),
             analysis: None,
             steady_cache,
+            proxies,
             tracking: None,
             speech: None,
             speaking: None,
@@ -1001,6 +1080,17 @@ impl App {
                     false,
                 )
             }),
+            renders,
+            export: None,
+            poster,
+            export_replace: None,
+            export_presets,
+            export_presets_path,
+            export_presets_asked: 0,
+            export_presets_written: Arc::new(std::sync::Mutex::new(
+                crate::export::presets::Writes::new(export_presets_unread),
+            )),
+            stop_renders: false,
         };
         app.recovery_dir = app
             .settings_path
@@ -1099,6 +1189,9 @@ impl App {
             self.restart_media();
         }
         self.assets_seen = assets.clone();
+        // Media that came, or is of another file now, may want a proxy.
+        let project = self.editor.project();
+        (self.proxies).library_changed(project, &self.settings.preview, &mut self.textures);
         let Some(source) = &mut self.source else {
             return;
         };
@@ -1316,6 +1409,10 @@ impl App {
         self.viewer.release_canvases();
         self.viewer.titles.clear();
         self.assets_seen = self.editor.project().assets.clone();
+        // Proxies asked for the old project are given up, and the new one's
+        // asked for.
+        let project = self.editor.project();
+        (self.proxies).replaced(project, &self.settings.preview, &mut self.textures);
         self.source = None;
         self.selection.clear();
         self.draft = None;
@@ -1756,6 +1853,17 @@ impl App {
                     Job::Picked(Pick::ImportFolder, path.into_iter().collect())
                 });
             }
+            Pick::ExportFolder => {
+                let mut dialog = dialog.set_title("Export to folder");
+                if let Some(folder) = self.export.as_ref().and_then(|state| state.folder()) {
+                    dialog = dialog.set_directory(folder);
+                }
+                let choice = dialog.pick_folder();
+                self.spawn(ctx, "aster-dialog", move || {
+                    let path = pollster::block_on(choice).map(|file| file.path().to_path_buf());
+                    Job::Picked(Pick::ExportFolder, path.into_iter().collect())
+                });
+            }
         }
     }
 
@@ -1879,6 +1987,11 @@ impl App {
                 self.pick(ctx, Pick::Open);
             }
             Pending::Open(Some(path)) => self.load(ctx, path),
+            // Exports that started while unsaved work was asked about are
+            // asked about too.
+            Pending::Quit if self.renders.busy() && !self.stop_renders => {
+                self.overlay = Overlay::StopRendering;
+            }
             Pending::Quit => {
                 // Quitting with unsaved work was chosen: its copy goes too.
                 self.discard_on_exit = self.editor.is_dirty();
@@ -1916,6 +2029,13 @@ impl App {
                         } else {
                             self.duplicate_to(ctx, with_extension(path));
                         }
+                    }
+                }
+                // The sheet that asked must still be open; otherwise the
+                // answer is dropped.
+                Job::Picked(Pick::ExportFolder, paths) => {
+                    if let Some(state) = self.export.as_mut() {
+                        state.folder_chosen(paths.into_iter().next());
                     }
                 }
                 Job::Picked(Pick::ImportFiles | Pick::ImportFolder | Pick::ImportFonts, paths) => {
@@ -3000,6 +3120,19 @@ impl App {
         }
     }
 
+    /// Takes what the proxy lane published, gives the viewer the person's
+    /// preview choices, and tells the lane which proxies the viewer has open.
+    fn take_proxies(&mut self, ctx: &egui::Context) {
+        let project = self.editor.project();
+        let taken = (self.proxies).take(project, &self.settings.preview, &mut self.textures);
+        if taken.ready {
+            ctx.request_repaint();
+        }
+        for failure in taken.failures {
+            self.notify(ctx, failure, true);
+        }
+    }
+
     /// Hands the layers the frames the worker published while this frame was
     /// composed: see [`take_published_frames`]. An import or a failure it
     /// published is not this moment's, and waits for [`Self::take_media`].
@@ -3117,6 +3250,17 @@ impl App {
                 AgentOperation::Apply { command } => Some(command.label().to_owned()),
                 AgentOperation::Undo => Some("Undo".to_owned()),
                 AgentOperation::Redo => Some("Redo".to_owned()),
+                AgentOperation::ExportCapabilities
+                | AgentOperation::QueueExport { .. }
+                | AgentOperation::RenderJobs
+                | AgentOperation::CancelRender { .. }
+                | AgentOperation::PauseRender { .. }
+                | AgentOperation::ResumeRender { .. }
+                | AgentOperation::RetryRender { .. }
+                | AgentOperation::RemoveRender { .. } => {
+                    self.render_operation(call);
+                    continue;
+                }
             };
             let before = self.editor.revision();
             call.execute(&mut self.editor);
@@ -3135,6 +3279,325 @@ impl App {
                 });
             }
         }
+    }
+
+    /// Render operations are answered from the render queue, never through
+    /// the reducer, and only while their requester still waits: each is
+    /// claimed, answered at once from the queue's state and replied to
+    /// exactly once. A queued export is of the project as the agent
+    /// inspected it, drafts not committed, and is said in the agent panel.
+    fn render_operation(&mut self, call: editor_agent::AgentCall) {
+        let Some(call) = call.claim() else {
+            return;
+        };
+        let presets = &self.export_presets;
+        let result = crate::export::wiring::render_result(
+            &self.renders,
+            &self.editor,
+            &call.request,
+            || crate::export::wiring::offered_presets(presets),
+            self.path.clone(),
+        );
+        if let (AgentOperation::QueueExport { .. }, editor_agent::AgentResult::RenderJob { job }) =
+            (&call.request.operation, &result)
+        {
+            self.agent.push(Entry::External {
+                ok: true,
+                text: format!("Agent: Export {}", job.name),
+            });
+        }
+        let request_id = call.request.request_id.clone();
+        call.reply(editor_agent::AgentResponse {
+            request_id,
+            revision: self.editor.revision(),
+            result,
+        });
+    }
+
+    // ---- Export -----------------------------------------------------------
+
+    /// Opens the export sheet over nothing but the render queue, drafts
+    /// committed first. A sheet closed unfinished for this project comes
+    /// back as it was left. Otherwise it starts from the settings and preset
+    /// last used, over the whole timeline, writing a file named after the
+    /// project into the folder the last export went to, the project's,
+    /// Videos or home.
+    fn open_export(&mut self, ctx: &egui::Context) {
+        if !matches!(self.overlay, Overlay::None | Overlay::RenderQueue) {
+            return;
+        }
+        self.commit_drafts(ctx, true);
+        let context = self.editor.instance_id();
+        self.export_replace = None;
+        if let Some(mut draft) = (self.export.take()).filter(|draft| draft.owner() == Some(context))
+        {
+            draft.reopened();
+            self.export = Some(draft);
+            self.overlay = Overlay::Export;
+            return;
+        }
+        let settings = crate::export::wiring::last_settings(self.settings.export_last.as_ref());
+        let name = crate::export::wiring::file_stem(&self.editor.project().name);
+        let user = directories::UserDirs::new();
+        let videos = (user.as_ref())
+            .and_then(directories::UserDirs::video_dir)
+            .map(Path::to_path_buf);
+        let home = user.as_ref().map(|user| user.home_dir().to_path_buf());
+        let folder = crate::export::wiring::initial_folder(
+            self.settings.export_folder.as_deref(),
+            self.path.as_deref(),
+            videos,
+            home,
+            Path::is_dir,
+        );
+        self.export = Some(
+            ui::export_sheet::ExportSheetState::new(settings, name, folder)
+                .with_owner(context)
+                .with_preset(self.settings.export_preset.clone()),
+        );
+        self.overlay = Overlay::Export;
+    }
+
+    /// Draws the export sheet from the queue's capabilities, the presets,
+    /// the selection and the playhead, with the poster of the output there,
+    /// and does what it answers; under a question asked over it
+    /// (`answering` false) it is only drawn.
+    fn export_sheet(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Palette,
+        project: &Arc<Project>,
+        answering: bool,
+    ) {
+        use crate::export::queue::CapabilityState;
+        use ui::export_sheet::{CapabilityView, ExportSheetInput};
+        let Some(mut state) = self.export.take() else {
+            if answering {
+                self.overlay = Overlay::None;
+            }
+            return;
+        };
+        let poster = self.poster.show(
+            ctx,
+            project,
+            (self.editor.instance_id(), self.editor.revision()),
+            state.settings(),
+            self.playback.position,
+        );
+        let caps = self.renders.capabilities();
+        let view = match &caps {
+            CapabilityState::Probing => CapabilityView::Probing,
+            CapabilityState::Ready(caps) => CapabilityView::Ready(caps),
+            CapabilityState::Failed(why) => CapabilityView::Failed(why),
+        };
+        let presets = crate::export::wiring::offered_presets(&self.export_presets);
+        // What is known without reading anything: camera paths not measured.
+        let steady = &self.viewer.steady;
+        let warnings = crate::export::wiring::warnings(project, state.settings(), |asset| {
+            matches!(
+                steady.status(asset),
+                crate::steady::Status::NotAnalysed
+                    | crate::steady::Status::Stale
+                    | crate::steady::Status::Failed(_)
+            )
+        });
+        let input = ExportSheetInput {
+            project,
+            caps: view,
+            presets: &presets,
+            selection: crate::export::wiring::selection_span(project, &self.selection.clips),
+            playhead: self.playback.position,
+            poster,
+            poster_problem: self.poster.problem(),
+            warnings: &warnings,
+            queue_len: self.renders.jobs().len(),
+        };
+        let answer = ui::export_sheet::show(ctx, p, &mut state, &input);
+        self.export = Some(state);
+        if let Some(answer) = answer.filter(|_| answering) {
+            self.answer_export(ctx, answer);
+        }
+    }
+
+    fn answer_export(&mut self, ctx: &egui::Context, answer: ui::export_sheet::ExportAnswer) {
+        use ui::export_sheet::ExportAnswer;
+        match answer {
+            // What was set is kept for the sheet to be opened again.
+            ExportAnswer::Close => self.overlay = Overlay::None,
+            ExportAnswer::Queue {
+                settings,
+                destination,
+                start_now,
+            } => {
+                // A file there, the export or its caption file, is replaced
+                // only when the person says so.
+                let there = crate::export::wiring::replaced_files(
+                    self.editor.project(),
+                    &settings,
+                    &destination,
+                    crate::export::wiring::file_there,
+                );
+                let mut names = there.iter().map(|path| {
+                    path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |name| name.to_string_lossy().into_owned(),
+                    )
+                });
+                if let Some(file) = names.next() {
+                    self.export_replace = Some((settings, destination, start_now, names.next()));
+                    self.overlay = Overlay::ReplaceExport(file);
+                } else {
+                    self.queue_export(ctx, settings, destination, start_now);
+                }
+            }
+            ExportAnswer::ChooseFolder => self.pick(ctx, Pick::ExportFolder),
+            ExportAnswer::SavePreset { name, settings } => {
+                match self.export_presets.keep(&name, &settings) {
+                    Ok(_) => self.save_export_presets(ctx),
+                    Err(why) => self.notify(ctx, why, true),
+                }
+            }
+            ExportAnswer::DeletePreset(id) => {
+                if self.export_presets.remove(&id).is_some() {
+                    self.save_export_presets(ctx);
+                }
+            }
+            ExportAnswer::Reprobe => self.renders.reprobe(),
+            ExportAnswer::OpenQueue => self.overlay = Overlay::RenderQueue,
+        }
+    }
+
+    /// Queues an export of the project as it is now, drafts committed. The
+    /// sheet closes and its choices are remembered once the queue takes it;
+    /// a refusal is said and the sheet stays open as it was.
+    fn queue_export(
+        &mut self,
+        ctx: &egui::Context,
+        settings: editor_core::export::ExportSettings,
+        destination: PathBuf,
+        start_now: bool,
+    ) {
+        self.commit_drafts(ctx, true);
+        let job = crate::export::wiring::new_job(
+            self.editor.snapshot(),
+            self.editor.instance_id(),
+            self.editor.revision(),
+            settings.clone(),
+            destination.clone(),
+            start_now,
+            self.path.clone(),
+        );
+        match self.renders.enqueue(job) {
+            Ok(_) => {
+                self.settings.export_last = crate::export::wiring::remembered(&settings);
+                self.settings.export_folder = destination.parent().map(Path::to_path_buf);
+                self.settings.export_preset =
+                    (self.export.take()).and_then(|state| state.preset().map(str::to_owned));
+                if start_now {
+                    self.overlay = Overlay::RenderQueue;
+                } else {
+                    self.overlay = Overlay::None;
+                    let file = destination
+                        .file_name()
+                        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+                    self.notify(
+                        ctx,
+                        format!("{file} is held in the render queue; start it there"),
+                        false,
+                    );
+                }
+            }
+            Err(error) => {
+                self.overlay = Overlay::Export;
+                self.notify(ctx, error.to_string(), true);
+            }
+        }
+    }
+
+    fn answer_queue(
+        &mut self,
+        ctx: &egui::Context,
+        answer: ui::render_queue::QueueAnswer,
+        jobs: &[editor_core::export::RenderJobInfo],
+    ) {
+        use ui::render_queue::QueueAnswer;
+        let renders = &self.renders;
+        // A job whose state changed since the panel was drawn refuses the
+        // operation; the panel shows the new state.
+        match answer {
+            QueueAnswer::Close => self.overlay = Overlay::None,
+            QueueAnswer::Pause(id) => _ = renders.pause(id),
+            QueueAnswer::Resume(id) => _ = renders.resume(id),
+            QueueAnswer::Cancel(id) => _ = renders.cancel(id),
+            QueueAnswer::Retry(id) => _ = renders.retry(id),
+            QueueAnswer::Remove(id) => _ = renders.remove(id),
+            QueueAnswer::MoveUp(id) => _ = renders.move_by(id, -1),
+            QueueAnswer::MoveDown(id) => _ = renders.move_by(id, 1),
+            QueueAnswer::ClearFinished => renders.clear_finished(),
+            QueueAnswer::StartAll => _ = renders.resume_all(),
+            QueueAnswer::Reveal(id) => {
+                let file = jobs.iter().find(|job| job.id == id);
+                if let Some(file) = file
+                    && let Err(why) = crate::export::wiring::reveal(&file.destination)
+                {
+                    self.notify(ctx, why, true);
+                }
+            }
+            QueueAnswer::NewExport => self.open_export(ctx),
+        }
+    }
+
+    /// Tells of exports that finished: a short notice for a file made, a
+    /// problem notice for a failure, which also stays in the queue. While
+    /// the queue is open its rows tell it.
+    fn take_renders(&mut self, ctx: &egui::Context) {
+        let open = self.overlay == Overlay::RenderQueue;
+        while let Some(event) = self.renders.poll() {
+            if let Some((text, problem)) = crate::export::wiring::finished_notice(&event, open) {
+                self.notify(ctx, text, problem);
+            }
+        }
+    }
+
+    /// Asks what quitting asks next, or quits.
+    fn ask_to_quit(&mut self, ctx: &egui::Context) {
+        use crate::export::wiring::{CloseQuestion, close_question};
+        self.commit_drafts(ctx, true);
+        match close_question(
+            self.renders.busy(),
+            self.stop_renders,
+            self.editor.is_dirty(),
+        ) {
+            CloseQuestion::Rendering => self.overlay = Overlay::StopRendering,
+            CloseQuestion::Unsaved => self.overlay = Overlay::Unsaved(Pending::Quit),
+            CloseQuestion::None => self.proceed(ctx, Pending::Quit),
+        }
+    }
+
+    /// Writes the saved export presets on a worker. Writes land in the
+    /// order they were asked for: one overtaken by a newer write is not
+    /// made.
+    fn save_export_presets(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.export_presets_path.clone() else {
+            return;
+        };
+        self.export_presets_asked += 1;
+        let asked = self.export_presets_asked;
+        let presets = self.export_presets.clone();
+        let written = Arc::clone(&self.export_presets_written);
+        self.spawn(ctx, "aster-export-presets", move || {
+            let mut writes = written
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Job::Background(match writes.save(&presets, &path, asked) {
+                None | Some(Ok(None)) => Ok(String::new()),
+                Some(Ok(Some(kept))) => Ok(format!(
+                    "The export presets file that could not be read was kept as {}.",
+                    kept.display()
+                )),
+                Some(Err(error)) => Err(format!("Export presets were not saved: {error}")),
+            })
+        });
     }
 
     // ---- Drafts -----------------------------------------------------------
@@ -3243,6 +3706,13 @@ impl App {
                 self.pick(ctx, Pick::ExportCaptions(track, format));
             }
             Action::OpenSettings => self.overlay = Overlay::Settings,
+            Action::OpenExport => self.open_export(ctx),
+            // The export sheet's state is kept for it to be opened again.
+            Action::OpenRenderQueue => {
+                if matches!(self.overlay, Overlay::None | Overlay::Export) {
+                    self.overlay = Overlay::RenderQueue;
+                }
+            }
 
             Action::Edit(command) => {
                 self.commit_drafts(ctx, true);
@@ -3548,6 +4018,30 @@ impl App {
                 self.restyle(ctx);
             }
             Action::SetAutosave(on) => self.settings.autosave = on,
+            Action::SetPreviewQuality(quality) => self.settings.preview.set_quality(quality),
+            Action::SetProxyMode(mode) => {
+                self.settings.preview.set_proxies(mode);
+                let project = self.editor.project();
+                (self.proxies).mode_changed(project, &self.settings.preview, &mut self.textures);
+            }
+            Action::SetProxyBudget(gib) => {
+                self.settings.preview.set_proxy_budget_gib(gib);
+                self.proxies.set_budget(&self.settings.preview);
+            }
+            Action::CreateProxy(asset) => {
+                if let Some(asset) = self.editor.project().assets.get(&asset) {
+                    self.proxies.create(asset, &mut self.textures)?;
+                }
+            }
+            Action::RemoveProxy(asset) => {
+                if let Some(asset) = self.editor.project().assets.get(&asset) {
+                    self.proxies.remove(asset, &mut self.textures);
+                }
+            }
+            Action::ClearProxies => {
+                let project = self.editor.project();
+                self.proxies.clear(project, &mut self.textures);
+            }
 
             Action::AgentSubmit(line) => self.agent_submit(ctx, line),
             Action::AiSubmit(prompt) => self.ai_submit(ctx, prompt),
@@ -4068,6 +4562,10 @@ impl App {
             (command(Key::L), 14),
             (command(Key::T), 18),
         ];
+        // Export and the render queue, which open over nothing else.
+        if let Some(action) = ctx.input_mut(|i| export_chords(i, &self.overlay)) {
+            actions.push(action);
+        }
         let typing = ctx.text_edit_focused();
         for (chord, index) in chords {
             // While a field has the keyboard, undo and select-all are its own.
@@ -4484,6 +4982,7 @@ impl App {
                 clips: &self.selection.clips,
                 playhead: self.playback.position,
                 freeze_hold: self.inspector.freeze_hold(),
+                renders: self.renders.summary(),
             },
             actions,
         );
@@ -4744,11 +5243,16 @@ impl App {
             }
         }
 
+        // The export sheet's poster is drawn only while the sheet is shown.
+        if !matches!(self.overlay, Overlay::Export | Overlay::ReplaceExport(_)) {
+            self.poster.stop();
+        }
         // Sheets and what floats over the window.
         match self.overlay.clone() {
             Overlay::None | Overlay::Conflict(_) => {}
             Overlay::Settings => {
-                if sheets::settings(&ctx, &p, &self.settings, actions) {
+                let cache = self.proxies.cache();
+                if sheets::settings(&ctx, &p, &self.settings, cache, actions) {
                     self.overlay = Overlay::None;
                 }
             }
@@ -4765,6 +5269,49 @@ impl App {
                     Some(CheckpointAnswer::SaveProject) => {
                         self.overlay = Overlay::None;
                         actions.push(Action::Save);
+                    }
+                }
+            }
+            Overlay::Export => self.export_sheet(&ctx, &p, &project, true),
+            Overlay::ReplaceExport(file) => {
+                // Asked over the sheet, which stays in sight under it.
+                self.export_sheet(&ctx, &p, &project, false);
+                let folder = (self.export_replace.as_ref())
+                    .and_then(|(_, destination, ..)| destination.parent())
+                    .and_then(Path::file_name)
+                    .map_or_else(String::new, |folder| folder.to_string_lossy().into_owned());
+                let also = (self.export_replace.as_ref()).and_then(|(.., also)| also.clone());
+                if let Some(replace) =
+                    sheets::replace_export(&ctx, &p, &file, also.as_deref(), &folder)
+                {
+                    // The sheet comes back as it was, unless the export is
+                    // queued.
+                    self.overlay = Overlay::Export;
+                    if let Some((settings, destination, start_now, _)) = self.export_replace.take()
+                        && replace
+                    {
+                        self.queue_export(&ctx, settings, destination, start_now);
+                    }
+                }
+            }
+            Overlay::RenderQueue => {
+                let jobs = self.renders.jobs();
+                let waiting = self.renders.waiting();
+                if let Some(answer) = ui::render_queue::show(&ctx, &p, &jobs, &waiting) {
+                    self.answer_queue(&ctx, answer, &jobs);
+                }
+            }
+            Overlay::StopRendering => {
+                let summary = self.renders.summary();
+                let jobs = summary.active + summary.queued + summary.held;
+                if let Some(stop) = sheets::stop_rendering(&ctx, &p, jobs) {
+                    self.overlay = Overlay::None;
+                    if stop {
+                        // Stopped now, not once quitting is through: they
+                        // stay cancelled should the person stay.
+                        crate::export::wiring::stop_all(&self.renders);
+                        self.stop_renders = true;
+                        self.ask_to_quit(&ctx);
                     }
                 }
             }
@@ -4800,7 +5347,8 @@ impl App {
         {
             self.recovery_sheet(&ctx, &p, offer);
         }
-        sheets::notices(&ctx, &p, &self.notices, viewer);
+        let over_sheet = self.overlay != Overlay::None || self.recover_offer.is_some();
+        sheets::notices(&ctx, &p, &self.notices, viewer, over_sheet);
         if self.files_held {
             sheets::drop_target(&ctx, &p);
         }
@@ -5013,6 +5561,8 @@ impl eframe::App for App {
         self.take_saves(ctx);
         self.take_agent_calls();
         self.take_ai();
+        self.take_renders(ctx);
+        self.take_proxies(ctx);
         while let Some(problem) = self.audio.as_ref().and_then(AudioService::poll) {
             self.notify(ctx, format!("Sound: {problem}"), true);
         }
@@ -5138,12 +5688,19 @@ impl eframe::App for App {
             }
         }
 
-        if ctx.input(|i| i.viewport().close_requested())
-            && !self.exit_approved
-            && self.editor.is_dirty()
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.overlay = Overlay::Unsaved(Pending::Quit);
+        // Closing asks first while exports render or wait, then about
+        // unsaved work.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.exit_approved {
+            self.stop_renders = false;
+            let question = crate::export::wiring::close_question(
+                self.renders.busy(),
+                self.stop_renders,
+                self.editor.is_dirty(),
+            );
+            if question != crate::export::wiring::CloseQuestion::None {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.ask_to_quit(ctx);
+            }
         }
         self.capture(ctx);
     }
@@ -5179,6 +5736,12 @@ impl eframe::App for App {
         if let Some(audio) = &self.audio {
             audio.stop();
         }
+        // Exports stop with the window: their processes are killed and
+        // their unfinished files removed. Quitting asked first.
+        self.renders.shutdown();
+        self.poster.stop();
+        // So does a proxy being written, and its part file.
+        self.proxies.shutdown();
         match self.recovery_base() {
             Some(base) => {
                 let dirty = self.editor.is_dirty();
@@ -5548,6 +6111,34 @@ fn part_with_recovery(
     }
     idle
 }
+
+/// Cmd+E opens the export sheet and Shift+Cmd+E the render queue, the
+/// shifted chord read first. Each is taken from the input whatever is
+/// open, and acts over nothing or over the other of the two, which it
+/// takes the place of; neither opens again over itself nor over another
+/// sheet.
+fn export_chords(input: &mut egui::InputState, overlay: &Overlay) -> Option<Action> {
+    let queue = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::E);
+    let export = KeyboardShortcut::new(Modifiers::COMMAND, Key::E);
+    let action = if input.consume_shortcut(&queue) {
+        Action::OpenRenderQueue
+    } else if input.consume_shortcut(&export) {
+        Action::OpenExport
+    } else {
+        return None;
+    };
+    // Each opens over nothing, and over the other: the export sheet and the
+    // render queue are one press apart.
+    let over = match action {
+        Action::OpenExport => Overlay::RenderQueue,
+        _ => Overlay::Export,
+    };
+    (*overlay == Overlay::None || *overlay == over).then_some(action)
+}
+
+#[cfg(test)]
+#[path = "app_export_tests.rs"]
+mod export_tests;
 
 #[cfg(test)]
 mod tests {

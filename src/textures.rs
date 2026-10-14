@@ -42,12 +42,28 @@
 //! the place of the one shown longest ago, and a poster is asked for only
 //! while those on screen leave it room, so a view of more media than the
 //! budget holds settles with icons for the rest instead of decoding in turns.
+//!
+//! A layer of a video reads its frames from the video's proxy instead, when
+//! proxies are read, one is ready for the video as it is now, and it has at
+//! least the pixels of the box the layer is drawn at; otherwise from the
+//! original. Only the pictures of layers are read so: a proxy is named in no
+//! project and reaches nothing else. A layer that turns from one to the
+//! other asks for its frames afresh, under a consumer of its own, so nothing
+//! decoded from what it read before is taken; it keeps its picture until the
+//! first frame arrives. A proxy that cannot be decoded is not read again in
+//! this session, and the original is read in its place.
+//!
+//! The preview's quality divides the boxes the viewer asks at: see
+//! [`Textures::detail`]. At `Auto` they are those of `Full` until frames are
+//! measured late during playback, and then half, until playback stops.
+use crate::settings::PreviewQuality;
 use editor_core::{Asset, AssetId, ClipId, MediaKind, Time};
-use editor_media::{Frame, MediaError, MediaService, PreviewConsumer};
+use editor_media::{Frame, MediaError, MediaService, PreviewConsumer, Proxy, ProxyStatus};
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use std::{
     cell::Cell,
     collections::{BTreeMap, HashMap, HashSet},
+    path::PathBuf,
 };
 
 /// The size asked for a poster. Frames keep their aspect inside it.
@@ -63,6 +79,14 @@ const LAYER_STEPS: [u32; 17] = [
 ];
 /// The RGBA bytes of one texel.
 const TEXEL: usize = 4;
+/// How many of the last advances of the clock across the layers drawn are
+/// looked at for frames that were late: see [`Preview::advance`].
+const LATE_WINDOW: u32 = 16;
+/// How many of those late steps `Auto` quality down for the rest of the
+/// playback. One late frame, as when a decoder starts, is not enough.
+const LATE_STEP: u32 = 4;
+// The window is the bits of [`Preview::late`].
+const _: () = assert!(LATE_WINDOW == u16::BITS);
 
 /// The RGBA bytes of a picture that fills `size`. A box too large to count
 /// comes to more than any budget.
@@ -76,6 +100,11 @@ fn box_bytes([width, height]: [u32; 2]) -> usize {
 /// `size` with neither side over `cap`, nor under one texel.
 fn held_to(size: [u32; 2], cap: u32) -> [u32; 2] {
     size.map(|side| side.clamp(1, cap))
+}
+
+/// The longer side of `size`.
+fn long_side([width, height]: [u32; 2]) -> u32 {
+    width.max(height)
 }
 
 /// Whether two descriptions of an asset decode to the same pictures and
@@ -190,6 +219,14 @@ struct Layer {
     /// The reading of the layer clock when it was last drawn. No two layers
     /// share one, so the order they were drawn in is never a tie.
     drawn: u64,
+    /// What its frames are read from in the place of its asset: the asset
+    /// with the path and the size of its proxy, and nothing else changed.
+    /// Nothing while the original is read.
+    proxy: Option<Asset>,
+    /// The source time it was last drawn at, which the clock moves on.
+    wanted_at: Option<Time>,
+    /// The service took a request for it whose frame has not come.
+    pending: bool,
 }
 
 impl Layer {
@@ -230,6 +267,9 @@ impl Layer {
     fn jump(&mut self) {
         self.jumped = true;
         self.before = None;
+        // What it waited for is not what it shows now: not waiting for that
+        // is not lateness.
+        self.pending = false;
         // One jump after another leaves what the first left.
         if let Some(admitted) = self.admitted.take() {
             self.left = Some(admitted);
@@ -326,6 +366,86 @@ impl ViewerBudget {
 impl Default for ViewerBudget {
     fn default() -> Self {
         Self::PRODUCTION
+    }
+}
+
+/// What the preview reads in the place of large media, and how much of the
+/// pictures it asks for.
+#[derive(Default)]
+struct Preview {
+    quality: PreviewQuality,
+    /// Proxies are read where one serves.
+    proxies_on: bool,
+    /// What there is of a proxy of each asset, as the proxy service last said.
+    proxies: HashMap<AssetId, ProxyStatus>,
+    /// The proxy file of each asset that could not be decoded in this
+    /// session. That file is not read again; another, or the same path
+    /// written afresh after the proxy stopped being ready, is.
+    unreadable: HashMap<AssetId, PathBuf>,
+    /// The last advances of the clock across the layers drawn while playing,
+    /// newest in the lowest bit: one for an advance made before the frame
+    /// asked for at the last had come.
+    late: u16,
+    /// Frames were measured late in this playback: `Auto` asks at half.
+    stepped: bool,
+}
+
+impl Preview {
+    /// The proxy a layer of `asset` drawn at `size` reads, when one serves:
+    /// proxies are read, the asset is a video whose proxy is ready, of the
+    /// file as the asset says it is now and not the file found unreadable,
+    /// and with as many pixels on its long side as the box.
+    fn serving(&self, asset: &Asset, size: [u32; 2]) -> Option<&Proxy> {
+        if !self.proxies_on || asset.kind != MediaKind::Video {
+            return None;
+        }
+        let proxy = self.ready_readable(asset.id)?;
+        // `SourceIdentity::of(asset)`, field by field and without a copy.
+        let source = &proxy.source;
+        let current = source.path == asset.path
+            && source.file_size == asset.file_size
+            && source.duration == asset.duration
+            && source.width == asset.width
+            && source.height == asset.height
+            && source.frame_rate == asset.frame_rate;
+        (current && long_side(size) <= long_side([proxy.width, proxy.height])).then_some(proxy)
+    }
+
+    /// The ready proxy of `asset`, unless its file is the one that could
+    /// not be decoded.
+    fn ready_readable(&self, asset: AssetId) -> Option<&Proxy> {
+        let ProxyStatus::Ready(proxy) = self.proxies.get(&asset)? else {
+            return None;
+        };
+        (self.unreadable.get(&asset) != Some(&proxy.path)).then_some(proxy)
+    }
+
+    /// The clock moved a layer on while playing; `late` says the frame it
+    /// asked for before had not come. Enough of the last advances late is
+    /// late playback.
+    fn advance(&mut self, late: bool) {
+        self.late = (self.late << 1) | u16::from(late);
+        if self.late.count_ones() >= LATE_STEP {
+            self.stepped = true;
+        }
+    }
+
+    /// Playback stopped: what was measured of it is over.
+    fn stopped(&mut self) {
+        self.late = 0;
+        self.stepped = false;
+    }
+}
+
+/// `asset` as its proxy describes it: the same identity, length and frame
+/// rate, so that its frames are asked for and placed as the original's, but
+/// read from the proxy's file at the proxy's size.
+fn proxied(asset: &Asset, proxy: &Proxy) -> Asset {
+    Asset {
+        path: proxy.path.clone(),
+        width: proxy.width,
+        height: proxy.height,
+        ..asset.clone()
     }
 }
 
@@ -430,6 +550,7 @@ pub struct Textures {
     keeps_frames: bool,
     /// Counts every frame a layer took, so each has a name of its own.
     taken: u64,
+    preview: Preview,
 }
 
 /// The decoded frame a layer shows, for a compositor that uploads its own
@@ -477,8 +598,156 @@ impl Textures {
             // A frame of the project that was is never named again.
             taken: self.taken,
             retired,
+            // The person's choices and the proxies known are not the
+            // project's; assets of another project have other IDs.
+            preview: Preview {
+                late: 0,
+                stepped: false,
+                ..std::mem::take(&mut self.preview)
+            },
             ..Self::default()
         };
+    }
+
+    /// The quality the preview is drawn at.
+    pub fn set_quality(&mut self, quality: PreviewQuality) {
+        self.preview.quality = quality;
+    }
+
+    /// What the long side of every box the viewer asks at, and of every
+    /// canvas it composites, is divided by: 1, 2 or 4. At `Auto`, 2 once
+    /// frames were measured late in this playback, and 1 otherwise: never
+    /// another merely because playback started.
+    pub fn detail(&self) -> u32 {
+        self.preview.quality.divisor(self.preview.stepped)
+    }
+
+    /// Whether frames were measured late in this playback.
+    #[cfg(test)]
+    pub(crate) fn playing_late(&self) -> bool {
+        self.preview.stepped
+    }
+
+    /// Whether proxies are read where one serves. Turned off, every layer
+    /// reading one turns back to its original when it is next composed.
+    pub fn read_proxies(&mut self, on: bool) {
+        self.preview.proxies_on = on;
+    }
+
+    /// Whether proxies are read where one serves: Preview › Proxies is not
+    /// Off.
+    pub fn reads_proxies(&self) -> bool {
+        self.preview.proxies_on
+    }
+
+    /// What the proxy service says there is of a proxy of `asset`. Anything
+    /// but the very proxy file found unreadable being ready forgets that it
+    /// was: a proxy removed, made again or replaced by another is tried.
+    pub fn set_proxy(&mut self, asset: AssetId, status: ProxyStatus) {
+        let same_file = matches!(
+            (&status, self.preview.unreadable.get(&asset)),
+            (ProxyStatus::Ready(proxy), Some(failed)) if proxy.path == *failed
+        );
+        if !same_file {
+            self.preview.unreadable.remove(&asset);
+        }
+        if status == ProxyStatus::None {
+            self.preview.proxies.remove(&asset);
+        } else {
+            self.preview.proxies.insert(asset, status);
+        }
+    }
+
+    /// Forgets every proxy status: the project is another, or the cache was
+    /// emptied.
+    pub fn forget_proxies(&mut self) {
+        self.preview.proxies.clear();
+    }
+
+    /// What the proxy service last said there is of a proxy of `asset`.
+    pub fn proxy_status(&self, asset: AssetId) -> &ProxyStatus {
+        self.preview
+            .proxies
+            .get(&asset)
+            .unwrap_or(&ProxyStatus::None)
+    }
+
+    /// Whether the proxy of `asset` that is ready could not be decoded in
+    /// this session, so its original is read.
+    pub fn proxy_unreadable(&self, asset: AssetId) -> bool {
+        let ready = matches!(
+            self.preview.proxies.get(&asset),
+            Some(ProxyStatus::Ready(_))
+        );
+        ready && self.preview.ready_readable(asset).is_none()
+    }
+
+    /// Forgets that the proxy of `asset` could not be decoded: the person
+    /// asked for it to be made again, or removed it.
+    pub fn forget_unreadable(&mut self, asset: AssetId) {
+        self.preview.unreadable.remove(&asset);
+    }
+
+    /// The proxy files layers read now, each once and in order: those
+    /// decoders may have open.
+    pub fn proxies_open(&self) -> Vec<PathBuf> {
+        let mut open: Vec<PathBuf> = (self.layers.values())
+            .filter_map(|layer| Some(layer.proxy.as_ref()?.path.clone()))
+            .collect();
+        open.sort();
+        open.dedup();
+        open
+    }
+
+    /// The source time the layer kept for `viewing` last asked for, while
+    /// that is what it waits for or shows.
+    #[cfg(test)]
+    pub(crate) fn requested(&self, viewing: Viewing) -> Option<Time> {
+        self.layers.get(self.viewing.get(&viewing)?)?.requested
+    }
+
+    /// The file the layer kept for `viewing` reads its frames from: its
+    /// proxy's, or nothing while it reads the original.
+    #[cfg(test)]
+    pub(crate) fn reads(&self, viewing: Viewing) -> Option<&std::path::Path> {
+        let layer = self.layers.get(self.viewing.get(&viewing)?)?;
+        Some(layer.proxy.as_ref()?.path.as_path())
+    }
+
+    /// The layer `consumer` has reads its frames from `reads` from now on:
+    /// a proxy, or the original for nothing. It is asked again as a layer
+    /// whose box changed is, under a consumer of its own, so whatever was
+    /// asked, decoded or published for it from the other file is not taken,
+    /// and the service lets go of that decoder. Its picture, its box and
+    /// its place among the decoders kept open stay. Returns the consumer it
+    /// has now.
+    fn read_from(&mut self, consumer: PreviewConsumer, reads: Option<Asset>) -> PreviewConsumer {
+        let Some(mut layer) = self.layers.remove(&consumer) else {
+            return consumer;
+        };
+        layer.proxy = reads;
+        layer.requested = None;
+        layer.admitted = None;
+        layer.before = None;
+        layer.left = None;
+        layer.failed = None;
+        layer.waiting = None;
+        layer.pending = false;
+        layer.jumped = true;
+        let fresh = PreviewConsumer::new();
+        self.layers.insert(fresh, layer);
+        for kept in self.viewing.values_mut() {
+            if *kept == consumer {
+                *kept = fresh;
+            }
+        }
+        for place in &mut self.retention {
+            if *place == Some(consumer) {
+                *place = Some(fresh);
+            }
+        }
+        self.retired.push(consumer);
+        fresh
     }
 
     pub fn begin_frame(&mut self) {
@@ -768,7 +1037,7 @@ impl Textures {
             }
             *consumer = Some(self.draw(want.viewing, want.asset.id));
         }
-        let drawn: Vec<PreviewConsumer> = drawn.into_iter().flatten().collect();
+        let mut drawn: Vec<PreviewConsumer> = drawn.into_iter().flatten().collect();
 
         // The most any side is asked at: the same for every layer, and a
         // matter of what is drawn alone, not of what happens to be kept.
@@ -789,6 +1058,57 @@ impl Textures {
             Some(cap) => Some(held_to(size, cap)),
             None => (index < budget.bytes / TEXEL).then_some([1, 1]),
         };
+
+        // Each reads from its proxy where one serves the box it is asked at,
+        // and from its original otherwise. That box is the one it is held to,
+        // and while playing no larger than the one it was granted, which
+        // playback does not grow: a box asked for and never granted would
+        // turn to the original for nothing. A layer that turns from one to
+        // the other is asked for afresh under another consumer.
+        for (index, (want, consumer)) in wanted.iter().zip(&mut drawn).enumerate() {
+            let Some(layer) = self.layers.get(consumer) else {
+                continue;
+            };
+            let target = held(index, want.size).unwrap_or(want.size);
+            let asked = match layer.granted {
+                Some(granted) if playing && long_side(granted) < long_side(target) => granted,
+                _ => target,
+            };
+            let serving = self.preview.serving(want.asset, asked);
+            let same = match (&layer.proxy, serving) {
+                (None, None) => true,
+                (Some(read), Some(proxy)) => {
+                    read.path == proxy.path
+                        && read.width == proxy.width
+                        && read.height == proxy.height
+                }
+                _ => false,
+            };
+            if !same {
+                let reads = serving.map(|proxy| proxied(want.asset, proxy));
+                *consumer = self.read_from(*consumer, reads);
+            }
+        }
+        let drawn = drawn;
+
+        // Whether the frames of this playback come late: each time the clock
+        // moves a video's layer on, whether the frame it asked for at the
+        // time before had come. Paused, nothing is late.
+        for (want, consumer) in wanted.iter().zip(&drawn) {
+            let Some(layer) = self.layers.get_mut(consumer) else {
+                continue;
+            };
+            if layer.wanted_at == Some(want.time) {
+                continue;
+            }
+            let moved_on = layer.wanted_at.replace(want.time).is_some();
+            if playing && moved_on && want.asset.kind == MediaKind::Video && !layer.plate {
+                self.preview.advance(layer.pending);
+            }
+        }
+        if !playing {
+            self.preview.stopped();
+        }
 
         let mut unplaced = 0;
         for (index, (want, consumer)) in wanted.iter().zip(&drawn).enumerate() {
@@ -1002,6 +1322,9 @@ impl Textures {
                 jumped: false,
                 used: self.frame,
                 drawn: self.layer_clock,
+                proxy: None,
+                wanted_at: None,
+                pending: false,
             },
         );
         consumer
@@ -1056,13 +1379,16 @@ impl Textures {
             return;
         }
         let clocked = playing && !layer.jumped;
+        // Only a picture request is ever given the proxy.
+        let read = layer.proxy.as_ref().unwrap_or(asset);
         let asked = if clocked {
-            media.request_playback_preview(consumer, asset, time, size)
+            media.request_playback_preview(consumer, read, time, size)
         } else {
-            media.request_preview(consumer, asset, time, size)
+            media.request_preview(consumer, read, time, size)
         };
         match asked {
             Ok(_) => {
+                layer.pending = true;
                 layer.requested = Some(time);
                 layer.before = layer.admitted.filter(|_| clocked);
                 // The service asks at no time before zero, and says so.
@@ -1491,6 +1817,9 @@ impl Textures {
         }
         // Whichever of the two this is, the earlier one is not taken after it.
         layer.before = None;
+        if layer.admitted == Some(time) {
+            layer.pending = false;
+        }
         let bytes = box_bytes([frame.width, frame.height]);
         if bytes > box_bytes(size) {
             // The frame this layer waited for did not come in a form it can
@@ -1570,6 +1899,14 @@ impl Textures {
         if layer.asset != asset || size.is_some_and(|size| layer.granted != Some(size)) {
             return false;
         }
+        if let Some(proxy) = &layer.proxy {
+            // Its proxy could not be read: the original is, for as long as
+            // that file is the proxy, and there is nothing to tell while it
+            // can be.
+            self.preview.unreadable.insert(asset, proxy.path.clone());
+            self.read_from(consumer, None);
+            return false;
+        }
         layer.failed = layer.requested.take();
         layer.forget_oversized();
         true
@@ -1589,6 +1926,7 @@ impl Textures {
             layer.left = None;
             layer.failed = None;
             layer.waiting = None;
+            layer.pending = false;
             layer.jumped = true;
         }
         self.retention_told = [None; 3];
@@ -2821,3 +3159,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "textures_proxy_tests.rs"]
+mod proxy_tests;

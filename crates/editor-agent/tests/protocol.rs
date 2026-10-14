@@ -1,5 +1,9 @@
 use editor_agent::*;
-use editor_core::{Command, Editor};
+use editor_core::export::{
+    Capabilities, Container, ExportError, ExportRange, ExportSettings, RenderJobInfo, RenderState,
+    builtin_presets,
+};
+use editor_core::{Command, Editor, Time};
 use std::{sync::mpsc, thread, time::Duration};
 
 fn request(operation: AgentOperation, revision: Option<u64>) -> AgentRequest {
@@ -310,4 +314,375 @@ fn a_plan_for_the_same_document_before_reload_cannot_target_its_reset_revision()
     assert!(matches!(response.result,AgentResult::Error{code,..} if code=="stale_context"));
     assert_eq!(reloaded.project().name, "Untitled");
     assert_eq!(reloaded.revision(), 0);
+}
+
+fn render_operations() -> Vec<AgentOperation> {
+    let job = uuid::Uuid::new_v4();
+    vec![
+        AgentOperation::ExportCapabilities,
+        AgentOperation::QueueExport {
+            settings: ExportSettings::default(),
+            destination: std::env::temp_dir().join("aster-never-written.mp4"),
+            overwrite: false,
+        },
+        AgentOperation::RenderJobs,
+        AgentOperation::CancelRender { job },
+        AgentOperation::PauseRender { job },
+        AgentOperation::ResumeRender { job },
+        AgentOperation::RetryRender { job },
+        AgentOperation::RemoveRender { job },
+    ]
+}
+fn targeted(editor: &Editor, operation: AgentOperation) -> AgentRequest {
+    AgentRequest {
+        request_id: "render".into(),
+        expected_revision: Some(editor.revision()),
+        expected_project_id: Some(editor.project().id),
+        expected_context_id: Some(editor.instance_id()),
+        operation,
+    }
+}
+fn code(result: Result<(), AgentResult>) -> String {
+    match result {
+        Err(AgentResult::Error { code, .. }) => code,
+        other => panic!("Expected an error, got {other:?}"),
+    }
+}
+fn job_info() -> RenderJobInfo {
+    RenderJobInfo {
+        id: uuid::Uuid::new_v4(),
+        name: "Film.mp4".into(),
+        destination: "/films/Film.mp4".into(),
+        settings: ExportSettings::default(),
+        project_id: uuid::Uuid::new_v4(),
+        revision: 7,
+        state: RenderState::Rendering,
+        progress: 0.25,
+        frames_done: 30,
+        frames_total: 120,
+        speed_fps: 60.0,
+        elapsed_seconds: 0.5,
+        eta_seconds: Some(1.5),
+        encoder: Some("libx264".into()),
+        output_bytes: None,
+        context_id: uuid::Uuid::new_v4(),
+        message: None,
+        attempts: 1,
+    }
+}
+
+#[test]
+fn capabilities_name_every_operation_in_the_schema() {
+    let mut editor = Editor::default();
+    let AgentResult::Capabilities { operations, .. } =
+        handle(&mut editor, request(AgentOperation::Capabilities, None)).result
+    else {
+        panic!("Expected capabilities");
+    };
+    let schema = serde_json::to_value(schemars::schema_for!(AgentOperation)).unwrap();
+    let mut tags: Vec<_> = schema["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|variant| {
+            variant["properties"]["operation"]["const"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    let mut named: Vec<_> = operations.iter().map(String::as_str).collect();
+    assert_eq!(named, OPERATIONS);
+    tags.sort_unstable();
+    named.sort_unstable();
+    assert_eq!(named, tags);
+}
+
+#[test]
+fn capabilities_from_an_older_session_parse_without_operations() {
+    let value = r#"{"request_id":"1","revision":0,"result":{"type":"capabilities","protocol_version":1,"commands":[],"command_schema":null}}"#;
+    let response: AgentResponse = serde_json::from_str(value).unwrap();
+    assert!(matches!(
+        response.result,
+        AgentResult::Capabilities { operations, .. } if operations.is_empty()
+    ));
+}
+
+#[test]
+fn render_requests_round_trip() {
+    let job = uuid::Uuid::new_v4();
+    let settings = ExportSettings {
+        range: ExportRange::Span {
+            start: Time(1_000_000),
+            end: Time(3_500_000),
+        },
+        ..ExportSettings::default()
+    };
+    let mut operations = render_operations();
+    operations.push(AgentOperation::QueueExport {
+        settings: settings.clone(),
+        destination: "/films/Cut.mp4".into(),
+        overwrite: true,
+    });
+    for operation in operations {
+        let request = AgentRequest {
+            request_id: "round-trip".into(),
+            expected_revision: Some(4),
+            expected_project_id: Some(job),
+            expected_context_id: Some(job),
+            operation,
+        };
+        let line = serde_json::to_string(&request).unwrap();
+        let parsed: AgentRequest = serde_json::from_str(&line).unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), line);
+        assert_eq!(parsed.expected_revision, Some(4));
+    }
+    let line = format!(r#"{{"request_id":"j","operation":"cancel_render","job":"{job}"}}"#);
+    let parsed: AgentRequest = serde_json::from_str(&line).unwrap();
+    assert!(matches!(parsed.operation, AgentOperation::CancelRender { job: id } if id == job));
+    let line = r#"{"request_id":"q","operation":"queue_export","expected_revision":0,"settings":{"container":"wav","video":null,"audio":{"codec":"pcm24","kbps":0,"sample_rate":48000,"channels":2}},"destination":"/films/Sound.wav"}"#;
+    let AgentOperation::QueueExport {
+        settings,
+        destination,
+        overwrite,
+    } = serde_json::from_str::<AgentRequest>(line)
+        .unwrap()
+        .operation
+    else {
+        panic!("Expected queue_export");
+    };
+    assert_eq!(settings.container, Container::Wav);
+    assert!(settings.video.is_none());
+    assert_eq!(settings.range, ExportRange::Timeline);
+    assert_eq!(destination, std::path::Path::new("/films/Sound.wav"));
+    assert!(!overwrite);
+}
+
+#[test]
+fn render_results_round_trip() {
+    let job = job_info();
+    let results = [
+        AgentResult::ExportCapabilities {
+            capabilities: Box::new(Capabilities {
+                ffmpeg: "ffmpeg version 8.0.1".into(),
+                containers: vec![Container::Mp4, Container::Wav],
+                ..Capabilities::default()
+            }),
+            presets: builtin_presets(),
+            settings_schema: export_settings_schema(),
+        },
+        AgentResult::RenderJobs {
+            jobs: vec![job.clone()],
+        },
+        AgentResult::RenderJob {
+            job: Box::new(job.clone()),
+        },
+    ];
+    for result in results {
+        let response = AgentResponse {
+            request_id: "result".into(),
+            revision: 3,
+            result,
+        };
+        let line = serde_json::to_string(&response).unwrap();
+        let parsed: AgentResponse = serde_json::from_str(&line).unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), line);
+        match parsed.result {
+            AgentResult::ExportCapabilities {
+                capabilities,
+                presets,
+                settings_schema,
+            } => {
+                assert_eq!(capabilities.containers, [Container::Mp4, Container::Wav]);
+                assert_eq!(presets, builtin_presets());
+                assert!(settings_schema["properties"]["container"].is_object());
+            }
+            AgentResult::RenderJobs { jobs } => assert_eq!(jobs, std::slice::from_ref(&job)),
+            AgentResult::RenderJob { job: parsed } => assert_eq!(*parsed, job),
+            other => panic!("Unexpected {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn the_settings_schema_describes_export_settings() {
+    let schema = export_settings_schema();
+    let properties = schema["properties"].as_object().unwrap();
+    for field in ["container", "video", "audio", "range", "subtitles"] {
+        assert!(properties.contains_key(field), "{field}");
+    }
+}
+
+#[test]
+fn handle_answers_render_operations_unsupported_without_editing() {
+    let mut editor = Editor::default();
+    let before = editor.snapshot();
+    for operation in render_operations() {
+        assert!(operation.is_render() && !operation.is_mutation());
+        let request = targeted(&editor, operation);
+        let response = handle(&mut editor, request);
+        assert!(
+            matches!(&response.result, AgentResult::Error { code, .. } if code == codes::UNSUPPORTED),
+            "{response:?}"
+        );
+        assert_eq!(response.revision, 0);
+    }
+    assert_eq!(&*before, editor.project());
+    assert_eq!(editor.revision(), 0);
+}
+
+#[test]
+fn export_errors_map_to_their_codes() {
+    for (error, expected) in [
+        (ExportError::Invalid("x".into()), codes::INVALID_EXPORT),
+        (
+            ExportError::Unsupported("x".into()),
+            codes::UNSUPPORTED_EXPORT,
+        ),
+        (ExportError::Empty("x".into()), codes::EMPTY_EXPORT),
+    ] {
+        assert!(matches!(
+            AgentResult::export_error(&error),
+            AgentResult::Error { code, message } if code == expected && message == "x"
+        ));
+    }
+}
+
+#[test]
+fn queue_export_needs_the_inspected_project_and_a_free_absolute_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let editor = Editor::default();
+    let queue = |destination: std::path::PathBuf, overwrite| {
+        targeted(
+            &editor,
+            AgentOperation::QueueExport {
+                settings: ExportSettings::default(),
+                destination,
+                overwrite,
+            },
+        )
+    };
+    let free = dir.path().join("Film.mp4");
+    assert!(check_queue_export(&editor, &queue(free.clone(), false)).is_ok());
+
+    type Spoil = fn(&mut AgentRequest);
+    let guards: [(Spoil, &str); 6] = [
+        (|r| r.expected_revision = None, codes::REVISION_REQUIRED),
+        (|r| r.expected_revision = Some(9), codes::STALE_REVISION),
+        (|r| r.expected_project_id = None, codes::PROJECT_REQUIRED),
+        (
+            |r| r.expected_project_id = Some(uuid::Uuid::new_v4()),
+            codes::STALE_PROJECT,
+        ),
+        (|r| r.expected_context_id = None, codes::CONTEXT_REQUIRED),
+        (
+            |r| r.expected_context_id = Some(uuid::Uuid::new_v4()),
+            codes::STALE_CONTEXT,
+        ),
+    ];
+    for (spoil, expected) in guards {
+        let mut request = queue(free.clone(), false);
+        spoil(&mut request);
+        assert_eq!(code(check_queue_export(&editor, &request)), expected);
+        assert_eq!(code(check_target(&editor, &request)), expected);
+    }
+
+    let relative = std::path::PathBuf::from("Film.mp4");
+    assert_eq!(
+        code(check_queue_export(&editor, &queue(relative, true))),
+        codes::INVALID_EXPORT
+    );
+    let missing = dir.path().join("missing").join("Film.mp4");
+    assert_eq!(
+        code(check_queue_export(&editor, &queue(missing, true))),
+        codes::INVALID_EXPORT
+    );
+    assert_eq!(
+        code(check_queue_export(&editor, &queue(dir.path().into(), true))),
+        codes::INVALID_EXPORT
+    );
+    std::fs::write(&free, b"earlier export").unwrap();
+    assert_eq!(
+        code(check_queue_export(&editor, &queue(free.clone(), false))),
+        codes::DESTINATION_EXISTS
+    );
+    assert!(check_queue_export(&editor, &queue(free.clone(), true)).is_ok());
+    assert_eq!(std::fs::read(&free).unwrap(), b"earlier export");
+
+    let not_queue = targeted(&editor, AgentOperation::RenderJobs);
+    assert_eq!(
+        code(check_queue_export(&editor, &not_queue)),
+        codes::INVALID_EXPORT
+    );
+}
+
+#[test]
+fn a_claimed_call_is_answered_once_by_its_owner() {
+    let (wake, wakes) = mpsc::channel();
+    let host = AgentHost::new(move || {
+        let _ = wake.send(());
+    })
+    .unwrap();
+    let descriptor = host.descriptor().clone();
+    let client =
+        thread::spawn(move || connect(&descriptor, request(AgentOperation::RenderJobs, None)));
+    wakes.recv_timeout(Duration::from_secs(3)).unwrap();
+    let call = host.poll().unwrap();
+    assert!(call.is_live());
+    let claimed = call.claim().unwrap();
+    assert!(matches!(
+        claimed.request.operation,
+        AgentOperation::RenderJobs
+    ));
+    let job = job_info();
+    let request_id = claimed.request.request_id.clone();
+    claimed.reply(AgentResponse {
+        request_id,
+        revision: 0,
+        result: AgentResult::RenderJobs {
+            jobs: vec![job.clone()],
+        },
+    });
+    let response = client.join().unwrap().unwrap();
+    assert!(matches!(response.result, AgentResult::RenderJobs { jobs } if jobs == [job]));
+}
+
+#[test]
+fn an_expired_call_cannot_be_claimed() {
+    let (wake, wakes) = mpsc::channel();
+    let host = AgentHost::new(move || {
+        let _ = wake.send(());
+    })
+    .unwrap();
+    let descriptor = host.descriptor().clone();
+    let editor = Editor::default();
+    let operation = AgentOperation::QueueExport {
+        settings: ExportSettings::default(),
+        destination: "/films/Film.mp4".into(),
+        overwrite: false,
+    };
+    let sent = targeted(&editor, operation);
+    let client = thread::spawn(move || connect(&descriptor, sent));
+    wakes.recv_timeout(Duration::from_secs(3)).unwrap();
+    let call = host.poll().unwrap();
+    let response = client.join().unwrap().unwrap();
+    assert!(matches!(response.result,AgentResult::Error{code,..} if code=="timeout"));
+    assert!(!call.is_live());
+    assert!(call.claim().is_none());
+}
+
+#[test]
+fn every_documented_request_parses() {
+    let doc = include_str!("../../../docs/agent-protocol.md");
+    let lines: Vec<_> = doc
+        .lines()
+        .filter(|line| line.starts_with(r#"{"request_id":"#))
+        .collect();
+    assert!(lines.len() >= 7);
+    for line in lines {
+        let request: AgentRequest =
+            serde_json::from_str(line).unwrap_or_else(|error| panic!("{line}: {error}"));
+        if let AgentOperation::QueueExport { settings, .. } = request.operation {
+            assert_eq!(settings.container, Container::Mp4);
+        }
+    }
 }

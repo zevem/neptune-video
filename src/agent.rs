@@ -33,7 +33,7 @@ pub struct Context<'a> {
 }
 
 /// What the panel lists as examples. Each one is accepted by [`interpret`].
-pub const EXAMPLES: [(&str, &str); 23] = [
+pub const EXAMPLES: [(&str, &str); 24] = [
     (
         "split",
         "Split the selected clips, or every clip, at the playhead",
@@ -98,6 +98,10 @@ pub const EXAMPLES: [(&str, &str); 23] = [
     (
         "duplicate project /path/Film copy.aster",
         "Carry on in a copy; this file stays as it is",
+    ),
+    (
+        "export · render queue",
+        "Open the export sheet, or the exports rendering and done",
     ),
 ];
 
@@ -688,6 +692,8 @@ pub fn interpret(line: &str, context: &Context) -> Result<Vec<Action>, String> {
         "fit" | "fit timeline" => vec![Action::FitTimeline],
         "save" => vec![Action::Save],
         "checkpoints" => vec![Action::OpenCheckpoints],
+        "export" | "export video" => vec![Action::OpenExport],
+        "render queue" | "renders" => vec![Action::OpenRenderQueue],
         "duplicate project" => vec![Action::DuplicateProject],
         "add marker" => vec![Action::AddMarker],
         "add text" => vec![Action::AddText],
@@ -1595,6 +1601,20 @@ mod tests {
         assert!(matches!(
             run("duplicate", &project, &none).unwrap().as_slice(),
             [Action::Duplicate]
+        ));
+    }
+
+    #[test]
+    fn export_and_the_render_queue_are_named_on_the_command_line() {
+        let project = Project::default();
+        let none = Selection::default();
+        assert!(matches!(
+            run("Export", &project, &none).unwrap().as_slice(),
+            [Action::OpenExport]
+        ));
+        assert!(matches!(
+            run("render queue", &project, &none).unwrap().as_slice(),
+            [Action::OpenRenderQueue]
         ));
     }
 

@@ -15,8 +15,8 @@ contains the verified native binaries and a launcher. Extract it into a director
 you own and run `AppRun` from that directory. The launcher preserves project/media
 arguments and the current working directory, and supports spaces, Unicode and
 symlinks in the bundle path. It performs no installation, downloads or updates.
-It was built before titles, captions and speech recognition were added, so it
-has none of them; build from source for those.
+It was built before titles, captions, speech recognition, export and proxies
+were added, so it has none of them; build from source for those.
 
 FFmpeg and ffprobe must be installed on normal `PATH`, or selected with
 `ASTER_FFMPEG` and `ASTER_FFPROBE`. Native graphics/audio libraries and desktop
@@ -97,6 +97,44 @@ downloaded or installed automatically by Aster.
 Codecs are therefore a runtime dependency, rather than a pure-Rust codec stack
 or a bundled installer guarantee. Supported formats depend on the installed
 FFmpeg build. Deployment, codec licensing and notices need a release policy.
+
+### Export encoders
+
+Export and proxies encode with the same FFmpeg. Which formats can be exported
+depends on how that FFmpeg was built and, for hardware encoders, on the
+graphics driver:
+
+| To export | FFmpeg needs |
+| --- | --- |
+| MP4 or MOV with H.264 / H.265 | `libx264` / `libx265`, or a hardware encoder |
+| AV1 | `libsvtav1` or `libaom-av1`, or a hardware encoder |
+| WebM with VP9 and Opus | `libvpx-vp9` (or a hardware VP9 encoder) and `libopus` |
+| MOV with ProRes | `prores_ks` (or `prores_videotoolbox` on macOS) |
+| AAC sound (MP4, MOV, M4A) | `aac` (FFmpeg's own) or `aac_at` (macOS) |
+| MP3 / FLAC / WAV sound | `libmp3lame` / `flac` / `pcm_s16le` and `pcm_s24le` |
+| Proxies | `libx264`; without it proxies are MJPEG |
+
+Hardware encoders are NVIDIA NVENC, AMD AMF, Intel Quick Sync, Apple
+VideoToolbox, VA-API and Media Foundation, each only when FFmpeg was built
+with it and the driver and device are present. VA-API is tried on each
+`/dev/dri/renderD*` node.
+
+Nothing is taken on trust: when the editor starts, it asks FFmpeg which
+encoders and muxers it lists and has each known encoder make a short test
+picture or a moment of silence. The export dialog offers only what passed and
+shows the reason for what failed. Without a working FFmpeg nothing can be
+exported, and each proxy asked for is marked failed in the library. After
+installing another FFmpeg, press **Try again** in the dialog. Distribution builds of FFmpeg differ; Ubuntu
+26.04's `ffmpeg` package, for example, links `libx264`, `libx265`, `libvpx`,
+`libsvtav1`, `libaom`, `libopus` and `libmp3lame`. On the Linux host used for this work (FFmpeg
+8.0.1, NVIDIA driver) the software encoders and NVENC passed, while Quick
+Sync and VA-API failed to initialise.
+
+H.264 and H.265 are patent-encumbered formats, and encoders such as `libx264`
+and `libx265` are GPL-licensed. Aster bundles no encoder: these come from the
+FFmpeg you install, under its terms. Codec licensing for a distributed
+release is part of the open
+[codec and distribution ticket](../.scratch/core-editor/issues/03-codec-and-distribution.md).
 
 ## Speech recognition
 

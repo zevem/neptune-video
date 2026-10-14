@@ -644,3 +644,11 @@ and a request it covers waits for it while that request is current. Measured:
 30 fps H.264 (keyframe every 15 frames) in the release build on the RTX 4060
 under headless Weston, against 144 to 147 before; nothing is claimed for
 distant keyframes, effects, larger preview frames or other adapters.
+
+2026-10-14: Export and final-quality rendering now exist:
+[export and rendering](../export-and-rendering/spec.md). The export consumes
+`resolve`'s plan and draws every layer through the compositor at the output
+size; plain half-transparent layers blend in linear light there and in gamma
+space in the viewer's mesh path. The "no export path exists" statements above
+are superseded by
+[ADR 0008](../../docs/adr/0008-export-renders-originals-through-the-preview-compositor.md).

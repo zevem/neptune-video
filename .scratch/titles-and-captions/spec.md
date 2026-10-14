@@ -313,3 +313,11 @@ ADR 0007 records the decision. The glossary, architecture, performance,
 installation, usage, agent protocol, native AI and verification documents
 describe the result. [Verification](../../docs/verification.md#titles-captions-and-motion-graphics)
 states what was and was not tried.
+
+2026-10-14: An export path now exists:
+[export and rendering](../export-and-rendering/spec.md). Captions can be burned
+into an exported picture, written beside it as SRT or VTT, or carried inside
+MP4, MOV and WebM files; titles are drawn by the export through the
+compositor at the output scale. The "no export path exists" statements above
+are superseded by
+[ADR 0008](../../docs/adr/0008-export-renders-originals-through-the-preview-compositor.md).

@@ -1,0 +1,257 @@
+//! The settings sheet's Preview section, driven as a person drives it: a
+//! control is found by the name accessibility is given for it and pressed
+//! with the pointer.
+use super::*;
+use crate::theme::{Accent, Appearance};
+use eframe::egui::{Event, Modifiers, PointerButton, Pos2, accesskit::Role};
+
+struct Seen {
+    name: String,
+    rect: Rect,
+    role: Role,
+    disabled: bool,
+}
+
+struct Bench {
+    ctx: egui::Context,
+    palette: Palette,
+    settings: Settings,
+    cache: Cache,
+    seen: Vec<Seen>,
+    painted: Vec<String>,
+    actions: Vec<Action>,
+}
+
+impl Bench {
+    fn new(settings: Settings, cache: Cache) -> Self {
+        let ctx = egui::Context::default();
+        let palette = Palette::new(Appearance::Dark, Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &palette);
+        ctx.enable_accesskit();
+        let mut bench = Self {
+            ctx,
+            palette,
+            settings,
+            cache,
+            seen: Vec::new(),
+            painted: Vec::new(),
+            actions: Vec::new(),
+        };
+        for _ in 0..3 {
+            bench.frame(Vec::new());
+        }
+        bench
+    }
+
+    fn frame(&mut self, events: Vec<Event>) {
+        let raw = egui::RawInput {
+            // Tall enough that the whole sheet is in sight.
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 3200.0))),
+            events,
+            ..Default::default()
+        };
+        let ctx = self.ctx.clone();
+        let output = ctx.run_ui(raw, |ui| {
+            settings(
+                ui.ctx(),
+                &self.palette,
+                &self.settings,
+                self.cache,
+                &mut self.actions,
+            );
+        });
+        if let Some(update) = &output.platform_output.accesskit_update {
+            self.seen = (update.nodes.iter())
+                .filter_map(|(_, node)| {
+                    let bounds = node.bounds()?;
+                    Some(Seen {
+                        name: node.label().or_else(|| node.value())?.to_owned(),
+                        rect: Rect::from_min_max(
+                            pos2(bounds.x0 as f32, bounds.y0 as f32),
+                            pos2(bounds.x1 as f32, bounds.y1 as f32),
+                        ),
+                        role: node.role(),
+                        disabled: node.is_disabled(),
+                    })
+                })
+                .collect();
+        }
+        self.painted.clear();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut self.painted);
+        }
+        output.drop_without_applying_deltas();
+    }
+
+    /// The controls named `name`, top to bottom.
+    fn all(&self, name: &str) -> Vec<&Seen> {
+        let mut found: Vec<&Seen> = (self.seen.iter())
+            .filter(|seen| seen.name == name && !matches!(seen.role, Role::Label | Role::TextRun))
+            .collect();
+        found.sort_by(|a, b| a.rect.top().total_cmp(&b.rect.top()));
+        found
+    }
+
+    fn get(&self, name: &str) -> &Seen {
+        self.all(name)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("FIXTURE: no control is named \"{name}\""))
+    }
+
+    fn says(&self, text: &str) -> bool {
+        self.painted.iter().any(|painted| painted.contains(text))
+            || self.seen.iter().any(|seen| seen.name.contains(text))
+    }
+
+    fn click(&mut self, at: Pos2) {
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        self.frame(vec![Event::PointerMoved(at)]);
+        self.frame(vec![button(true)]);
+        self.frame(vec![button(false)]);
+        self.frame(Vec::new());
+    }
+}
+
+fn collect(shape: &egui::Shape, into: &mut Vec<String>) {
+    match shape {
+        egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, into)),
+        egui::Shape::Text(text) => into.push(text.galley.text().to_owned()),
+        _ => {}
+    }
+}
+
+fn cache(bytes: u64, proxies: usize) -> Cache {
+    Cache {
+        available: true,
+        bytes,
+        proxies,
+    }
+}
+
+#[test]
+fn the_preview_section_sets_the_quality_and_the_proxy_mode() {
+    let mut bench = Bench::new(Settings::default(), cache(0, 0));
+    for (name, nth, wanted) in [
+        ("Half", 0, "quality Half"),
+        ("Quarter", 0, "quality Quarter"),
+        ("Full", 0, "quality Full"),
+        ("Always", 0, "proxies Always"),
+        ("Off", 0, "proxies Off"),
+    ] {
+        let at = bench.all(name)[nth].rect.center();
+        bench.actions.clear();
+        bench.click(at);
+        let got = match bench.actions.as_slice() {
+            [Action::SetPreviewQuality(quality)] => format!("quality {}", quality.name()),
+            [Action::SetProxyMode(mode)] => format!("proxies {}", mode.name()),
+            other => panic!("{name}: {other:?}"),
+        };
+        assert_eq!(got, wanted);
+    }
+    // The second Auto is the proxies'.
+    bench.settings.preview.quality = PreviewQuality::Full;
+    bench.settings.preview.proxies = ProxyMode::Off;
+    bench.frame(Vec::new());
+    let autos = bench.all("Auto");
+    assert_eq!(autos.len(), 2, "one Auto for each");
+    let (quality, proxies) = (autos[0].rect.center(), autos[1].rect.center());
+    bench.actions.clear();
+    bench.click(quality);
+    assert!(matches!(
+        bench.actions.as_slice(),
+        [Action::SetPreviewQuality(PreviewQuality::Auto)]
+    ));
+    bench.actions.clear();
+    bench.click(proxies);
+    assert!(matches!(
+        bench.actions.as_slice(),
+        [Action::SetProxyMode(ProxyMode::Auto)]
+    ));
+}
+
+#[test]
+fn the_preview_section_says_what_proxies_are_and_what_the_cache_holds() {
+    let mut settings = Settings::default();
+    settings.preview.quality = PreviewQuality::Half;
+    let bench = Bench::new(settings, cache(3_435_973_837, 4));
+    assert!(bench.says("Proxies are smaller copies used only for preview"));
+    assert!(bench.says("exports always use the"));
+    assert!(bench.says(quality_note(PreviewQuality::Half)));
+    assert!(bench.says("3.2 GB of 20 GB"), "{:?}", bench.painted);
+    assert!(!bench.get("Clear proxies").disabled);
+    assert_eq!(bench.get("Proxy cache size").role, Role::ComboBox);
+}
+
+#[test]
+fn clear_proxies_asks_to_clear_and_waits_for_something_to_clear() {
+    let mut bench = Bench::new(Settings::default(), cache(0, 0));
+    assert!(bench.get("Clear proxies").disabled, "nothing to clear");
+    assert!(bench.says("Nothing of 20 GB"));
+    let at = bench.get("Clear proxies").rect.center();
+    bench.click(at);
+    assert!(bench.actions.is_empty(), "{:?}", bench.actions);
+
+    let mut bench = Bench::new(Settings::default(), cache(10 << 20, 1));
+    let at = bench.get("Clear proxies").rect.center();
+    bench.click(at);
+    assert!(matches!(bench.actions.as_slice(), [Action::ClearProxies]));
+}
+
+#[test]
+fn clear_proxies_says_they_are_not_made_again_unasked() {
+    // Clearing declines every video's proxy until the person asks again or
+    // the project is opened again; the tooltip says what happens.
+    let mut bench = Bench::new(Settings::default(), cache(10 << 20, 1));
+    let at = bench.get("Clear proxies").rect.center();
+    bench.frame(vec![Event::PointerMoved(at)]);
+    for _ in 0..90 {
+        bench.frame(Vec::new());
+    }
+    assert!(
+        bench.says("None is made again until you ask for one or reopen the project."),
+        "{:?}",
+        bench.painted
+    );
+    assert!(!bench.says("made again."), "{:?}", bench.painted);
+}
+
+#[test]
+fn a_cache_size_is_chosen_from_the_list() {
+    let mut bench = Bench::new(Settings::default(), cache(0, 0));
+    let at = bench.get("Proxy cache size").rect.center();
+    bench.click(at);
+    let at = (bench.all("50 GB").first())
+        .expect("the sizes are listed")
+        .rect
+        .center();
+    bench.click(at);
+    assert!(
+        matches!(bench.actions.as_slice(), [Action::SetProxyBudget(50)]),
+        "{:?}",
+        bench.actions
+    );
+}
+
+#[test]
+fn without_proxies_the_section_says_so_and_offers_no_cache() {
+    let bench = Bench::new(Settings::default(), Cache::default());
+    assert!(bench.says("Proxies are unavailable"));
+    assert!(bench.all("Clear proxies").is_empty());
+    assert!(bench.all("Proxy cache size").is_empty());
+}
+
+#[test]
+fn cache_usage_reads_in_the_budget_s_gigabytes() {
+    assert_eq!(cache_usage(0, 20), "Nothing of 20 GB");
+    assert_eq!(cache_usage(1, 20), "1 MB of 20 GB");
+    assert_eq!(cache_usage(50 << 20, 20), "50 MB of 20 GB");
+    assert_eq!(cache_usage(3_435_973_837, 20), "3.2 GB of 20 GB");
+    assert_eq!(cache_usage(20 << 30, 20), "20.0 GB of 20 GB");
+}

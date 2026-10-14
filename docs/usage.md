@@ -97,12 +97,12 @@ playhead moves onto a clip it was off.
 
 ## Looks, animation and motion
 
-Everything in this section is a preview at preview resolution; there is no
-export. It is drawn by a GPU compositor. If the window has no usable graphics
-device the picture keeps position, scale and opacity only and the viewer shows
-"Effects not shown". The [verification record](verification.md#advanced-editing)
-says which of these were driven natively and on what host; none has a measured
-playback rate.
+Everything in this section is drawn by a GPU compositor, in the viewer and in
+an [export](#exporting). If the window has no usable graphics device the
+viewer keeps position, scale and opacity only and shows "Effects not shown";
+an export opens a graphics device of its own, a software one if need be. The
+[verification record](verification.md#advanced-editing) says which of these
+were driven natively and on what host; none has a measured playback rate.
 
 The inspector of a selected video, image or GIF clip has five sections:
 **Video**, **Look**, **Color**, **Speed** and **Motion**. A title has Video,
@@ -348,9 +348,9 @@ has no phrase.
 
 Titles, captions and graphics are drawn on this computer by a background
 worker and shown in the viewer as each picture is ready, so a title can appear
-a moment after it is added or changed. Like everything else in the viewer they
-are a preview: there is no export, and captions leave the editor only as SRT
-or VTT files. The [verification record](verification.md#titles-captions-and-motion-graphics)
+a moment after it is added or changed. An [export](#exporting) draws them at
+the output size and can burn captions into the picture, write them beside the
+file or carry them inside it. The [verification record](verification.md#titles-captions-and-motion-graphics)
 says what was driven natively and on what host.
 
 ### Titles and text styles
@@ -528,9 +528,316 @@ normally. Rate changes currently change pitch.
 The frame cache retains up to 64 MiB/256 frames and five software video decoders;
 GIF sequential working state has a separate 64 MiB/four-state budget.
 Preview is RGBA software decoding, with up to 4096 pixels per requested dimension
-and 64 MiB per frame. Hardware/zero-copy decoding, HDR, exact variable-frame-rate
-PTS handling, proxy generation, waveforms and export are not current features.
-Export was outside the user's first core-feature phase.
+and 64 MiB per frame. Large videos can be previewed from smaller copies; see
+[preview quality and proxies](#preview-quality-and-proxies). Hardware/zero-copy
+decoding, HDR, exact variable-frame-rate PTS handling and waveforms are not
+current features.
+
+## Exporting
+
+Export makes a video or sound file from the timeline. Every frame is drawn
+again from the original media, at the size you choose, by the same compositor
+the viewer uses; the sound is mixed the way playback mixes it. Exporting does
+not change the project and is not an undo step. It needs FFmpeg (see
+[media executables](installation.md#media-executables)), and what it can write
+depends on that FFmpeg. What was verified, on one Linux host only, is in the
+[verification record](verification.md#export-and-rendering); the
+measurements are in [performance](performance.md#export-and-proxy-budgets).
+
+### The export dialog
+
+Open it with **Export** at the right end of the toolbar, **Export…** in the
+Project menu, Command/Ctrl+E, or `export` in the command panel. Over the
+render queue, Command/Ctrl+E opens it too. In a narrow window its two columns
+become one.
+
+The left column shows what will be made:
+
+- A picture of the output frame at the playhead, or at the range's first or
+  last frame when the playhead is outside the range, with the export's black
+  bars or the cut of the fit. It is drawn from the original media, at most
+  640 pixels on its long side, once the playhead and settings have stayed the
+  same for 150 ms. Until it is drawn, or if it cannot be (the reason is on
+  hover), a plain placeholder in the output's shape stands in; a sound-only
+  export shows "Sound only".
+- **File name**, with the extension shown beside it; typing the extension does
+  not double it, and `/ \ : * ? " < > |` are refused. **Folder** opens a folder
+  chooser titled "Export to folder"; its button shows the folder as the
+  render queue does (`~/…/Trip/Exports`, or "Home folder"), with the whole
+  path on hover. The first export starts in the project's folder, or Videos, or home;
+  after that the last folder used is remembered.
+- **Range**: **Whole timeline** (from the start to the end of the last clip),
+  **Selected clips** (from the first to the end of the last selected clip;
+  with nothing selected it is disabled with "Close Export and select clips on
+  the timeline first") or **Custom range**, typed as times such as `0:12` or
+  `00:00:12:15`, with **Start at playhead** and **End at playhead**. A range
+  is widened to whole frames of the output.
+- **Summary**: size and aspect, frame rate, sound, duration and frame count,
+  an estimated file size marked "≈", and the encoder that will be used (for
+  example "NVIDIA NVENC · h264_nvenc" or "Software · libx264"; for sound only,
+  the sound encoder such as "aac"). Warnings follow, and in red the reason the
+  settings cannot be exported, if there is one.
+
+The estimate for a bitrate is close. For a quality level it is a typical size
+for the encoder that will run: on the synthetic test pictures measured, Lower
+and Recommended came to 0.89 to 1.29 times the estimate. Higher and Maximum
+depend on the footage: 0.42 to 0.9 times the estimate on clean pictures,
+and three to four times it with libx264 on grainy ones. Camera footage has not
+been measured.
+
+The right column holds the settings. **Preset** comes first: a list grouped
+by where the file is going, with your own presets last, a one-line note
+under it (what the preset makes, "A preset of your own", or "Changed from the
+presets; Save preset… keeps them"), and a row of as many of Recommended,
+YouTube 1080p, TikTok, Instagram feed (4:5) and Audio (WAV) as fit, to pick
+with one click:
+
+| Group | Presets |
+| --- | --- |
+| General | Recommended (MP4 H.264), High quality, Small file (H.265), Web (VP9) |
+| YouTube | YouTube 1080p, YouTube 4K (H.265), YouTube Shorts (1080 × 1920) |
+| TikTok, Instagram, Facebook, X, Vimeo | TikTok and Instagram Reels (1080 × 1920), Instagram feed (4:5, 1080 × 1350), Facebook, X and Vimeo (1080p) |
+| Master | ProRes 422 HQ master (MOV, PCM 24-bit sound) |
+| Audio | Audio (AAC), Audio (WAV), Audio (MP3), Audio (FLAC) |
+| Saved | The presets you saved |
+
+Every built-in preset keeps the project's frame rate, the Auto encoder,
+Letterbox and captions burned in. A preset this computer cannot encode is
+disabled, with the reason on hover. Changing any setting shows
+**Custom settings**.
+
+- **Video**, switched off to export sound only:
+  - **Format**: MP4, MOV or WebM; with Video off, M4A, MP3, WAV or FLAC. Only
+    formats this FFmpeg can write are listed.
+  - **Resolution**: 720p, 1080p, 1440p and 4K (named by the short side, at the
+    project's shape), Project, or Custom width and height, from 16 to 8192
+    pixels a side. Sides are rounded to even numbers.
+  - **Fit**, shown when the output's shape differs from the canvas: Letterbox
+    shows the whole canvas with black bars; Fill fills the output and cuts what
+    overflows equally from both sides.
+  - **Frame rate**: the project's, or one of the standard rates. Titles,
+    grain and other animation step at the output rate.
+  - **Codec**: H.264, H.265 (HEVC) or AV1 in MP4; H.264, H.265 or Apple ProRes
+    in MOV; VP9 or AV1 in WebM. A codec no encoder here can make is disabled
+    with the reason its test failed.
+  - **Quality**: Lower, Recommended, Higher or Maximum, which hold a quality
+    and let the bitrate vary, or a **Bitrate** in kbit/s (100 to 800,000). ProRes
+    has a **Profile** (LT, 422, HQ, 4444) instead.
+  - **Encoder and speed**, closed at first: **Encoder** is Auto (it names what
+    it picks), Software, or a hardware encoder found here; **Speed** is
+    Faster, Balanced or Smaller, trading encoding time against file size.
+- **Audio**, always on for a sound-only file: codec (AAC, Opus in WebM, MP3,
+  FLAC, or PCM 16 or 24-bit in MOV and WAV), bitrate, sample rate (44.1, 48 or
+  96 kHz; Opus is 48 kHz only and MP3 at most 48) and Mono or Stereo.
+- **Captions**, shown when the project has a caption track:
+  - **Burn into the picture** draws the caption tracks in the video. Turned
+    off, caption tracks are left out of the picture; plain titles are always
+    drawn.
+  - **Subtitle file**: None, SRT or VTT, written beside the export as
+    `<name>.<language>.srt` (or `.vtt`).
+  - **Subtitle stream in the file**, for MP4, MOV and WebM, which viewers can
+    turn on and off.
+  - **Track** chooses the caption track to write.
+
+At the foot, **Save preset…** keeps the settings under a name you give, without
+the range or the caption track; your presets are kept beside the editor's
+settings, not in the project, and one that matches the settings can be
+deleted. Saving is available once the encoders have been checked. **Add to
+queue** holds the export in the render queue until you start it there ("…
+is held in the render queue; start it there"). **Export** queues it to render
+as soon as the jobs ahead of it are done and opens the render queue. Both are
+disabled, with the reason, while the encoders are being checked, after a
+failed check (with **Try again**), while a field is invalid, when the
+settings cannot be exported, and when the queue holds 64 jobs.
+
+If a file of that name is already in the folder, you are asked "Replace
+“<name>”?" before anything is queued; with a subtitle file whose name is
+taken too, "Replace “<name>” and “<subtitle name>”?". The files there stay as
+they are until the export has finished. **Cancel** brings the dialog back as
+it was.
+
+**Cancel**, Escape or a click beside the dialog closes it and keeps what you
+set: opening it again for the same project brings it back. Queuing an export,
+or opening another project, starts the next one afresh from the settings,
+preset and folder you used last; the range and caption track are not
+remembered.
+
+The export renders the project as it was when you queued it: later edits do
+not change it. A file of the project's own media, or the project file and its
+recovery, lock and checkpoint files, cannot be the destination, nor can a
+file another unfinished export in the queue writes ("Another export in the
+queue already writes <name>; choose another name"). Names that differ only in
+case count as the same file, on every system. A clash found only by following
+links, or a folder removed after queueing, fails the job when it starts,
+with the same reason.
+
+### The render queue
+
+Open it with the queue button beside **Export**, **Render queue** in the
+Project menu, Command/Ctrl+Shift+E, or `render queue` in the command panel.
+Over the export dialog, Command/Ctrl+Shift+E opens it and keeps the dialog's
+settings. The queue button shows a progress ring, and the number of jobs when
+there are several, while a job renders or waits its turn; its tooltip gives
+the state, for example "rendering, 34 % · 2 waiting · 1 held". The panel's
+heading counts the jobs the same way ("1 rendering · 2 waiting · 1 held").
+
+Each job shows its name, state, its folder (as `~/…/Trip/Exports`, or "Home
+folder", with the whole path on hover), a progress bar once it has started,
+a line such as "Frame 120 of 360 · 42.0 fps · 1:02 left", the encoder and any
+message.
+
+Jobs render one at a time, in the background; you can keep editing. The
+list shows the job under way first (rendering, or paused after it started),
+then the waiting and held jobs in the order they will render, then the
+finished jobs, the most recent first. A job that starts is scrolled into
+sight. Jobs that finished while the panel was closed are listed as if they
+finished in the order they rendered.
+
+| State | Actions |
+| --- | --- |
+| Queued | Render sooner / later (move up or down), Cancel |
+| Held ("Held until you start it") | Start, Render sooner / later, Cancel |
+| Preparing, Rendering | Pause, Cancel |
+| Paused | Resume, Cancel |
+| Finishing | Cancel |
+| Done | Show in its folder, Remove |
+| Failed, Cancelled | Render again (Retry), Remove |
+
+A held job was queued with **Add to queue**, or paused before its turn. It is
+passed over while the jobs after it render, and **Start all** starts every
+held job, in the order listed. Pause on a job that has started stops between
+frames and Resume continues the same file; that paused job keeps the jobs
+behind it waiting. Retry renders the same snapshot of the project again, not
+the project as it is now; it does nothing while another unfinished job writes
+the same file. **Clear finished** takes done, failed and cancelled jobs off
+the list, and **New export…** opens the dialog. A notice says when a job is
+done ("Exported <name>") or has failed ("<name> was not exported: <reason>"),
+unless the render queue is open, where the job's row says so; failed jobs stay
+in the list with their reason. While a dialog or panel is open, notices
+appear at the bottom of the window, below it, instead of over the viewer.
+
+Closing the window while a job is rendering or waiting, held jobs included,
+asks first: "Rendering will stop". **Stop and quit** cancels every job at
+once and removes their unfinished files, leaving any file they would have
+replaced as it was; unsaved changes are asked about next. If you then stay,
+the jobs remain cancelled and can be rendered again with Retry.
+**Keep rendering**, Escape or a click beside the question keeps the window
+open and the jobs rendering.
+
+### Files are never half-written
+
+FFmpeg writes to a hidden file, `.<name>.<job>.part`, in the destination
+folder. Only when FFmpeg has finished without error and the file has been
+checked for the streams and length expected is it renamed over the
+destination, so an existing file there stays as it was until the new one is
+complete. A subtitle file beside it is written the same way. The job's
+working files, its rendered sound among them, go in a hidden folder,
+`.aster-render-<job>`, beside the destination, or in the system's temporary
+folder when that one cannot be made. Cancelling or a failure removes the
+hidden file and the working folder; quitting during a render removes them
+too, unless the editor is stopped before it has done so. What a crash leaves
+is removed later: when a job starts, the part files and working folders in
+its folder that have not changed for an hour and belong to no listed job, and
+when the editor starts, such working folders in the temporary folder.
+
+While FFmpeg finishes the file (MP4 and MOV rewrite it to put their index
+first), it is waited for at least 10 minutes plus a second for every 8 MiB
+written, and after that for as long as the file keeps changing. Two minutes
+without a change fails the job with "FFmpeg stopped finishing the file:
+nothing was written to it for 120 seconds".
+
+When the encoder is Auto and a hardware encoder fails, the job starts again
+once from the beginning with the software encoder, and its message says so,
+for example "NVIDIA NVENC failed (…); finished with libx264 software
+encoding". If the software encoder fails too, the message gives both
+reasons. A full disk, a missing permission, a name too long, a folder that
+went away or a stalled finish fails the job at once, since a second encode
+would meet it again. A hardware encoder chosen by name fails with FFmpeg's
+reason instead. Some problems do not stop an export but are listed in the
+job's message: a stabilized clip whose camera motion was never analysed is
+exported as the camera took it, and a LUT that cannot be read is left out.
+
+If FFmpeg is missing or its check failed, the dialog says the encoders could
+not be checked; install or fix FFmpeg and press **Try again**.
+
+### Export limits
+
+- Pictures are 8-bit BT.709 (10-bit for ProRes) at a constant frame rate. HDR,
+  10-bit H.264 or H.265, transparency and variable frame rate are not written.
+- Sound is mono or stereo, mixed by the playback mixer: at most 16 clips sound
+  at once (more fails the export), a speed change alters pitch, frozen,
+  reversed and ramped stretches are silent, a transition does not crossfade
+  the sound, and a hidden video track still sounds unless it is muted.
+  Sound keeps the source file's own time, as the picture does: a sound
+  stream that starts after the picture is preceded by silence, and Opus
+  sound can move by a few milliseconds to agree with the picture.
+- A half-transparent clip with no effects, mask or blend mode can be a
+  slightly different shade in the export than in the viewer: the export
+  blends it in linear light, the viewer in gamma space. Clips with effects
+  match.
+- Titles are drawn at most 4096 pixels a side, so a title filling an 8K
+  output is softer than the rest of the picture.
+- Hardware H.264 encoders take at most 4096 pixels a side; above that Auto
+  uses the software encoder.
+- Every export reencodes; nothing is copied from a source file unchanged.
+- Agents can queue and control exports in a running editor window (see the
+  [agent protocol](agent-protocol.md#render-jobs)); the headless `aster-agent`
+  cannot export.
+- Only NVIDIA NVENC was run on real hardware. AMD AMF, Intel Quick Sync, Apple
+  VideoToolbox, VA-API and Media Foundation are checked and driven by the same
+  code but have not been tried, and their quality levels are set from
+  NVENC's measurements, not their own. The AV1 and VP9 quality levels and
+  size estimates are not measured on any encoder.
+- There is no check for free space before an export starts; a disk that
+  fills fails the job with the system's reason.
+
+## Preview quality and proxies
+
+**Settings → Preview** holds two choices that change only what the viewer
+shows, never an export.
+
+**Quality** sets how much detail the viewer decodes and composites: **Full**
+is every pixel the screen shows, **Half** and **Quarter** a half or a quarter
+of that on the long side, for smoother playback. **Auto**, the default, is
+Full until frames come late during playback, then Half until playback stops.
+
+**Proxies** are smaller copies of videos made for the preview: at most 1280
+pixels on the long side, with the same frames at the same times as the
+original, counted from the start of the file, and no sound. A video with
+transparency gets none: its proxy fails with "it has transparency, which a
+proxy cannot keep, so the original is read".
+
+- **Off** makes none and reads none.
+- **Auto**, the default, makes them for videos larger than 1920 pixels on a
+  side or above 50 Mbit/s.
+- **Always** makes them for every video.
+
+A video's context menu in the library has **Create proxy** and
+**Remove proxy** (with Proxies Off, "Create proxy (used when Proxies is
+on)"), and its tile shows a badge while one is waiting, being made (with its
+progress), ready or failed; with Proxies Off a made proxy is said not to be
+read. The viewer reads a proxy only when it is ready, the video file has not
+changed since, and the proxy has at least the pixels the clip is drawn at:
+the size the viewer's budget lets it have, and during playback no more than
+the size it already has. A large viewer at Full quality may still read the
+original; Half and Quarter use proxies more often. A proxy file that cannot be
+read is not used again until it is removed or made again, and the original is
+shown meanwhile. Sound, tracking, stabilization, captions from speech and
+every export read the original file.
+
+Proxies are kept in a cache in the user's cache directory (or in `proxies/`
+beside the settings file when Aster is started with `--settings`), not in the
+project. **Cache size** chooses its limit, from 5 to 500 GB (20 GB unless
+changed); the oldest unused proxies are removed first, never one the viewer
+has open. A proxy removed to keep the limit goes back to having none, and
+is not made again until the library, the project or the Proxies choice
+changes. **Clear proxies** removes them all. After you remove a proxy or
+clear the cache, Auto and Always do not make that video's proxy again until you
+ask or the project is opened again. Without FFmpeg proxies cannot be made:
+each one asked for is marked failed in the library, and the viewer reads the
+originals. Closing the window stops a proxy being made, waiting at most
+750 ms for it. Whether proxies make a given video play smoothly has not been
+measured.
 
 ## Keyboard controls
 
@@ -570,6 +877,8 @@ Linux only; the Alt chords are untested as Option on macOS.
 | Command/Ctrl+scroll, pinch, or = / - | Timeline zoom about the pointer |
 | Command/Ctrl+Plus / Minus / 0 | Interface size larger / smaller / 100% |
 | Shift+Z | Fit timeline |
+| Command/Ctrl+E | Export |
+| Command/Ctrl+Shift+E | Render queue |
 | Command/Ctrl+K | Open local command panel |
 | Command/Ctrl+Shift+K | Open native AI Ask panel |
 | Command/Ctrl+Comma | Preferences |

@@ -53,16 +53,39 @@ impl AgentCall {
         self.state.store(COMPLETED, Ordering::Release);
         let _ = self.response.try_send(response);
     }
+    /// Takes the call for an answer made on the owning thread, only if the
+    /// requester is still waiting. `None` means the call expired and nothing
+    /// may be started for it.
+    pub fn claim(self) -> Option<Claimed> {
+        self.state
+            .compare_exchange(QUEUED, EXECUTING, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(Claimed {
+            request: self.request,
+            response: self.response,
+            state: self.state,
+        })
+    }
     /// Apply on the desktop's owning thread only if the requester is still waiting.
     pub fn execute(self, editor: &mut Editor) {
-        if self
-            .state
-            .compare_exchange(QUEUED, EXECUTING, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            let response = handle(editor, self.request.clone());
-            self.reply(response);
+        if let Some(call) = self.claim() {
+            let response = handle(editor, call.request.clone());
+            call.reply(response);
         }
+    }
+}
+
+/// A call its requester still waits on, answered exactly once by `reply`.
+/// Dropping it unanswered leaves the requester with `indeterminate`.
+pub struct Claimed {
+    pub request: AgentRequest,
+    response: SyncSender<AgentResponse>,
+    state: Arc<AtomicU8>,
+}
+impl Claimed {
+    pub fn reply(self, response: AgentResponse) {
+        self.state.store(COMPLETED, Ordering::Release);
+        let _ = self.response.try_send(response);
     }
 }
 

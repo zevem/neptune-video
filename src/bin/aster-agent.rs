@@ -39,7 +39,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "aster-agent [--project FILE [--create|--recover] [--save-as NEWPATH]] | [--connect SESSION.json]\nReads AgentRequest JSON lines on stdin and writes AgentResponse lines on stdout.\nMutations require expected_revision, expected_project_id and expected_context_id from inspect. With no arguments, use an ephemeral headless session.\n--create and --save-as refuse existing files. Legacy/unbound recovery is inspectable but requires --save-as before durable edits. A failed project save restores the prior editing state and renews context; inspect again before retrying."
+                    "aster-agent [--project FILE [--create|--recover] [--save-as NEWPATH]] | [--connect SESSION.json]\nReads AgentRequest JSON lines on stdin and writes AgentResponse lines on stdout.\nMutations require expected_revision, expected_project_id and expected_context_id from inspect. With no arguments, use an ephemeral headless session.\n--create and --save-as refuse existing files. Legacy/unbound recovery is inspectable but requires --save-as before durable edits. A failed project save restores the prior editing state and renews context; inspect again before retrying.\nRender jobs (export_capabilities, queue_export, render_jobs and the job operations) run in the desktop editor; use --connect for them."
                 );
                 return Ok(());
             }
@@ -731,6 +731,31 @@ mod tests {
             AgentResult::Project { .. }
         ));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn render_operations_are_unsupported_and_touch_nothing() {
+        let dir = OwnedDirectory::new();
+        let path = dir.project();
+        let (mut editor, mut document) = open_headless(&path, true, false).unwrap();
+        let original = fs::read(&path).unwrap();
+        let destination = dir.0.join("film.mp4");
+        let request = mutation(
+            &editor,
+            AgentOperation::QueueExport {
+                settings: editor_core::export::ExportSettings::default(),
+                destination: destination.clone(),
+                overwrite: false,
+            },
+        );
+        let response = execute_headless(&mut editor, Some(&mut document), request).unwrap();
+        assert_code(response, editor_agent::codes::UNSUPPORTED);
+        let request = mutation(&editor, AgentOperation::RenderJobs);
+        let response = execute_headless(&mut editor, Some(&mut document), request).unwrap();
+        assert_code(response, editor_agent::codes::UNSUPPORTED);
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(editor.revision(), 0);
     }
 
     #[test]

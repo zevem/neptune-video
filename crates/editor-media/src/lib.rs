@@ -1,13 +1,17 @@
-//! Background media import, bounded preview decoding, motion analysis and
-//! native audio output.
-//! No public operation performs file, process or device I/O on the caller thread.
+//! Background media import, bounded preview decoding, motion analysis,
+//! native audio output and export encoding.
+//! No public operation performs file, process or device I/O on the caller
+//! thread, except the `export` APIs: they are blocking calls made on a worker
+//! thread the desktop owns, and each owns the processes it starts.
 
 mod analysis;
 mod audio;
 mod decode;
+pub mod export;
 mod import;
 mod lut;
 mod process;
+pub mod proxy;
 mod service;
 pub mod speech;
 pub mod text;
@@ -20,6 +24,10 @@ pub use analysis::{
 };
 pub use audio::AudioService;
 pub use lut::{Cube, CubeError, MAX_CUBE_BYTES, MAX_CUBE_SIZE, MIN_CUBE_SIZE};
+pub use proxy::{
+    PROXY_ABOVE_BITRATE, PROXY_ABOVE_SIDE, PROXY_BUDGET, PROXY_PROFILE, PROXY_QUEUE, PROXY_SIDE,
+    Proxy, ProxyEvent, ProxyService, ProxyStatus, proxy_size, wants_proxy,
+};
 pub use service::MediaService;
 
 use editor_core::{Asset, AssetId, MediaFolder, Time};

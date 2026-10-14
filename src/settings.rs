@@ -88,6 +88,279 @@ pub struct Settings {
     pub transitions: Vec<editor_core::Transition>,
     /// What captions from speech are made with.
     pub speech: SpeechSettings,
+    /// How the viewer reads and draws its pictures.
+    #[serde(deserialize_with = "lenient")]
+    pub preview: PreviewSettings,
+    /// The export settings last used, as the export dialog wrote them. Kept
+    /// as they were read: the dialog parses them leniently itself.
+    pub export_last: Option<serde_json::Value>,
+    /// The folder the last export went to.
+    #[serde(deserialize_with = "lenient")]
+    pub export_folder: Option<PathBuf>,
+    /// The preset the last export's settings were chosen from, shown
+    /// chosen while they are still its settings: of presets with the same
+    /// settings, the one the person picked.
+    #[serde(deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub export_preset: Option<String>,
+}
+
+/// Reads a value a newer or damaged file may hold in a form this build does
+/// not know as its default, so that one such value never resets the rest of
+/// the person's settings.
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(T::deserialize(value).unwrap_or_default())
+}
+
+/// How much of the pictures the viewer decodes and composites, against how
+/// smoothly it plays.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewQuality {
+    /// Full, until frames are measured late during playback: then half,
+    /// until playback stops.
+    #[default]
+    Auto,
+    /// All the screen shows.
+    Full,
+    /// A half of what full would decode and composite.
+    Half,
+    /// A quarter of it.
+    Quarter,
+}
+
+impl PreviewQuality {
+    pub const ALL: [Self; 4] = [Self::Auto, Self::Full, Self::Half, Self::Quarter];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Full => "Full",
+            Self::Half => "Half",
+            Self::Quarter => "Quarter",
+        }
+    }
+
+    /// What the long side of a decode box or a canvas is divided by: 1, 2
+    /// or 4. `late` says frames were measured late during this playback,
+    /// which only `Auto` answers.
+    pub fn divisor(self, late: bool) -> u32 {
+        match self {
+            Self::Auto if late => 2,
+            Self::Auto | Self::Full => 1,
+            Self::Half => 2,
+            Self::Quarter => 4,
+        }
+    }
+}
+
+/// When the viewer reads a smaller copy of a video in its place.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyMode {
+    /// Never: existing proxies are not read either.
+    Off,
+    /// Large or heavy videos get one made, and any made is read.
+    #[default]
+    Auto,
+    /// Every video gets one made.
+    Always,
+}
+
+impl ProxyMode {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Auto, Self::Always];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Auto => "Auto",
+            Self::Always => "Always",
+        }
+    }
+}
+
+/// The proxy cache's budget, in GiB, unless the person chose another.
+pub const PROXY_BUDGET_GIB: u32 = 20;
+/// The budgets the person may choose, in GiB.
+pub const PROXY_BUDGETS: std::ops::RangeInclusive<u32> = 1..=1000;
+
+/// The person's preview choices.
+///
+/// Each is read leniently: a value this build does not know, as a newer one
+/// may write, reads as the default and is kept as it was read. Saved while
+/// the choice is still that default and the person has not chosen since, it
+/// is written back as it was, so a newer build reads its own choice again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "StoredPreview", into = "SavedPreview")]
+pub struct PreviewSettings {
+    pub quality: PreviewQuality,
+    pub proxies: ProxyMode,
+    /// How much the proxy cache may hold, in GiB.
+    pub proxy_budget_gib: u32,
+    /// What the file held of each choice that could not be read.
+    pub(crate) unread: Unread,
+}
+
+/// The values of a preview file this build could not read, each as it was.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Unread {
+    quality: Option<serde_json::Value>,
+    proxies: Option<serde_json::Value>,
+    proxy_budget_gib: Option<serde_json::Value>,
+}
+
+/// The preview as a file holds it: an object with any value at all of each
+/// choice.
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct StoredPreview(serde_json::Map<String, serde_json::Value>);
+
+/// The preview as it is written: each choice as made, or as it was read
+/// when it could not be.
+#[derive(Serialize)]
+struct SavedPreview {
+    quality: Saved<PreviewQuality>,
+    proxies: Saved<ProxyMode>,
+    proxy_budget_gib: Saved<u32>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Saved<T> {
+    Chosen(T),
+    Unread(serde_json::Value),
+}
+
+impl Saved<()> {
+    /// `chosen`, unless the file held something unread for it and it is
+    /// still the `fallback` that was read in its place.
+    fn of<T: PartialEq>(chosen: T, fallback: T, unread: Option<serde_json::Value>) -> Saved<T> {
+        match unread {
+            Some(value) if chosen == fallback => Saved::Unread(value),
+            _ => Saved::Chosen(chosen),
+        }
+    }
+}
+
+/// `value` read as a `T`, or the default when there is none or it is null;
+/// one that is not a `T` is kept in `unread`.
+fn read_or_keep<T>(value: Option<serde_json::Value>, unread: &mut Option<serde_json::Value>) -> T
+where
+    T: serde::de::DeserializeOwned + Default,
+{
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return T::default();
+    };
+    T::deserialize(&value).unwrap_or_else(|_| {
+        *unread = Some(value);
+        T::default()
+    })
+}
+
+impl From<StoredPreview> for PreviewSettings {
+    fn from(StoredPreview(mut stored): StoredPreview) -> Self {
+        let mut unread = Unread::default();
+        let quality = read_or_keep(stored.remove("quality"), &mut unread.quality);
+        let proxies = read_or_keep(stored.remove("proxies"), &mut unread.proxies);
+        let proxy_budget_gib = match stored.remove("proxy_budget_gib") {
+            None | Some(serde_json::Value::Null) => PROXY_BUDGET_GIB,
+            Some(value) => budget_of(&value).unwrap_or_else(|| {
+                unread.proxy_budget_gib = Some(value);
+                PROXY_BUDGET_GIB
+            }),
+        };
+        Self {
+            quality,
+            proxies,
+            proxy_budget_gib,
+            unread,
+        }
+    }
+}
+
+impl From<PreviewSettings> for SavedPreview {
+    fn from(preview: PreviewSettings) -> Self {
+        let unread = preview.unread;
+        Self {
+            quality: Saved::of(preview.quality, PreviewQuality::default(), unread.quality),
+            proxies: Saved::of(preview.proxies, ProxyMode::default(), unread.proxies),
+            proxy_budget_gib: Saved::of(
+                preview.proxy_budget_gib,
+                PROXY_BUDGET_GIB,
+                unread.proxy_budget_gib,
+            ),
+        }
+    }
+}
+
+impl Default for PreviewSettings {
+    fn default() -> Self {
+        Self {
+            quality: PreviewQuality::default(),
+            proxies: ProxyMode::default(),
+            proxy_budget_gib: PROXY_BUDGET_GIB,
+            unread: Unread::default(),
+        }
+    }
+}
+
+impl PreviewSettings {
+    /// The person chose `quality`: what was unread of it is theirs no more.
+    pub fn set_quality(&mut self, quality: PreviewQuality) {
+        self.quality = quality;
+        self.unread.quality = None;
+    }
+
+    /// The person chose `mode`.
+    pub fn set_proxies(&mut self, mode: ProxyMode) {
+        self.proxies = mode;
+        self.unread.proxies = None;
+    }
+
+    /// The person chose a budget of `gib`, brought into [`PROXY_BUDGETS`].
+    pub fn set_proxy_budget_gib(&mut self, gib: u32) {
+        self.proxy_budget_gib = gib.clamp(*PROXY_BUDGETS.start(), *PROXY_BUDGETS.end());
+        self.unread.proxy_budget_gib = None;
+    }
+
+    /// The proxy cache's budget in bytes.
+    pub fn proxy_budget(&self) -> u64 {
+        u64::from(
+            self.proxy_budget_gib
+                .clamp(*PROXY_BUDGETS.start(), *PROXY_BUDGETS.end()),
+        ) * 1024
+            * 1024
+            * 1024
+    }
+}
+
+/// A budget read as a number brought into [`PROXY_BUDGETS`], or nothing for
+/// anything that is not a number.
+fn budget_of(value: &serde_json::Value) -> Option<u32> {
+    value.as_f64().filter(|gib| gib.is_finite()).map(|gib| {
+        gib.round().clamp(
+            f64::from(*PROXY_BUDGETS.start()),
+            f64::from(*PROXY_BUDGETS.end()),
+        ) as u32
+    })
+}
+
+/// Where proxies are kept between sessions: beside the settings a window was
+/// told to use, so a test or a verification run keeps its own, or the
+/// user's cache directory, or the system's temporary one on a system without
+/// a home.
+pub fn proxy_dir(told_settings: Option<&Path>) -> PathBuf {
+    match told_settings.and_then(Path::parent) {
+        Some(beside) => beside.join("proxies"),
+        None => directories::ProjectDirs::from("app", "Aster", "Aster").map_or_else(
+            || std::env::temp_dir().join("aster-proxies"),
+            |dirs| dirs.cache_dir().join("proxies"),
+        ),
+    }
 }
 
 impl Default for Settings {
@@ -111,6 +384,10 @@ impl Default for Settings {
             recent: Vec::new(),
             transitions: Vec::new(),
             speech: SpeechSettings::default(),
+            preview: PreviewSettings::default(),
+            export_last: None,
+            export_folder: None,
+            export_preset: None,
         }
     }
 }
@@ -142,6 +419,8 @@ impl Settings {
         self.recent.truncate(RECENT_LIMIT);
         self.ai = self.ai.sanitized();
         self.transitions = crate::ui::transitions::sanitized(self.transitions);
+        self.preview.proxy_budget_gib =
+            (self.preview.proxy_budget_gib).clamp(*PROXY_BUDGETS.start(), *PROXY_BUDGETS.end());
         self
     }
 
@@ -296,6 +575,190 @@ mod tests {
         // A fade has no softness: that default is not one a clip would take.
         assert_eq!(Settings::load(&path).transitions, [wipe]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preview_choices_survive_a_round_trip() {
+        let dir = std::env::temp_dir().join(format!("aster-settings-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        for quality in PreviewQuality::ALL {
+            for proxies in ProxyMode::ALL {
+                let settings = Settings {
+                    preview: PreviewSettings {
+                        quality,
+                        proxies,
+                        proxy_budget_gib: 7,
+                        ..PreviewSettings::default()
+                    },
+                    ..Settings::default()
+                };
+                settings.save(&path).unwrap();
+                assert_eq!(Settings::load(&path), settings);
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unknown_preview_value_falls_back_alone() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"snapping":false,"preview":{"quality":"eighth","proxies":"always","proxy_budget_gib":50}}"#,
+        )
+        .unwrap();
+        assert!(!settings.snapping, "the rest of the file is still read");
+        assert_eq!(settings.preview.quality, PreviewQuality::Auto);
+        assert_eq!(settings.preview.proxies, ProxyMode::Always);
+        assert_eq!(settings.preview.proxy_budget_gib, 50);
+
+        let settings: Settings = serde_json::from_str(
+            r#"{"snapping":false,"preview":{"quality":"half","proxies":{"mode":3}}}"#,
+        )
+        .unwrap();
+        assert!(!settings.snapping);
+        assert_eq!(settings.preview.quality, PreviewQuality::Half);
+        assert_eq!(settings.preview.proxies, ProxyMode::Auto);
+        assert_eq!(settings.preview.proxy_budget_gib, PROXY_BUDGET_GIB);
+    }
+
+    #[test]
+    fn an_unknown_preview_value_is_saved_back_until_the_person_chooses() {
+        let dir = std::env::temp_dir().join(format!("aster-settings-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let stored = |path: &Path| -> serde_json::Value {
+            let bytes = std::fs::read(path).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["preview"].clone()
+        };
+        std::fs::write(
+            &path,
+            r#"{"snapping":false,"preview":{"quality":"eighth","proxies":{"mode":3},"proxy_budget_gib":"lots"}}"#,
+        )
+        .unwrap();
+        let mut settings = Settings::load(&path);
+        assert_eq!(settings.preview.quality, PreviewQuality::Auto);
+        assert_eq!(settings.preview.proxies, ProxyMode::Auto);
+        assert_eq!(settings.preview.proxy_budget_gib, PROXY_BUDGET_GIB);
+
+        // Saved for another reason, the values a newer build wrote are kept.
+        settings.autosave = false;
+        settings.save(&path).unwrap();
+        assert_eq!(
+            stored(&path),
+            serde_json::json!({"quality": "eighth", "proxies": {"mode": 3}, "proxy_budget_gib": "lots"})
+        );
+        let reread = Settings::load(&path);
+        assert_eq!(reread, settings);
+        assert!(!reread.snapping && !reread.autosave);
+
+        // Chosen by the person, even as the default it read as, they are not.
+        settings.preview.set_quality(PreviewQuality::Full);
+        settings.preview.set_proxies(ProxyMode::Auto);
+        settings.save(&path).unwrap();
+        assert_eq!(
+            stored(&path),
+            serde_json::json!({"quality": "full", "proxies": "auto", "proxy_budget_gib": "lots"})
+        );
+        settings.preview.set_quality(PreviewQuality::Auto);
+        settings.preview.set_proxy_budget_gib(5000);
+        settings.save(&path).unwrap();
+        assert_eq!(
+            stored(&path),
+            serde_json::json!({"quality": "auto", "proxies": "auto", "proxy_budget_gib": 1000})
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_preview_value_set_away_from_its_fallback_is_saved_as_set() {
+        let mut settings: Settings =
+            serde_json::from_str(r#"{"preview":{"quality":"eighth","proxies":"sometimes"}}"#)
+                .unwrap();
+        settings.preview.quality = PreviewQuality::Half;
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert_eq!(saved["preview"]["quality"], "half");
+        assert_eq!(saved["preview"]["proxies"], "sometimes");
+    }
+
+    #[test]
+    fn a_preview_of_another_shape_is_the_default_and_the_rest_is_kept() {
+        for preview in [r#""fast""#, "12", "[1,2]", "null"] {
+            let text = format!(r#"{{"autosave":false,"preview":{preview}}}"#);
+            let settings: Settings = serde_json::from_str(&text).unwrap();
+            assert!(!settings.autosave, "{preview}");
+            assert_eq!(settings.preview, PreviewSettings::default(), "{preview}");
+        }
+        // A file from before the preview was kept reads the defaults.
+        let settings: Settings = serde_json::from_str(r#"{"snapping":false}"#).unwrap();
+        assert_eq!(settings.preview, PreviewSettings::default());
+        assert_eq!(settings.preview.quality, PreviewQuality::Auto);
+        assert_eq!(settings.preview.proxies, ProxyMode::Auto);
+        assert_eq!(settings.preview.proxy_budget_gib, 20);
+    }
+
+    #[test]
+    fn a_proxy_budget_is_brought_into_its_range() {
+        for (kept, read) in [
+            ("0", 1),
+            ("-4", 1),
+            ("2.6", 3),
+            ("5000", 1000),
+            ("1e300", 1000),
+            (r#""big""#, PROXY_BUDGET_GIB),
+            ("true", PROXY_BUDGET_GIB),
+        ] {
+            let text = format!(r#"{{"preview":{{"proxy_budget_gib":{kept}}}}}"#);
+            let settings: Settings = serde_json::from_str(&text).unwrap();
+            assert_eq!(settings.preview.proxy_budget_gib, read, "{kept}");
+        }
+        let settings = Settings {
+            preview: PreviewSettings {
+                proxy_budget_gib: 0,
+                ..PreviewSettings::default()
+            },
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(settings.preview.proxy_budget_gib, 1);
+        assert_eq!(PreviewSettings::default().proxy_budget(), 20 << 30);
+    }
+
+    #[test]
+    fn quality_divides_by_what_it_says_and_auto_only_when_late() {
+        assert_eq!(PreviewQuality::Full.divisor(false), 1);
+        assert_eq!(PreviewQuality::Full.divisor(true), 1);
+        assert_eq!(PreviewQuality::Half.divisor(false), 2);
+        assert_eq!(PreviewQuality::Quarter.divisor(true), 4);
+        assert_eq!(PreviewQuality::Auto.divisor(false), 1);
+        assert_eq!(PreviewQuality::Auto.divisor(true), 2);
+    }
+
+    #[test]
+    fn export_choices_are_kept_as_they_were_read() {
+        let text = r#"{"snapping":false,"export_last":{"video":{"codec":"av2"},"later":[1,2]},"export_folder":"/films"}"#;
+        let settings: Settings = serde_json::from_str(text).unwrap();
+        assert!(!settings.snapping);
+        assert_eq!(
+            settings.export_last,
+            Some(serde_json::json!({"video":{"codec":"av2"},"later":[1,2]}))
+        );
+        assert_eq!(settings.export_folder, Some(PathBuf::from("/films")));
+        let again: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(again, settings);
+        // A folder that is not a path is none, and nothing else is lost.
+        let settings: Settings =
+            serde_json::from_str(r#"{"snapping":false,"export_folder":42}"#).unwrap();
+        assert!(!settings.snapping);
+        assert_eq!(settings.export_folder, None);
+    }
+
+    #[test]
+    fn proxies_are_kept_beside_settings_a_window_was_told_to_use() {
+        assert_eq!(
+            proxy_dir(Some(Path::new("/tmp/run/settings.json"))),
+            PathBuf::from("/tmp/run/proxies")
+        );
+        assert!(proxy_dir(None).to_string_lossy().contains("proxies"));
     }
 
     #[test]

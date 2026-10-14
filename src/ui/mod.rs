@@ -3,9 +3,11 @@
 pub mod agent;
 pub mod browser;
 pub mod captions_tab;
+pub mod export_sheet;
 pub mod inspector;
 pub mod keyframes;
 pub mod library;
+pub mod render_queue;
 pub mod sheets;
 pub mod text_tab;
 pub mod timeline;
@@ -76,6 +78,10 @@ pub enum Action {
         format: editor_core::captions::SubtitleFormat,
     },
     OpenSettings,
+    /// Open the export sheet, starting from the settings last used.
+    OpenExport,
+    /// Show the render queue.
+    OpenRenderQueue,
 
     /// One document change, undone as one step.
     Edit(Command),
@@ -152,6 +158,18 @@ pub enum Action {
     SetAppearance(Appearance),
     SetAccent(Accent),
     SetAutosave(bool),
+    /// How much of the pictures the preview decodes and composites.
+    SetPreviewQuality(crate::settings::PreviewQuality),
+    /// When the preview reads smaller copies of videos in their place.
+    SetProxyMode(crate::settings::ProxyMode),
+    /// How much the proxy cache may hold, in GiB.
+    SetProxyBudget(u32),
+    /// Make a proxy of this video now, whatever the mode.
+    CreateProxy(AssetId),
+    /// Take this video's proxy out of the cache.
+    RemoveProxy(AssetId),
+    /// Empty the proxy cache.
+    ClearProxies,
 
     /// Run one line of the command language. No model is asked.
     AgentSubmit(String),

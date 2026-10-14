@@ -121,6 +121,16 @@ fn rig() -> Option<Turn<&'static Rig>> {
     })
 }
 
+/// The tests' device and queue, for what makes a compositor of its own: an
+/// export's renderer.
+pub(crate) fn device() -> Option<Turn<(wgpu::Device, wgpu::Queue)>> {
+    let Turn { made: rig, _turn } = rig()?;
+    Some(Turn {
+        made: (rig.device.clone(), rig.queue.clone()),
+        _turn,
+    })
+}
+
 pub(super) fn gpu() -> Option<Turn<Gpu>> {
     let Turn { made: rig, _turn } = rig()?;
     match Gpu::new(rig.device.clone(), rig.queue.clone()) {
@@ -840,6 +850,22 @@ pub(super) fn composer(budget: ComposeBudget) -> Option<Turn<Composer>> {
     let mut made = Composer::new(Some(state));
     made.budget = budget;
     Some(Turn { made, _turn })
+}
+
+/// A composer on the tests' device, and the device and queue themselves:
+/// what the viewer composites with beside what an export draws with, in
+/// one turn.
+pub(crate) fn composer_beside_device(
+    budget: ComposeBudget,
+) -> Option<Turn<(Composer, wgpu::Device, wgpu::Queue)>> {
+    let Turn { made: state, _turn } = render_state()?;
+    let (device, queue) = (state.device.clone(), state.queue.clone());
+    let mut composer = Composer::new(Some(state));
+    composer.budget = budget;
+    Some(Turn {
+        made: (composer, device, queue),
+        _turn,
+    })
 }
 
 fn held(composer: &Composer) -> usize {

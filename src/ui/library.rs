@@ -25,7 +25,7 @@ use crate::{
 use editor_core::{
     Asset, Command, FolderId, MediaFolder, MediaKind, Project, Time, captions::SubtitleFormat,
 };
-use editor_media::MediaService;
+use editor_media::{MediaService, ProxyStatus};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, Vec2,
     epaint::RectShape, pos2, vec2,
@@ -311,6 +311,142 @@ pub struct LibraryInput<'a> {
 enum Item<'a> {
     Folder(&'a MediaFolder),
     Asset(&'a Asset),
+}
+
+/// What a video's tile says of its proxy.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ProxyMark {
+    /// The preview can read a smaller copy.
+    Ready,
+    /// One is made, but Preview › Proxies is Off: the preview reads the
+    /// original.
+    Unused,
+    /// One waits to be made, or is being made: how much of it, when known.
+    Making(Option<f32>),
+    /// None could be made, or the one made could not be read, and why.
+    Failed(String),
+}
+
+impl ProxyMark {
+    /// Its name for accessibility and its tooltip.
+    pub(crate) fn describe(&self) -> (&'static str, String) {
+        match self {
+            Self::Ready => (
+                "Proxy ready",
+                "Proxy ready: the preview reads a smaller copy. Exports use the original."
+                    .to_owned(),
+            ),
+            Self::Unused => (
+                "Proxy not used",
+                "Proxy made; Preview › Proxies is Off, so the original is shown".to_owned(),
+            ),
+            Self::Making(None) => ("Proxy waiting", "Waiting to make a proxy".to_owned()),
+            Self::Making(Some(done)) => (
+                "Making proxy",
+                format!("Making a proxy: {:.0}%", done.clamp(0.0, 1.0) * 100.0),
+            ),
+            Self::Failed(why) => ("Proxy failed", format!("No proxy: {why}")),
+        }
+    }
+}
+
+/// What the tile of `asset` shows of its proxy, given what the proxy
+/// service says of it, whether the preview could not read the one made and
+/// whether the preview reads proxies at all (`read`, Proxies is not Off).
+pub(crate) fn proxy_mark(
+    asset: &Asset,
+    status: &ProxyStatus,
+    unreadable: bool,
+    read: bool,
+) -> Option<ProxyMark> {
+    if asset.kind != MediaKind::Video {
+        return None;
+    }
+    match status {
+        ProxyStatus::None => None,
+        ProxyStatus::Queued => Some(ProxyMark::Making(None)),
+        ProxyStatus::Generating(done) => Some(ProxyMark::Making(Some(*done))),
+        ProxyStatus::Ready(_) if !read => Some(ProxyMark::Unused),
+        ProxyStatus::Ready(_) if unreadable => Some(ProxyMark::Failed(
+            "the proxy could not be read, so the original is shown".to_owned(),
+        )),
+        ProxyStatus::Ready(_) => Some(ProxyMark::Ready),
+        ProxyStatus::Failed(why) => Some(ProxyMark::Failed(why.clone())),
+    }
+}
+
+/// The proxy item of a video's menu, and what it asks: to make one when it
+/// has none, or none could be made, and to remove the one it has or is
+/// making. Only a video with a picture has one. While the preview reads no
+/// proxies (`read` is false) the item says when the one made is used.
+pub(crate) fn proxy_item(
+    asset: &Asset,
+    status: &ProxyStatus,
+    read: bool,
+) -> Option<(&'static str, Action)> {
+    if asset.kind != MediaKind::Video || asset.width == 0 || asset.height == 0 {
+        return None;
+    }
+    Some(match status {
+        ProxyStatus::None | ProxyStatus::Failed(_) if !read => (
+            "Create proxy (used when Proxies is on)",
+            Action::CreateProxy(asset.id),
+        ),
+        ProxyStatus::None | ProxyStatus::Failed(_) => {
+            ("Create proxy", Action::CreateProxy(asset.id))
+        }
+        ProxyStatus::Queued | ProxyStatus::Generating(_) | ProxyStatus::Ready(_) => {
+            ("Remove proxy", Action::RemoveProxy(asset.id))
+        }
+    })
+}
+
+/// Draws the proxy mark of a tile in the top right corner of its picture,
+/// with its name and tooltip, and a thin bar along the picture's foot while
+/// a proxy is made.
+fn proxy_badge(ui: &Ui, p: &Palette, id: Id, picture: Rect, grid: bool, mark: &ProxyMark) {
+    let side = if grid { 18.0 } else { 14.0 };
+    let badge = Rect::from_min_size(
+        pos2(picture.right() - side - 5.0, picture.top() + 5.0),
+        Vec2::splat(side),
+    );
+    let (name, tip) = mark.describe();
+    let response = ui.interact(badge, id.with("proxy"), Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name));
+    response.on_hover_text(tip);
+    let painter = ui.painter();
+    let (icon, color, fill) = match mark {
+        ProxyMark::Ready => (Icon::Layers, Color32::WHITE, Color32::from_black_alpha(150)),
+        // Dimmed: made, but not what the preview reads.
+        ProxyMark::Unused => (
+            Icon::Layers,
+            Color32::from_white_alpha(110),
+            Color32::from_black_alpha(90),
+        ),
+        ProxyMark::Making(_) => (
+            Icon::Layers,
+            Color32::from_white_alpha(150),
+            Color32::from_black_alpha(110),
+        ),
+        ProxyMark::Failed(_) => (Icon::Warning, p.yellow, Color32::from_black_alpha(150)),
+    };
+    painter.rect_filled(badge, CornerRadius::same(5), fill);
+    icons::paint(painter, badge.shrink(side * 0.2), icon, color);
+    if let ProxyMark::Making(Some(done)) = mark {
+        let track = Rect::from_min_max(
+            pos2(picture.left() + 4.0, picture.bottom() - 5.0),
+            pos2(picture.right() - 4.0, picture.bottom() - 3.0),
+        );
+        painter.rect_filled(track, CornerRadius::same(1), Color32::from_black_alpha(120));
+        let fill = Rect::from_min_max(
+            track.min,
+            pos2(
+                track.left() + track.width() * done.clamp(0.0, 1.0),
+                track.bottom(),
+            ),
+        );
+        painter.rect_filled(fill, CornerRadius::same(1), p.accent);
+    }
 }
 
 fn kind_name(kind: MediaKind) -> &'static str {
@@ -1002,6 +1138,17 @@ fn asset_cell(
         painter.rect_filled(mark, CornerRadius::same(5), p.accent);
         icons::paint(painter, mark.shrink(side * 0.22), Icon::Play, p.on_accent);
     }
+    // A video with a proxy, or one on its way, says so on its picture.
+    let proxy_status = textures.proxy_status(asset.id);
+    let read = textures.reads_proxies();
+    if let Some(mark) = proxy_mark(
+        asset,
+        proxy_status,
+        textures.proxy_unreadable(asset.id),
+        read,
+    ) {
+        proxy_badge(ui, p, id, picture, grid, &mark);
+    }
     // A lookup table is neither played nor placed on a track.
     let placeable = crate::rules::placeable(asset);
     // Under the pointer, the picture offers to play its source.
@@ -1156,6 +1303,12 @@ fn asset_cell(
         }
         if menu_item(ui, p, Some(Icon::Copy), "Copy path", "").clicked() {
             ui.ctx().copy_text(asset.path.display().to_string());
+            ui.close();
+        }
+        if let Some((label, action)) = proxy_item(asset, proxy_status, textures.reads_proxies())
+            && menu_item(ui, p, Some(Icon::Layers), label, "").clicked()
+        {
+            actions.push(action);
             ui.close();
         }
         let project = input.project;
@@ -1314,6 +1467,317 @@ mod tests {
                     1,
                     "grid {grid}: one ring, on what has the keyboard"
                 );
+            }
+        }
+    }
+
+    fn proxy(asset: &Asset) -> editor_media::Proxy {
+        editor_media::Proxy {
+            path: format!("/cache/{}.mp4", asset.id).into(),
+            width: 1280,
+            height: 720,
+            source: editor_media::SourceIdentity::of(asset),
+        }
+    }
+
+    fn wide(name: &str) -> Asset {
+        let mut asset = asset(name, MediaKind::Video, 8.0, 500_000_000);
+        asset.width = 3840;
+        asset.height = 2160;
+        asset
+    }
+
+    #[test]
+    fn a_video_tile_marks_its_proxy_and_nothing_else_does() {
+        let video = wide("uhd.mov");
+        let ready = ProxyStatus::Ready(proxy(&video));
+        assert_eq!(proxy_mark(&video, &ProxyStatus::None, false, true), None);
+        assert_eq!(
+            proxy_mark(&video, &ProxyStatus::Queued, false, true),
+            Some(ProxyMark::Making(None))
+        );
+        assert_eq!(
+            proxy_mark(&video, &ProxyStatus::Generating(0.4), false, true),
+            Some(ProxyMark::Making(Some(0.4)))
+        );
+        assert_eq!(
+            proxy_mark(&video, &ready, false, true),
+            Some(ProxyMark::Ready)
+        );
+        assert_eq!(
+            proxy_mark(
+                &video,
+                &ProxyStatus::Failed("disk full".into()),
+                false,
+                true
+            ),
+            Some(ProxyMark::Failed("disk full".into()))
+        );
+        // One the viewer could not read is a warning, with the reason.
+        let Some(ProxyMark::Failed(why)) = proxy_mark(&video, &ready, true, true) else {
+            panic!("an unreadable proxy is a failure");
+        };
+        assert!(why.contains("original"), "{why}");
+        let still = asset("still.png", MediaKind::Image, 5.0, 10);
+        assert_eq!(proxy_mark(&still, &ready, false, true), None);
+        // Each says what it is.
+        assert_eq!(ProxyMark::Ready.describe().0, "Proxy ready");
+        assert_eq!(
+            ProxyMark::Making(Some(0.42)).describe().1,
+            "Making a proxy: 42%"
+        );
+        assert_eq!(
+            ProxyMark::Failed("disk full".into()).describe().1,
+            "No proxy: disk full"
+        );
+    }
+
+    #[test]
+    fn a_video_menu_creates_or_removes_its_proxy() {
+        let video = wide("uhd.mov");
+        let id = video.id;
+        let item = |status: &ProxyStatus| proxy_item(&video, status, true);
+        assert!(matches!(
+            item(&ProxyStatus::None),
+            Some(("Create proxy", Action::CreateProxy(asset))) if asset == id
+        ));
+        assert!(matches!(
+            item(&ProxyStatus::Failed("no".into())),
+            Some(("Create proxy", Action::CreateProxy(asset))) if asset == id
+        ));
+        for status in [
+            ProxyStatus::Queued,
+            ProxyStatus::Generating(0.5),
+            ProxyStatus::Ready(proxy(&video)),
+        ] {
+            assert!(matches!(
+                item(&status),
+                Some(("Remove proxy", Action::RemoveProxy(asset))) if asset == id
+            ));
+        }
+        let still = asset("still.png", MediaKind::Image, 5.0, 10);
+        assert!(proxy_item(&still, &ProxyStatus::None, true).is_none());
+        let unknown = asset("unknown.mkv", MediaKind::Video, 5.0, 10);
+        assert!(proxy_item(&unknown, &ProxyStatus::None, true).is_none());
+    }
+
+    #[test]
+    fn with_proxies_off_a_made_proxy_is_not_said_to_be_read() {
+        // Preview › Proxies is Off: the preview reads originals, so a proxy
+        // that is ready says it is not used rather than that it is read.
+        let video = wide("uhd.mov");
+        let ready = ProxyStatus::Ready(proxy(&video));
+        assert_eq!(
+            proxy_mark(&video, &ready, false, false),
+            Some(ProxyMark::Unused)
+        );
+        assert_eq!(
+            proxy_mark(&video, &ready, true, false),
+            Some(ProxyMark::Unused),
+            "an unread proxy is not a failure either"
+        );
+        let (name, tip) = ProxyMark::Unused.describe();
+        assert_eq!(name, "Proxy not used");
+        assert_eq!(
+            tip,
+            "Proxy made; Preview › Proxies is Off, so the original is shown"
+        );
+        assert!(!tip.contains("reads a smaller copy"));
+        // One being made still says so; the menu says when it is used.
+        assert_eq!(
+            proxy_mark(&video, &ProxyStatus::Generating(0.5), false, false),
+            Some(ProxyMark::Making(Some(0.5)))
+        );
+        assert!(matches!(
+            proxy_item(&video, &ProxyStatus::None, false),
+            Some((
+                "Create proxy (used when Proxies is on)",
+                Action::CreateProxy(_)
+            ))
+        ));
+        assert!(matches!(
+            proxy_item(&video, &ready, false),
+            Some(("Remove proxy", Action::RemoveProxy(_)))
+        ));
+    }
+
+    /// The media tab of `project` in a window of its own, driven by the
+    /// pointer and read through what accessibility is told.
+    struct Shelf {
+        ctx: egui::Context,
+        project: Project,
+        textures: Textures,
+        state: LibraryState,
+        selection: Selection,
+        grid: bool,
+        seen: Vec<(String, Rect)>,
+        actions: Vec<Action>,
+    }
+
+    impl Shelf {
+        fn new(project: Project, grid: bool) -> Self {
+            let ctx = egui::Context::default();
+            crate::theme::install_fonts(&ctx);
+            ctx.enable_accesskit();
+            // Preview › Proxies at Auto, as a new window starts.
+            let mut textures = Textures::default();
+            textures.read_proxies(true);
+            Self {
+                ctx,
+                project,
+                textures,
+                state: LibraryState::default(),
+                selection: Selection::default(),
+                grid,
+                seen: Vec::new(),
+                actions: Vec::new(),
+            }
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            let palette = Palette::new(crate::theme::Appearance::Dark, Default::default());
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(320.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let ctx = self.ctx.clone();
+            let output = ctx.run_ui(input, |ui| {
+                let rect = ui.max_rect();
+                show(
+                    ui,
+                    rect,
+                    &mut self.state,
+                    &mut self.selection,
+                    &mut self.textures,
+                    &mut Titles::default(),
+                    &LibraryInput {
+                        p: &palette,
+                        project: &self.project,
+                        media: None,
+                        grid: self.grid,
+                        sort: LibrarySort::default(),
+                        importing: 0,
+                        problem: None,
+                        previewing: None,
+                        playhead: Time::ZERO,
+                        presets: &Arc::default(),
+                        speech: captions_tab::SpeechInput {
+                            view: &crate::speech::SpeechView::Idle,
+                            settings: &crate::speech::SpeechSettings::default(),
+                            inventory: None,
+                        },
+                    },
+                    &mut self.actions,
+                );
+            });
+            if let Some(update) = &output.platform_output.accesskit_update {
+                self.seen = (update.nodes.iter())
+                    .filter_map(|(_, node)| {
+                        let bounds = node.bounds()?;
+                        Some((
+                            node.label().or_else(|| node.value())?.to_owned(),
+                            Rect::from_min_max(
+                                pos2(bounds.x0 as f32, bounds.y0 as f32),
+                                pos2(bounds.x1 as f32, bounds.y1 as f32),
+                            ),
+                        ))
+                    })
+                    .collect();
+            }
+            output.drop_without_applying_deltas();
+        }
+
+        fn find(&self, name: &str) -> Option<Rect> {
+            (self.seen.iter())
+                .find(|(seen, _)| seen == name)
+                .map(|(_, rect)| *rect)
+        }
+
+        fn click(&mut self, at: egui::Pos2, button: egui::PointerButton) {
+            let press = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![egui::Event::PointerMoved(at)]);
+            self.frame(vec![press(true)]);
+            self.frame(vec![press(false)]);
+            self.frame(Vec::new());
+        }
+    }
+
+    #[test]
+    fn a_tile_says_what_there_is_of_its_proxy() {
+        let video = wide("uhd.mov");
+        let id = video.id;
+        let mut project = Project::new("Library");
+        Arc::make_mut(&mut project.assets).insert(video.id, video.clone());
+        for grid in [true, false] {
+            let mut shelf = Shelf::new(project.clone(), grid);
+            shelf.frame(Vec::new());
+            shelf.frame(Vec::new());
+            assert!(shelf.find("Proxy ready").is_none(), "none yet");
+            for (status, name) in [
+                (ProxyStatus::Queued, "Proxy waiting"),
+                (ProxyStatus::Generating(0.3), "Making proxy"),
+                (ProxyStatus::Ready(proxy(&video)), "Proxy ready"),
+                (ProxyStatus::Failed("disk full".into()), "Proxy failed"),
+            ] {
+                shelf.textures.set_proxy(id, status);
+                shelf.frame(Vec::new());
+                shelf.frame(Vec::new());
+                let tile = shelf.find("uhd.mov").expect("the tile is named");
+                let mark = (shelf.find(name)).unwrap_or_else(|| panic!("grid {grid}: {name}"));
+                assert!(
+                    tile.contains_rect(mark),
+                    "grid {grid}: {name} is on its tile"
+                );
+            }
+            // With Proxies off the one made is not said to be read.
+            shelf
+                .textures
+                .set_proxy(id, ProxyStatus::Ready(proxy(&video)));
+            shelf.textures.read_proxies(false);
+            shelf.frame(Vec::new());
+            shelf.frame(Vec::new());
+            assert!(shelf.find("Proxy ready").is_none(), "grid {grid}");
+            assert!(shelf.find("Proxy not used").is_some(), "grid {grid}");
+            assert!(shelf.actions.is_empty(), "a mark asks for nothing");
+        }
+    }
+
+    #[test]
+    fn the_tile_menu_asks_to_create_or_remove_the_proxy_of_that_video() {
+        let video = wide("uhd.mov");
+        let id = video.id;
+        let mut project = Project::new("Library");
+        Arc::make_mut(&mut project.assets).insert(video.id, video.clone());
+        for (status, item) in [
+            (ProxyStatus::None, "Create proxy"),
+            (ProxyStatus::Ready(proxy(&video)), "Remove proxy"),
+        ] {
+            let mut shelf = Shelf::new(project.clone(), true);
+            shelf.textures.set_proxy(id, status);
+            shelf.frame(Vec::new());
+            shelf.frame(Vec::new());
+            let tile = shelf.find("uhd.mov").expect("the tile is named");
+            // Away from the play badge in its middle.
+            let at = tile.left_top() + vec2(8.0, 8.0);
+            shelf.click(at, egui::PointerButton::Secondary);
+            let row = shelf
+                .find(item)
+                .unwrap_or_else(|| panic!("the menu offers {item}"));
+            shelf.click(row.center(), egui::PointerButton::Primary);
+            let asked: Vec<_> = (shelf.actions.iter())
+                .filter(|action| matches!(action, Action::CreateProxy(_) | Action::RemoveProxy(_)))
+                .collect();
+            assert_eq!(asked.len(), 1, "{item}: {:?}", shelf.actions);
+            match (item, asked[0]) {
+                ("Create proxy", Action::CreateProxy(asset))
+                | ("Remove proxy", Action::RemoveProxy(asset)) => assert_eq!(*asset, id),
+                other => panic!("{other:?}"),
             }
         }
     }

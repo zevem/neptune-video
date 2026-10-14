@@ -78,3 +78,10 @@ Source28259254/release2c596cb0 adds truthful "No changes" feedback and passed
 its own native acceptance, including both real providers and GTK import/recovery.
 See the current verification record;
 the implementation resolution does not close the broader production gates.
+
+2026-10-14: Export is now specified and implemented in
+[export and rendering](../export-and-rendering/spec.md), with
+[ADR 0008](../../docs/adr/0008-export-renders-originals-through-the-preview-compositor.md).
+The "Export … outside this first core-feature request" sentence above stays as
+the record of this phase. Codec deployment and licensing remain with
+[ticket 03](issues/03-codec-and-distribution.md).

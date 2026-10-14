@@ -14,7 +14,11 @@ use super::{
     shortcut, tone_of_media, widgets,
 };
 use crate::{
-    compose::{self, Composer, Draw, Job, Placement, Run, lut::Luts},
+    compose::{
+        self, Composer, Draw, Job, Run,
+        assemble::{self, SteadyParams, fade_weight, reading_of, steadied},
+        lut::Luts,
+    },
     icons::{self, Icon},
     steady::Steadies,
     textures::{Textures, Viewing, Wanted},
@@ -23,9 +27,9 @@ use crate::{
     titles::Titles,
 };
 use editor_core::{
-    AnimTarget, Asset, AssetId, Clip, ClipId, ClipOverride, EffectKind, FrameRate, Layer,
-    LayerSource, Mask, MaskShape, MediaKind, ParamKey, Project, ProjectQuery, Reading, Time, Track,
-    TrackKind, Transform, look, render, resolve,
+    AnimTarget, Asset, AssetId, Clip, ClipId, ClipOverride, FrameRate, Layer, LayerSource, Mask,
+    MaskShape, MediaKind, ParamKey, Project, ProjectQuery, Reading, Time, Track, TrackKind,
+    Transform, look, render, resolve,
 };
 // The tests below build their clips from it.
 #[cfg(test)]
@@ -382,18 +386,42 @@ fn decode_size(needed: f32) -> [u32; 2] {
     [side, side]
 }
 
+/// The square a layer asks at for the screen pixels it needs, at a preview
+/// quality that divides by `divisor`: the step [`decode_size`] picks, held to
+/// the largest step within a half or a quarter of it, and never under the
+/// smallest. A divisor of one is full quality, the step itself.
+fn detailed_size(needed: f32, divisor: u32) -> [u32; 2] {
+    let [full, _] = decode_size(needed);
+    if divisor <= 1 {
+        return [full, full];
+    }
+    let cap = full / divisor;
+    let side = (DECODE_STEPS.into_iter().rev())
+        .find(|step| *step <= cap)
+        .unwrap_or(DECODE_STEPS[0]);
+    [side, side]
+}
+
+/// [`decode_box_at`] at full quality.
+#[cfg(test)]
+fn decode_box(needed: f32, asset: &Asset) -> [u32; 2] {
+    decode_box_at(needed, asset, 1)
+}
+
 /// The box a layer of `asset` asks its frames to fit, for the screen pixels
-/// it needs: the square of [`decode_size`] drawn in to the shape of the
-/// asset's picture, and to no more than the picture has. A frame is fitted
-/// inside the box it is asked at, so what a square leaves empty around a
-/// picture of another shape is room of the viewer budget that nothing fills.
+/// it needs at a preview quality that divides by `divisor`: the square of
+/// [`detailed_size`] drawn in to the shape of the asset's picture, and to no
+/// more than the picture has. A frame is fitted inside the box it is asked
+/// at, so what a square leaves empty around a picture of another shape is
+/// room of the viewer budget that nothing fills.
 ///
 /// The picture is held to the lesser of what the square has of its width and
 /// of its height, and never enlarged. Its sides are rounded up, so a frame
 /// fitted inside the square and rounded to whole texels still fits the box.
-/// An asset whose size is not known asks at the square.
-fn decode_box(needed: f32, asset: &Asset) -> [u32; 2] {
-    let [across, down] = decode_size(needed);
+/// An asset whose size is not known asks at the square. It is always the
+/// asset's own size that counts, whatever its frames are read from.
+fn decode_box_at(needed: f32, asset: &Asset, divisor: u32) -> [u32; 2] {
+    let [across, down] = detailed_size(needed, divisor);
     let (width, height) = (u64::from(asset.width), u64::from(asset.height));
     if width == 0 || height == 0 {
         return [across, down];
@@ -470,27 +498,6 @@ fn cut_run(track: &Track, clip: &Clip, shown: &[Layer]) -> Vec<ClipId> {
         }
     }
     run
-}
-
-/// What of a layer of a transition is shown where no compositor draws the
-/// transition, whatever its kind: the incoming layer fades in and the
-/// outgoing one fades out. `under` is the opacity of the partner drawn over
-/// an outgoing layer on the very same box, when there is one: the outgoing
-/// layer is then left as much more as its partner hides of it, so that the
-/// two sum to a cross-fade and the canvas does not show through half way.
-fn fade_weight(layer: &Layer, under: Option<f32>) -> f32 {
-    let Some(transition) = &layer.transition else {
-        return 1.0;
-    };
-    let progress = transition.progress.clamp(0.0, 1.0);
-    match (transition.outgoing, under) {
-        (false, _) => progress,
-        (true, None) => 1.0 - progress,
-        (true, Some(over)) => {
-            let hidden = progress * over.clamp(0.0, 1.0);
-            ((1.0 - progress) / (1.0 - hidden).max(f32::EPSILON)).min(1.0)
-        }
-    }
 }
 
 /// The longer side a media layer needs a picture for, in screen pixels: that
@@ -574,45 +581,7 @@ fn snapped(stored: f32, shown: f32, reach: f32) -> Option<f32> {
     ((stored + shown).abs() <= reach).then_some(-shown)
 }
 
-/// Where the segment of its time map that `clip` is in at `playhead` ends on
-/// the timeline, when it runs back through the source there: it ends earlier
-/// in the source than it starts. A clip without a map never does, and a
-/// freeze goes neither way.
-pub(crate) fn backwards_until(clip: &Clip, playhead: Time) -> Option<Time> {
-    let retime = clip.retime.as_ref()?;
-    let last = retime.keys.len().checked_sub(2)?;
-    let index = retime
-        .keys
-        .partition_point(|key| key.at <= playhead - clip.start)
-        .saturating_sub(1)
-        .min(last);
-    let (from, to) = (&retime.keys[index], &retime.keys[index + 1]);
-    (from.ease != editor_core::Ease::Hold && to.source < from.source).then(|| clip.start + to.at)
-}
-
-/// What a source time is let fall short of the frame it is on. The times of
-/// the timeline are whole microseconds, each rounded down from a frame grid,
-/// and a clip's rate multiplies what its start and the playhead lost by up to
-/// sixteen: the source time of a frame can come out that much before the
-/// frame's own, which would show the one before it.
-const SOURCE_SLACK: Time = Time(18);
-
-/// The source time to show, on the asset's own frame grid so that a paused
-/// playhead asks for one frame once, and never past the asset's last frame:
-/// a freeze on the end of a source holds that one.
-///
-/// A frame of the timeline shows the source frame its start is in, and a clip
-/// stops short of the source time it ends on. Played backwards that is the
-/// time it starts on, so there a frame of the timeline shows the source it
-/// has run back to by its own end: the frames of a span reversed are the
-/// frames it shows forwards, last first, and none from past its end.
-pub(crate) fn source_frame(project: &Project, asset: &Asset, clip: &Clip, playhead: Time) -> Time {
-    let rate = asset.frame_rate.unwrap_or(project.settings.frame_rate);
-    let at = backwards_until(clip, playhead).map_or(playhead, |end| {
-        (playhead + project.settings.frame_rate.frame_time(1)).min(end)
-    });
-    source_frame_time(asset, rate, clip.source_time(at) + SOURCE_SLACK)
-}
+pub(crate) use editor_core::render::{backwards_until, source_frame};
 
 #[expect(clippy::too_many_arguments, reason = "one call site in the frame")]
 pub fn show(
@@ -666,14 +635,17 @@ pub fn show(
         .iter()
         .map(|layer| Staged::of(project, &active, layer, input.playhead))
         .collect();
+    // How much of the pictures the preview's quality asks for.
+    let detail = textures.detail();
     let composing = state.composer.available();
     // The clean plate of each difference matte of a layer. Only a compositor
     // reads one, so without one none is asked for.
     let plates = |layer: &'_ Layer| {
-        (layer.effects.iter())
-            .filter(|effect| composing && effect.kind == EffectKind::DifferenceMatte)
-            .filter_map(|effect| Some((effect.id, project.assets.get(&effect.asset_id?)?)))
-            .collect::<Vec<(uuid::Uuid, &Asset)>>()
+        if composing {
+            assemble::plates(project, layer)
+        } else {
+            Vec::new()
+        }
     };
     // The pictures this frame draws are asked for together, in the order they
     // are painted, before any is.
@@ -695,7 +667,7 @@ pub fn show(
             wanted.push(Wanted {
                 viewing: Viewing::Plate(layer.clip, effect),
                 asset: plate,
-                size: decode_box(needed, plate),
+                size: decode_box_at(needed, plate, detail),
                 time: Time::ZERO,
                 carries_on: Vec::new(),
             });
@@ -703,7 +675,7 @@ pub fn show(
         wanted.push(Wanted {
             viewing,
             asset,
-            size: decode_box(needed, asset),
+            size: decode_box_at(needed, asset, detail),
             time: source_frame(project, asset, staged.clip, input.playhead),
             carries_on: if textures.has_layer(viewing) {
                 Vec::new()
@@ -750,14 +722,12 @@ pub fn show(
             let effect = steadied(layer).filter(|_| composing)?;
             let asset = staged.as_ref()?.asset?;
             let shown = textures.input(Viewing::Clip(layer.clip))?;
-            let value = |key: ParamKey, plain: f32| effect.param(key).unwrap_or(plain);
-            steady.sampling(
-                asset,
-                shown.time,
-                value(ParamKey::Smoothness, 0.0),
-                value(ParamKey::CropZoom, 1.0),
-                effect.mix,
-            )
+            let SteadyParams {
+                smoothness,
+                zoom,
+                mix,
+            } = SteadyParams::of(effect);
+            steady.sampling(asset, shown.time, smoothness, zoom, mix)
         })
         .collect();
     // A point tracked on a steadied picture is where that reading shows it:
@@ -787,20 +757,16 @@ pub fn show(
     let plan = plan;
 
     // Where a media layer's box is, in canvas pixels about the canvas centre.
-    let boxes: Vec<Option<(Vec2, Vec2)>> = (plan.layers.iter().zip(&staged))
+    let boxes: Vec<Option<assemble::LayerBox>> = (plan.layers.iter().zip(&staged))
         .map(|(layer, staged)| {
             let asset = staged.as_ref()?.asset?;
-            let transform = &layer.transform;
-            let source = if asset.width > 0 && asset.height > 0 {
-                vec2(asset.width as f32, asset.height as f32)
-            } else if let Some([width, height]) = textures.picture_size(Viewing::Clip(layer.clip)) {
-                vec2(width as f32, height as f32)
-            } else {
-                canvas_size
-            };
-            let size = fitted_size(source, transform.crop, canvas_size)
-                * vec2(transform.scale[0], transform.scale[1]);
-            Some((vec2(transform.position[0], transform.position[1]), size))
+            let picture = textures.picture_size(Viewing::Clip(layer.clip));
+            let source = assemble::source_size(asset, picture, canvas_size.into());
+            Some(assemble::layer_box(
+                &layer.transform,
+                source,
+                canvas_size.into(),
+            ))
         })
         .collect();
     let boxed = |index: usize| boxes[index];
@@ -808,12 +774,7 @@ pub fn show(
     // The lookup tables this frame looks colours up in are asked for before
     // any is drawn with. One that has not come, cannot be read or has no
     // room changes nothing in its layer; the last two are said.
-    let tables = |layer: &'_ Layer| {
-        (layer.effects.iter())
-            .filter(|effect| effect.kind == EffectKind::Lut)
-            .filter_map(|effect| Some((effect.id, project.assets.get(&effect.asset_id?)?)))
-            .collect::<Vec<(uuid::Uuid, &Asset)>>()
-    };
+    let tables = |layer: &'_ Layer| assemble::tables(project, layer);
     let mut lut_problem: Option<String> = None;
     if composing {
         for (_, asset) in plan.layers.iter().flat_map(&tables) {
@@ -846,15 +807,10 @@ pub fn show(
             .filter_map(|index| {
                 let layer = &plan.layers[index];
                 let input = textures.input(Viewing::Clip(layer.clip))?;
-                let (position, size) = boxed(index)?;
-                let center = canvas_size * 0.5 + position;
+                let place = boxed(index)?.placement(canvas_size.into(), layer.transform.rotation);
                 Some(Draw {
                     layer,
-                    place: Placement {
-                        center: [center.x, center.y],
-                        half: [size.x * 0.5, size.y * 0.5],
-                        angle: layer.transform.rotation.to_radians(),
-                    },
+                    place,
                     input,
                     // A matte whose plate has not come leaves its layer
                     // whole until it has.
@@ -879,12 +835,15 @@ pub fn show(
         jobs.push(Job {
             canvas: plan.canvas,
             // Only the lowest layers have the canvas's colour under them.
-            background: (range.start == 0).then_some(plan.background),
+            background: assemble::background(&plan, range),
             draws,
         });
     }
     let canvases = state.composer.frame(
-        compose::target_size(plan.canvas, canvas.size(), pixels),
+        compose::detailed(
+            compose::target_size(plan.canvas, canvas.size(), pixels),
+            detail,
+        ),
         &jobs,
     );
     // What each plate asked for was when the canvases were drawn.
@@ -946,7 +905,8 @@ pub fn show(
     let place = |index: usize, placed: &mut Vec<Placed>| -> Option<Placed> {
         let layer = &plan.layers[index];
         let staged = staged[index].as_ref()?;
-        let (position, size) = boxed(index)?;
+        let layer_box = boxed(index)?;
+        let (position, size) = (Vec2::from(layer_box.position), Vec2::from(layer_box.size));
         let on_screen = Placed {
             clip: layer.clip,
             center: canvas.center() + position * view,
@@ -970,8 +930,8 @@ pub fn show(
                 };
                 let transform = &layer.transform;
                 // Drawn as many picture pixels as it covers on screen.
-                let reach = transform.scale[0].abs().max(transform.scale[1].abs());
-                (state.titles).want(layer.clip, &layer.source, reach * view * pixels);
+                let scale = assemble::title_scale(transform) * view * pixels;
+                (state.titles).want(layer.clip, &layer.source, scale);
                 let Some((picture, texture)) = state.titles.picture(layer.clip) else {
                     continue;
                 };
@@ -1141,28 +1101,7 @@ pub struct SourceInput<'a> {
     pub media: Option<&'a MediaService>,
 }
 
-/// The frame of a source to show at `playhead`: on its own grid, and never
-/// past its last one.
-pub fn source_frame_time(asset: &Asset, rate: FrameRate, playhead: Time) -> Time {
-    if asset.kind == MediaKind::Image {
-        return Time::ZERO;
-    }
-    let last = rate.frame_at(Time((asset.duration.0 - 1).max(0)));
-    rate.frame_time(rate.frame_at(playhead.max(Time::ZERO)).min(last))
-}
-
-/// A steadied picture's reading, as the plan is told of it.
-fn reading_of(sampling: &Sampling) -> Reading {
-    Reading {
-        matrix: sampling.matrix,
-        offset: sampling.offset,
-    }
-}
-
-/// The stabilization of a layer, when it has one.
-fn steadied(layer: &Layer) -> Option<&editor_core::ResolvedEffect> {
-    (layer.effects.iter()).find(|effect| effect.kind == EffectKind::Stabilize)
-}
+pub use editor_core::render::source_frame_time;
 
 fn media_kind_name(kind: MediaKind) -> &'static str {
     match kind {
@@ -1305,7 +1244,7 @@ pub fn show_source(
         let wanted = Wanted {
             viewing: Viewing::Source,
             asset,
-            size: decode_box(needed, asset),
+            size: decode_box_at(needed, asset, textures.detail()),
             time: source_frame_time(asset, input.rate, input.playhead),
             carries_on: Vec::new(),
         };
@@ -1637,13 +1576,7 @@ fn pick_colour(
 /// Where a point of a title is on screen: `x` and `y` canvas pixels from its
 /// anchor at the layer's scale 1, which is at `anchor`.
 fn title_point(anchor: Pos2, view: f32, transform: &Transform, x: f32, y: f32) -> Pos2 {
-    let flip = |flipped: bool| if flipped { -1.0 } else { 1.0 };
-    let local = vec2(
-        x * transform.scale[0] * flip(transform.flip_x),
-        y * transform.scale[1] * flip(transform.flip_y),
-    ) * view;
-    let (sin, cos) = transform.rotation.to_radians().sin_cos();
-    anchor + vec2(local.x * cos - local.y * sin, local.x * sin + local.y * cos)
+    assemble::title_point(anchor.into(), view, transform, x, y).into()
 }
 
 /// A title's picture as one quad through the layer's transform.
@@ -2289,6 +2222,9 @@ mod lut_viewer_tests;
 #[cfg(test)]
 #[path = "plate_viewer_tests.rs"]
 mod plate_viewer_tests;
+#[cfg(test)]
+#[path = "preview_quality_tests.rs"]
+mod preview_quality_tests;
 
 #[cfg(test)]
 mod tests {

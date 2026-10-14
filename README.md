@@ -34,6 +34,17 @@ production release gates remain in [verification](docs/verification.md).
   with word times and karaoke looks, edited and timed in a list, imported and
   exported as SRT or VTT, one track per language, and translated through the
   native AI provider for review.
+- Export from the original media through the preview's compositor: MP4, MOV
+  and WebM with H.264, H.265, AV1, VP9 or ProRes, or sound-only M4A, MP3, WAV
+  and FLAC; presets for common destinations, a range, a size and frame rate,
+  captions burned in, beside the file or inside it, and hardware encoders
+  where this computer's FFmpeg has a working one. Files are written whole or
+  not at all.
+- A background render queue with pause, resume, cancel, retry and reordering;
+  agents in a running editor can queue, list, pause, resume, cancel, retry and
+  remove jobs.
+- Preview quality settings and proxies: smaller copies of large videos for the
+  preview only, kept in a bounded cache outside the project.
 
 See the [user guide](docs/usage.md) for controls and current limits, and the
 [feature acceptance record](docs/verification.md) for what was actually tested.
@@ -77,15 +88,16 @@ is a source build; signed installers and codec bundling remain release work.
 
 | Component | Responsibility |
 | --- | --- |
-| `crates/editor-core` | Typed project/timeline model, titles and captions, validated commands, undo/redo and frame timing |
-| `crates/editor-media` | Media probing, decoding, the text renderer, speech recognition and bounded worker services |
+| `crates/editor-core` | Typed project/timeline model, titles and captions, validated commands, undo/redo, frame timing and export plans |
+| `crates/editor-media` | Media probing, decoding, the text renderer, speech recognition, export encoding, proxies and bounded worker services |
 | `crates/editor-store` | Versioned save/load, autosave, recovery and checkpoints |
 | `crates/editor-agent` | Native provider planning, exact validated proposals and local authenticated editing transport |
-| `src/` | Native desktop UI and `aster-agent` command interface |
+| `src/` | Native desktop UI, compositor, render queue and `aster-agent` command interface |
 
 ## Documentation
 
 - [Core-feature spec](.scratch/core-editor/spec.md) and [backend contract](.scratch/core-editor/backend-contract.md)
+- [Export and rendering spec](.scratch/export-and-rendering/spec.md) and [ADR 0008](docs/adr/0008-export-renders-originals-through-the-preview-compositor.md)
 - [Installation](docs/installation.md) and [user guide](docs/usage.md)
 - [Agent protocol](docs/agent-protocol.md)
 - [Native AI editing](docs/native-ai.md)

@@ -961,6 +961,228 @@ because whisper.cpp reports per 30 s window. The larger models' speed, the
 memory used while recognizing, GPU acceleration and a real recording longer
 than one five-minute piece were not measured.
 
+## Export and proxy budgets
+
+These are the bounds the [export and rendering](../.scratch/export-and-rendering/spec.md)
+code enforces and the figures measured for it. Every figure is from one
+Linux host (i9-13900HX, RTX 4060 Laptop on Vulkan, Ubuntu 26.04.1) with
+FFmpeg 8.0.1. Those under [Measurements](#measurements) come from test runs
+whose build profile was not recorded; those under
+[release-build export measurements](#release-build-export-measurements) come
+from the release build of the native verification; those under
+[export FFmpeg thread caps](#export-ffmpeg-thread-caps) from the export's own
+FFmpeg commands run outside the editor. None is from macOS or Windows.
+
+### Render queue and frame pipeline
+
+| Bound | Value |
+| --- | --- |
+| Jobs listed | 64, finished ones included (`MAX_JOBS`); queueing more is refused as `queue_full` |
+| Jobs rendering | 1, on the `aster-render` thread; a paused running job holds the queue |
+| Output frames in existence | 3: the one being drawn and 2 handed to the `aster-render-writer` thread (`IN_FLIGHT`), in recycled buffers. At 3840x2160 that is about 95 MiB; at 8192x8192 about 768 MiB |
+| One frame written to FFmpeg | 60 s (`WRITE_DEADLINE`); a write past it kills FFmpeg, which is an encoder failure (see the software fallback in [architecture](architecture.md#export-and-rendering)) |
+| FFmpeg finishing the file | At least 600 s (`FINISH_DEADLINE`) plus the part file's size at 8 MiB/s (`FINISH_PACE`), on an `aster-render-finish` thread; past that, as long as the part file's length or modified time changes; 120 s without a change (`FINISH_STALL`) kills FFmpeg and fails the job, with no software fallback |
+| One frame read back from the device | 60 s (`READ_DEADLINE` in `src/export/frame.rs`), polled without blocking, with short sleeps |
+| Progress wakes | At most one every 100 ms (`WAKE_EVERY`); start, stage changes, the end and the probe result wake at once |
+| Finished events waiting | 32 (`MAX_EVENTS`); the oldest go first |
+| Speed shown | Measured over the last 2 s (`SPEED_WINDOW`) |
+| Shutdown | Cancels every job and waits 750 ms at most for the running one to tidy up (`SHUTDOWN_GRACE`); joins no thread |
+| Sound file in the job's folder | Raw 32-bit float: sample rate x channels x 4 bytes a second, in `.aster-render-<job>` beside the destination, or `<system temp>/aster-render-<job>` when that folder cannot be made. 48 kHz stereo is 384,000 bytes a second, about 1.4 GB an hour (computed, not measured). No free space is checked first |
+| Left-over part files and working folders | Removed once unchanged for 1 h (`STALE_AFTER`) and named by no listed job: in the destination folder when a job starts there, and in the system's temporary folder when the queue starts |
+| Part file name | `.<name>.<job>.part`, the name cut at a character boundary so the whole stays within 255 bytes |
+| Encoder FFmpeg threads | libx264: `-threads:v` x264's own count, 1.5 times the logical processors (4 when they cannot be counted), from 1 to 24 (`X264_MAX_THREADS`): 2 processors give 3, 8 give 12, 16 or more give 24. libsvtav1: `-svtav1-params lp=4` (`SVT_AV1_PARALLELISM`), as it ignores `-threads`. libx265, libvpx-vp9, prores_ks, libaom-av1 and every hardware encoder get no thread option. The encoder probe uses the same arguments. Memory is under [export FFmpeg thread caps](#export-ffmpeg-thread-caps) |
+
+### Output and the frame renderer
+
+| Bound | Value |
+| --- | --- |
+| Output side | 16 to 8192 pixels (`MIN_OUTPUT_SIDE`, `MAX_OUTPUT_SIDE`); a custom size at most 134,217,728 pixels (`MAX_OUTPUT_PIXELS`). Fill is refused when the canvas it would draw is over 8192 a side |
+| Hardware encoder limits | H.264 hardware encoders 4096 pixels a side, others 8192; NVENC's smallest pictures (146x50 for H.264, 130x34 otherwise) are applied to every hardware family. `Auto` picks software for sizes outside them |
+| Video bitrate | 100 to 800,000 kbit/s (`MIN_VIDEO_KBPS`, `MAX_VIDEO_KBPS`) |
+| Audio | 1 or 2 channels; 44.1, 48 or 96 kHz (`SAMPLE_RATES`); 32 kbit/s to the codec's ceiling, at most 512 (`MIN_AUDIO_KBPS`, `MAX_AUDIO_KBPS`) |
+| Compositor passes a frame | 1024 (`MAX_PASSES`); a frame needing more fails the job. The viewer's `ComposeBudget`, canvas steps and four-canvas limit do not apply |
+| Decode size a clip | The most it needs over its keyframed scale and crop on the drawn canvas, never above the source, 16 to 8192 a side (`MIN_DECODE_SIDE`, `MAX_DECODE_SIDE`) |
+| Title pictures | 4096 pixels a side (`MAX_TITLE_SIDE`), drawn on the render thread at the output scale |
+| Sound | The playback mixer's 16 simultaneous audible clips (`MAX_VOICES`); more fails the job with "Export sound supports at most 16 simultaneous audible clips; mute extra tracks" |
+
+### Rate control and the size estimate
+
+| Bound | Value |
+| --- | --- |
+| Quality value on hardware | libx264/libx265's CRF for the level plus an offset (`hardware_quality`): NVENC `-cq` +5 for H.264 and +3 for HEVC; AMF and VA-API constant QP +2 and +1; QSV and every AV1 and VP9 mapping unchanged |
+| NVENC quality ceiling | `-b:v 0 -maxrate` 4 times the suggested rate (`NVENC_CEILING`) and `-bufsize` 8 times. Without it NVENC held Higher and Maximum to the rate its level allows, about 16 Mbit/s for H.264 and 10 for HEVC at 1080p |
+| Suggested rate | Pixels a second times bits per pixel (H.264 0.14, H.265 0.11, AV1 0.055, VP9 0.07, ProRes 1.9) times the level's factor (Lower 0.55, Recommended 1, Higher 1.8, Maximum 4), within 100 to 800,000 kbit/s. 1080p30 H.264 Recommended is 8,709 kbit/s. Bitrate mode starts from it, and Media Foundation's quality mode holds it |
+| Quality-mode estimate | The suggested rate times 0.85 for libx264 at Faster, 1 otherwise, plus the sound and 1 % for the container |
+
+### Export dialog poster
+
+| Bound | Value |
+| --- | --- |
+| Thread | One `aster-poster` thread with its own `FrameRenderer` and `SourceReader`, while the dialog is open |
+| Picture | The output's shape at most 640 pixels on the long side (`POSTER_SIDE`) |
+| Requests | Sent once unchanged for 150 ms (`SETTLE`); only the latest waits; 10 s to read the picture back (`READ_DEADLINE` in `poster.rs`) |
+
+### Source reader
+
+The `SourceReader` decodes the export's pictures with FFmpeg processes of its
+own, apart from the preview's decoder pool.
+
+| Bound | Value |
+| --- | --- |
+| Decode pipes | 16 open at once (`MAX_PIPES`), one per clip, asset and size; the least recently read closes first |
+| One decoded picture | 8192 pixels a side and 256 MiB (`MAX_READ_SIDE`, `MAX_READ_BYTES`); the preview's 4096-pixel, 64 MiB limit does not apply |
+| One picture arriving | 60 s, seeking included (`READ_DEADLINE` in `reader.rs`) |
+| Reading on instead of seeking | Up to 12 frames or one second of source, whichever is more (`MIN_GAP`) |
+| Decoded stills held | 512 MiB (`STILL_BUDGET`); the one just used always stays |
+| GIF decoders | 8 (`MAX_GIFS`) |
+| FFmpeg threads a pipe | 4 decoder threads (`-threads 4` before the input, `DECODE_THREADS`), 2 filter threads (`-filter_threads`) and 1 for the raw output (`-threads:v 1`) |
+
+There is no prefetch thread; FFmpeg's own threads decode ahead.
+
+### Encoder probe
+
+| Bound | Value |
+| --- | --- |
+| When | Once on an `aster-render-probe` thread when the queue starts, and again on request; queued jobs wait for it |
+| Probes at once | 4 (`PROBES_AT_ONCE`), each with a 10 s deadline (`PROBE_DEADLINE`) |
+| Test | Video: 2 frames of a 256x144 black picture (`PROBE_PICTURE`) through the export's own argument builder. Sound: 0.1 s of silence. VA-API tries each `/dev/dri/renderD*` |
+| Listings read | `-encoders` and `-muxers`, 4 MiB of output each at most (`LISTING_BYTES`) |
+
+### Proxy lane and cache
+
+| Bound | Value |
+| --- | --- |
+| Lane threads / FFmpeg processes | 1 (`aster-proxy`) / 1; one proxy written at a time |
+| Proxies waiting | 64 (`PROXY_QUEUE`); past it a request is refused and asked again at the next change of the library, project or mode |
+| Proxy picture | 1280 pixels on the long side at most (`PROXY_SIDE`), never larger than the source; H.264 `veryfast`, CRF 23, a keyframe every 15 frames and no B-frames, or MJPEG without libx264; no sound; frame grid from the file's start (`fps=N/D:start_time=0`); none for a source with an alpha pixel format |
+| FFmpeg threads | Half the processors, from 2 to 8, and 2 filter threads |
+| Which videos at Auto | Longer than 1920 pixels on a side (`PROXY_ABOVE_SIDE`), or above 50,000,000 bit/s averaged over the file (`PROXY_ABOVE_BITRATE`) |
+| Cache budget | 20 GiB unless changed (`PROXY_BUDGET`, `PROXY_BUDGET_GIB`); the settings sheet offers 5 to 500 GB and a stored value is held to 1 to 1000. Least recently used first; proxies open in a decoder and the one written last are kept |
+| Cache place | `proxies/` beside the settings file when `--settings` names one, otherwise the user's cache directory |
+| Deadlines | 120 s without progress from FFmpeg (`SILENCE`), 30 s to exit (`EXIT`) |
+| Left-over files | Part files and proxies without a manifest are removed once over an hour old (`LEFT_OVER`) |
+| Manifests | 64 KiB each at most (`MANIFEST_BYTES`); read once, on the lane, when it starts |
+| Remembered failures / waiting answers | 256 (`FAILURES`) / 1024 (`EVENTS`); one progress figure an asset |
+| Recipe | `PROXY_PROFILE` 2; a proxy written with another is not used |
+| Closing the window | `ProxyService::shutdown` waits at most 750 ms (`SHUTDOWN_GRACE`) for the proxy being written to stop |
+
+### Preview quality
+
+| Bound | Value |
+| --- | --- |
+| Divisors | Full 1, Half 2, Quarter 4, applied to the long side of each decode box and of the compositor canvas |
+| Auto | Full, until 4 (`LATE_STEP`) of the last 16 (`LATE_WINDOW`) frame advances of playing video layers were late; then Half until playback stops |
+
+### Measurements
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| Encoder probe | About 0.9 s | The probe test on this host. Offered: libx264, libx265, libsvtav1, libaom-av1, libvpx-vp9, prores_ks, h264_nvenc, hevc_nvenc, av1_nvenc, and every audio encoder. QSV ("Error creating a MFX session") and VA-API ("Failed to initialise VAAPI connection") failed on both render nodes |
+| Whole job, 320x180, NVENC | 60 frames in 0.42 s | Engine test, FFmpeg start and sound included; fixture is the test's generated project |
+| Whole job, 1920x1080, NVENC | 60 frames in 0.60 s on the RTX 4060, 1.17 s on llvmpipe | Same |
+| Proxy cancel | A paced proxy encode stopped, its watchdogs ended and no part file left, within the test's 5 s bound | Proxy test, an encode paced with `-readrate 1` |
+| Quality-level size, software and NVENC | 520 encodes scored on size, SSIM and PSNR. At Recommended, x264 / NVENC wrote 2.83 / 3.00 MB (clean 720p), 5.83 / 6.40 (clean 1080p), 3.44 / 3.01 (grain 720p), 7.49 / 6.47 (grain 1080p); x265 / NVENC HEVC 2.49 / 2.49, 5.69 / 5.43, 2.17 / 2.49, 4.56 / 5.51. SSIM matched within 0.002 | testsrc2 with and without `noise=alls=4:allf=t`, 1280x720 and 1920x1080, 30 fps, 6 s; libx264, libx265 and NVENC with the quality offsets above |
+| Size against the estimate | Lower and Recommended: 0.89 to 1.29 times the estimate across these fixtures and encoders (1.24 to 3.06 before). Higher and Maximum: 0.42 to 0.9 on clean pictures; x264 on grainy pictures 3 to 4 times | Same fixtures |
+| Real-encode size test | x264 wrote 1.01 and x265 1.04 times their estimate; NVENC wrote 1.16 (H.264) and 1.24 (HEVC) times what x264 and x265 did. Heavy grain at Maximum reached 16.7 and 16.5 Mbit/s on NVENC, against 13.6 and 9.5 without the ceiling | `a_quality_level_writes_about_the_estimate_on_software_and_nvenc_alike` |
+| Sound alignment | A sound stream starting late in MOV (0, 0.04 and 0.5 s seeks) and Matroska PCM seeks (0, 0.5, 0.51, 0.7 s) land within 4 samples; WebM VP9 with Opus within 2 ms | `editor-media` export tests |
+
+The whole-job figures are two-second jobs and say little about a long render:
+FFmpeg's start and the sound render are a large part of them.
+
+### Release-build export measurements
+
+From the [native verification](verification.md#export-and-rendering) on
+2026-10-14: `cargo build --release --locked --bins`, `aster` SHA-256
+`3452f930…f2e572`; Dell G15 5530, i9-13900HX (32 threads), 30 GiB RAM,
+RTX 4060 Laptop driver 595.99.02 on Vulkan, Linux 7.0.0-38-generic; FFmpeg
+8.0.1-3ubuntu2. The window ran on Xvfb with no window manager, with other
+desktop load on the host. Fixtures are synthetic `lavfi` clips with H.264
+sources. A job's time is its own `elapsed_seconds`: FFmpeg start, the sound
+render and the ffprobe check included. The speed shown is the queue's 2 s
+figure (`SPEED_WINDOW`), polled during the job.
+
+| Job | Whole-job time | Speed shown while rendering |
+| --- | --- | --- |
+| 1080p 29.97 fps, 240 frames (8 s), libx264 | 9.24, 9.22, 5.30, 5.20 s (26 to 46 fps); identical runs differed widely | Highest 29 to 86 fps a run |
+| Same, h264_nvenc | 3.67, 3.55, 3.74, 3.65 s (64 to 68 fps) | Highest 79 to 86 fps a run |
+| 4K 25 fps, 100 frames (4 s) from the 4K source, h264_nvenc | 4.75, 4.59 s (21 to 22 fps) | Highest 27 to 29 fps a run |
+| Same, libx264 | 7.32, 6.42 s (14 to 16 fps) | Highest 21 to 25 fps a run |
+| Same, hevc_nvenc | 4.65 s | Highest 27 fps |
+| The whole 14 s timeline (420 frames) at 3840x2160, libx264 | 19 to 20 s (about 21 fps) | 16.7 to 32 fps |
+| Sound only, 8 s: AAC, WAV, MP3, FLAC | 0.83, 0.10, 0.21, 0.13 s | n/a |
+
+| Memory | Result | How |
+| --- | --- | --- |
+| `aster` | Highest VmRSS 396 to 446 MiB on 1080p and smaller jobs, 570 MiB on 4K jobs | Sampled every 100 ms |
+| All of `aster`'s child processes, the viewer's decoders included | Highest summed VmRSS: about 1,150 to 1,190 MiB for 1080p NVENC, 1,720 to 1,780 MiB for 1080p libx264, 2,810 to 3,020 MiB for 4K NVENC, 5,990 to 6,040 MiB for 4K libx264. RSS counts shared pages in each process | Same |
+| 4K libx264 job, per process | Highest PSS: encoder FFmpeg 4,942 MiB, export source reader 1,004 MiB, `aster` 402 MiB. Highest PSS of `aster` and all its children together: 6,294 MiB | Sampled PSS |
+
+These figures are from the build before the export FFmpeg thread caps; no
+job through the editor was measured with them.
+
+### Export FFmpeg thread caps
+
+Measured on 2026-10-14 on the same host (i9-13900HX, 32 logical processors,
+30 GiB RAM), FFmpeg 8.0.1 from `.tools`, SVT-AV1 2.3.0, by running the
+export's source reader command into its encoder command, with the export's
+own arguments, at Recommended and Balanced, outside the editor and without
+its compositor. Another task's `aster` kept the load average between 2 and
+21, so each figure is the median of 3 interleaved runs, and speed varied up
+to ±15 % between runs. Sources were synthetic: `testsrc2` with noise, H.264 at
+about 300 Mbit/s, and HEVC at 4K. Peaks are the higher of VmHWM and
+ru_maxrss.
+
+| Job | Speed before → after | Encoder peak MiB, before → after | Reader peak MiB, before → after | Both, before → after |
+| --- | --- | --- | --- | --- |
+| libx264 1080p, 300 frames | 72.4 → 69.6 fps | 1,197–1,205 → 1,018–1,022 | 261–269 → 178–181 | 1,460–1,474 → 1,199–1,201 |
+| libx264 4K, 180 frames | 17.8 → 17.7 fps | 5,442–5,466 → 3,685–3,971 | 814–816 → 462–497 | 6,258–6,282 → 4,147–4,467 |
+| libx265 1080p | 55.1 → 54.9 fps | 982–1,123, arguments unchanged | 259–340 → 181–244 | 1,322–1,444 → 1,163–1,367 |
+| libx265 4K | 15.5 → 14.9 fps | 2,466–2,504, arguments unchanged | 784–816 → 494 | 3,261–3,294 → 2,959–2,998 |
+| libsvtav1 1080p, preset 8 | 62.9 → 62.2 fps | 2,400–2,426 → 1,465–1,521 | 340 → 252 | 2,740–2,766 → 1,718–1,774 |
+| libsvtav1 4K, preset 8 | 17.3 → 18.4 fps | 7,771–8,064 → 4,452–4,645 | 1,099–1,101 → 619–765 | 8,873–9,163 → 5,178–5,344 |
+| libx264 encoder alone, 1080p | 93.2 → 90.6 fps | 1,353–1,375 → 1,160–1,170 | – | – |
+| libx264 encoder alone, 4K | 24.3 → 20.6 fps | 6,206–6,319 → 4,305–4,368 | – | – |
+
+Why these values:
+
+- **x264 at 24, not 16.** 16 threads saved about 0.4 GiB more at 4K but cost
+  the encoder alone about 16 % of its 1080p speed. With 1 thread the 4K
+  encoder still used 2.3 GiB; a minimal x264 left about 1.1 GiB, which points
+  to FFmpeg's own queues of 4K RGBA frames, and the rest is the medium
+  preset's 40-frame lookahead, about 26 MiB a frame at 4K. `-rc-lookahead 20`
+  with about 8 threads would give about 2.5 GiB at 4K at 14.6 fps for the
+  encoder alone, against 22 to 29; it changes the encoded output and is not
+  applied.
+- **SVT-AV1 at `lp=4`.** Left alone it chose level 6 even with the process
+  held to 2 CPUs. Level 4 was 9 % slower at preset 5 at 1080p and as fast or
+  faster at presets 8 and 10; level 3 lost 13 to 18 % at 1080p. SVT-AV1
+  releases before 2.0, which may read `lp` as a processor count, and preset
+  5 at 4K were not measured.
+- **x265 left alone.** FFmpeg passes `-threads` to x265 as frame threads:
+  `-threads 16` reached 4.29 GiB at 4K against 3.16 GiB with its defaults,
+  which choose about 6 frame threads at most.
+- **libvpx-vp9 and prores_ks** already stop at 16 threads (1.7 and 2.05 GiB
+  at 4K); **libaom-av1** used 2.30 GiB at 4K with or without `-threads 16`.
+  These were spot checks at 4K only.
+- **Reader at 4 decoder threads.** Paced at 16 fps, as the editor reads,
+  4K went from 1,099–1,147 MiB to 779–790 MiB and 1080p from 332 to 242 MiB.
+  4 threads read as fast as FFmpeg's own choice (33 to 35 fps at 4K, set by
+  the pipe's scaler, and 134 fps at 1080p); 2 threads were about 40 % slower
+  on the 4K H.264 source and at 1080p.
+
+Not measured: sustained throughput of any long render, at 1080p or 4K;
+GPU memory of a running job, and process memory beyond the short jobs above;
+how much a running export slows the
+interactive window, with which it may share the GPU; the cost of effect
+stacks, stabilized clips or many layers per output frame; source reader
+throughput for 8K media, and for 4K beyond the synthetic sources above; how long a proxy takes to write; whether
+proxies or a lower preview quality make large media play smoothly; any
+hardware encoder other than NVENC, whose quality offsets (AMF, VA-API) are
+NVENC's stand-ins; AV1 and VP9 quality and size; camera footage, as every
+size figure above is from synthetic pictures; macOS and Windows. The export
+thread caps were measured outside the editor only; their effect on a whole
+export through the editor is not measured.
+
 ## Acceptance targets
 
 These are investigation targets, not achieved guarantees. Fix a host and
@@ -977,9 +1199,11 @@ workload before using them as regression budgets.
 | Long fractional-frame timeline | Deterministic frame positions | Frame-index timing at 30000/1001 and 60000/1001 |
 | Save during editing | Interactive input independent of storage | Slow-disk frame latency and exact saved-revision acknowledgement |
 
-Hardware decoding, proxy generation, waveform pyramids, GPU-native composition,
-zero-copy upload and indexed timeline lookup are opportunities to assess against
-profiles. They are not features merely because the architecture permits them.
+Hardware decoding, waveform pyramids, GPU-native composition, zero-copy upload
+and indexed timeline lookup are opportunities to assess against profiles. They
+are not features merely because the architecture permits them. Proxy
+generation now exists (see [export and proxy budgets](#export-and-proxy-budgets)),
+but whether it makes large media play at its rate has not been measured.
 
 ## Reproducible measurements
 

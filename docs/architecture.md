@@ -10,13 +10,14 @@ the evidence in
 
 | Component | Owns | Boundary |
 | --- | --- | --- |
-| `editor-core` | Project settings, assets, folders, tracks, clips, markers, effects, masks, animation tracks, time maps, transitions, trackers, title styles, text animations, word times, graphics, caption languages, SubRip/WebVTT text, edit validation, history, frame timing and the pure `resolve` to a render plan | No windows, filesystem, font files, decoder handles, GPU or live workers |
+| `editor-core` | Project settings, assets, folders, tracks, clips, markers, effects, masks, animation tracks, time maps, transitions, trackers, title styles, text animations, word times, graphics, caption languages, SubRip/WebVTT text, edit validation, history, frame timing, the pure `resolve` to a render plan, and export data: settings, formats, presets, capability data, validation into an `ExportPlan`, output frame and sample spans, output geometry and render job reports | No windows, filesystem, font files, decoder handles, GPU or live workers |
 | `editor-store` | Versioned documents, protected document sessions, atomic replacement, autosave and recovery bindings | Immutable project/history snapshots and explicit destination ownership in, load/save/conflict results out |
-| `editor-media` | File/folder import, source probing, image/GIF/video decoding, cached frames, PCM audio mixing, `.cube` table reading, the analysis lane (region tracking, camera-motion measurement and its on-disk cache), the text renderer and title lane (fonts, shaping, title pictures) and the speech lane (model downloads, offline 16 kHz mix, whisper.cpp) | Owned metadata, frame/audio results, title pictures, words and analysis results carrying project, request and source identity; codec, font and live worker details remain private |
-| Desktop composition | Controller integration, worker scheduling, clipboard, file dialogs, input, playback clock, title textures, the preset file and subtitle file reads and writes | Converts UI actions and completions into targeted commands |
-| Compositor (`src/compose`) | Off-screen wgpu passes, WGSL pixel math, `ComposeBudget`, lookup-table textures | Draws a render plan's non-plain runs into one canvas texture while the interface is drawn; never asks for a repaint; falls back to the mesh path |
-| Native UI | Media library with text, captions, effects, transitions and looks tabs, preview, timeline with keyframe lane and graph editor, sectioned inspector, dialogs and accessible controls | Draws prepared state and emits actions |
-| `editor-agent` | Command/schema discovery, guarded local transport, native provider processes, captured planning context and edit proposals | Providers return data; reviewed application uses the same validated reducer as the UI |
+| `editor-media` | File/folder import, source probing, image/GIF/video decoding, cached frames, PCM audio mixing, `.cube` table reading, the analysis lane (region tracking, camera-motion measurement and its on-disk cache), the text renderer and title lane (fonts, shaping, title pictures), the speech lane (model downloads, offline 16 kHz mix, whisper.cpp), export encoding (encoder probe, FFmpeg arguments, the stdin-fed encoder, output check), the export source reader, the offline sound render for export, and the proxy lane and cache | Owned metadata, frame/audio results, title pictures, words, analysis results and proxy answers carrying project, request and source identity; codec, font and live worker details remain private. The export calls block and run on a thread the desktop owns |
+| Desktop composition | Controller integration, worker scheduling, clipboard, file dialogs, input, playback clock, title textures, the preset file and subtitle file reads and writes, preview quality and which proxies the viewer reads | Converts UI actions and completions into targeted commands |
+| Render queue (`src/export`) | `RenderQueue`, the `aster-render` thread, the job runner and `FrameRenderer` | Takes immutable project snapshots; publishes job reports and finished events; never edits a project |
+| Compositor (`src/compose`) | Off-screen wgpu passes, WGSL pixel math, `ComposeBudget`, lookup-table textures, the layer assembly the viewer and export share, readback | Draws a render plan's non-plain runs into one canvas texture while the interface is drawn, never asking for a repaint and falling back to the mesh path; draws every layer of an export frame on the render thread at the output size, with no fallback |
+| Native UI | Media library with text, captions, effects, transitions and looks tabs, preview, timeline with keyframe lane and graph editor, sectioned inspector, export dialog, render queue panel, dialogs and accessible controls | Draws prepared state and emits actions |
+| `editor-agent` | Command/schema discovery, guarded local transport, native provider processes, captured planning context, edit proposals and the render job operations | Providers return data; reviewed application uses the same validated reducer as the UI |
 
 The root desktop package is `aster-editor`, with `aster` and `aster-agent`
 binaries. Consult the manifests and
@@ -241,6 +242,179 @@ Presets are desktop state, not project state. `presets.json` is read at start,
 written atomically on a worker after a change and again on exit, and moved
 aside rather than overwritten when this build cannot read it.
 
+## Export and rendering
+
+[ADR 0008](adr/0008-export-renders-originals-through-the-preview-compositor.md)
+records the decision; [the design](../.scratch/export-and-rendering/spec.md)
+holds the binding rules and their dated changes. This section says where
+things live.
+
+| Concern | Owner |
+| --- | --- |
+| `ExportSettings`, containers and codecs, `Capabilities` data, the `VIDEO_ENCODERS` table, `plan` into an `ExportPlan`, `FrameSpan`, `sample_count`, `Geometry`, `range_cues`, `render_project`, `builtin_presets`, `RenderJobInfo` | [export.rs](../crates/editor-core/src/export.rs) |
+| `source_frame`, shared by the viewer and the export | [render.rs](../crates/editor-core/src/render.rs) |
+| Encoder probe, FFmpeg arguments, the stdin-fed `Encoder`, the export sound render, `SourceReader`, `verify_output` | [editor-media/src/export](../crates/editor-media/src/export/mod.rs) (`caps`, `args`, `encoder`, `audio`, `reader`, `verify`) |
+| `ProxyService` and the proxy cache (`aster-proxy`) | [proxy.rs](../crates/editor-media/src/proxy.rs) |
+| Layer assembly the viewer and the export share; stacked drawing and non-blocking readback | [compose/assemble.rs](../src/compose/assemble.rs), [compose/gpu.rs](../src/compose/gpu.rs) |
+| `FrameRenderer`, the headless device | [src/export/frame.rs](../src/export/frame.rs) |
+| The export dialog's poster (`aster-poster`) | [src/export/poster.rs](../src/export/poster.rs) |
+| Saved presets file; the window's export decisions and agent answers | [src/export/presets.rs](../src/export/presets.rs), [src/export/wiring.rs](../src/export/wiring.rs) |
+| `RenderQueue` (`aster-render`), the job runner | [src/export/queue.rs](../src/export/queue.rs), [src/export/engine.rs](../src/export/engine.rs) |
+| Export dialog; render queue panel | [src/ui/export_sheet.rs](../src/ui/export_sheet.rs), [src/ui/render_queue.rs](../src/ui/render_queue.rs) |
+| Which proxies are asked for; which one a layer reads; preview quality | [src/proxies.rs](../src/proxies.rs), [src/textures.rs](../src/textures.rs), [src/settings.rs](../src/settings.rs) |
+| Render operations on the wire | [editor-agent](../crates/editor-agent/src/lib.rs), [agent protocol](agent-protocol.md#render-jobs) |
+
+The export path is:
+
+```text
+project, drafts committed → Arc<Project> snapshot + project id, context, revision
+    → ExportSettings::plan(snapshot, capabilities) → ExportPlan
+      (output frames, sample span, geometry, encoders, caption cues)
+    → render_project (output frame rate; caption tracks hidden unless burned in)
+sound:   OfflineMix over the sample span → raw f32le file in the job's
+         working folder, .aster-render-<job> beside the destination
+picture: each output frame n → resolve(render_project, frame_time(n))
+         → SourceReader (originals, the preview's source frame)
+         → FrameRenderer (one accumulator, linear light, runs on their own
+           canvases, titles at the output scale) → readback → opaque RGBA
+         → writer thread → FFmpeg stdin
+FFmpeg (RGBA + f32le + captions) → .<name>.<job>.part beside the destination
+    → exit 0 → ffprobe: streams and duration → sync → rename over destination
+```
+
+**Queueing.** The window commits drafts and hands `RenderQueue::enqueue` a
+snapshot. `enqueue` reads no file: it plans the job with the probed
+capabilities and compares names only, refusing a destination that is
+relative or has an extension other than the container's, and a destination
+or caption file that names a source of the snapshot, the project file or its
+recovery, lock or checkpoint files, or a file another unfinished job writes
+(`DestinationQueued`). Names are compared without regard to case on every
+platform. Whether to replace an existing file, the export or its caption
+file, is asked before queueing: the window asks the person, and an agent
+passes `overwrite`. Later edits do not change a queued job.
+
+When the job starts, the render thread asks the file system (`check_files`):
+a destination that is a folder, a missing folder, or a destination or
+caption file that resolves through links, `..` or case to a source or the
+project's files, or is the same file by device and inode on Unix (a hard
+link), fails the job with the same `EnqueueError` text. It then removes
+what stopped exports left in the destination folder: part files and
+working folders unchanged for an hour (`STALE_AFTER`) whose UUID names no
+listed job, symbolic links skipped. When the queue starts it does the same
+for `aster-render-<id>` folders in the system's temporary folder.
+
+**Running.** One `aster-render` thread runs the first runnable job in list
+order. The queue's lock is taken briefly and never held across job work; the
+job reports through a handle. A job plans again with the capabilities of the
+moment. It then builds its `FrameRenderer`, on the window's device or one it
+opens itself, renders the sound and writes any caption stream into its
+working folder (`.aster-render-<id>` beside the destination, or the system's
+temporary folder when that cannot be made), starts the encoder and feeds
+frames. Frames go to an `aster-render-writer` thread
+through two recycled buffers, so drawing the next frame overlaps encoding the
+last and at most three output frames exist. Every allocation and submit on
+the render thread runs inside `Gpu::checked`. Readback maps a staging buffer
+and polls the device without blocking, checking for a stop and a deadline.
+Each job runs inside `catch_unwind`; a panic fails the job and its files are
+removed.
+
+The `FrameRenderer` owns its compositor state and sizes it from the job, so
+the viewer's `ComposeBudget` steps and canvas count do not apply. A frame
+needing more than `MAX_PASSES` passes fails the job with its timecode. Each
+clip is decoded at the most it needs over its keyframed scale and crop. A
+stabilized clip reads the stabilization cache as the viewer does; a clip
+never measured, or measured on another file, is drawn unsteadied. An
+unreadable lookup table is left out. Both add a warning to the job instead of
+failing it. Unlike the viewer, the export draws titles through the
+compositor, laid over with Normal blending.
+
+**Finishing.** `Encoder::finish` runs on a scoped `aster-render-finish`
+thread watched by `FinishWatch`: FFmpeg is given at least `FINISH_DEADLINE`
+plus the part file's size at `FINISH_PACE`, then as long as the part file's
+length or modified time keeps changing, and is killed after `FINISH_STALL`
+without a change. A stall fails the job without a fallback.
+
+**Pause, cancel and fallback.** Pause stops between frames: FFmpeg waits on
+its pipe, a paused running job holds the queue, and paused time is not
+counted. A job paused before it started is held: it is passed over while the
+jobs after it render, and `resume_all` starts every held job. Cancel sets
+the job's stop flag and calls the cancellers of its sound render, reader and
+encoder, killing their processes. Under `EncoderChoice::Auto`, a hardware
+encoder that fails to start, write, finish or pass the output check makes the
+job start again once from frame 0 with the software encoder, reusing the
+rendered sound; the job's message says so, and when the software encoder
+fails too it gives both reasons. A missing folder, an FFmpeg reason that
+names the disk or the file (`file_problem`: no space, quota, read-only file
+system, name too long, I/O error, file too large; permission denied or no
+such file only on a line about the part file or the output) and a stalled
+finish fail at once instead. Retry puts a failed or cancelled job back in the
+queue with the same snapshot, unless another unfinished job now writes its
+file.
+
+**Reports.** `jobs()` is a cheap copy of every `RenderJobInfo`; the window
+reads it each frame the panel is open and is woken at most every 100 ms for
+progress, and at once when a job starts, changes stage or ends. Done and
+Failed jobs also send one finished event, for a notice, which the window
+leaves out while the render queue panel is open. The desktop answers
+the agent's render operations from the queue without blocking; the headless
+`handle` answers them `unsupported`.
+
+**Poster.** The export dialog's picture is drawn by `PosterService` on an
+`aster-poster` thread that owns a `FrameRenderer` and a `SourceReader` of its
+own, from the originals, at the output's shape scaled to at most
+`POSTER_SIDE` (640) on the long side. A request is keyed by context,
+revision, geometry, rate, burn-in and the output frame's time (the playhead,
+clamped into the range); it is sent once it has stayed the same for `SETTLE`
+(150 ms), only the latest waits, and a picture answering an older request is
+dropped. The thread stops when the dialog closes.
+
+### Proxies and preview quality
+
+The proxy lane is one `aster-proxy` thread with its own FFmpeg process,
+separate from preview, import, analysis and export. It writes one proxy at a
+time from a bounded queue. Each finished proxy gets a manifest beside it, and
+the lane keeps the cache directory within its budget, least recently used
+first. Manifests are read on the lane when it starts; after that `lookup`
+reads only memory. A source that changed on disk gets a new key, so its old
+proxy is not used. The proxy's `fps` grid starts at the source file's start
+(`start_time=0`, `PROXY_PROFILE` 2), so a time seeks to the same frame in
+proxy and original even when the picture starts after the sound. A source
+with an alpha pixel format gets no proxy: the job fails with "it has
+transparency, which a proxy cannot keep, so the original is read". A proxy
+removed for the budget is reported in a `ProxyEvent::Removed`; the window
+sets that asset's status from the lane, and the mode does not remake it
+until the library, project or mode changes, so two proxies do not push each
+other out. `ProxyService::shutdown`, called from `App::on_exit`, waits at
+most 750 ms for the proxy being written to stop.
+
+The window decides what is asked for. [src/proxies.rs](../src/proxies.rs)
+requests proxies by the person's mode (Off, Auto for videos above 1920 pixels
+a side or 50 Mbit/s, Always for every video), or one asset at a time from the
+library. It also tells the lane which proxy files the viewer has open, so
+eviction and Clear skip them. [src/textures.rs](../src/textures.rs) decides
+for each layer: it reads a proxy when one is ready for the file as it is now
+and is at least as large as the box the layer is drawn at, and otherwise the
+original. That box is the one the layer is granted: after the viewer budget
+holds it, and while playing no larger than the box already granted. A proxy
+file that fails to decode is not read again until it is removed, made again
+or replaced; the original is read meanwhile. Between the viewer opening a
+proxy and the lane hearing it is in use there is one frame in which eviction
+can still remove it; the `Removed` event and the retry above recover from
+that.
+Proxies are put into picture requests only; sound, analysis, speech, titles
+and export receive the project, which names only originals.
+
+Preview quality divides the long side of each decode box and of the
+compositor canvas by 1, 2 or 4. The preview settings are read leniently: an
+unknown `quality` or `proxies` value, or a `proxy_budget_gib` that is not a
+number, reads as the default and is written back unchanged until the person
+chooses that setting; a `preview` that is not an object resets to the
+defaults. During playback, each time a video layer
+moves on to a new frame, Auto notes whether the frame it asked for before had
+come. When 4 of the last 16 such advances, across layers, were late, it asks
+at half until playback stops, so starting playback does not restart every
+decoder pipe.
+
 ## Asynchronous work
 
 Directory scans, probing, decoding, serialization and filesystem sync run on
@@ -399,9 +573,23 @@ jobs waiting at most, and a second thread that only reads the stabilization
 cache. Its bounds are in [performance](performance.md#analysis-lane-and-stabilization-cache).
 Sound for a clip with a time map plays on straight forward stretches only.
 
-Codec executables remain explicit runtime dependencies until packaged. This is
-software RGBA preview, not hardware/zero-copy decoding, HDR processing, exact
-variable-frame-rate PTS preview or export. Packaging, format coverage, native
+Export opens its own FFmpeg processes, apart from the preview's: an
+`aster-render-probe` thread that test-encodes each known encoder at start (at
+most four at once), one decode pipe per clip, picture and size in the
+`SourceReader`, the mixer's decoders for the sound render, and the encoder.
+They belong to the job and are killed when it is cancelled. The dialog's
+poster has its own `SourceReader` on the `aster-poster` thread while the
+dialog is open. Proxies are
+written by their own lane, described under
+[proxies and preview quality](#proxies-and-preview-quality). The bounds are in
+[performance](performance.md#export-and-proxy-budgets).
+
+Codec executables remain explicit runtime dependencies until packaged.
+Decoding, for preview and export alike, is software RGBA, not
+hardware/zero-copy decoding, HDR processing or exact variable-frame-rate PTS
+handling. Export encodes with the hardware encoders FFmpeg offers on the host,
+but writes 8-bit 4:2:0 (4:2:2 or 4:4:4 10-bit for ProRes) BT.709 pictures
+without alpha, at a constant frame rate. Packaging, format coverage, native
 audio/device-clock integration and licensing require the evidence in
 [verification](verification.md).
 

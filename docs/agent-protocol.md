@@ -100,8 +100,9 @@ Missing context identity returns `context_required`; a context from a previous
 open/recovery returns `stale_context`, even when the same project has reopened
 at the same revision. Invalid edits return `invalid_edit` and leave the document
 unchanged. `undo` and `redo` also require all three guards.
-`capabilities` returns protocol version and supported command names. Fetch the
-exact serialized command JSON schema in the same result's `command_schema`:
+`capabilities` returns the protocol version, every operation name in
+`operations` and the supported command names. Fetch the exact serialized
+command JSON schema in the same result's `command_schema`:
 
 ```json
 {"request_id":"schema-1","operation":"capabilities"}
@@ -240,6 +241,87 @@ and each title on it is one caption.
 Use a `batch` command to apply a multi-step edit as one all-or-nothing history
 entry. Capture stable asset, track and clip IDs from inspection instead of
 retargeting from whichever item the desktop currently selects.
+
+## Render jobs
+
+Export is not an edit. It has no command and no undo entry, and it never
+changes the project. The desktop's render queue renders each job from a
+snapshot of the project taken when the job was queued, so later edits do not
+change a queued or running job. Only a live desktop session runs render
+jobs: a headless `aster-agent` answers every operation below with
+`unsupported`, so connect with `--connect`.
+
+| Operation | Fields | Guards | Result |
+| --- | --- | --- | --- |
+| `export_capabilities` | | none | `export_capabilities` |
+| `queue_export` | `settings`, `destination`, `overwrite` (default `false`) | revision, project and context | `render_job` |
+| `render_jobs` | | none | `render_jobs` |
+| `pause_render`, `resume_render`, `cancel_render`, `retry_render`, `remove_render` | `job` | none | `render_job` |
+
+- **`export_capabilities`** returns `capabilities` (the FFmpeg version, the
+  video and audio encoders that encoded a test picture on this host, the
+  containers its muxers can write, and encoders that failed with the reason),
+  `presets` (built-in and saved) and `settings_schema`, the exact JSON schema
+  of `settings`. Encoder detection runs once in the background after the
+  desktop starts; until it ends this and `queue_export` answer
+  `capabilities_pending`, so ask again after a moment.
+- **`queue_export`** carries the three identity guards of a mutation and
+  answers with the same `revision_required`, `stale_revision`,
+  `project_required`, `stale_project`, `context_required` and
+  `stale_context` errors. The job renders the project at the inspected
+  revision. `destination` is an absolute path to a file in an existing
+  folder, with the container's extension, and not a source asset, the
+  project file, or a file that another unfinished job writes. Names that
+  differ only in case are the same file on every platform. An existing file
+  is replaced only with `"overwrite": true`, and so is an existing caption
+  file the settings would write beside it; the old files stay whole until
+  the finished export is renamed over them. These checks compare names when
+  the job is queued. A clash found only by resolving paths (a symbolic link,
+  a hard link, `..` through a link), or a destination folder removed (or a
+  folder made at the destination) after queueing, makes the queued job fail
+  instead, with the same reason in its `message`.
+- **Job operations** name a `job` from `render_job` or `render_jobs` and need
+  no guards. Pausing a running job stops feeding frames, and resume
+  continues the same encode; until then it holds the queue. Pausing a queued
+  job holds it: it reads `paused` with `frames_done` 0 and is passed over
+  while later jobs render, and resume lets it take its turn. Cancel stops the
+  job and removes its partial file. Retry re-runs a failed or cancelled job
+  from its snapshot; it is refused while another unfinished job writes the
+  same file. Remove drops a job that is not running and answers with it as
+  it was. Finished jobs stay listed until removed. Reordering waiting jobs
+  and clearing finished ones are in the window only; agents have no
+  operation for them.
+- **Progress is polled.** Every operation answers at once; nothing streams.
+  Poll `render_jobs` about once a second and read each job's `state`
+  (`queued`, `preparing`, `rendering`, `paused`, `finalizing`, `done`,
+  `failed`, `cancelled`), `progress` (0–1), `frames_done`, `frames_total`,
+  `speed_fps`, `eta_seconds`, `encoder` and `message`, which gives a failure's
+  reason or a fallback from a hardware to the software encoder.
+
+```json
+{"request_id":"caps-1","operation":"export_capabilities"}
+{"request_id":"export-1","operation":"queue_export","expected_revision":12,"expected_project_id":"00000000-0000-0000-0000-000000000000","expected_context_id":"00000000-0000-0000-0000-000000000000","settings":{"container":"mp4","video":{"codec":"h264","resolution":{"kind":"short","pixels":1080}},"audio":{"codec":"aac","kbps":256,"sample_rate":48000,"channels":2}},"destination":"/absolute/Film.mp4"}
+{"request_id":"poll-1","operation":"render_jobs"}
+{"request_id":"pause-1","operation":"pause_render","job":"00000000-0000-0000-0000-000000000000"}
+```
+
+| Render error code | Meaning and next step |
+| --- | --- |
+| `capabilities_pending` | Encoder detection has not finished; ask again shortly. |
+| `invalid_export` | The settings contradict themselves or the limits, or the destination is relative, in a missing folder, a folder, a source or the project, has the wrong extension, or is written by another unfinished job ("Another export in the queue already writes <name>; choose another name"). The message names what to change. |
+| `unsupported_export` | This host's FFmpeg cannot make what was asked; choose from `export_capabilities`. `export_capabilities` and `queue_export` also answer it when FFmpeg is missing or its encoder check failed, or the queue has stopped; the message says why, and nothing can be exported from this session until FFmpeg is fixed and checked again from the window's export dialog. |
+| `empty_export` | The timeline or range holds nothing to export, or the caption track has no captions in it. |
+| `destination_exists` | A file is at `destination`, or at the caption file the settings would write beside it; the message names it ("<path> exists; send overwrite: true to replace it"). Resend with `"overwrite": true` to replace them. |
+| `queue_full` | The queue already lists 64 jobs; remove finished ones. |
+| `unknown_job` | No job has that ID, or its state does not allow the operation (pausing a finished job, or retrying one whose file another unfinished job now writes). |
+| `unsupported` | This session cannot run render jobs (headless). |
+
+The desktop answers render operations through the same queued call as
+edits. A `timeout` before acceptance means no job was queued or changed, and
+it cannot start later; an `indeterminate` `queue_export` may have queued a
+job, so list `render_jobs` before sending it again.
+
+## Transport states
 
 The [host](../crates/editor-agent/src/host.rs) distinguishes queued, executing,
 cancelled and completed calls. A `timeout` before acceptance atomically cancels

@@ -11,9 +11,16 @@
 //! last needs a device; with none, or with pipelines the device refuses,
 //! every layer keeps the mesh path and the viewer says effects are not shown.
 //!
-//! Composition happens while the interface is drawn and never elsewhere. A
+//! The viewer composites while the interface is drawn and never elsewhere. A
 //! canvas whose plan, pictures and size are what they were is not drawn
 //! again, and nothing here asks for a repaint.
+//!
+//! An export draws with a [`gpu::Gpu`] of its own on its render thread, at
+//! the output's size and with no budget to step down to: every layer of a
+//! frame, plain, composited and title, stacked onto one canvas by
+//! [`assemble::stack`] and read back. [`assemble`] works out the boxes and
+//! inputs of a layer for both, so the export draws what the viewer shows.
+pub mod assemble;
 pub mod gpu;
 pub mod lut;
 pub(crate) mod pass;
@@ -121,6 +128,31 @@ impl<'a> Job<'a> {
     }
 }
 
+/// The intermediate canvases [`gpu::Gpu::render_stack`] draws `jobs` with:
+/// two the frame is blended between, two more for a canvas drawn over it
+/// when there is more than one, and those the layer, or the pair of a
+/// transition, that needs the most is placed on and its chain goes between.
+pub fn stack_targets(jobs: &[Job<'_>]) -> usize {
+    let runs = if jobs.len() > 1 { 4 } else { 2 };
+    runs + (jobs.iter().map(Job::slots).max()).unwrap_or(1)
+}
+
+/// The passes [`gpu::Gpu::render_stack`] takes to draw `jobs`: those of
+/// each job, where every one after the first is laid over the frame in the
+/// pass that would have encoded it, and one job's encoding at the end.
+pub fn stack_passes(jobs: &[Job<'_>]) -> usize {
+    match jobs.split_first() {
+        Some((first, rest)) => {
+            first.passes()
+                + (rest.iter())
+                    .filter(|job| !job.draws.is_empty())
+                    .map(Job::passes)
+                    .sum::<usize>()
+        }
+        None => 1,
+    }
+}
+
 /// How a stretch of a plan's layers is drawn.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Run {
@@ -185,6 +217,26 @@ pub fn runs(plan: &RenderPlan) -> Vec<Run> {
 pub fn target_size(canvas: [u32; 2], points: egui::Vec2, pixels_per_point: f32) -> [u32; 2] {
     let needed = (points.x.max(points.y) * pixels_per_point).round();
     sized(canvas, needed.clamp(1.0, MAX_SIDE as f32) as u32)
+}
+
+/// A canvas of `size` held to the preview's quality: `divisor` 1 leaves it
+/// as it is; 2 or 4 hold its long side to the largest of [`CANVAS_STEPS`]
+/// within a half or a quarter of it, and never under the smallest step nor
+/// over what was asked. The budget may still step it down from there.
+pub fn detailed(size: [u32; 2], divisor: u32) -> [u32; 2] {
+    let long = size[0].max(size[1]);
+    if divisor <= 1 || long == 0 {
+        return size;
+    }
+    let cap = long / divisor;
+    let step = (CANVAS_STEPS.into_iter().rev())
+        .find(|step| *step <= cap)
+        .unwrap_or(CANVAS_STEPS[0]);
+    if step >= long {
+        size
+    } else {
+        sized(size, step)
+    }
 }
 
 /// The longest side asked for of any canvas, before the device and the
@@ -742,6 +794,8 @@ impl Composer {
     }
 }
 
+#[cfg(test)]
+mod assemble_tests;
 #[cfg(test)]
 mod effect_tests;
 #[cfg(test)]

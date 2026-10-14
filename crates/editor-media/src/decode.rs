@@ -1199,7 +1199,7 @@ impl DecoderPool {
 
 /// The process that decodes a video from frame `target` on, scaled to
 /// `dimensions`, as raw RGBA on its output.
-fn video_command(
+pub(crate) fn video_command(
     path: &std::path::Path,
     rate: FrameRate,
     target: i64,

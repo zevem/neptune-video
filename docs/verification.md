@@ -279,9 +279,10 @@ establish native platform acceptance.
 | Transform | Position/scale/rotation/opacity, horizontal/vertical reflection, source crop | Core validation/reversal, real decoded composition and X11 canvas-position gesture with one exact undo; complete inspector input acceptance on each OS remains open |
 | Canvas | 16:9, 9:16, 1:1, custom dimensions, rational frame rate and background | Typed settings/save tests and native project settings; clean-machine/DPI/driver behavior remains open |
 | History | Undo/redo, named checkpoints, reversible checkpoint restore, crash recovery and recovery leases | XTest checkpoint restore/undo/redo, crash recovery offer and optimized exit/relaunch retaining the full undo/redo chain; store shared-root/corruption/lease tests. Ordinary `.aster` open starts fresh history; recovery sidecar retains it |
-| Looks, animation and motion | Keyframes, transitions, effects, looks, speed, masks, blend, colour, keying, tracking, stabilization as preview | See [advanced editing](#advanced-editing): Linux headless tests, device readback on two adapters and native captures on virtual displays; no playback rate, export or other platform |
+| Looks, animation and motion | Keyframes, transitions, effects, looks, speed, masks, blend, colour, keying, tracking, stabilization as preview | See [advanced editing](#advanced-editing): Linux headless tests, device readback on two adapters and native captures on virtual displays; no playback rate or other platform, and no effect was checked in an [export](#export-and-rendering) |
 | Native AI | Claude/Codex CLI planning, captured/focused metadata, review/apply/discard/cancel and exact prepared-state commits | Exact reviewed split IDs verified through the public runtime; `2c596cb0` both real-provider split/undo/redo and owned no-op/stale fixtures passed. Prior db30 cancel/reopen evidence stays scoped. Metadata only; no audiovisual semantic analysis |
-| Titles, captions and graphics | Styled titles, text animation, captions from speech with word times, karaoke, caption editing, SRT/VTT, caption languages and AI translation, lower thirds, title cards, callouts, stickers, emoji, editable templates, kept looks and brand colours, as preview | See [titles, captions and motion graphics](#titles-captions-and-motion-graphics): Linux headless tests, a real Whisper model on synthetic English speech and native captures on a virtual display; no export, playback rate, real provider translation or other platform |
+| Titles, captions and graphics | Styled titles, text animation, captions from speech with word times, karaoke, caption editing, SRT/VTT, caption languages and AI translation, lower thirds, title cards, callouts, stickers, emoji, editable templates, kept looks and brand colours, as preview | See [titles, captions and motion graphics](#titles-captions-and-motion-graphics): Linux headless tests, a real Whisper model on synthetic English speech and native captures on a virtual display; one title and two captions, burned in and embedded, in [Linux exports](#export-and-rendering); no playback rate, real provider translation or other platform |
+| Export and rendering | Export dialog with poster and saved presets; render queue with pause, resume, cancel, retry and part files; MP4, MOV, WebM and sound-only files; software and hardware encoders; caption sidecars, embedding and burn-in; proxies and preview quality | See [export and rendering](#export-and-rendering): one Linux host, release build, every matrix export matched its expected values and sound was within 0.1 ms of the picture; NVENC only among hardware encoders; no macOS, Windows or long render |
 
 The [user guide](usage.md) explains controls and current limits. Local agent
 commands and the authenticated live/headless protocol use the same reducer;
@@ -295,8 +296,12 @@ Keyframes, transitions, effects, looks, speed, masks, blend modes, colour
 grading, background removal, tracking, stabilization and picture-in-picture
 from [the advanced-editing design](../.scratch/advanced-editing/spec.md) are
 implemented as preview features. This section states what evidence exists for
-each. It records no platform acceptance, no playback frame rate and no export:
-there is no export path, so everything is preview at preview resolution.
+each. It records no platform acceptance and no playback frame rate. It was
+written before export existed, so everything below is preview at preview
+resolution. Export now draws these features through the same compositor
+([ADR 0008](adr/0008-export-renders-originals-through-the-preview-compositor.md)),
+but the [export verification](#export-and-rendering) used no effect, look,
+mask, transition, speed change, tracking or stabilization.
 
 ### Where the evidence comes from
 
@@ -379,8 +384,11 @@ have raised a Save dialog on their desktop; later sessions isolate D-Bus and
 
 The features of [the titles and captions design](../.scratch/titles-and-captions/spec.md)
 are implemented as preview features: titles and graphics are drawn in the
-viewer, and captions leave the editor only as SubRip or WebVTT files. There is
-no export, so nothing is burned into a video. This section states what
+viewer, and captions leave the editor as SubRip or WebVTT files. This section
+was written before export existed. Export now draws titles and can burn
+captions in or embed them; the [export verification](#export-and-rendering)
+checked one title and two captions, not graphics, karaoke or animated
+text. This section states what
 evidence exists for each feature and what was not tried. The tickets'
 comments in [`.scratch/titles-and-captions/issues/`](../.scratch/titles-and-captions/issues)
 list every capture and test by name.
@@ -433,6 +441,309 @@ else in that column is unmeasured.
   choice open system pickers that were not driven.
 - **Accessibility.** Controls are reachable by AccessKit names in the benches;
   no screen reader was used.
+
+## Export and rendering
+
+The features of [the export and rendering design](../.scratch/export-and-rendering/spec.md)
+and [ADR 0008](adr/0008-export-renders-originals-through-the-preview-compositor.md)
+were driven on 2026-10-14 on one Linux host, release build, for
+[ticket 12](../.scratch/export-and-rendering/issues/12-native-verification.md).
+The [full record](../artifacts/export-phase7/verify-20261014-093405/results.md)
+keeps ffprobe output for each file, the scripts, logs and captures; it is
+local, as `artifacts/` is not tracked by git. Nothing here covers macOS,
+Windows, a Wayland compositor or any hardware encoder other than NVENC.
+
+Later the same day, fixes for the defects below were checked in a second
+release build, with the window driven by XTest
+([follow-up record](../artifacts/export-phase7/polish-20261014-102125/results.md),
+also local). The export FFmpeg thread caps were measured with a script that
+runs the export's source reader and encoder commands directly, not through the
+editor.
+
+### Host and build
+
+| Item | Value |
+| --- | --- |
+| Host | Dell G15 5530, i9-13900HX (32 threads), 30 GiB RAM, Ubuntu 26.04.1, Linux 7.0.0-38-generic |
+| GPU | NVIDIA GeForce RTX 4060 Laptop, driver 595.99.02. The window ran on the NVIDIA GPU through Vulkan: `nvidia-smi` listed `aster` as a client. Xvfb has no DRI3, so Mesa could not present there |
+| FFmpeg | 8.0.1-3ubuntu2 from `.tools`, named by `ASTER_FFMPEG` and `ASTER_FFPROBE` |
+| Build | `cargo build --release --locked --bins`, pinned toolchain 1.97.1 |
+| Final binaries (SHA-256) | `target/release/aster` `3452f930b345c90bf9e659c3f7683ab5564478da649b0123665c03d596f2e572`; `target/release/aster-agent` `0a75889e28ab0a4a070766a0d4006ae22158cba30014b53d73621cadfeeb4048`. The build before the speed fix below was `aster` `be85dfc5d54c269e52c85f9f80e523f6846bde07dfb6901ff0346e508f479a84`; output files from both builds were byte-identical |
+| Isolation | Private Xvfb displays `:147` (1440x900) and `:148` (760x560), no window manager, `dbus-run-session`, and a fresh HOME, XDG folders, `--settings` and `--agent-session` for each window |
+| Follow-up build (defects 4 to 8) | `target/release/aster` `07b644ca2a25918deb075899ed25d19bad3ad5cc06629ca5b9cf42a8eef9ad1b`; `aster-agent` unchanged. Private Xvfb displays `:151` (1440x900) and `:152` (760x560), isolated in the same way. The record does not say whether this build already had the thread caps of defect 3 |
+| Thread-cap measurements (defect 3) | Same host, FFmpeg 8.0.1 from `.tools`, SVT-AV1 2.3.0. Another task's `aster` kept the load average between 2 and 21, so each figure is the median of 3 interleaved runs |
+
+### Checks
+
+Each suite ran once, `aster-editor` twice; no test failed or behaved
+inconsistently.
+
+| Command | Result |
+| --- | --- |
+| `cargo test -p editor-core --locked` | 192 passed, 0 failed |
+| `cargo test -p editor-media --locked`, with `ASTER_FFMPEG` set | 316 passed, 0 failed |
+| `cargo test -p aster-editor --locked` | 871 passed before the speed fix, 872 after (its regression test) |
+| `python3 scripts/test-workspace.py --package editor-agent` | 97 passed, 0 failed |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Clean, last run after both fixes |
+| `python3 scripts/check-architecture.py` | Passed |
+| `rustfmt --edition 2024 --check` on `src/main.rs`, `src/bin/aster-agent.rs` and `crates/*/src/lib.rs` | Failed at first on module order in `crates/editor-core/src/lib.rs`; clean after the fix |
+| `cargo build --release --locked --bins` | Built |
+
+After the fixes for defects 3 to 8:
+
+| Command | Result |
+| --- | --- |
+| `cargo test -p aster-editor --locked` | 868 passed, 0 failed |
+| `cargo test -p editor-media --locked --lib -- export::`, with `ASTER_FFMPEG` and `ASTER_FFPROBE` set | 50 passed, 0 failed. The capability probe test among them makes every software encoder encode, so FFmpeg accepts `-threads:v 24` and `lp=4` |
+| `cargo clippy -p aster-editor --all-targets --locked -- -D warnings` and the same for `editor-media` | Clean |
+| `rustfmt --edition 2024 --check` on the changed files | Clean |
+
+### Export matrix
+
+Three fixtures were made with FFmpeg `lavfi`: a 1920x1080 29.97 fps clip of
+240 frames with one white frame (90, at 3.003 s) and a click in the sound at
+the same time; a 3840x2160 25 fps clip and a 1080x1920 30 fps clip, 4 s each.
+The project was built over `aster-agent --connect`: the first fixture on
+linked video and audio tracks, a title from 0.5 to 2.5 s, and an `en` caption
+track with two cues from 4.0 to 7.0 s. Each export was queued with
+`queue_export` and checked with `ffprobe -count_frames`. Every job ended
+`done` on its first attempt. "Job" is the job's own `elapsed_seconds`,
+FFmpeg start, sound render and output check included.
+
+| Setting | Encoder | Result | Job |
+| --- | --- | --- | --- |
+| MP4 H.264 software, 1080p | libx264 | High, yuv420p, 1920x1080, 30000/1001, 240 of 240 frames, 8.008 s; AAC 48 kHz stereo | 9.24 s |
+| MP4 H.264 Auto | h264_nvenc | Main, 240 frames | 3.67 s |
+| MP4 H.265 Auto and software | hevc_nvenc, libx265 | Main, tag `hvc1` on both, 240 frames | 3.47 s, 5.59 s |
+| MOV ProRes 422 HQ with PCM | prores_ks | `apch` (HQ), yuv422p10le; pcm_s24le, 384,384 samples (8.008 s x 48,000 exactly) | 9.25 s |
+| WebM VP9 with Opus | libvpx-vp9, libopus | VP9 Profile 0, 240 frames; Opus 48 kHz, stream start -0.007 s | 14.8 s |
+| MP4 AV1 software, range 2 to 4 s | libsvtav1 | 61 frames as expected; white frame at index 31 as expected | 4.55 s |
+| M4A, WAV, MP3, FLAC | aac, pcm_s24le, libmp3lame, flac | AAC 8.008 s; 384,384 samples exactly; 44.1 kHz, 353,153 decoded (8.008 x 44,100 = 353,152.8); 384,384 exactly | 0.83, 0.10, 0.21, 0.13 s |
+| 720p and 1440p | h264_nvenc | 1280x720 and 2560x1440, 240 frames | 3.48 s, 6.04 s |
+| Custom 1001x563 | h264_nvenc | 1002x564: each side rounded up to even, as the design says | 2.48 s |
+| 25 fps from the 29.97 fps project | h264_nvenc | 201 frames, 8.04 s | 4.14 s |
+| Range 2 to 5 s | h264_nvenc | 91 frames; white frame at index 31 (90 - 59) | 2.09 s |
+| TikTok preset on the 16:9 canvas | h264_nvenc | 1080x1920; the 400-pixel band at the top is black (Y at most 16) | 3.45 s |
+| SRT sidecar and embedded, burn-in off | h264_nvenc | `.en.srt` beside the file with 2 cues; `mov_text` stream, language `eng`; captions absent from the picture | 4.43 s |
+| VTT sidecar and MOV embedded, burn-in on, 720p | h264_nvenc | `.en.vtt` with word times; `tx3g` stream; captions drawn in the picture | 2.97 s |
+| 4K project (3840x2160, 25 fps), range 10 to 14 s | h264_nvenc, libx264, hevc_nvenc | 100 frames each | 4.59 to 4.75, 6.42 to 7.32, 4.65 s |
+| Portrait canvas 1080x1920, range 16 to 20 s | h264_nvenc | Project size 1080x1920; 720p is 720x1280; 120 frames each | 2.04 s, 1.24 s |
+| Export button in the sheet | h264_nvenc | The window's own path wrote `$HOME/Untitled.mp4`: 420 frames, 14.014 s, in sync | Not recorded |
+
+Every video file is tagged BT.709 with limited (tv) range; ProRes stores no
+range. The title was seen at 1.5 s and the caption at 4.5 s in frames taken
+from the files.
+
+**Fill.** In the follow-up build, the TikTok preset with Fill on the 16:9
+canvas wrote 1080x1920, 1200 frames. Frame 300 scores 42.2 dB PSNR against the
+source scaled to 1920 high and cropped at the centre, and 4.0 dB against a
+letterboxed layout; the top and bottom 300 rows have mean Y 127, so there are
+no black bars.
+
+**Originals, not proxies.** The 4K exports score 41.4 dB (libx264) and
+41.9 dB (NVENC) PSNR against the 4K source; the 1280x720 proxy scaled up to
+4K scores 33.6 dB against it. Export read the original. The portrait export
+scores 40.8 dB against its source.
+
+### Sound and picture sync
+
+The white frame and the click were found in each file and compared.
+
+| Export | Click minus white frame |
+| --- | --- |
+| Every whole-timeline video export with sound (8 s at each size and codec, and the 14 s export from the sheet) | +0.02 ms |
+| The two range exports | +0.03 ms |
+| WebM with Opus | -6.98 ms as measured; the Opus stream starts at -7 ms, so about 0 |
+| 25 fps from 29.97 fps | The one-frame flash (3.003 to 3.036 s) falls between output frames 75 (3.000 s) and 76 (3.040 s), so no output frame shows it, as it should. Picture timing was checked instead: output frames 50, 75, 76, 100 and 150 match source frames 59, 89, 91, 119 and 179, and the click stays at 3.003 s |
+
+### Queue, refusals and quitting
+
+Driven through the agent operations of the final build unless noted.
+
+- **Cancel**: the job reached `cancelled` 0.24 s after the request; its part
+  file and `.aster-render-<job>` folder were removed and its two FFmpeg
+  processes ended. Retry ran it again (attempt 2); a second cancel cleaned up
+  the same way.
+- **Pause and resume**: no frame advanced in 5 s and the job's FFmpeg
+  processes used no CPU over 2 s. Resume finished with 240 frames in sync.
+- **Folder removed while queued**: the job failed with "The destination
+  folder does not exist" and left nothing behind.
+- **Refusals**: a relative path, a wrong extension and a missing folder were
+  `invalid_export`; an existing file `destination_exists`; a destination that
+  is a source asset, even with overwrite, `invalid_export`; WAV with video,
+  Opus at 44.1 kHz and a ProRes bitrate `invalid_export`; a range past the
+  end `empty_export`; an unknown job `unknown_job`; a request without guards
+  `revision_required`. `overwrite: true` replaced the file.
+- **Quitting during a render** (window): the "Rendering will stop" question,
+  then Stop and quit and Don't save; the process exited and no part file,
+  working folder or FFmpeg process was left.
+
+In the follow-up build, through the window's own buttons:
+
+- **Add to queue, then Start all**: the notice "… is held in the render
+  queue", a Held row, and Start all rendered it, 1200 of 1200 frames.
+- **Pause and Resume**: paused at frame 957 (1440x900) and 560 (760x560); no
+  frame advanced in 3 s; Resume finished all 1200 frames.
+- **A failed job, retried**: with the destination folder removed after Add
+  to queue, Start all ended the job Failed, "The destination folder does not
+  exist". With the folder made again, Retry finished it (attempts 2).
+- **Stop and quit** (760x560, a 4K job): the export FFmpeg processes were
+  gone 6 ms and 11 ms after the click, and the part file and working folder
+  after 165 ms and 170 ms (two runs). The job was cancelled at frame 180 of
+  1200 while the save question was up, and no output file was written.
+  Cancel on the save question kept the window open with the job Cancelled
+  and Retry offered; Don't save quit, leaving the folder empty.
+
+### Timings and memory
+
+Whole-job times for 8 s at 1080p were 5.2 to 9.2 s with libx264, varying
+widely between identical runs, and 3.55 to 3.74 s with NVENC; 100 frames at
+4K took 4.6 to 4.75 s with NVENC and 6.4 to 7.3 s with libx264. During the 4K
+libx264 job the encoder FFmpeg used up to 4,942 MiB and the source reader
+1,004 MiB, before the thread caps. Conditions and the rest are in
+[performance](performance.md#release-build-export-measurements).
+
+With the thread caps, the reader and encoder commands of a 4K libx264 job
+(Recommended, Balanced), run outside the editor, peaked at 4,147 to
+4,467 MiB together, against 6,258 to 6,282 MiB before; the 4K SVT-AV1 job at
+5,178 to 5,344 MiB, against 8,873 to 9,163 MiB. The figures for each encoder
+are in [performance](performance.md#export-ffmpeg-thread-caps).
+
+### Captures
+
+Taken from the final build on the private displays and looked at. In
+[`out/`](../artifacts/export-phase7/verify-20261014-093405/out):
+
+| Size | Captures |
+| --- | --- |
+| 1440x900 | `export-sheet-1440x900.png` (poster showing the title at 1.5 s), `queue-rendering-1440x900.png` (frame, speed and time-left line), `queue-done-1440x900.png`, `settings-1440x900.png` (Preview section), `library-proxy-generating-1440x900.png` and `library-proxy-1440x900.png` (proxy queued and ready), `toolbar-ring-1440x900.png` and `toolbar-ring-zoom.png` |
+| 760x560 | `main-760x560.png`, `export-sheet-760x560.png`, `export-sheet-hover-left-760x560.png` and its zoom, `queue-rendering-760x560.png`, `queue-done-760x560.png`, `settings-760x560.png`, `settings-preview-760x560.png`, `library-proxy-760x560.png`, `toolbar-ring-760x560.png` and its zoom, `quit-with-job-760x560.png`, `quit2-save-prompt-760x560.png`, `after-stop-and-quit-760x560.png` |
+
+`queue-rendering-scrolled-list-1440x900.png` is from the build before the
+speed fix. Frames taken from the exported files are in
+[`frames/`](../artifacts/export-phase7/verify-20261014-093405/frames).
+
+From the follow-up build, in
+[`out/`](../artifacts/export-phase7/polish-20261014-102125/out) (`w-` at
+1440x900, `n-` at 760x560):
+
+| Check | Captures |
+| --- | --- |
+| Held row and Start all | `w-03` to `w-05`, `n-04` to `n-06` |
+| Paused row | `w-06-paused.png`, `n-07-paused.png` |
+| Failed row and Retry | `w-08` to `w-11`, `n-08` to `n-10` |
+| Fill with the TikTok preset | `w-12` to `w-14` |
+| Scroll bar beside the summary values | `n-02-sheet-hover-left.png`, `n-03-sheet-hover-bar.png` and their zooms |
+| Running job first, many finished | `w-16-many-finished-active.png`, `n-12-many-finished-active.png` |
+| Notices under an open sheet, none over the open queue | `w-07-done-no-notice.png`, `w-17-notice-under-sheet.png`, `n-11-notice-under-export-sheet.png`, `n-13-sheet-open-during-render.png` |
+| Stop and quit | `n-14`, `n-17` to `n-20`, `w-18` to `w-21` |
+| Folder named as in the queue | `w-01-sheet.png`, `w-04-queue-held.png`, `n-01-sheet.png`, `n-05-queue-held.png` |
+
+### Defects found
+
+Fixed during the run:
+
+1. **Speed and time left were never shown.** `Control::hold` in
+   `src/export/queue.rs` reported a wait of about 100 to 200 ns even when the
+   job was not paused, which emptied the speed window before every frame.
+   Agents got `speed_fps` 0 and no `eta_seconds`, and the queue row showed
+   only "Frame N of M". It now returns zero unless the job was paused; the
+   test `hold_reports_no_wait_unless_it_was_paused` fails on the old code and
+   passes now. The row now reads, for example, "Frame 343 of 420 · 16.7 fps ·
+   0:05 left".
+2. **Formatting**: module order in `crates/editor-core/src/lib.rs`.
+
+Fixed after the run, the same day. Each fix has a regression test; the
+captures are listed above:
+
+3. **Export FFmpeg had no thread cap.** The encoder got no `-threads`, and
+   the source reader capped its filter and output threads but not its
+   decoder. Now libx264 gets x264's own count, 1.5 times the logical
+   processors, at most 24 (`X264_MAX_THREADS`); libsvtav1 gets
+   `-svtav1-params lp=4`; and each reader pipe decodes with 4 threads
+   (`DECODE_THREADS`). Other encoders are unchanged. Tests:
+   `x264_takes_its_own_thread_count_up_to_a_cap`,
+   `svt_av1_runs_at_a_bounded_level_of_parallelism` and
+   `a_pipe_decodes_with_a_bounded_number_of_threads` fail without the
+   change; `encoders_that_bound_their_own_threads_are_left_alone` guards
+   the rest. The memory is lower but not near 2 GiB at 4K (see Open).
+4. **Clipped values at 760x560.** The widened scroll bar covered the last
+   letter of each summary value. The sheet's scroll areas now keep a gutter
+   for the bar: the values end at x=282 and the bar sits at about 286 to 292,
+   with the pointer over the column or on the bar
+   (`a_scroll_bar_widened_under_the_pointer_covers_nothing`).
+5. **Running job out of sight.** The queue now lists the job under way
+   first, then waiting and held jobs in render order, then finished jobs
+   newest first, and scrolls a job that starts into sight once. With 9
+   finished jobs at 1440x900 and 7 at 760x560 the active row was first
+   (`the_job_under_way_comes_first_then_the_waiting_then_the_finished`,
+   `a_job_retried_and_done_again_is_the_most_recent`,
+   `a_job_that_starts_is_scrolled_into_sight_once`).
+6. **Notices over the queue.** While a sheet is open, notices now sit at
+   the bottom of the window, under it, and while the queue is open a
+   finished or failed job posts no notice, its row saying so. At 760x560
+   "Exported fail-n.mp4" fit in the 40-pixel band under the export sheet
+   (`src/ui/notices_tests.rs`,
+   `a_finished_job_is_told_by_a_notice_unless_the_queue_shows_it`).
+7. **Stop and quit waited for the save question.** It now cancels every job
+   at once, waiting ones first, then asks about unsaved changes; staying
+   leaves the jobs cancelled, with Retry. Timings are under
+   [Queue, refusals and quitting](#queue-refusals-and-quitting)
+   (`stop_and_quit_cancels_every_job_at_once_and_starts_none`; it passes
+   without the waiting-first order too, so that order has no failing test).
+8. **Folder named two ways.** The sheet's folder button showed the folder's
+   base name and the queue the shortened path; both now show
+   `~/…/Trip/Final`, the full path on hover
+   (`the_folder_is_named_as_the_render_queue_names_it`).
+
+Open:
+
+- **4K encoder memory.** The 4K libx264 encoder still peaks at 3,685 to
+  3,971 MiB (2.3 GiB with one thread). About 2.5 GiB would need `-rc-lookahead 20` and
+  about 8 threads, which changes the encoded output and roughly halves 4K
+  encoder speed; that is a product decision
+  ([ticket 14](../.scratch/export-and-rendering/issues/14-throughput-and-memory.md)).
+- **One slow job.** A 1080p NVENC job of 1200 frames, with the export sheet
+  open at 1440x900, reported "Done in 1:06"; the same job took 0:13 to 0:21
+  in every other run, 0:18 with the sheet open at 760x560. It was not
+  reproduced and its log shows nothing
+  ([ticket 15](../.scratch/export-and-rendering/issues/15-implementation-follow-ups.md)).
+
+### Not verified
+
+- **macOS and Windows.** Nothing in this section was built or run there:
+  VideoToolbox, Media Foundation, Metal, Direct3D, their file pickers,
+  Explorer and Finder reveal, and Windows paths
+  ([ticket 13](../.scratch/export-and-rendering/issues/13-other-platforms-and-hardware-encoders.md)).
+- **Other hardware encoders.** AMF was not offered; VA-API ("Failed to
+  initialise VAAPI connection" on both render nodes) and QSV ("Error creating
+  a MFX session") failed the encoder check on this host. Only NVENC's H.264
+  and HEVC encoders wrote files; `av1_nvenc` passed the check and was not
+  used.
+- **The automatic fallback from hardware to software** under Auto: covered by
+  engine tests only, as NVENC could not be made to fail from outside.
+- **libaom AV1** (offered, not exported), and **96 kHz and mono** sound.
+- **The thread caps in the editor.** No release-build export through the
+  editor and its GPU compositor was measured with them: the figures are from
+  the reader and encoder commands run on their own, on synthetic sources
+  (`testsrc2` with noise, H.264 at about 300 Mbit/s and HEVC at 4K), with
+  speed varying up to ±15 % between runs. Other hosts, SVT-AV1 releases
+  before 2.0, SVT-AV1 preset 5 at 4K, and libaom, VP9 and ProRes beyond a
+  spot check at 4K were not measured. Below 17 logical processors the x264
+  cap changes nothing.
+- **Picture parity with the viewer** beyond looking at it; the ±2 parity is a
+  headless test.
+- **Long renders** of minutes or hours, **GPU memory** of a job, how much a
+  job slows the interactive window, effect-heavy projects and **camera
+  footage**: every fixture is synthetic
+  ([ticket 14](../.scratch/export-and-rendering/issues/14-throughput-and-memory.md)).
+- **Preview quality and proxy switching during playback**: the badges were
+  captured, playback with them was not measured.
+- **A real display, a window manager, a Wayland compositor and HiDPI**: every
+  window was on Xvfb at scale 1.
+- **Sound devices**: sync was measured in the files; nothing was played
+  through a device.
+- **Free space, an interrupted machine and a killed editor** during a job.
 
 ## Native Linux evidence
 
@@ -975,6 +1286,8 @@ complete missing-media UX or native wake/presentation acceptance.
 | Distribution | OS/architecture packages, clean-machine launch, signing/notarization, notices and update/release policy |
 | Provider integration | [Portable process-fault fixtures](../.scratch/native-ai/issues/01-portable-process-fault-fixtures.md) and native Windows job teardown; macOS/Windows real sign-in/model/failure/cancel behavior; semantic audiovisual analysis if advertised |
 
-Export was outside the user's first core-feature phase and is not implemented.
-No installer, signed distribution or release pipeline is implied by a native
+Export was outside the user's first core-feature phase. It is now implemented,
+with Linux-only evidence in [export and rendering](#export-and-rendering);
+export on macOS and Windows, other hardware encoders and long renders remain
+gates. No installer, signed distribution or release pipeline is implied by a native
 source build.

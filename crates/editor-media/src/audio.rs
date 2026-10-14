@@ -960,8 +960,15 @@ impl Mixer {
                     ])
                     .arg(self.channels.to_string())
                     .arg("-af")
+                    // The first byte read is the sound at `source` in the
+                    // file's time, as the picture is read. Where the stream's
+                    // first sample comes later (a late audio stream, a seek
+                    // landing on a packet past the point, the lead-in Opus
+                    // drops) the gap is silence rather than the sound being
+                    // pulled early. Gaps of 0.1 s or more later in the
+                    // stream are filled the same way.
                     .arg(format!(
-                        "aresample={},asetrate={},aresample={}",
+                        "aresample={}:async=1:first_pts=0,asetrate={},aresample={}",
                         self.rate, changed_rate as u32, self.rate
                     ))
                     .args(["-f", "f32le", "-c:a", "pcm_f32le", "pipe:1"]);
@@ -1039,9 +1046,9 @@ impl Mixer {
     }
 }
 
-/// The timeline's sound rendered away from the device, mono, as playback
-/// mixes it: cuts, gain, mute and steady speed changes are what it hears.
-/// Its decoders are children of the given processes.
+/// The timeline's sound rendered away from the device, mono unless given a
+/// layout, as playback mixes it: cuts, gain, mute and steady speed changes
+/// are what it hears. Its decoders are children of the given processes.
 pub(crate) struct OfflineMix {
     mixer: Mixer,
     start: Time,
@@ -1051,17 +1058,28 @@ pub(crate) struct OfflineMix {
 
 impl OfflineMix {
     pub(crate) fn new(project: Arc<Project>, start: Time, rate: u32, processes: Processes) -> Self {
+        Self::with_layout(project, start, rate, 1, processes)
+    }
+
+    /// The same mix with `channels` interleaved channels (1 to 8), as an
+    /// export writes it. Sources are up- or downmixed by their decoders.
+    pub(crate) fn with_layout(
+        project: Arc<Project>,
+        start: Time,
+        rate: u32,
+        channels: usize,
+        processes: Processes,
+    ) -> Self {
         Self {
-            mixer: Mixer::new(project, 1.0, rate, 1, processes),
+            mixer: Mixer::new(project, 1.0, rate, channels, processes),
             start,
             rate,
             frames: 0,
         }
     }
 
-    /// The next 64 ms of samples at 16 kHz, or the same number of samples at
-    /// another rate. Each chunk starts at its own sample
-    /// time, so rounding never accumulates.
+    /// The next 1024 sample frames (64 ms at 16 kHz), interleaved. Each chunk
+    /// starts at its own sample time, so rounding never accumulates.
     pub(crate) fn next(&mut self) -> Result<Vec<f32>, MediaError> {
         let at = self.start + Time::from_seconds(self.frames as f64 / f64::from(self.rate));
         let samples = self.mixer.chunk(at, CHUNK_FRAMES)?;

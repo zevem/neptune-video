@@ -887,3 +887,77 @@ pub fn disclosure(ui: &mut Ui, p: &Palette, open: bool, text: &str, dim: bool) -
     }
     response.on_hover_cursor(CursorIcon::Default)
 }
+
+/// How far a piece of background work has got: a 4-point bar over the width
+/// available, filled in `fill`, named `name` with its value for those who do
+/// not see it.
+pub fn progress(ui: &mut Ui, p: &Palette, done: f32, fill: Color32, name: &str) -> Response {
+    let done = if done.is_finite() {
+        done.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
+    response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::ProgressIndicator, true, name);
+        info.value = Some(f64::from(done));
+        info
+    });
+    if ui.is_rect_visible(bar) {
+        let painter = ui.painter();
+        painter.rect_filled(bar, CornerRadius::same(2), p.pressed);
+        if done > 0.0 {
+            let mut filled = bar;
+            // A started bar shows at least its rounded end.
+            filled.set_width((bar.width() * done).max(4.0).min(bar.width()));
+            painter.rect_filled(filled, CornerRadius::same(2), fill);
+        }
+    }
+    response
+}
+
+/// A pill that picks one of several named choices, such as a preset. It is
+/// filled with a tint of the accent while it is the one chosen.
+pub fn chip(ui: &mut Ui, p: &Palette, text: &str, selected: bool) -> Response {
+    let font = theme::medium(12.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
+    let size = vec2(galley.size().x + 22.0, 26.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let enabled = ui.is_enabled();
+    response
+        .widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, enabled, selected, text));
+    if ui.is_rect_visible(rect) {
+        let radius = CornerRadius::same(13);
+        let painter = ui.painter();
+        if selected {
+            painter.rect_filled(rect, radius, theme::tint(p.accent, 0.18));
+            painter.rect_stroke(
+                rect,
+                radius,
+                Stroke::new(1.0, theme::tint(p.accent, 0.7)),
+                StrokeKind::Inside,
+            );
+        } else {
+            painter.rect_filled(rect, radius, p.control);
+        }
+        let body = feedback(ui, &response, rect, p, 13);
+        let ink = if !enabled {
+            p.muted.gamma_multiply(0.7)
+        } else if selected || response.hovered() {
+            p.fg
+        } else {
+            p.secondary
+        };
+        ui.painter().galley(
+            pos2(
+                body.center().x - galley.size().x * 0.5,
+                body.center().y - galley.size().y * 0.5,
+            ),
+            galley,
+            ink,
+        );
+    }
+    response.on_hover_cursor(CursorIcon::Default)
+}
