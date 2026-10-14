@@ -125,7 +125,11 @@ impl Shared {
     fn say(&self, event: RecordEvent, wake: &Wake) {
         let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
         if matches!(event, RecordEvent::Finished(_) | RecordEvent::Failed(_)) {
-            said.level = None;
+            // The level of the last sound written is said before the end,
+            // not lost to it; none is left waiting after the take.
+            if let Some(level) = said.level.take() {
+                said.events.push_back(RecordEvent::Level(level));
+            }
         }
         said.events.push_back(event);
         drop(said);

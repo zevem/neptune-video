@@ -4,3 +4,6 @@
 *.aster.checkpoints/
 artifacts/
 *.tmp
+
+# Recovery archives written by an older build, kept as schema fixtures.
+!crates/editor-store/tests/fixtures/*.aster.recovery
