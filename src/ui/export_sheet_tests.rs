@@ -131,6 +131,8 @@ struct Bench {
     ctx: egui::Context,
     palette: Palette,
     size: Vec2,
+    /// Physical pixels to a point, as the display gives them.
+    scale: f32,
     time: f64,
     state: ExportSheetState,
     project: Project,
@@ -161,6 +163,7 @@ impl Bench {
             ctx,
             palette,
             size,
+            scale: 1.0,
             time: 0.0,
             state: ExportSheetState::new(ExportSettings::default(), "Trip".to_owned(), folder),
             project,
@@ -182,12 +185,16 @@ impl Bench {
     fn frame(&mut self, events: Vec<Event>) {
         self.time += 0.05;
         let ctx = self.ctx.clone();
-        let raw = egui::RawInput {
+        let mut raw = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
             time: Some(self.time),
             events,
             ..Default::default()
         };
+        raw.viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .native_pixels_per_point = Some(self.scale);
         let caps = match &self.probe {
             Probe::Probing => CapabilityView::Probing,
             Probe::Ready(caps) => CapabilityView::Ready(caps),
@@ -1223,4 +1230,30 @@ fn the_folder_is_named_as_the_render_queue_names_it() {
     assert!(bench.find(&name).is_some());
     bench.hover(&name);
     assert!(bench.says(&format!("Saved in {}", folder.display())));
+}
+
+#[test]
+fn the_sheet_holds_still_under_a_moving_pointer_at_a_fractional_scale() {
+    // 1200 × 750 at 1.5 is a 1800 × 1125 window at 125% with the interface
+    // at 120%: the sheet shook there by a pixel at every repaint.
+    let windows = [vec2(1200.0, 750.0), WIDE, NARROW, vec2(1013.0, 707.0)];
+    for size in windows {
+        for scale in [1.25, 1.5, 1.75] {
+            let mut bench = Bench::new(size);
+            bench.scale = scale;
+            bench.settle();
+            let mut seen = Vec::new();
+            for step in 0..6 {
+                bench.frame(vec![Event::PointerMoved(pos2(
+                    size.x * 0.3 + step as f32 * 9.0,
+                    size.y * 0.5,
+                ))]);
+                seen.push(bench.ctx.memory(|m| m.area_rect(Id::new("export-sheet"))));
+            }
+            assert!(
+                seen.windows(2).all(|pair| pair[0] == pair[1]),
+                "at {size:?} and {scale}× the sheet moved: {seen:?}"
+            );
+        }
+    }
 }

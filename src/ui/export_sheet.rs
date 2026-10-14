@@ -790,55 +790,48 @@ pub fn show(
             if width >= TWO_COLUMNS {
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.allocate_ui_with_layout(
-                        vec2(LEFT, room),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            ui.set_width(LEFT);
-                            ui.set_min_height(room);
-                            egui::ScrollArea::vertical()
-                                .id_salt("export-summary")
-                                .max_height(room)
-                                .auto_shrink([false, true])
-                                .show(ui, |ui| {
-                                    ui.spacing_mut().item_spacing.y = 6.0;
-                                    sheet.left(ui, state);
-                                });
-                        },
-                    );
+                    sheets::column(ui, LEFT, |ui| {
+                        ui.set_min_height(room);
+                        egui::ScrollArea::vertical()
+                            .id_salt("export-summary")
+                            .max_height(room)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 6.0;
+                                sheet.left(ui, state);
+                            });
+                    });
                     ui.add_space(10.0);
                     let (line, _) = ui.allocate_exact_size(vec2(1.0, room), Sense::hover());
                     ui.painter()
                         .vline(line.center().x, line.y_range(), p.hairline());
                     ui.add_space(10.0);
-                    ui.allocate_ui_with_layout(
-                        vec2(ui.available_width(), room),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            egui::ScrollArea::vertical()
-                                .id_salt("export-options")
-                                .max_height(room)
-                                .min_scrolled_height(room)
-                                .auto_shrink([false, true])
-                                .show(ui, |ui| {
-                                    ui.spacing_mut().item_spacing.y = 6.0;
-                                    sheet.right(ui, state);
-                                });
-                        },
-                    );
+                    sheets::column(ui, ui.available_width(), |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("export-options")
+                            .max_height(room)
+                            .min_scrolled_height(room)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 6.0;
+                                sheet.right(ui, state);
+                            });
+                    });
                 });
             } else {
-                egui::ScrollArea::vertical()
-                    .id_salt("export-stacked")
-                    .max_height(room)
-                    .min_scrolled_height(room)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 6.0;
-                        sheet.left(ui, state);
-                        ui.add_space(6.0);
-                        sheet.right(ui, state);
-                    });
+                sheets::column(ui, width, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("export-stacked")
+                        .max_height(room)
+                        .min_scrolled_height(room)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 6.0;
+                            sheet.left(ui, state);
+                            ui.add_space(6.0);
+                            sheet.right(ui, state);
+                        });
+                });
             }
             ui.add_space(4.0);
             let facts = (plan.as_ref())

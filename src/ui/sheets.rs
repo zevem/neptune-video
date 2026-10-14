@@ -128,6 +128,30 @@ pub(crate) fn sheet(p: &Palette) -> egui::Frame {
         .inner_margin(egui::Margin::same(18))
 }
 
+/// Lays `add` out at the cursor in a column exactly `width` wide, for what
+/// a sheet scrolls.
+///
+/// A scroll area rounds its content's room to device pixels where it is on
+/// the screen, so what fills that room can end a fraction of a pixel past
+/// the area. A sheet is centred on the width it had the frame before: that
+/// fraction moves it, the move turns the rounding the other way, and at a
+/// fractional scale the whole sheet shook by a pixel at every repaint. What
+/// is in the column cannot widen the sheet.
+pub(crate) fn column<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let room = Rect::from_min_size(ui.cursor().min, vec2(width, ui.available_height()));
+    let mut column = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(room)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let inner = add(&mut column);
+    ui.advance_cursor_after_rect(Rect::from_min_size(
+        room.min,
+        vec2(width, column.min_rect().height()),
+    ));
+    inner
+}
+
 /// An on/off control drawn as a switch.
 fn switch(ui: &mut Ui, p: &Palette, on: bool, label: &str) -> bool {
     let (rect, response) = ui.allocate_exact_size(vec2(36.0, 22.0), Sense::click());
