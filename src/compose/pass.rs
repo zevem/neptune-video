@@ -727,6 +727,8 @@ fn most(kind: EffectKind) -> usize {
         EffectKind::Blur | EffectKind::Sharpen | EffectKind::Shadow => 4,
         EffectKind::MotionBlur => 2,
         EffectKind::Stabilize => 0,
+        // Heard, not drawn.
+        kind if kind.is_audio() => 0,
         _ => 1,
     }
 }

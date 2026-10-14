@@ -16,6 +16,7 @@ use super::{
 use crate::{
     compose::{self, Composer, Draw, Job, Placement, Run, lut::Luts},
     icons::{self, Icon},
+    record::{self, RecordView},
     steady::Steadies,
     textures::{Textures, Viewing, Wanted},
     theme::{self, Palette, metrics},
@@ -270,6 +271,8 @@ pub struct ViewerInput<'a> {
     pub speed: f64,
     pub looping: bool,
     pub media: Option<&'a MediaService>,
+    /// The voiceover take, as the record control shows it.
+    pub record: RecordView,
 }
 
 impl ViewerInput<'_> {
@@ -1143,6 +1146,7 @@ pub fn show(
                 trim_number(settings.frame_rate.fps())
             ),
             emit: Transport::timeline,
+            record: Some(input.record),
         },
         actions,
     );
@@ -1476,6 +1480,7 @@ pub fn show_source(
             looping: input.looping,
             detail,
             emit: |transport| Action::Source(transport),
+            record: None,
         },
         actions,
     );
@@ -1494,6 +1499,8 @@ struct Deck<'a> {
     /// Facts about what is playing, at the trailing edge.
     detail: String,
     emit: fn(Transport) -> Action,
+    /// The record control: the timeline's alone has one.
+    record: Option<RecordView>,
 }
 
 /// A layer of the plan with the clip it is of.
@@ -1941,11 +1948,15 @@ struct TransportText {
     duration: f32,
     /// The facts at the trailing edge, with the space after the controls.
     detail: f32,
+    /// The record control before speed; nought on a deck that records
+    /// nothing.
+    record: f32,
 }
 
 /// Where the parts of a transport go in a bar of some width.
 ///
-/// Play and speed are always there and never share a pixel. Everything else
+/// Play and speed are always there and never share a pixel, and so is the
+/// record control just before speed on a deck that has one. Everything else
 /// is shown only where it fits beside them: the timecode, then the frame
 /// steps, then the jumps and the loop toggle, and last the duration and the
 /// facts, which stay away unless the controls keep the centre of the bar.
@@ -1957,6 +1968,7 @@ struct TransportLayout {
     /// The central group, exactly as wide as its controls.
     group: Rect,
     looping: Option<Rect>,
+    record: Option<Rect>,
     speed: Rect,
     detail: bool,
 }
@@ -1965,7 +1977,13 @@ impl TransportLayout {
     fn new(rect: Rect, text: TransportText) -> Self {
         let width = rect.width();
         let timecode = TRANSPORT_LEADING + text.timecode;
-        let speed = TRANSPORT_TRAILING + SPEED.x;
+        let record = if text.record > 0.0 {
+            text.record + CONTROL_GAP
+        } else {
+            0.0
+        };
+        // What always trails: speed, and the record control before it.
+        let speed = TRANSPORT_TRAILING + record + SPEED.x;
         let looping = speed + CONTROL_GAP + metrics::ICON_BUTTON;
         let fits = |controls: Controls, trailing: f32| {
             timecode + GROUP_GAP + controls.width() + GROUP_GAP + trailing <= width
@@ -2015,11 +2033,17 @@ impl TransportLayout {
             pos2(centre, y),
             vec2(controls.width(), metrics::ICON_BUTTON.max(PLAY)),
         );
-        let speed_left = (rect.right() - speed).max(group.right() + GROUP_GAP);
-        let speed = Rect::from_min_size(pos2(speed_left, y - SPEED.y * 0.5), SPEED);
+        let trailing_left = (rect.right() - speed).max(group.right() + GROUP_GAP);
+        let record_rect = (text.record > 0.0).then(|| {
+            Rect::from_min_size(
+                pos2(trailing_left, y - metrics::ICON_BUTTON * 0.5),
+                vec2(text.record, metrics::ICON_BUTTON),
+            )
+        });
+        let speed = Rect::from_min_size(pos2(trailing_left + record, y - SPEED.y * 0.5), SPEED);
         let looping = (controls == Controls::Full).then(|| {
             Rect::from_center_size(
-                pos2(speed.left() - CONTROL_GAP - metrics::ICON_BUTTON * 0.5, y),
+                pos2(trailing_left - CONTROL_GAP - metrics::ICON_BUTTON * 0.5, y),
                 Vec2::splat(metrics::ICON_BUTTON),
             )
         });
@@ -2029,6 +2053,7 @@ impl TransportLayout {
             controls,
             group,
             looping,
+            record: record_rect,
             speed,
             detail,
         }
@@ -2065,6 +2090,11 @@ fn draw_transport(ui: &mut Ui, rect: Rect, input: &Deck, actions: &mut Vec<Actio
             timecode: now.size().x,
             duration: 6.0 + total.size().x,
             detail: detail.size().x + 10.0,
+            record: if input.record.is_some() {
+                metrics::ICON_BUTTON
+            } else {
+                0.0
+            },
         },
     );
 
@@ -2157,38 +2187,53 @@ fn draw_transport(ui: &mut Ui, rect: Rect, input: &Deck, actions: &mut Vec<Actio
         actions.push(emit(Transport::JumpEnd));
     }
 
-    // Loop and speed at the trailing edge, each in a place of its own.
-    let mut trailing = ui.new_child(egui::UiBuilder::new().max_rect(layout.speed));
-    // The control is as wide as the layout made it, whatever it reads.
-    trailing.spacing_mut().button_padding = vec2(4.0, 4.0);
-    let speed_text = format!("{}×", trim_number(input.speed));
-    let speed = trailing.put(
-        layout.speed,
-        egui::Button::new(
-            egui::RichText::new(&speed_text)
-                .font(theme::medium(12.0))
-                .color(p.secondary),
-        )
-        .min_size(SPEED),
-    );
-    speed.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            true,
-            format!("Playback speed, {speed_text}"),
-        )
-    });
-    egui::Popup::menu(&speed).show(|ui| {
-        widgets::menu_style(ui, 120.0);
-        for value in [0.25, 0.5, 1.0, 1.5, 2.0, 4.0] {
-            let icon = (value == input.speed).then_some(Icon::Check);
-            if widgets::menu_item(ui, p, icon, &format!("{}×", trim_number(value)), "").clicked() {
-                actions.push(emit(Transport::SetSpeed(value)));
-                ui.close();
-            }
+    // While a take runs, its stop control, elapsed time and level take the
+    // place of record and speed, which is fixed at 1× until it ends.
+    if let (Some(view), Some(place)) = (input.record, layout.record) {
+        if let RecordView::Recording { elapsed, level } = view {
+            draw_take(ui, p, place.union(layout.speed), elapsed, level, actions);
+        } else {
+            draw_record(ui, p, place, view, actions);
         }
-    });
-    speed.on_hover_text("Playback speed");
+    }
+    let recording = matches!(input.record, Some(RecordView::Recording { .. }));
+
+    // Loop and speed at the trailing edge, each in a place of its own.
+    if !recording {
+        let mut trailing = ui.new_child(egui::UiBuilder::new().max_rect(layout.speed));
+        // The control is as wide as the layout made it, whatever it reads.
+        trailing.spacing_mut().button_padding = vec2(4.0, 4.0);
+        let speed_text = format!("{}×", trim_number(input.speed));
+        let speed = trailing.put(
+            layout.speed,
+            egui::Button::new(
+                egui::RichText::new(&speed_text)
+                    .font(theme::medium(12.0))
+                    .color(p.secondary),
+            )
+            .min_size(SPEED),
+        );
+        speed.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                true,
+                format!("Playback speed, {speed_text}"),
+            )
+        });
+        egui::Popup::menu(&speed).show(|ui| {
+            widgets::menu_style(ui, 120.0);
+            for value in [0.25, 0.5, 1.0, 1.5, 2.0, 4.0] {
+                let icon = (value == input.speed).then_some(Icon::Check);
+                if widgets::menu_item(ui, p, icon, &format!("{}×", trim_number(value)), "")
+                    .clicked()
+                {
+                    actions.push(emit(Transport::SetSpeed(value)));
+                    ui.close();
+                }
+            }
+        });
+        speed.on_hover_text("Playback speed");
+    }
     if let Some(rect) = layout.looping {
         let mut looping = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         if widgets::icon_toggle(
@@ -2213,6 +2258,94 @@ fn draw_transport(ui: &mut Ui, rect: Rect, input: &Deck, actions: &mut Vec<Actio
             detail,
             p.muted,
         );
+    }
+}
+
+/// The record control at rest, starting or closing a take: a red disc that
+/// asks for a take, and gives up one that is starting.
+fn draw_record(ui: &mut Ui, p: &Palette, place: Rect, view: RecordView, actions: &mut Vec<Action>) {
+    let mut control = ui.new_child(egui::UiBuilder::new().max_rect(place));
+    let (label, tint, enabled) = match view {
+        RecordView::Starting => (
+            format!("Starting to record; press to give up ({})", shortcut("R")),
+            p.red.gamma_multiply(0.5),
+            true,
+        ),
+        RecordView::Stopping => ("Closing the take…".to_owned(), p.muted, false),
+        _ => (format!("Record voiceover ({})", shortcut("R")), p.red, true),
+    };
+    control.add_enabled_ui(enabled, |ui| {
+        let pressed =
+            widgets::icon_button_tinted(ui, p, Icon::Record, &label, Some(tint)).clicked();
+        if pressed {
+            actions.push(match view {
+                RecordView::Idle => Action::Record,
+                _ => Action::StopRecord,
+            });
+        }
+    });
+}
+
+/// A take that runs: a stop control where record was, and in speed's place
+/// how long the take is with a small bar of its level. One press anywhere on
+/// it ends the take.
+fn draw_take(
+    ui: &mut Ui,
+    p: &Palette,
+    place: Rect,
+    elapsed: Time,
+    level: f32,
+    actions: &mut Vec<Action>,
+) {
+    let text = record::elapsed_text(elapsed);
+    let label = format!("Stop recording, {text} recorded ({})", shortcut("R"));
+    let response = ui.interact(place, ui.id().with("take"), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    let painter = ui.painter_at(place.expand(2.0));
+    let radius = CornerRadius::same(metrics::CONTROL_RADIUS);
+    let fill = if response.hovered() { 0.22 } else { 0.14 };
+    painter.rect_filled(place, radius, theme::tint(p.red, fill));
+    if response.has_focus() {
+        painter.rect_stroke(
+            place,
+            radius,
+            Stroke::new(1.5, p.accent),
+            StrokeKind::Inside,
+        );
+    }
+    let stop = Rect::from_center_size(
+        pos2(place.left() + metrics::ICON_BUTTON * 0.5, place.center().y),
+        Vec2::splat(metrics::ICON),
+    );
+    icons::paint(&painter, stop, Icon::Stop, p.red);
+    // The time and the bar share what is left, centred in it.
+    let rest = Rect::from_min_max(
+        pos2(place.left() + metrics::ICON_BUTTON, place.top()),
+        place.max,
+    );
+    let time = painter.layout_no_wrap(text, theme::mono(12.0), p.fg);
+    painter.galley(
+        pos2(
+            rest.center().x - time.size().x * 0.5,
+            rest.center().y - 2.5 - time.size().y * 0.5,
+        ),
+        time,
+        p.fg,
+    );
+    let bar = Rect::from_center_size(
+        pos2(rest.center().x, rest.center().y + 8.0),
+        vec2(30.0, 3.0),
+    );
+    painter.rect_filled(bar, CornerRadius::same(1), theme::tint(p.fg, 0.14));
+    let fill = record::level_fill(level);
+    if fill > 0.0 {
+        let lit = Rect::from_min_size(bar.min, vec2(bar.width() * fill, bar.height()));
+        // Within 1 dB of full scale the take is clipping.
+        let ink = if fill >= 59.0 / 60.0 { p.red } else { p.green };
+        painter.rect_filled(lit, CornerRadius::same(1), ink);
+    }
+    if response.on_hover_text(label).clicked() {
+        actions.push(Action::StopRecord);
     }
 }
 
@@ -2266,6 +2399,7 @@ mod tests {
             speed: 1.0,
             looping: false,
             media: None,
+            record: Default::default(),
         };
         assert_eq!(input.active_clips().count(), 1);
     }
@@ -2277,20 +2411,50 @@ mod tests {
         timecode: 84.0,
         duration: 104.0,
         detail: 130.0,
+        record: 0.0,
+    };
+    /// The timeline's, with its record control.
+    const RECORDING: TransportText = TransportText {
+        record: metrics::ICON_BUTTON,
+        ..TEXT
     };
 
     fn bar(width: f32) -> (Rect, TransportLayout) {
+        bar_of(width, TEXT)
+    }
+
+    fn bar_of(width: f32, text: TransportText) -> (Rect, TransportLayout) {
         let rect = Rect::from_min_size(pos2(380.0, 500.0), vec2(width, TRANSPORT));
-        (rect, TransportLayout::new(rect, TEXT))
+        (rect, TransportLayout::new(rect, text))
     }
 
     #[test]
     fn a_transport_of_any_width_keeps_its_parts_apart() {
+        for text in [TEXT, RECORDING] {
+            parts_apart(text);
+        }
+    }
+
+    fn parts_apart(text: TransportText) {
         let slack = 0.01;
         let mut narrower = (Controls::Play, false, false, false);
         for width in 60u16..=1400 {
-            let (rect, layout) = bar(f32::from(width));
+            let (rect, layout) = bar_of(f32::from(width), text);
             let (group, speed) = (layout.group, layout.speed);
+            assert_eq!(layout.record.is_some(), text.record > 0.0);
+            // What always trails starts at the record control, when there
+            // is one, which keeps its gap to speed and the bar's height.
+            let trailing = layout.record.map_or(speed.left(), |record| {
+                assert!(
+                    speed.left() - record.right() >= CONTROL_GAP - slack,
+                    "{width}: record and speed touch"
+                );
+                assert!(
+                    record.top() >= rect.top() && record.bottom() <= rect.bottom(),
+                    "{width}: record is not within the bar's height"
+                );
+                record.left()
+            });
             assert!(
                 group.contains_rect(layout.play()),
                 "{width}: play is outside its group"
@@ -2299,10 +2463,10 @@ mod tests {
                 group.left() >= rect.left() + TRANSPORT_TRAILING - slack,
                 "{width}: the controls leave the bar at its leading edge"
             );
-            let before_speed = layout.looping.map_or(speed.left(), |looping| {
+            let before_speed = layout.looping.map_or(trailing, |looping| {
                 assert!(
-                    speed.left() - looping.right() >= CONTROL_GAP - slack,
-                    "{width}: loop and speed touch"
+                    trailing - looping.right() >= CONTROL_GAP - slack,
+                    "{width}: loop and what trails it touch"
                 );
                 looping.left()
             });
@@ -2310,9 +2474,16 @@ mod tests {
                 before_speed - group.right() >= GROUP_GAP - slack,
                 "{width}: the controls and what trails them touch"
             );
-            // Play, the gaps and speed need this much; anything wider
-            // holds all of both.
-            if f32::from(width) >= 2.0 * TRANSPORT_TRAILING + PLAY + 2.0 * GROUP_GAP + SPEED.x {
+            // Play, the gaps, record and speed need this much; anything
+            // wider holds all of them.
+            let record = if text.record > 0.0 {
+                text.record + CONTROL_GAP
+            } else {
+                0.0
+            };
+            if f32::from(width)
+                >= 2.0 * TRANSPORT_TRAILING + PLAY + 2.0 * GROUP_GAP + record + SPEED.x
+            {
                 assert!(
                     speed.right() <= rect.right() - TRANSPORT_TRAILING + slack,
                     "{width}: speed leaves the bar"
@@ -2323,18 +2494,18 @@ mod tests {
                 "{width}: speed is not within the bar's height"
             );
             if layout.timecode {
-                let mut text = rect.left() + TRANSPORT_LEADING + TEXT.timecode;
+                let mut leading = rect.left() + TRANSPORT_LEADING + text.timecode;
                 if layout.duration {
-                    text += TEXT.duration;
+                    leading += text.duration;
                 }
                 assert!(
-                    group.left() - text >= GROUP_GAP - slack,
+                    group.left() - leading >= GROUP_GAP - slack,
                     "{width}: the timecode and the controls touch"
                 );
             }
             if layout.detail {
                 assert!(
-                    before_speed - TEXT.detail - group.right() >= GROUP_GAP - slack,
+                    before_speed - text.detail - group.right() >= GROUP_GAP - slack,
                     "{width}: the controls and the facts touch"
                 );
             }
@@ -2379,6 +2550,20 @@ mod tests {
         let (rect, layout) = bar(1000.0);
         assert!(layout.duration && layout.detail);
         assert_eq!(layout.group.center().x, rect.center().x);
+    }
+
+    #[test]
+    fn the_timeline_keeps_record_just_before_speed_in_its_narrowest_pane() {
+        let (rect, layout) = bar_of(168.0, RECORDING);
+        let Some(record) = layout.record else {
+            panic!("no record control in the narrowest pane");
+        };
+        assert_eq!(layout.speed.right(), rect.right() - TRANSPORT_TRAILING);
+        assert_eq!(record.right() + CONTROL_GAP, layout.speed.left());
+        assert!(record.left() - layout.group.right() >= GROUP_GAP);
+        // A deck that records nothing lays out as it did.
+        assert_eq!(bar(168.0).1.speed, layout.speed);
+        assert_eq!(bar(168.0).1.record, None);
     }
 
     #[test]

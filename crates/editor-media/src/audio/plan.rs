@@ -1,69 +1,18 @@
 //! Sample-aligned admission before decoder I/O. Scratch belongs to one mixer.
-use super::{
-    AssetId, BTreeSet, CHUNK_FRAMES, ClipContent, ClipId, MAX_VOICES, MediaError, MediaKind,
-    Project, Time, TrackKind, VecDeque,
-};
-use editor_core::{Clip, Ease, ParamKey, TimeKey};
-
-/// Whether keyframes drive the clip's gain, so its stored gain is only a base.
-pub(super) fn gain_animated(clip: &Clip) -> bool {
-    clip.animation
-        .iter()
-        .any(|track| track.target.is_none() && track.key == ParamKey::Gain)
-}
-
-// The speed of a straight forward segment of a time map, which is all of one
-// a sequential decoder can play.
-fn straight(from: &TimeKey, to: &TimeKey) -> Option<f64> {
-    let speed = (to.source.0 - from.source.0) as f64 / (to.at.0 - from.at.0) as f64;
-    (from.ease == Ease::Linear && speed > 0.0).then_some(speed)
-}
-
-/// The source speed one sequential decoder can hold at `position`. A time map
-/// is audible only on its straight forward segments: a freeze, a reverse and a
-/// ramp are silent.
-pub(super) fn steady_speed(clip: &Clip, position: Time) -> Option<f64> {
-    let Some(retime) = &clip.retime else {
-        return Some(clip.playback_rate);
-    };
-    let local = position - clip.start;
-    let index = retime
-        .keys
-        .partition_point(|key| key.at <= local)
-        .checked_sub(1)?;
-    straight(retime.keys.get(index)?, retime.keys.get(index + 1)?)
-}
-
-/// The next stretch of timeline one decoder plays `clip` over, looking from
-/// segment `from` of its time map, and the segment to look from after it. A
-/// clip without a map is one stretch. A map gives one for each run of
-/// straight forward segments at one speed, so a freeze, a reverse or a ramp
-/// is silent from the sample it starts on, and the decoder after it starts at
-/// that segment's own source position.
-fn audible_run(clip: &Clip, from: usize) -> Option<(Time, Time, usize)> {
-    let Some(retime) = &clip.retime else {
-        return (from == 0).then(|| (clip.start, clip.end(), 1));
-    };
-    let speed_of = |index: usize| straight(retime.keys.get(index)?, retime.keys.get(index + 1)?);
-    let segments = retime.keys.len().saturating_sub(1);
-    let first = (from..segments).find(|index| speed_of(*index).is_some())?;
-    let speed = speed_of(first);
-    let after = (first + 1..segments)
-        .find(|index| speed_of(*index) != speed)
-        .unwrap_or(segments);
-    Some((
-        clip.start + retime.keys[first].at,
-        clip.start + retime.keys[after].at,
-        after,
-    ))
-}
+use super::{CHUNK_FRAMES, ClipId, MAX_VOICES, MediaError, Project, Time, VecDeque};
+use editor_core::sound::{self, Sounding};
 
 const MAX_INTERVALS: usize = MAX_VOICES * CHUNK_FRAMES;
 
-pub(super) fn voice_limit() -> MediaError {
-    MediaError::Invalid(
-        "Preview audio supports at most 16 simultaneous audible clips; mute extra tracks".into(),
-    )
+/// The refusal names how many clips sound at once and where, to the second.
+pub(super) fn voice_limit(audible: usize, at: Time) -> MediaError {
+    let seconds = at.0.max(0) / 1_000_000;
+    MediaError::Invalid(format!(
+        "Preview audio supports at most {MAX_VOICES} simultaneous audible clips ({audible} at {:02}:{:02}:{:02}); mute or solo tracks",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    ))
 }
 
 #[derive(Clone, Copy)]
@@ -109,7 +58,7 @@ impl Plan {
     pub fn prepare(
         &mut self,
         project: &Project,
-        audio_owners: &BTreeSet<(AssetId, [u8; 16])>,
+        sounding: &Sounding,
         window: Window,
     ) -> Result<(), MediaError> {
         self.intervals.clear();
@@ -127,36 +76,19 @@ impl Plan {
         let end = window.start
             + Time::from_seconds(window.frames as f64 / f64::from(window.rate) * window.speed);
         let interval_limit = MAX_VOICES * window.frames;
+        let mut crowded = false;
         for (track_index, track) in project.tracks.iter().enumerate() {
-            if track.muted {
-                continue;
-            }
             for (clip_index, clip) in track.clips.iter().enumerate() {
                 // Validated tracks are start-sorted; future clips cannot overlap.
                 if clip.start >= end {
                     break;
                 }
-                if (clip.gain == 0.0 && !gain_animated(clip)) || clip.end() <= window.start {
-                    continue;
-                }
-                let ClipContent::Media { asset_id } = &clip.content else {
-                    continue;
-                };
-                if track.kind == TrackKind::Video
-                    && clip
-                        .linked_id
-                        .is_some_and(|link| audio_owners.contains(&(*asset_id, link.into_bytes())))
-                {
-                    continue;
-                }
-                let Some(asset) = project.assets.get(asset_id) else {
-                    continue;
-                };
-                if !asset.has_audio && asset.kind != MediaKind::Audio {
+                // The core decides what sounds; nothing here adds to it.
+                if clip.end() <= window.start || !sounding.sounds(project, track, clip) {
                     continue;
                 }
                 let mut segment = 0;
-                while let Some((from, to, after)) = audible_run(clip, segment) {
+                while let Some((from, to, after)) = sound::audible_run(clip, segment) {
                     segment = after;
                     // Runs are in timeline order; a later one is past the window too.
                     if from >= end {
@@ -177,10 +109,14 @@ impl Plan {
                         continue;
                     }
                     // Every interval owns at least one sample. More than 16*frames
-                    // intervals must exceed peak 16 somewhere, so reject before
-                    // growing scratch or touching a source. Counters stay <=16384.
-                    if self.intervals.len() == interval_limit {
-                        return Err(voice_limit());
+                    // intervals must exceed peak 16 somewhere, so none is kept
+                    // past that count: scratch stops growing and no source is
+                    // touched, and counting goes on only to name where.
+                    self.changes[first] += 1;
+                    self.changes[last] -= 1;
+                    if crowded || self.intervals.len() == interval_limit {
+                        crowded = true;
+                        continue;
                     }
                     if self.intervals.len() == self.intervals.capacity() {
                         let capacity =
@@ -193,8 +129,6 @@ impl Plan {
                                 )
                             })?;
                     }
-                    self.changes[first] += 1;
-                    self.changes[last] -= 1;
                     self.intervals.push_back(Interval {
                         track: track_index,
                         clip: clip_index,
@@ -205,11 +139,18 @@ impl Plan {
             }
         }
         let mut audible = 0;
-        for change in &self.changes[..window.frames] {
+        for (frame, change) in self.changes[..window.frames].iter().enumerate() {
             audible += change;
             if audible > MAX_VOICES as i32 {
-                return Err(voice_limit());
+                return Err(voice_limit(
+                    audible as usize,
+                    window.start
+                        + Time::from_seconds(frame as f64 / f64::from(window.rate) * window.speed),
+                ));
             }
+        }
+        if crowded {
+            return Err(voice_limit(MAX_VOICES + 1, window.start));
         }
         self.intervals
             .make_contiguous()
@@ -221,8 +162,14 @@ impl Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use editor_core::{Asset, Clip, Track};
+    use editor_core::{
+        Asset, Clip, Ease, MediaKind, ParamKey, Track, TrackKind, sound::steady_speed,
+    };
     use std::{path::PathBuf, sync::Arc};
+
+    fn prepare(plan: &mut Plan, project: &Project, window: Window) -> Result<(), MediaError> {
+        plan.prepare(project, &Sounding::of(project), window)
+    }
 
     fn project_with_intervals(intervals: &[(usize, usize)]) -> Project {
         let asset = Asset::new(
@@ -278,7 +225,7 @@ mod tests {
             let accepted = expected.iter().all(|&count| count <= MAX_VOICES);
             let mut project = project_with_intervals(&intervals);
             for _ in 0..2 {
-                let result = plan.prepare(&project, &BTreeSet::new(), window(8));
+                let result = prepare(&mut plan, &project, window(8));
                 assert_eq!(result.is_ok(), accepted);
                 if accepted {
                     let actual: Vec<_> = (0..8)
@@ -301,7 +248,7 @@ mod tests {
         let clip = &mut Arc::make_mut(&mut project.tracks[0]).clips[0];
         clip.gain = 0.0;
         let mut plan = Plan::default();
-        plan.prepare(&project, &BTreeSet::new(), window(8)).unwrap();
+        prepare(&mut plan, &project, window(8)).unwrap();
         assert_eq!(plan.intervals().count(), 0);
 
         let clip = &mut Arc::make_mut(&mut project.tracks[0]).clips[0];
@@ -315,8 +262,52 @@ mod tests {
             }],
         });
         project.validate().unwrap();
-        plan.prepare(&project, &BTreeSet::new(), window(8)).unwrap();
+        prepare(&mut plan, &project, window(8)).unwrap();
         assert_eq!(plan.intervals().count(), 1);
+    }
+
+    #[test]
+    fn a_detached_pair_is_planned_as_its_audio_clip_alone() {
+        // A video with sound on the video track, and the same span of it on
+        // the audio track, as Detach audio leaves them once linked.
+        let mut asset = Asset::new(
+            PathBuf::from("owned-planner-fixture.mp4"),
+            MediaKind::Video,
+            Time(1_000_000),
+        );
+        asset.has_audio = true;
+        let mut project = Project::new("Detached audio fixture");
+        Arc::make_mut(&mut project.assets).insert(asset.id, asset.clone());
+        let mut picture = Clip::from_asset(&asset, Time::ZERO);
+        picture.duration = Time(8_000);
+        let mut sound = picture.clone();
+        sound.id = uuid::Uuid::new_v4();
+        let (picture_id, sound_id) = (picture.id, sound.id);
+        Arc::make_mut(&mut project.tracks[0]).clips.push(picture);
+        Arc::make_mut(&mut project.tracks[1]).clips.push(sound);
+        project.validate().unwrap();
+        let planned = |project: &Project| -> Vec<ClipId> {
+            let mut plan = Plan::default();
+            prepare(&mut plan, project, window(8)).unwrap();
+            plan.intervals()
+                .map(|interval| interval.id(project))
+                .collect()
+        };
+        // Not linked, each is a voice of its own.
+        let mut both = planned(&project);
+        both.sort_unstable();
+        let mut expected = vec![picture_id, sound_id];
+        expected.sort_unstable();
+        assert_eq!(both, expected);
+
+        let link = Some(uuid::Uuid::new_v4());
+        Arc::make_mut(&mut project.tracks[0]).clips[0].linked_id = link;
+        Arc::make_mut(&mut project.tracks[1]).clips[0].linked_id = link;
+        project.validate().unwrap();
+        assert_eq!(planned(&project), [sound_id]);
+        // Muting the audio track does not give the picture its sound back.
+        Arc::make_mut(&mut project.tracks[1]).muted = true;
+        assert!(planned(&project).is_empty());
     }
 
     #[test]
@@ -441,7 +432,7 @@ mod tests {
                         clip.start <= at && at < clip.end() && steady_speed(clip, at).is_some()
                     })
                     .collect();
-                plan.prepare(&project, &BTreeSet::new(), window).unwrap();
+                prepare(&mut plan, &project, window).unwrap();
                 let actual: Vec<_> = (0..window.frames)
                     .map(|frame| {
                         plan.intervals()
@@ -488,21 +479,92 @@ mod tests {
         let mut intervals = vec![(0, 4); MAX_VOICES];
         intervals.extend([(4, 8); MAX_VOICES]);
         let mut plan = Plan::default();
-        plan.prepare(
-            &project_with_intervals(&intervals),
-            &BTreeSet::new(),
-            window(8),
-        )
-        .unwrap();
+        prepare(&mut plan, &project_with_intervals(&intervals), window(8)).unwrap();
         intervals.push((3, 4));
         assert!(matches!(
-            plan.prepare(
-                &project_with_intervals(&intervals),
-                &BTreeSet::new(),
-                window(8)
-            ),
+            prepare(&mut plan, &project_with_intervals(&intervals), window(8)),
             Err(MediaError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn the_voice_limit_names_how_many_clips_sound_and_when() {
+        let refusal = |project: &Project, window: Window| {
+            let mut plan = Plan::default();
+            match prepare(&mut plan, project, window) {
+                Err(MediaError::Invalid(message)) => message,
+                other => panic!("expected the voice limit, got {other:?}"),
+            }
+        };
+        // Sixteen clips from 72.000 s and two more from 72.003 s.
+        let mut intervals = vec![(72_000, 72_008); MAX_VOICES];
+        intervals.extend([(72_003, 72_004); 2]);
+        let project = project_with_intervals(&intervals);
+        let from = |start: i64| Window {
+            start: Time(start),
+            ..window(8)
+        };
+        assert_eq!(
+            refusal(&project, from(72_000_000)),
+            "Preview audio supports at most 16 simultaneous audible clips (18 at 00:01:12); mute or solo tracks"
+        );
+        // The time is the first crowded sample's, not the window's start.
+        assert_eq!(
+            refusal(&project, from(71_998_000)),
+            "Preview audio supports at most 16 simultaneous audible clips (18 at 00:01:12); mute or solo tracks"
+        );
+        let hour = project_with_intervals(&[(3_723_000, 3_723_008); MAX_VOICES + 1]);
+        assert_eq!(
+            refusal(&hour, from(3_723_000_000)),
+            "Preview audio supports at most 16 simultaneous audible clips (17 at 01:02:03); mute or solo tracks"
+        );
+        // More intervals than the scratch keeps are still counted where they sound.
+        assert_eq!(
+            refusal(
+                &project_with_intervals(&[(0, 1); MAX_VOICES + 4]),
+                window(1)
+            ),
+            "Preview audio supports at most 16 simultaneous audible clips (20 at 00:00:00); mute or solo tracks"
+        );
+    }
+
+    #[test]
+    fn a_track_soloed_out_or_at_volume_zero_is_not_planned() {
+        let mut project = project_with_intervals(&[(0, 8), (0, 8), (0, 8)]);
+        let ids: Vec<_> = project
+            .tracks
+            .iter()
+            .map(|track| track.clips[0].id)
+            .collect();
+        let planned = |project: &Project| -> Vec<ClipId> {
+            project.validate().unwrap();
+            let mut plan = Plan::default();
+            prepare(&mut plan, project, window(8)).unwrap();
+            let mut planned: Vec<_> = plan
+                .intervals()
+                .map(|interval| interval.id(project))
+                .collect();
+            planned.sort_unstable_by_key(|id| ids.iter().position(|other| other == id));
+            planned
+        };
+        assert_eq!(planned(&project), ids);
+        Arc::make_mut(&mut project.tracks[2]).gain = 0.0;
+        assert_eq!(planned(&project), ids[..2]);
+        Arc::make_mut(&mut project.tracks[1]).solo = true;
+        assert_eq!(planned(&project), [ids[1]]);
+        // A soloed track at volume 0 is silent and still solos the others out.
+        Arc::make_mut(&mut project.tracks[2]).solo = true;
+        assert_eq!(planned(&project), [ids[1]]);
+        // Mute wins over solo, so more than sixteen tracks fit once soloed down.
+        Arc::make_mut(&mut project.tracks[1]).muted = true;
+        assert!(planned(&project).is_empty());
+
+        let mut crowded = project_with_intervals(&[(0, 8); MAX_VOICES + 1]);
+        let mut plan = Plan::default();
+        assert!(prepare(&mut plan, &crowded, window(8)).is_err());
+        Arc::make_mut(&mut crowded.tracks[0]).solo = true;
+        prepare(&mut plan, &crowded, window(8)).unwrap();
+        assert_eq!(plan.intervals().count(), 1);
     }
 
     #[test]
@@ -512,29 +574,21 @@ mod tests {
             .collect();
         let project = project_with_intervals(&intervals);
         let mut plan = Plan::default();
-        plan.prepare(&project, &BTreeSet::new(), window(CHUNK_FRAMES))
-            .unwrap();
+        prepare(&mut plan, &project, window(CHUNK_FRAMES)).unwrap();
         assert_eq!(plan.intervals.len(), MAX_INTERVALS);
         assert!(plan.intervals.capacity() <= MAX_INTERVALS);
         let scratch = plan.intervals.as_slices().0.as_ptr();
         let capacity = plan.intervals.capacity();
-        plan.prepare(&project, &BTreeSet::new(), window(CHUNK_FRAMES))
-            .unwrap();
+        prepare(&mut plan, &project, window(CHUNK_FRAMES)).unwrap();
         assert_eq!(plan.intervals.capacity(), capacity);
         assert_eq!(plan.intervals.as_slices().0.as_ptr(), scratch);
 
         let overloaded = project_with_intervals(&[(0, 1); MAX_VOICES + 1]);
-        assert!(
-            plan.prepare(&overloaded, &BTreeSet::new(), window(1))
-                .is_err()
-        );
+        assert!(prepare(&mut plan, &overloaded, window(1)).is_err());
         assert_eq!(plan.intervals.len(), MAX_VOICES);
         assert!(plan.intervals.capacity() <= MAX_INTERVALS);
-        assert!(plan.prepare(&project, &BTreeSet::new(), window(0)).is_err());
-        assert!(
-            plan.prepare(&project, &BTreeSet::new(), window(CHUNK_FRAMES + 1))
-                .is_err()
-        );
+        assert!(prepare(&mut plan, &project, window(0)).is_err());
+        assert!(prepare(&mut plan, &project, window(CHUNK_FRAMES + 1)).is_err());
     }
 
     #[test]
@@ -547,7 +601,7 @@ mod tests {
         }
         project.validate().unwrap();
         let mut plan = Plan::default();
-        plan.prepare(&project, &BTreeSet::new(), window(4)).unwrap();
+        prepare(&mut plan, &project, window(4)).unwrap();
         assert_eq!(plan.intervals().count(), 0);
     }
 
@@ -570,9 +624,9 @@ mod tests {
                 let first = sample_at(offset);
                 let last = sample_at(offset + 1000).min(CHUNK_FRAMES);
                 let mut plan = Plan::default();
-                plan.prepare(
+                prepare(
+                    &mut plan,
                     &project,
-                    &BTreeSet::new(),
                     Window {
                         start: Time(5_000_000),
                         frames: CHUNK_FRAMES,

@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const PREFIX: &str = "{\"aster_clips\":";
-/// Written as 2 since clips carry looks, motion and time maps, so a build that
-/// would strip them does not take the text for clips. Version 1 text is read.
-const VERSION: u32 = 2;
+/// Written as 2 since clips carry looks, motion and time maps, and as 3 since
+/// they carry fades, so a build that would strip them does not take the text
+/// for clips. Version 1 and 2 text is read.
+const VERSION: u32 = 3;
 /// Longer text is not looked at: no copy of clips comes near it.
 const LIMIT: usize = 8 * 1024 * 1024;
 
@@ -155,6 +156,81 @@ mod tests {
     }
 
     #[test]
+    fn copied_fades_survive_the_system_clipboard() {
+        let song = Asset::new(
+            std::path::PathBuf::from("/media/song.wav"),
+            editor_core::MediaKind::Audio,
+            Time::from_seconds(30.0),
+        );
+        let mut clip = Clip::from_asset(&song, Time::from_seconds(2.0));
+        clip.fade_in = Time::from_seconds(0.5);
+        clip.fade_out = Time::from_seconds(2.0);
+        let mut clipboard = copied();
+        clipboard.clips.push(ClipboardClip {
+            track_index: 1,
+            track_kind: TrackKind::Audio,
+            clip: clip.clone(),
+        });
+        let text = encode(&clipboard).expect("clips encode");
+        let back = decode(&text).expect("clips decode");
+        assert_eq!(back.clips.len(), 2);
+        assert_eq!(back.clips[0].clip, clipboard.clips[0].clip);
+        assert_eq!(back.clips[1].track_kind, TrackKind::Audio);
+        assert_eq!(back.clips[1].clip, clip);
+        assert_eq!(back.clips[1].clip.fade_in, Time::from_seconds(0.5));
+        assert_eq!(back.clips[1].clip.fade_out, Time::from_seconds(2.0));
+    }
+
+    #[test]
+    fn a_copied_audio_effect_survives_the_system_clipboard() {
+        use editor_core::{Effect, EffectKind, ParamKey, ParamValue};
+        let song = Asset::new(
+            std::path::PathBuf::from("/media/song.wav"),
+            editor_core::MediaKind::Audio,
+            Time::from_seconds(30.0),
+        );
+        let mut clip = Clip::from_asset(&song, Time::from_seconds(2.0));
+        let mut band = Effect::new(EffectKind::EqBand);
+        band.params = vec![
+            ParamValue {
+                key: ParamKey::Frequency,
+                value: 3_500.0,
+            },
+            ParamValue {
+                key: ParamKey::Gain,
+                value: 3.0,
+            },
+        ];
+        let mut off = Effect::new(EffectKind::Denoise);
+        off.enabled = false;
+        clip.effects = vec![Effect::new(EffectKind::HighPass), band, off];
+        let mut clipboard = copied();
+        clipboard.clips.push(ClipboardClip {
+            track_index: 1,
+            track_kind: TrackKind::Audio,
+            clip: clip.clone(),
+        });
+        let text = encode(&clipboard).expect("clips encode");
+        assert!(text.contains(r#""kind":"eq_band""#), "{text}");
+        let back = decode(&text).expect("clips decode");
+        assert_eq!(back.clips[1].track_kind, TrackKind::Audio);
+        assert_eq!(back.clips[1].clip.effects, clip.effects);
+        assert_eq!(back.clips[1].clip, clip);
+        // Neither plays nor reads media the library lacks.
+        let library: BTreeMap<AssetId, Asset> = [(song.id, song)].into();
+        assert!(!lacks_media(&back, &library));
+
+        // Pasted into a project that has the song, the clip is as it was copied.
+        let mut project = editor_core::Project::new("Paste");
+        std::sync::Arc::make_mut(&mut project.assets).extend(library);
+        let mut editor = editor_core::Editor::new(project).unwrap();
+        editor.paste(&back, Time::from_seconds(2.0), None).unwrap();
+        let pasted = &editor.project().tracks[1].clips[0];
+        assert_eq!(pasted.effects.len(), 3);
+        assert_eq!(pasted.effects[1].param(ParamKey::Frequency), Some(3_500.0));
+    }
+
+    #[test]
     fn a_copied_time_map_plays_the_same_source_when_pasted() {
         use editor_core::Ease::{Bezier, Linear};
         let ramp = Bezier {
@@ -198,16 +274,20 @@ mod tests {
     #[test]
     fn older_text_is_read_and_newer_text_is_left_alone() {
         let text = encode(&copied()).expect("clips encode");
-        assert!(text.starts_with("{\"aster_clips\":2,"));
-        let older = text.replacen("\"aster_clips\":2", "\"aster_clips\":1", 1);
-        assert_eq!(decode(&older).expect("version 1").clips.len(), 1);
-        for version in [0, 3] {
-            let other = text.replacen(
-                "\"aster_clips\":2",
+        assert!(text.starts_with("{\"aster_clips\":3,"));
+        let as_version = |version: u32| {
+            text.replacen(
+                "\"aster_clips\":3",
                 &format!("\"aster_clips\":{version}"),
                 1,
-            );
-            assert!(decode(&other).is_none());
+            )
+        };
+        for version in [1, 2] {
+            let older = decode(&as_version(version)).expect("an older version");
+            assert_eq!(older.clips.len(), 1);
+        }
+        for version in [0, 4] {
+            assert!(decode(&as_version(version)).is_none());
         }
     }
 
@@ -217,6 +297,7 @@ mod tests {
         assert!(decode("{\"type\":\"rename_project\",\"name\":\"Film\"}").is_none());
         assert!(decode("{\"aster_clips\":1,\"origin\":0,\"clips\":[]}").is_none());
         assert!(decode("{\"aster_clips\":2,\"origin\":0,\"clips\":[]}").is_none());
+        assert!(decode("{\"aster_clips\":3,\"origin\":0,\"clips\":[]}").is_none());
         assert!(decode("{\"aster_clips\":").is_none());
     }
 }

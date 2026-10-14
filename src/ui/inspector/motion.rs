@@ -71,7 +71,7 @@ fn shown_until(clip: &Clip, playhead: Time) -> Time {
         .fold(clip.source_time(playhead), Time::max)
 }
 
-fn note(ui: &mut Ui, p: &theme::Palette, text: &str) {
+pub(super) fn note(ui: &mut Ui, p: &theme::Palette, text: &str) {
     ui.add(
         egui::Label::new(
             egui::RichText::new(text)
@@ -84,7 +84,7 @@ fn note(ui: &mut Ui, p: &theme::Palette, text: &str) {
 
 /// How far something the analysis worker does has got: what it is, a
 /// figure, and a bar named `name` for those who do not see it.
-fn bar(ui: &mut Ui, p: &theme::Palette, title: &str, name: &str, done: f32) {
+pub(super) fn bar(ui: &mut Ui, p: &theme::Palette, title: &str, name: &str, done: f32) {
     let done = done.clamp(0.0, 1.0);
     let percent = (done * 100.0).round() as i32;
     row(ui, p, title, |ui| {

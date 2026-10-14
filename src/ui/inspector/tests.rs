@@ -97,6 +97,13 @@ struct Bench {
     /// The videos it asked to have analysed for stabilization.
     analyses: Vec<editor_core::AssetId>,
     cancels: usize,
+    /// The clips it asked to have measured and normalized, by request.
+    normalized: Vec<Vec<ClipId>>,
+    /// The clips it asked to have ducked, and how deep, by request.
+    ducked: Vec<(Vec<ClipId>, f32)>,
+    /// The audio kinds the session's FFmpeg is said not to run; `None`
+    /// while its probe has not finished.
+    missing: Option<Vec<EffectKind>>,
 }
 
 impl Bench {
@@ -146,6 +153,9 @@ impl Bench {
             tracks: Vec::new(),
             analyses: Vec::new(),
             cancels: 0,
+            normalized: Vec::new(),
+            ducked: Vec::new(),
+            missing: None,
         }
     }
 
@@ -235,6 +245,7 @@ impl Bench {
                     textures: &self.textures,
                     playhead: self.playhead,
                     transition: None,
+                    missing: self.missing.as_deref(),
                 },
                 &mut actions,
             );
@@ -282,6 +293,9 @@ impl Bench {
                 Action::AddTracked => self.said.push("add tracked".to_owned()),
                 Action::Stabilize(asset) => self.analyses.push(asset),
                 Action::CancelStabilize => self.cancels += 1,
+                Action::Normalize(clips) => self.normalized.push(clips),
+                Action::Duck { clips, depth } => self.ducked.push((clips, depth)),
+                Action::CancelDuck => self.cancels += 1,
                 other => panic!("FIXTURE: the inspector asked for {other:?}"),
             }
         }
@@ -1066,6 +1080,7 @@ fn a_keyframe_is_made_for_the_clip_and_playhead_of_the_click() {
                 textures: &bench.textures,
                 playhead: bench.playhead,
                 transition: None,
+                missing: None,
             },
             &mut actions,
         );
@@ -1315,10 +1330,372 @@ fn a_title_and_a_sound_are_offered_only_what_the_project_accepts() {
     assert!(bench.refused.is_empty());
 
     let project = bench.editor.project();
-    for (id, expected) in [(title, 2), (voice, 0)] {
+    for (id, expected) in [
+        (title, [Section::Video, Section::Motion].as_slice()),
+        (voice, &[Section::Audio]),
+    ] {
         let (track, clip) = project.clip(id).expect("the clip exists");
-        assert_eq!(sections(track, clip).len(), expected);
+        assert_eq!(sections(track, clip), expected);
     }
+}
+
+#[test]
+fn a_sound_shows_the_audio_effects_an_agent_wrote_and_the_card_leaves_them() {
+    let mut bench = Bench::empty();
+    let sound = media("voice.wav", MediaKind::Audio);
+    bench.edit(Command::AddAssets {
+        assets: vec![sound.clone()],
+    });
+    let voice = bench.add(TrackKind::Audio, {
+        let mut clip = Clip::from_asset(&sound, Time::ZERO);
+        clip.duration = seconds(3.0);
+        clip
+    });
+    // As a serialized command writes them, one of each kind.
+    let stack: Vec<Effect> = (EffectKind::ALL.into_iter())
+        .filter(|kind| kind.is_audio())
+        .map(Effect::new)
+        .collect();
+    bench.edit(Command::SetEffects {
+        clip_id: voice,
+        effects: stack.clone(),
+    });
+    bench.playhead = seconds(1.0);
+    bench.selection.only(voice);
+    // The section last looked at is one a sound does not have.
+    bench.state.section = Section::Look;
+    let before = bench.steps();
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    assert!(bench.find("Volume").is_some());
+    for refused in ["Look", "Add effect", "Show Compressor", "Compressor mix"] {
+        assert!(!bench.has(refused), "a sound has no {refused}");
+    }
+    // A card for each, in the order they are heard, Pitch among them.
+    let cards: Vec<f32> = (stack.iter())
+        .map(|effect| bench.at(effect_name(effect.kind)).y)
+        .collect();
+    assert!(cards.is_sorted(), "{cards:?}");
+    assert!(bench.find("Remove Pitch").is_some());
+    assert_eq!(bench.steps(), before, "{:?}", bench.refused);
+
+    // An edit of the Playback card leaves the stack as it was.
+    bench.click("Animate volume");
+    assert_eq!(bench.steps(), before + 1, "{:?}", bench.refused);
+    assert_eq!(bench.clip(voice).effects, stack);
+    assert!(bench.refused.is_empty());
+}
+
+/// A bench whose one clip is three seconds of a sound on the audio track,
+/// selected.
+fn with_voice() -> (Bench, ClipId) {
+    let mut bench = Bench::empty();
+    let sound = media("voice.wav", MediaKind::Audio);
+    bench.edit(Command::AddAssets {
+        assets: vec![sound.clone()],
+    });
+    let voice = bench.add(TrackKind::Audio, {
+        let mut clip = Clip::from_asset(&sound, Time::ZERO);
+        clip.duration = seconds(3.0);
+        clip
+    });
+    bench.selection.only(voice);
+    bench.playhead = seconds(1.0);
+    bench.frame(Vec::new());
+    (bench, voice)
+}
+
+#[test]
+fn a_typed_fade_is_held_to_the_room_and_return_is_one_step() {
+    let (mut bench, voice) = with_voice();
+    bench.edit(Command::SetFades {
+        clip_id: voice,
+        fade_in: Time::ZERO,
+        fade_out: seconds(1.0),
+    });
+    bench.frame(Vec::new());
+    let before = bench.steps();
+    let fades = |bench: &Bench| (bench.clip(voice).fade_in, bench.clip(voice).fade_out);
+    // The fields read in seconds.
+    let read = |name| bench.find(name).and_then(|seen| seen.value.clone());
+    assert_eq!(read("Fade in").as_deref(), Some("0.00 s"));
+    assert_eq!(read("Fade out").as_deref(), Some("1.00 s"));
+    bench.focus("Fade in");
+    // Longer than the two seconds the fade out leaves of three.
+    bench.frame(vec![Event::Text("99".to_owned())]);
+    let held = bench.draft.as_ref().map(|draft| draft.fade_in);
+    assert_eq!(
+        held,
+        Some(seconds(2.0)),
+        "what is typed is held to the room"
+    );
+    assert_eq!(bench.steps(), before, "and is no step yet");
+    bench.enter(Modifiers::NONE);
+    assert_eq!(bench.steps(), before + 1, "{:?}", bench.refused);
+    assert_eq!(bench.last(), "Change fades");
+    assert_eq!(fades(&bench), (seconds(2.0), seconds(1.0)));
+    assert!(bench.refused.is_empty(), "{:?}", bench.refused);
+
+    // The other fade has the second it has and no more.
+    bench.focus("Fade out");
+    bench.frame(vec![Event::Text("2.5".to_owned())]);
+    bench.enter(Modifiers::NONE);
+    assert_eq!(fades(&bench), (seconds(2.0), seconds(1.0)));
+    assert_eq!(bench.steps(), before + 1, "a value that is the stored one");
+    // A shorter one is taken as typed, and nothing takes the fade away.
+    bench.focus("Fade out");
+    bench.frame(vec![Event::Text("0.25".to_owned())]);
+    bench.enter(Modifiers::NONE);
+    assert_eq!(fades(&bench), (seconds(2.0), seconds(0.25)));
+    bench.focus("Fade in");
+    bench.frame(vec![Event::Text("0".to_owned())]);
+    bench.enter(Modifiers::NONE);
+    assert_eq!(fades(&bench), (Time::ZERO, seconds(0.25)));
+    assert_eq!(bench.steps(), before + 3);
+
+    // An Escape gives up what was typed, and each step undoes by itself.
+    bench.focus("Fade in");
+    bench.frame(vec![Event::Text("1".to_owned())]);
+    assert_eq!(
+        bench.draft.as_ref().map(|draft| draft.fade_in),
+        Some(seconds(1.0))
+    );
+    bench.key(Key::Escape, Modifiers::NONE);
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    assert_eq!(bench.steps(), before + 3);
+    assert_eq!(fades(&bench), (Time::ZERO, seconds(0.25)));
+    assert!(bench.editor.undo());
+    assert_eq!(fades(&bench), (seconds(2.0), seconds(0.25)));
+    assert!(bench.refused.is_empty(), "{:?}", bench.refused);
+}
+
+#[test]
+fn a_fade_field_left_as_it_reads_keeps_the_stored_length_and_is_no_step() {
+    // Lengths a handle leaves, of whole frames: neither is a whole number
+    // of hundredths, which is all the field reads.
+    let (mut bench, voice) = with_voice();
+    let stored = (Time(33_333), Time(1_041_667));
+    bench.edit(Command::SetFades {
+        clip_id: voice,
+        fade_in: stored.0,
+        fade_out: stored.1,
+    });
+    bench.frame(Vec::new());
+    let before = bench.steps();
+    let fades = |bench: &Bench| (bench.clip(voice).fade_in, bench.clip(voice).fade_out);
+    let read = |bench: &Bench, name| bench.find(name).and_then(|seen| seen.value.clone());
+    assert_eq!(read(&bench, "Fade in").as_deref(), Some("0.03 s"));
+    assert_eq!(read(&bench, "Fade out").as_deref(), Some("1.04 s"));
+
+    // Return with nothing typed.
+    bench.focus("Fade in");
+    bench.enter(Modifiers::NONE);
+    assert_eq!(bench.steps(), before, "{:?}", bench.refused);
+    assert_eq!(fades(&bench), stored);
+    // The focus through both fields and on to another.
+    bench.focus("Fade in");
+    bench.focus("Fade out");
+    bench.focus("Volume");
+    bench.enter(Modifiers::NONE);
+    assert_eq!(bench.steps(), before, "{:?}", bench.refused);
+    assert_eq!(fades(&bench), stored);
+    // What the field reads typed again is what is there.
+    bench.focus("Fade out");
+    bench.frame(vec![Event::Text("1.04".to_owned())]);
+    bench.enter(Modifiers::NONE);
+    assert_eq!(bench.steps(), before, "{:?}", bench.refused);
+    assert_eq!(fades(&bench), stored);
+
+    // Another length typed is stored as typed, and is one step.
+    bench.focus("Fade in");
+    bench.frame(vec![Event::Text("0.04".to_owned())]);
+    bench.enter(Modifiers::NONE);
+    assert_eq!(bench.steps(), before + 1, "{:?}", bench.refused);
+    assert_eq!(fades(&bench), (Time(40_000), stored.1));
+    assert!(bench.refused.is_empty(), "{:?}", bench.refused);
+}
+
+#[test]
+fn a_fade_field_drag_is_one_step_on_a_sound_and_on_a_picture_with_sound() {
+    // A sound: the rows are under its speed and volume.
+    let (mut bench, voice) = with_voice();
+    let before = bench.steps();
+    let end = bench.drag("Fade out", vec2(50.0, 0.0));
+    let held = bench.draft.as_ref().map(|draft| draft.fade_out);
+    assert!(
+        held.is_some_and(|held| held > Time::ZERO),
+        "the drag is held"
+    );
+    assert_eq!(bench.steps(), before, "and is no step while it is held");
+    assert_eq!(bench.clip(voice).fade_out, Time::ZERO);
+    bench.release(end);
+    assert_eq!(bench.steps(), before + 1, "{:?}", bench.refused);
+    assert_eq!(bench.last(), "Change fades");
+    assert_eq!(Some(bench.clip(voice).fade_out), held);
+    assert_eq!(bench.clip(voice).fade_in, Time::ZERO);
+
+    // A picture with sound: the rows are in the Sound card of its Video
+    // section.
+    let (mut bench, shot) = Bench::new();
+    bench.frame(Vec::new());
+    let before = bench.steps();
+    bench.focus("Fade in");
+    bench.frame(vec![Event::Text("1.5".to_owned())]);
+    bench.enter(Modifiers::NONE);
+    assert_eq!(bench.steps(), before + 1, "{:?}", bench.refused);
+    assert_eq!(bench.clip(shot).fade_in, seconds(1.5));
+    // A fade is not drawn: the canvas has the layer as it was.
+    assert_eq!(bench.layer(shot).transform, Transform::default());
+
+    // A still and a silent video have no sound to fade, and no rows.
+    let mut bench = Bench::empty();
+    let still = media("still.png", MediaKind::Image);
+    let mut silent = media("silent.mp4", MediaKind::Video);
+    silent.has_audio = false;
+    bench.edit(Command::AddAssets {
+        assets: vec![still.clone(), silent.clone()],
+    });
+    for (asset, start) in [(still, 0.0), (silent, 5.0)] {
+        let mut clip = Clip::from_asset(&asset, seconds(start));
+        clip.duration = seconds(4.0);
+        let id = bench.add(TrackKind::Video, clip);
+        bench.selection.only(id);
+        bench.playhead = seconds(start + 1.0);
+        bench.frame(Vec::new());
+        assert!(bench.find("Opacity").is_some());
+        for absent in ["Volume", "Fade in", "Fade out"] {
+            assert!(bench.find(absent).is_none(), "{} has {absent}", asset.name);
+        }
+    }
+}
+
+#[test]
+fn a_picture_whose_sound_is_detached_says_where_it_is_and_offers_no_volume_or_fade() {
+    const OWNED: &str = "Sound is on the linked audio clip";
+    const ROWS: [&str; 4] = ["Volume", "Animate volume", "Fade in", "Fade out"];
+    let (mut bench, shot) = Bench::new();
+    let offered = |bench: &Bench| ROWS.map(|row| bench.find(row).is_some());
+    bench.frame(Vec::new());
+    assert_eq!(offered(&bench), [true; 4]);
+    assert!(!bench.has(OWNED));
+
+    // Detached: the audio clip in the picture's link owns the sound.
+    let detach = crate::rules::detach_audio(bench.editor.project(), shot).expect("it has sound");
+    bench.edit(detach);
+    let sound = (bench.editor.project().tracks.iter())
+        .filter(|track| track.kind == TrackKind::Audio)
+        .flat_map(|track| &track.clips)
+        .map(|clip| clip.id)
+        .next()
+        .expect("FIXTURE: detaching made an audio clip");
+    bench.frame(Vec::new());
+    assert!(bench.has(OWNED), "the picture says where its sound is");
+    assert_eq!(offered(&bench), [false; 4]);
+    // The rest of the picture's section is as it was.
+    assert!(bench.find("Opacity").is_some() && bench.find("Blend mode").is_some());
+    // The audio clip has the rows, and takes a fade.
+    bench.selection.only(sound);
+    bench.frame(Vec::new());
+    assert_eq!(offered(&bench), [true; 4]);
+    assert!(!bench.has(OWNED));
+    let before = bench.steps();
+    bench.focus("Fade in");
+    bench.frame(vec![Event::Text("1".to_owned())]);
+    bench.enter(Modifiers::NONE);
+    assert_eq!(bench.steps(), before + 1, "{:?}", bench.refused);
+    assert_eq!(bench.clip(sound).fade_in, seconds(1.0));
+    assert_eq!(
+        bench.clip(shot).fade_in,
+        Time::ZERO,
+        "each clip has its own"
+    );
+
+    // Unlinked, the picture's sound is its own again, and so are the rows.
+    bench.edit(Command::UnlinkClips {
+        clip_ids: vec![shot],
+    });
+    bench.selection.only(shot);
+    bench.frame(Vec::new());
+    assert_eq!(offered(&bench), [true; 4]);
+    assert!(!bench.has(OWNED));
+
+    // A clip that is only silenced keeps its rows: at volume 0, and on a
+    // track that is muted or soloed out.
+    bench.edit(Command::SetGain {
+        clip_id: shot,
+        gain: 0.0,
+    });
+    let state = |track_id, muted, solo| Command::SetTrackState {
+        track_id,
+        locked: None,
+        hidden: None,
+        muted,
+        name: None,
+        gain: None,
+        solo,
+    };
+    bench.edit(state(bench.track(TrackKind::Video), Some(true), None));
+    bench.edit(state(bench.track(TrackKind::Audio), None, Some(true)));
+    bench.frame(Vec::new());
+    let (track, clip) = bench.editor.project().clip(shot).expect("the clip exists");
+    assert!(!editor_core::sound::sounds(
+        bench.editor.project(),
+        track,
+        clip
+    ));
+    assert_eq!(offered(&bench), [true; 4]);
+    assert!(!bench.has(OWNED));
+}
+
+#[test]
+fn normalize_loudness_is_asked_beside_the_volume_of_a_clip_that_is_heard() {
+    use crate::normalize::LABEL;
+    // A sound on an audio track: under its fades in the Playback card. It
+    // is asked for by the clip's id and edits nothing until it is measured.
+    let (mut bench, voice) = with_voice();
+    assert!(bench.at("Fade out").y < bench.at(LABEL).y);
+    let before = bench.steps();
+    bench.click(LABEL);
+    assert_eq!(bench.normalized, [vec![voice]]);
+    assert_eq!(bench.steps(), before);
+
+    // A picture with sound: in its Sound card.
+    let (mut bench, shot) = Bench::new();
+    bench.click(LABEL);
+    assert_eq!(bench.normalized, [vec![shot]]);
+    // Detached, the picture has the line in place of it, and its audio
+    // clip has it.
+    let detach = crate::rules::detach_audio(bench.editor.project(), shot).expect("it has sound");
+    bench.edit(detach);
+    bench.frame(Vec::new());
+    assert!(bench.find(LABEL).is_none());
+    assert!(bench.has("Sound is on the linked audio clip"));
+    let sound = (bench.editor.project().tracks.iter())
+        .filter(|track| track.kind == TrackKind::Audio)
+        .flat_map(|track| &track.clips)
+        .map(|clip| clip.id)
+        .next()
+        .expect("FIXTURE: detaching made an audio clip");
+    bench.selection.only(sound);
+    bench.frame(Vec::new());
+    assert!(bench.find(LABEL).is_some_and(|seen| !seen.disabled));
+
+    // On a muted track it is shown and not to be chosen: the clip is not
+    // heard, and the reason is on hover.
+    bench.edit(Command::SetTrackState {
+        track_id: bench.track(TrackKind::Audio),
+        locked: None,
+        hidden: None,
+        muted: Some(true),
+        name: None,
+        gain: None,
+        solo: None,
+    });
+    bench.frame(Vec::new());
+    assert!(bench.find(LABEL).is_some_and(|seen| seen.disabled));
+    bench.click(LABEL);
+    assert_eq!(bench.normalized.len(), 1, "a disabled button asks nothing");
 }
 
 #[test]
@@ -1331,6 +1708,8 @@ fn a_locked_track_takes_no_edit() {
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     });
     let before = bench.steps();
     bench.frame(Vec::new());
@@ -1402,6 +1781,12 @@ fn every_parameter_of_the_tables_has_a_name_and_a_field_that_holds_its_range() {
         .filter(|k| addable(*k))
         .collect();
     assert_eq!(added.len(), 11);
+    // An audio kind is heard, not drawn: the Look section adds none.
+    assert_eq!(
+        EffectKind::ALL.into_iter().filter(|k| k.is_audio()).count(),
+        7
+    );
+    assert!(added.iter().all(|kind| !kind.is_audio()));
     for left_out in [
         EffectKind::Stabilize,
         EffectKind::Grade,
@@ -1502,6 +1887,9 @@ fn an_inspector_nothing_is_done_in_asks_for_no_frame() {
         assert!(bench.draft.is_none() && bench.refused.is_empty());
     }
 }
+
+#[path = "audio_tests.rs"]
+mod audio;
 
 #[path = "color_tests.rs"]
 mod color;

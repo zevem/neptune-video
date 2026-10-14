@@ -1946,6 +1946,7 @@ fn paint_in(stage: &mut Stage, size: Vec2, project: &Project, playhead: Time) ->
                 speed: 1.0,
                 looping: false,
                 media: None,
+                record: Default::default(),
             },
             &mut actions,
         );

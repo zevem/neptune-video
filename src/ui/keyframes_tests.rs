@@ -244,6 +244,7 @@ impl Bench {
                 &mut self.state,
                 &mut self.selection,
                 &mut self.textures,
+                &mut crate::peaks::HeldPeaks::default(),
                 &TimelineInput {
                     p: &self.palette,
                     project: &project,
@@ -252,6 +253,7 @@ impl Bench {
                     media: None,
                     can_paste: false,
                     freeze_hold: seconds(2.0),
+                    separator: crate::stems::Tool::Missing,
                 },
                 &mut actions,
             );
@@ -938,6 +940,8 @@ fn a_locked_track_holds_its_keys_and_the_project_refuses_what_is_asked_of_them()
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     });
     let before = bench.steps();
     let stored = bench.editor.snapshot();
@@ -1467,4 +1471,274 @@ fn a_dragged_value_lands_no_coarser_than_a_hundredth_of_its_range() {
     // Alone on the axis it lands as finely as a point tells apart.
     assert_eq!(unit(250.0, Some((0.0, 1.0))), 0.001);
     assert_eq!(unit(0.24, None), 1.0);
+}
+
+// ---- The empty Volume row --------------------------------------------------
+
+/// A bench with one clip of four seconds a second in and no keyframes,
+/// selected: of `media` on a track of `kind`, with sound or without.
+fn unkeyed(name: &str, media: MediaKind, sound: bool, kind: TrackKind) -> (Bench, ClipId) {
+    let mut asset = Asset::new(
+        PathBuf::from(format!("/media/{name}")),
+        media,
+        seconds(10.0),
+    );
+    asset.name = name.to_owned();
+    asset.has_audio = sound;
+    let mut bench = Bench::empty();
+    bench.edit(Command::AddAssets {
+        assets: vec![asset.clone()],
+    });
+    let mut clip = Clip::from_asset(&asset, seconds(1.0));
+    clip.duration = seconds(4.0);
+    let id = clip.id;
+    let track_id = bench.track(kind);
+    bench.edit(Command::AddClip { track_id, clip });
+    bench.selection.only(id);
+    bench.frame(Vec::new());
+    (bench, id)
+}
+
+const STRIP_TOGGLE: &str = "Keyframes of the selected clip (U)";
+const VOLUME_ROW: &str = "Select Volume keyframes";
+
+#[test]
+fn a_sound_clip_without_keys_opens_a_lane_of_one_empty_volume_row() {
+    let (mut bench, voice) = unkeyed("voice.wav", MediaKind::Audio, true, TrackKind::Audio);
+    // Closed, the tile has no chevron: the tool strip and U open the lane.
+    assert!(!bench.has("Keyframes of voice.wav"));
+    assert!(
+        bench
+            .find(STRIP_TOGGLE)
+            .is_some_and(|strip| !strip.disabled)
+    );
+    assert!(!bench.has(VOLUME_ROW));
+    bench.key(Key::U);
+    assert_eq!(bench.state.keys.lane_clip(), Some(voice));
+    let project = bench.editor.project();
+    let track = project.clip(voice).unwrap().0.id;
+    assert_eq!(bench.state.keys.lane_rows(project), Some((track, 1)));
+    // One row, named, with no key in it, and nothing was edited to show it.
+    assert!(bench.has(VOLUME_ROW));
+    assert!(
+        !bench
+            .seen
+            .iter()
+            .any(|seen| seen.name.contains("keyframe at"))
+    );
+    assert!(bench.clip(voice).animation.is_empty());
+    assert_eq!(bench.steps(), 2, "the fixture's two edits and no more");
+    // Open, the tile carries the chevron that closes it.
+    bench.click("Keyframes of voice.wav");
+    assert_eq!(bench.state.keys.lane_clip(), None);
+    assert!(!bench.has(VOLUME_ROW));
+    bench.click(STRIP_TOGGLE);
+    assert!(bench.has(VOLUME_ROW));
+
+    // A key written into the row is drawn in it, and with the last key
+    // deleted the row is empty again and stays.
+    bench.keys(voice, None, ParamKey::Gain, vec![key(1.0, 0.5)]);
+    bench.frame(Vec::new());
+    const KEY: &str = "Volume keyframe at 00:00:02:00";
+    assert!(bench.has(KEY) && bench.has(VOLUME_ROW));
+    bench.click(KEY);
+    bench.frame(vec![Event::Copy]);
+    bench.key(Key::Delete);
+    assert!(
+        bench.clip(voice).animation.is_empty(),
+        "{:?}",
+        bench.refused
+    );
+    assert_eq!(bench.clip_deletes, 0, "the key was deleted, not the clip");
+    assert!(bench.has(VOLUME_ROW) && !bench.has(KEY));
+    // The empty row takes a paste of the copied key at the playhead.
+    bench.playhead = seconds(3.0);
+    let before = bench.steps();
+    bench.frame(vec![Event::Paste(
+        bench.state.keys.copied_text().to_owned(),
+    )]);
+    bench.frame(Vec::new());
+    assert_eq!(bench.steps(), before + 1, "{:?}", bench.refused);
+    assert_eq!(
+        bench.clip_chords, 0,
+        "the paste was the keys', not the clips'"
+    );
+    assert_eq!(bench.track_keys(voice, None, ParamKey::Gain), [(2.0, 0.5)]);
+    assert!(bench.editor.undo());
+    bench.frame(Vec::new());
+    assert!(bench.has(VOLUME_ROW));
+    bench.said.clear();
+    // A click in the empty row moves the playhead, as in any lane.
+    let row = bench.find(VOLUME_ROW).expect("named").rect.center();
+    bench.click_at(pos2(400.0, row.y));
+    assert!(bench.playhead > Time::ZERO);
+    assert!(bench.refused.is_empty() && bench.said.is_empty());
+}
+
+#[test]
+fn a_picture_with_sound_opens_the_volume_row_and_one_muted_or_silenced_keeps_it() {
+    let (mut bench, shot) = unkeyed("shot.mp4", MediaKind::Video, true, TrackKind::Video);
+    bench.key(Key::U);
+    assert_eq!(bench.state.keys.lane_clip(), Some(shot));
+    assert!(bench.has(VOLUME_ROW));
+    // At volume 0 on a muted track it is not in the mix, and its volume is
+    // keyed all the same: that is how it is brought back in.
+    let track_id = bench.track(TrackKind::Video);
+    bench.edit(Command::SetTrackState {
+        track_id,
+        locked: None,
+        hidden: None,
+        muted: Some(true),
+        name: None,
+        gain: None,
+        solo: None,
+    });
+    bench.edit(Command::SetGain {
+        clip_id: shot,
+        gain: 0.0,
+    });
+    bench.frame(Vec::new());
+    let project = bench.editor.project();
+    let (track, clip) = project.clip(shot).unwrap();
+    assert!(!editor_core::sound::sounds(project, track, clip));
+    assert!(bench.has(VOLUME_ROW));
+}
+
+#[test]
+fn a_still_a_silent_video_and_an_owned_picture_have_no_lane_to_open() {
+    for (name, media, sound) in [
+        ("still.png", MediaKind::Image, false),
+        ("mute.mp4", MediaKind::Video, false),
+    ] {
+        let (mut bench, _) = unkeyed(name, media, sound, TrackKind::Video);
+        assert!(bench.find(STRIP_TOGGLE).is_some_and(|strip| strip.disabled));
+        let project = bench.editor.project();
+        assert!(!bench.state.keys.can_toggle_lane(project, &bench.selection));
+        bench.key(Key::U);
+        assert_eq!(bench.state.keys.lane_clip(), None, "{name}");
+        assert!(!bench.has(VOLUME_ROW), "{name}");
+    }
+
+    // A picture whose sound its linked audio clip owns: the audio clip has
+    // the row, the picture has none.
+    let (mut bench, shot) = unkeyed("shot.mp4", MediaKind::Video, true, TrackKind::Video);
+    bench.key(Key::U);
+    assert!(bench.has(VOLUME_ROW));
+    let detach = rules::detach_audio(bench.editor.project(), shot).unwrap();
+    bench.edit(detach);
+    bench.frame(Vec::new());
+    // The lane that was open has no row left, and takes no room.
+    assert!(!bench.has(VOLUME_ROW));
+    assert_eq!(bench.state.keys.lane_rows(bench.editor.project()), None);
+    bench.state.keys.set_lane(None);
+    bench.frame(Vec::new());
+    assert!(bench.find(STRIP_TOGGLE).is_some_and(|strip| strip.disabled));
+    bench.key(Key::U);
+    assert_eq!(bench.state.keys.lane_clip(), None);
+    let sound = (bench.editor.project().tracks.iter())
+        .filter(|track| track.kind == TrackKind::Audio)
+        .flat_map(|track| &track.clips)
+        .find(|clip| clip.linked_id.is_some())
+        .expect("the detached sound")
+        .id;
+    bench.selection.only(sound);
+    bench.key(Key::U);
+    assert_eq!(bench.state.keys.lane_clip(), Some(sound));
+    assert!(bench.has(VOLUME_ROW));
+    // Unlinked, the picture's sound is its own again.
+    bench.edit(Command::UnlinkClips {
+        clip_ids: vec![shot],
+    });
+    bench.selection.only(shot);
+    bench.key(Key::U);
+    assert_eq!(bench.state.keys.lane_clip(), Some(shot));
+    assert!(bench.has(VOLUME_ROW));
+    // The graph draws curves, and says a clip without keyframes has none.
+    bench.click("Graph editor (G)");
+    assert!(bench.state.keys.graph);
+    bench.frame(Vec::new());
+    assert!(!bench.has(VOLUME_ROW));
+}
+
+#[test]
+fn a_volume_key_is_written_at_the_volume_the_clip_has_there_or_refused_in_words() {
+    let (mut bench, voice) = unkeyed("voice.wav", MediaKind::Audio, true, TrackKind::Audio);
+    bench.edit(Command::SetGain {
+        clip_id: voice,
+        gain: 0.25,
+    });
+    let ask = |bench: &Bench, at: f64| volume_key(bench.editor.project(), voice, seconds(at));
+    // Off the clip, before it and after it.
+    for at in [0.5, 5.5] {
+        let off = ask(&bench, at).unwrap_err();
+        assert_eq!(off, "Put the playhead on the clip to key its volume.");
+    }
+    // On it, at its first and last times too: one batch, one step.
+    let steps = bench.steps();
+    bench.edit(ask(&bench, 1.0).unwrap());
+    bench.edit(ask(&bench, 5.0).unwrap());
+    assert_eq!(bench.steps(), steps + 2);
+    assert_eq!(bench.last(), "Key volume");
+    let keys = |bench: &Bench| bench.track_keys(voice, None, ParamKey::Gain);
+    assert_eq!(keys(&bench), [(0.0, 0.25), (4.0, 0.25)]);
+    let there = ask(&bench, 5.0).unwrap_err();
+    assert_eq!(there, "The volume is keyed there already.");
+    // Between keys the new one has the value the track has there, the keys
+    // beside it keep theirs, and the eased stretch it divides its shape.
+    bench.keys(
+        voice,
+        None,
+        ParamKey::Gain,
+        vec![
+            Keyframe {
+                at: Time::ZERO,
+                value: 0.0,
+                ease: EASE_IN,
+            },
+            key(4.0, 2.0),
+        ],
+    );
+    let before = gain_at(bench.clip(voice), seconds(2.0));
+    let eased = bench.clip(voice).clone();
+    assert!(
+        (before - 0.5).abs() > 0.1,
+        "the stretch is not a straight one"
+    );
+    bench.edit(ask(&bench, 2.0).unwrap());
+    assert_eq!(keys(&bench), [(0.0, 0.0), (1.0, before), (4.0, 2.0)]);
+    for step in 0..=400 {
+        let at = seconds(1.0) + Time(step * 10_000);
+        let (was, is) = (gain_at(&eased, at), gain_at(bench.clip(voice), at));
+        assert!((was - is).abs() <= 2e-4, "{at:?}: {was} became {is}");
+    }
+    assert!(bench.editor.undo());
+    assert_eq!(keys(&bench), [(0.0, 0.0), (4.0, 2.0)]);
+
+    // A locked track is refused in words, and by the project if asked.
+    let (track, clip) = bench.editor.project().clip(voice).unwrap();
+    let (track_id, direct) = (track.id, key_volume(clip, seconds(2.0)).unwrap());
+    bench.edit(Command::SetTrackState {
+        track_id,
+        locked: Some(true),
+        hidden: None,
+        muted: None,
+        name: None,
+        gain: None,
+        solo: None,
+    });
+    let locked = ask(&bench, 3.0).unwrap_err();
+    assert_eq!(locked, "Unlock the clip's track to key its volume.");
+    let held = bench.editor.project().clone();
+    assert!(bench.editor.dispatch(direct).is_err());
+    assert_eq!(*bench.editor.project(), held);
+
+    // A clip without sound, and one whose sound its audio clip owns.
+    let (bench, still) = unkeyed("still.png", MediaKind::Image, false, TrackKind::Video);
+    let silent = volume_key(bench.editor.project(), still, seconds(2.0)).unwrap_err();
+    assert_eq!(silent, "That clip has no sound to key the volume of.");
+    let (mut bench, shot) = unkeyed("shot.mp4", MediaKind::Video, true, TrackKind::Video);
+    let detach = rules::detach_audio(bench.editor.project(), shot).unwrap();
+    bench.edit(detach);
+    let owned = volume_key(bench.editor.project(), shot, seconds(2.0)).unwrap_err();
+    assert_eq!(owned, "Sound is on the linked audio clip.");
 }

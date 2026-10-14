@@ -9,6 +9,7 @@
 //! the transport. `ISSUE14:` is the behavior the issue describes.
 use super::{GROUP_GAP, SPEED, SourceInput, ViewerInput, ViewerState, show, show_source};
 use crate::{
+    record::RecordView,
     textures::Textures,
     theme::{self, Accent, Appearance, Palette},
     ui::{Action, ClipDraft, Selection, Transport},
@@ -79,6 +80,7 @@ struct Pane {
     selection: Selection,
     draft: Option<ClipDraft>,
     playing: bool,
+    record: RecordView,
 }
 
 impl Pane {
@@ -107,6 +109,7 @@ impl Pane {
             selection: Selection::default(),
             draft: None,
             playing: false,
+            record: RecordView::Idle,
         }
     }
 
@@ -139,6 +142,7 @@ impl Pane {
                         speed: 1.0,
                         looping: false,
                         media: None,
+                        record: self.record,
                     },
                     &mut actions,
                 ),
@@ -383,4 +387,84 @@ fn play_reads_as_pause_while_playing_and_still_asks_to_toggle() {
             "ISSUE14: {deck:?} at {size:?}: a press on pause asked for {asked:?}"
         );
     });
+}
+
+/// Where the record control's disc was painted, if it was: the one disc in
+/// the palette's red.
+fn record_disc(pane: &Pane, painted: &Painted) -> Option<Pos2> {
+    let mut found = (painted.discs.iter()).filter(|(_, _, fill)| *fill == pane.palette.red);
+    let first = found.next().map(|(centre, _, _)| *centre);
+    assert!(found.next().is_none(), "FIXTURE: more than one red disc");
+    first
+}
+
+#[test]
+fn only_the_timeline_records_and_a_press_on_record_asks_for_a_take() {
+    each_pane(|mut pane| {
+        let painted = pane.rest();
+        let (deck, size) = (pane.deck, pane.size);
+        let disc = record_disc(&pane, &painted);
+        if deck == Deck::Source {
+            assert!(
+                disc.is_none(),
+                "the source monitor at {size:?} offers to record"
+            );
+            return;
+        }
+        let Some(disc) = disc else {
+            panic!("no record control in the timeline's pane of {size:?}");
+        };
+        let (play, speed) = (pane.play(&painted), pane.speed(&painted));
+        assert!(pane.bounds().contains(disc));
+        assert!(
+            disc.x - play.right() >= GROUP_GAP && speed.left() > disc.x,
+            "at {size:?}: record at {disc:?} is not between play {play:?} and speed {speed:?}"
+        );
+        let (asked, _) = pane.click(disc);
+        assert!(
+            matches!(asked.as_slice(), [Action::Record]),
+            "at {size:?}: a press on record asked for {asked:?}"
+        );
+    });
+}
+
+#[test]
+fn a_running_take_shows_its_time_in_speeds_place_and_a_press_stops_it() {
+    for size in PANES {
+        let mut pane = Pane::new(Deck::Timeline, size);
+        let at_rest = pane.rest();
+        let disc = record_disc(&pane, &at_rest).unwrap();
+        pane.record = RecordView::Recording {
+            elapsed: Time::from_seconds(3.6),
+            level: 0.5,
+        };
+        let painted = pane.rest();
+        let Some(time) = painted.text("0:03") else {
+            panic!("at {size:?}: no elapsed time while recording");
+        };
+        assert!(
+            pane.bounds().contains_rect(time),
+            "at {size:?}: {time:?} is clipped"
+        );
+        assert!(
+            painted.text("1×").is_none(),
+            "at {size:?}: the speed control is offered while recording"
+        );
+        // The stop control is where record was.
+        let (asked, _) = pane.click(disc);
+        assert!(
+            matches!(asked.as_slice(), [Action::StopRecord]),
+            "at {size:?}: a press on stop asked for {asked:?}"
+        );
+        let (asked, _) = pane.click(time.center());
+        assert!(
+            matches!(asked.as_slice(), [Action::StopRecord]),
+            "at {size:?}: a press on the time asked for {asked:?}"
+        );
+        // Closing, the control asks for nothing.
+        pane.record = RecordView::Stopping;
+        pane.rest();
+        let (asked, _) = pane.click(disc);
+        assert!(asked.is_empty(), "at {size:?}: closing asked for {asked:?}");
+    }
 }

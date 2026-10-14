@@ -197,7 +197,9 @@ pub(crate) fn import_paths(
     result
 }
 
-fn probe(
+/// One media file as an asset: what ffprobe, or the image decoder, reads of
+/// it. The import's own step, called directly by jobs that make media.
+pub(crate) fn probe(
     path: &Path,
     processes: &Processes,
     cancelled: &impl Fn() -> bool,

@@ -728,6 +728,42 @@ place pass's uniform, and no further pass. On the unoptimized test build a
 320x240 fixture of 60 frames took 15 ms a frame, FFmpeg included; an optimized
 build and real footage have not been measured.
 
+Sound analysis has a lane of its own beside that one
+(`editor-media/src/sound.rs`), so a long tracking or stabilization run holds
+up no waveform: one thread reading sound with one FFmpeg process at a time
+and sixteen jobs waiting at most, and a second thread that only reads the
+peak cache, sixteen questions waiting at most. A file's first sound stream is
+read whole, once, as one channel at 8 kHz in pieces of 32 KiB, and each 80
+samples become four bytes: a hundred buckets a second, about 1.4 MB an hour,
+refused before any process past 2,097,152 buckets (5.8 hours, 8 MiB). The
+peaks are derived data: one file a media path under the user's cache
+directory, bounded to 64 MiB and 512 files with the least lately read removed
+first. A newer request takes the place of an older only when both are of the
+same kind for the same media; a job is given up by a flag and by killing its
+process. The window is woken once for each whole percent and once for the
+answer, and an idle lane wakes nobody. The lane is started by the first tile
+on an audio lane that is drawn. Only the tiles drawn ask: the cache first,
+then the sound, each once for a media file, and a failure is remembered. The
+window holds 32 MiB of peaks at most (`src/peaks.rs`); those least lately
+wanted make room and never those of a tile on screen, so media with no room
+beside what is on screen is not asked about until it has. The one exception
+is work: Duck under speech wants one media file's peaks at a time whether a
+tile draws them or not, they are asked for whatever the room, and when they
+come they may take the room of on-screen peaks, least lately wanted first.
+Those tiles wait while the work holds its peaks and ask again once it lets
+them go, so a duck always finishes with more voice files than the map holds.
+A duck asks the lane from the window's logic pass, which also runs while the
+window is hidden, so it reads on unseen. A file whose sound a duck could not
+read stays failed when the duck lets it go, as one a tile asked for does: it
+is not read or reported again. A sound read asked for by a tile that has not been drawn for two frames is given up, so the lane
+reads for what is in view; what it had read of the file is lost, and the file
+is read from its start when the tile is drawn again. Telling held peaks from
+those of a relinked file compares the path in place and builds nothing for a
+tile drawn. A waveform is one mesh a tile, a column for each
+point of the tile in view; a column reads the least and greatest of the
+buckets its stretch of source touches, so a frame at the widest zoom reads
+every bucket of the media in view. That cost is not measured.
+
 ## Advanced editing budgets
 
 These are the bounds the [advanced-editing](../.scratch/advanced-editing/spec.md)
@@ -903,6 +939,234 @@ is given up by a flag and by killing its process.
 
 No real camera footage, optimized build or other host was measured, and the
 native stabilization figures predate the estimator's second fit guard.
+
+## Audio editing budgets
+
+The bounds the [audio-editing](../.scratch/audio-editing/spec.md) code
+enforces. The figures are from one macOS host (Apple M1, macOS 26.5.2, Rust
+1.97.1, Homebrew FFmpeg 8.1.2) through each feature's own tests on the `dev`
+test profile (opt-level 1, dependencies at 2) unless a row says `ci`, which is
+unoptimized; none is a release-build, Linux, Windows, real-device or
+real-recording measurement, and nothing was listened to. No CPU cost of a
+voice, a filter, the level stage or the limiter has been measured, nor
+underruns.
+
+### Agent text
+
+| Bound | Value |
+| --- | --- |
+| Planner instructions / provider schema | Under 6 KiB (`MAX_SYSTEM_BYTES`) / under 23 KiB (`MAX_SCHEMA_BYTES`), 29 KiB between them on the Claude command line; the runtime guard refuses a schema at its cap before launch |
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| Sizes | Instructions 5,377 bytes (767 left), schema 21,859 bytes (1,693 left) | Printed by `cargo test -p editor-agent --locked --lib -- --nocapture planner::tests` on 2026-10-14; Windows command-line headroom not measured |
+
+### Sound lane and peak cache
+
+| Bound | Value |
+| --- | --- |
+| Lane threads / FFmpeg processes at a time | 1 reading sound (`aster-sound`) and 1 reading the cache (`aster-sound-load`) / 1 |
+| Jobs waiting / cache reads waiting | 16 (`SOUND_QUEUE`) / 16 (`PEAK_LOADS`) |
+| Sound read | The first sound stream, one channel, 8 kHz, 16-bit, 32 KiB a read under the 10 s read deadline |
+| Peaks | 100 buckets a second (`PEAKS_PER_SECOND`) of 4 bytes; 2,097,152 a file at most (`MAX_PEAK_BUCKETS`, 5.8 hours, 8 MiB) |
+| Peak cache on disk | 64 MiB and 512 files (`PEAK_CACHE_BYTES`, `PEAK_CACHE_ENTRIES`), least lately read removed first |
+| Peaks held by the window | 32 MiB (`MAX_HELD_PEAK_BYTES`): four files at the bucket bound; least lately wanted evicted, never a tile on screen except for a duck's one file of work |
+| Duck under speech | One voice file's peaks held at a time, let go when its spans are taken; at most 4,096 spans a file (closest merged); 256 volume keys a clip (closest dips merged). The gate walks each voice clip over the ducked clips' time in 10 ms steps on the UI thread, one file a frame; that cost is not measured |
+| Waveform drawn | One mesh a tile, four vertices a point of the tile's width in view |
+| Beats | Found in kept peaks on the cache-reading thread, in its queue (`PEAK_LOADS`), with no process; a cache read waits behind it. 16,384 beats a grid at most (`MAX_BEATS`). About 13 bytes a bucket while it runs, the peaks included: 26 MiB at the bucket bound, counted and not measured |
+| Beat grids held by the window | 8 media files (`MAX_HELD_GRIDS`), 64 KiB each at most; the least lately shown dropped, and none asked for while 8 are on screen or on their way. Asked for only of media whose beats are shown, by a tile drawn, once its peaks are held. Ticks and snap candidates are the beats in view, recomputed each frame by binary search in the grid; that cost is not measured |
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| Reading a file's peaks | 0.98 s on the `dev` test profile, 1.64 s on the unoptimized `ci` profile, FFmpeg included | Two hours of silent mono 8 kHz FLAC (1.3 MB, 720,000 buckets), one run each |
+| A late sound stream | First loud bucket 100 of 301 | 3 s MP4, AAC tone given a 1 s offset; ffprobe reports the stream at 0.978 s |
+| Finding beats at the bucket bound | 0.49 s on the `dev` test profile, 4.11 s on the unoptimized `ci` profile | 2,097,152 buckets of synthetic clicks at 120 BPM, the peaks already in memory, one run each |
+
+Silence in FLAC is the cheapest sound there is to decode: the first row says
+what the reduction and the pipe cost, not how long a real recording of that
+length takes. Not measured: compressed speech or music, a file at the bucket
+bound, a slow disk, memory while reading, and the time to a first waveform.
+
+### Loudness measurement
+
+A span of a file is measured when asked, on the sound lane, by one FFmpeg
+process through the clip's audio effects and the `ebur128` filter; it writes
+nothing and nothing is kept. It holds the lane while it runs, so waveforms
+wait behind it, and the first one in a session waits for the filter probe.
+
+| Bound | Value |
+| --- | --- |
+| Process | 1, `-threads 1`, output to `null`; each read of its `-progress` lines (twice a second) under the 10 s read deadline |
+| Replacement | A newer request for the same media and the same span stops the older; other spans and the media's peaks are left alone |
+| Effects | Run at 48 kHz behind an `aresample`, written for two channels, as a voice's chain at that rate; none and no `aresample` when the clip has none to run |
+| Channels | Summed to stereo (`aformat`, FFmpeg's default matrix, as a voice's `-ac 2`) before the meter, so a 5.1 or mono source reads as a two-channel output plays it; checked against a voice's own output for 5.1 and mono tones on the design host |
+| Report | The last 8 KiB of FFmpeg's error pipe (`STDERR_TAIL`), waited for at most 250 ms once the process has ended |
+| Desktop | Normalize loudness keeps at most 64 clips waiting (`normalize::MOST_WAITING`); clips of one span with the same enabled audio effects share one request, one of the same span with other audio effects waits for that answer, and clips the full lane turned away are asked again in the frames after, which the lane's own answers wake |
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| Twenty minutes of sound | 2.54 s through the lane, FFmpeg included and the probe already done; 2.50 s for `ffmpeg` alone, 0.19 s without `peak=true` | Silent mono 8 kHz FLAC, `dev` test profile, one run each |
+| Ten minutes of sound | 2.77 s for `ffmpeg` alone | Stereo 48 kHz FLAC of white noise, one run |
+
+Nearly all of the time is the true peak, and it does not fall with the
+source's rate: twenty minutes of mono 8 kHz cost about what ten of stereo
+48 kHz do. Not measured: compressed speech or music, a span through several
+effects, and a measurement on another host.
+
+### Save audio as a file
+
+A span of a file's sound is written when asked, on the sound lane, by one
+FFmpeg process; it holds the lane while it runs, so waveforms and loudness
+measurements wait behind it. Its cost is the decoder's and the disk's: the
+WAV it writes is as large as the span at its own rate and channels.
+
+| Bound | Value |
+| --- | --- |
+| Process | 1, `-threads 1`, `-nostats`; each read of its `-progress` lines (twice a second) under the 10 s read deadline |
+| Files | One `.part` beside the target, made with `create_new` before the process and the only file ever removed; renamed over the target after `sync_all` through a handle opened for writing |
+| Replacement | A newer request for the same media and the same span stops the older, unless it has claimed its rename, and names what it stopped; the media's peaks, beats and loudness and other spans are left alone |
+| Project replace | `cancel_all` keeps a file being written or waiting, and its answer; the desktop offers it only to the project that asked |
+| Cancel | Too late once the job has claimed its rename (`Finishing`) or its written answer waits (`Written`); a waiting failure is given up with it |
+| Desktop | Cards for files being written and written ones, each offered for 12 s (`extract::OFFER_SECONDS`); no file is read on the window's thread, the dialog's thread looks whether a name with `.wav` added is taken |
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| A video's whole sound | 3.008 s written of 3 s of video; a 1000.0 Hz tone at -9.02 dBFS RMS, as made | MP4 of `mpeg4` picture and AAC 1 kHz tone at half of full scale, 48 kHz mono, one run |
+| A span | The tone begins 24,001 frames into a 1 s span asked from 1.5 s of a file whose tone starts at 2 s (24,000 expected) | Stereo 48 kHz PCM WAV, one run |
+
+Not measured: how long a long or compressed source takes, the disk's cost,
+memory while writing, a span from a seek far into a long file, and any other
+host. A WAV past 4 GiB (about 6.2 hours of 48 kHz stereo) is written without
+RF64 and its header cannot say its length.
+
+### Stem separation
+
+A separation runs one external process, the person's stem separator
+(Demucs), on the sound lane over a whole media file. It holds the lane for
+as long as the tool runs, so waveforms, loudness and beats wait behind it;
+the tool's own threads, memory, GPU use and model download are its own and
+are not bounded by Aster.
+
+| Bound | Value |
+| --- | --- |
+| Probe | Once a session on `aster-separator-probe`, `<tool> --help` within 60 s and 256 KiB of output; the window reads the answer and never waits for it |
+| Process | 1; its output drained and dropped on a thread of its own; its progress read from the last 8 KiB of its error pipe every 0.5 s; looked at every 0.1 s for cancellation and its end |
+| Deadline | The whole run, 15 minutes plus 4 times the media's length, enforced by the process watchdog |
+| Files | One `<media> (stems).part` folder in the media folder, made with `create_dir` before the process (one already there is refused and left) and removed with what is in it however the job ends; stems moved out by hard link to a free name, or a rename where links are refused; never over a file |
+| Replacement | A newer separation of the same media stops the older unless it has claimed its last step; other jobs of the media are left alone |
+| Project replace | `cancel_all` keeps it and its answer; the desktop places stems only for the project and clip that asked and otherwise names the files |
+| Voices | Each stem is one more voice where its clip plays, within the 16-voice bound |
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| Through the lane | Probe 1.24 to 1.87 s; 20 s of source separated in 5.65 and 6.04 s with the model held, 15.72 s on the run that fetched it; two 20.000 s stems of 3,528,044 bytes; progress said at 25, 50, 75 (and 100) % | Demucs 4.1.0 (torch 2.14.1, Python 3.12, through `uvx`), model `htdemucs` (`955717e8`), its default device; two tones FFmpeg made, stereo 44.1 kHz WAV; macOS 26.5.2, Apple M1, `dev` test profile; three runs |
+| The tool alone | 180 s of source in 26.7 s wall (6.4 s user) | The same command line and host, one run |
+
+Not measured: speech or music, memory, the GPU or CPU the tool chose, a
+host without a GPU, other models, Linux and Windows. Quality is not
+claimed: nothing was listened to, and two tones are no test of it.
+
+### Mixer level stage and master limiter
+
+The level stage and the limiter are arithmetic in the mixer's sum loop on the
+`aster-audio` worker; neither starts a process or allocates per frame, and the
+device callback still only copies.
+
+| Bound | Value |
+| --- | --- |
+| Voices | 16 sounding clips at once, as before; the 17th stops the mix with a message naming the count and the time |
+| Level | `track.gain × clip.gain` once for an interval when the clip's level does not vary; `sound::level_at` at every output frame for a clip with a fade or volume keys, over its whole length and not only inside the fade |
+| Master limiter | One `f32` of state (`Mixer.limit`), reset in `clear()`; ceiling 1.0 (`MASTER_CEILING`, 0 dBFS), release time constant 0.2 s (`LIMITER_RELEASE_SECONDS`), no lookahead, sample peaks only; a step back towards 1 is at least one `f32` epsilon; the clamp to ±1 follows |
+| Admission | One `Sounding` built from the mixer's snapshot answers `sounds` for every clip; its cost over a large project is not measured |
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| Fades | Every frame of a 100 ms fade within 1e-4 of the curve across four chunk edges; frames past the fade bit for bit | 997 Hz full-scale tone in a 32-bit float WAV the test writes, through `Mixer::chunk` |
+| A mix within ±1.0 | Bit for bit, the values 1.0 and -1.0 included; a full-scale single tone bit for bit with the gain still 1 | The same |
+| Two full-scale tones in phase | Never above 1.0; from the first peak on within 0.01 of the single tone; under a tenth of the samples on the ceiling | The same |
+| The gain's return to 1 | 1.42 s after a peak of twice the ceiling, 1.08 s after 10 % over, 0.64 s after 1 % over; more than 0.1 dB down for 0.76 s after the first | Counted in a test at 48 kHz |
+
+### Pitch and pitch-keeping speed
+
+Keeping or shifting pitch adds one `atempo` stage to the chain a voice already
+has, never two; it starts no process.
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| Pitch read back | 440.0 Hz at speed 2 with `Pitch` 0, ending at 399.9 ms of 400; 880.0 Hz with `Pitch` +12 at speed 1, ending at 790.8 ms of 800; 877.5 Hz at speed 2 without a `Pitch` | 0.8 s 440 Hz tone and silence through `Mixer::chunk`, three runs alike |
+| Sound early against the picture | `atempo` 0.5: 40.0, 58.5 and 58.5 ms; 0.84: 27.5, 28.2 and 28.4 ms; 1.5: 8.0, 16.0 and 16.0 ms; 2: 12.0, 13.3 and 18.5 ms; none late. Not compensated | Onsets of 5 ms 1 kHz bursts at 1, 10 and 30 s of source |
+| Two stages of 0.5 | 151.5 ms early | FFmpeg 8.1.2 alone, design review; why one stage is the rule |
+
+### Voice chain and filter probe
+
+An audio effect costs no process: it is a filter in the decoder a voice
+already has, one thread each (`-threads 1`, `-filter_threads 1`), sixteen
+voices at most. The probe is eight FFmpeg runs over 50 ms of silence, once a
+session, on the audio worker before the first sound.
+
+| Bound | Value |
+| --- | --- |
+| Probe | 1 control and 7 kinds, one process at a time, each under the 10 s read deadline, its own `Processes` |
+| Delay dropped at a voice's start | 25,000 us for `Denoise`, 5,000 us for `Limiter`, summed and rounded to frames at the device's rate (1,440 frames for both at 48 kHz) |
+| Filter frequency | At most 0.45 of the output rate |
+| Centre reduction | Left out of a chain for an output of one channel |
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| The probe's eight runs | 297 ms, one run | `dev` test profile, FFmpeg already in the file cache |
+| Delay of `afftdn` | 24,979 us at 48 kHz, 24,965 us at 44.1 kHz | Onset of a 5 ms 1 kHz burst through `Mixer::chunk`, against the same clip without effects |
+| Delay of `alimiter` | 4,979 us at 48 kHz, 4,965 us at 44.1 kHz | The same |
+| Both, after the drop | The burst lands 41 us early at 48 kHz and 68 us early at 44.1 kHz | The same; the test allows 1 ms |
+| `highpass`, `equalizer`, `acompressor` | No delay | The same |
+| Noise between bursts with `Denoise` | 16.3 dB lower at the defaults, 11.5 at amount 0.2, 20.8 at amount 1, unchanged with the floor at -80 dB; the bursts unchanged | White noise at -45 dBFS RMS under 300 Hz and 1 kHz in bursts of 0.5 s |
+
+Not measured: the CPU of a filtered voice or of sixteen, underruns, the time a
+decoder with a chain takes to start, the probe on a cold disk or another
+host, and how any of it sounds. The last 25 ms of a source file are not heard
+through noise reduction (5 ms through the limiter): FFmpeg ends the stream as
+long as it came in, and the delay is taken off its start.
+
+### Voiceover recording
+
+`RecordService` captures the default input device to a WAV file the desktop
+named. The device's callback only copies into a ring and counts what found it
+full; one thread opens and plays the device, then makes the file (the ring
+holds what comes meanwhile), writes and closes them, and no call waits for it
+except `Drop`, which joins it.
+
+| Bound | Value |
+| --- | --- |
+| Threads / processes | 1 (`aster-record`) beside the device's own callback / none |
+| Ring | Two seconds at the device's rate and channels (`RECORD_RING_SECONDS`), 32-bit samples in atomics: 375 KiB for mono 48 kHz, 750 KiB for stereo, 5.9 MiB at the highest rate taken (384 kHz stereo). A full ring drops the frames and counts them (`Take::dropped`); the callback never waits |
+| Callback | Copies whole frames into the ring with atomics: no lock, allocation, file work or wake. After `stop` it takes nothing |
+| Channels and rate | One or two channels as the device delivers them, more refused; 1 Hz to 384 kHz |
+| Writer | Drains every 20 ms, 4,096 frames at a write, from a buffer allocated once |
+| Crash tolerance | The header's two sizes are rewritten and the file synced (`sync_data`) after each second of sound written and after a second of the clock with sound unsynced; `sync_all` when the take is closed |
+| Longest take | 2 hours (`MAX_TAKE_SECONDS`), or data bytes ≤ `u32::MAX − 36` rounded down to whole frames (4,294,967,256 for mono or stereo), whichever comes first; the take ends itself there as if stopped. 1.38 GB an hour for stereo 48 kHz, 0.69 GB for mono |
+| Events | `Started`, `Finished` and `Failed` wake once each; `Level` is the loudest sample since the last poll, kept as one value and never a wake |
+| Free space | Not checked before a take; a failed write, a full disk included, ends the take and keeps what was written; part of a piece the failed write left is cut off on close, so the file's length is `Take::bytes`. Only a test's simulated full disk was run |
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| Longest callback into a stalled writer | 0.3 to 12.2 us over three runs | 300 calls of 80 mono frames into a ring that filled after 200, fake source on the test thread, `dev` test profile; the test allows 5 ms |
+| `stop` with the writer stalled | 1.3 to 3.5 us over three runs | The same; the test allows 20 ms |
+| A writer ended without closing | Its header counts 19,096 of 20,000 frames written; ffprobe reads 2.387 s of 2.5 s | 8 kHz mono, fed under the ring's length and drained, then ended as a crash would; the test allows one second short |
+| ffprobe's length of a closed take | 2 s for 96,000 frames at 48 kHz stereo, within one frame | The same fake source |
+
+Not measured: a real microphone on any host, a device's own latency, the cost
+of `sync_data` on a slow or full disk, the writer under load, and a take of
+any length beyond these fixtures. The 44-byte header has no `fact` chunk;
+FFmpeg 8.1.2 reads it.
+
+In the desktop the frame loop does no file work for a take: the take's path
+and media folder are made on a short worker thread (`aster-take`), and the
+service is started from its answer. While a take runs the window is drawn
+ten times a second (`record::REPAINT`) for its elapsed time and level, and
+not at all for the take once it is placed; starting and closing are woken by
+the service. A take placed is one asset built from `Take`, with no ffprobe.
+Closing the window during a take stops it and joins the service's thread,
+which writes what the ring holds and closes the file. The time a stop takes
+on a real device was not measured.
 
 ## Acceptance targets
 

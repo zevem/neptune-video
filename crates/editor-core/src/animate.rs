@@ -406,6 +406,46 @@ impl AnimTrack {
         true
     }
 
+    /// Adds a key at `at` on the curve as it is, so that no sample changes:
+    /// the segment it lands in is subdivided as a cut would, its values
+    /// clamped to `range`, and outside the keys the nearest one's value is
+    /// held. `false`, with the track untouched, when a key is there already,
+    /// there is no key to take a value from, or the segment cannot be carried
+    /// by keys.
+    #[must_use]
+    pub fn insert(&mut self, at: Time, range: (f32, f32)) -> bool {
+        let next = self.keys.partition_point(|k| k.at < at);
+        if self.keys.get(next).is_some_and(|k| k.at == at) {
+            return false;
+        }
+        let held = |key: &Keyframe| Keyframe {
+            at,
+            value: key.value,
+            ease: Ease::Linear,
+        };
+        if next == 0 {
+            let Some(first) = self.keys.first().map(held) else {
+                return false;
+            };
+            self.keys.insert(0, first);
+        } else if next == self.keys.len() {
+            let last = held(&self.keys[next - 1]);
+            self.keys.push(last);
+        } else {
+            let (Some(mut keys), Some(after)) = (
+                self.part(next, at, range, false),
+                self.part(next, at, range, true),
+            ) else {
+                return false;
+            };
+            // Both parts end on `at`; the later one shapes what follows it.
+            keys.pop();
+            keys.extend(after);
+            self.keys.splice(next - 1..next, keys);
+        }
+        true
+    }
+
     /// Stretches key times from a clip lasting `old` to one lasting `new`.
     /// Keys that land on the same microsecond collapse into the earlier one.
     pub fn rescale(&mut self, old: Time, new: Time) {

@@ -9,10 +9,14 @@ use cpal::{
     FromSample, Sample, SampleFormat, SizedSample, StreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
-use editor_core::{AssetId, ClipContent, ClipId, MediaKind, Project, Time, TrackKind};
+use editor_core::{
+    ClipContent, ClipId, Project, Time,
+    sound::{self, Sounding},
+};
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     io::Read,
+    process::ChildStdout,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering},
@@ -27,6 +31,16 @@ const MAX_VOICES: usize = 16;
 const MAX_AUDIO_RING_BYTES: usize = 8 * 1024 * 1024;
 const MIN_CALLBACK_GRACE_NS: u64 = 500_000_000;
 const CALLBACK_GRACE_PERIODS: u64 = 4;
+/// The level the master limiter holds the mix under: 0 dBFS, where the clamp
+/// it replaced cut.
+const MASTER_CEILING: f32 = 1.0;
+/// The time constant the limiter's gain rises back toward 1 with.
+const LIMITER_RELEASE_SECONDS: f64 = 0.2;
+
+// The sound lane reads the same chain and the same probe.
+pub(crate) mod chain;
+use chain::Filters;
+pub use chain::missing_audio_filters;
 
 struct AudioRequest {
     generation: u64,
@@ -237,17 +251,38 @@ pub struct AudioService {
 
 impl AudioService {
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Result<Self, MediaError> {
+        Self::start(Arc::new(wake), chain::session, open_output)
+    }
+
+    /// `probe` finds which audio kinds FFmpeg runs and `open` the output
+    /// device, both on the worker and in that order; tests stand in for
+    /// either.
+    fn start(
+        wake: Wake,
+        probe: impl FnOnce() -> Arc<Filters> + Send + 'static,
+        open: impl FnOnce(
+            &Arc<AudioState>,
+            &SyncSender<AudioEvent>,
+            &Wake,
+        ) -> Result<Output, MediaError>
+        + Send
+        + 'static,
+    ) -> Result<Self, MediaError> {
         let state = Arc::new(AudioState::default());
         let processes = Processes::default();
         let (sender, events) = mpsc::sync_channel(8);
         let (worker_state, worker_processes) = (Arc::clone(&state), processes.clone());
-        let wake: Wake = Arc::new(wake);
         thread::Builder::new()
             .name("aster-audio".into())
             .spawn(move || {
-                if let Err(error) =
-                    audio_worker(Arc::clone(&worker_state), worker_processes, &sender, &wake)
-                {
+                if let Err(error) = audio_worker(
+                    Arc::clone(&worker_state),
+                    worker_processes,
+                    &sender,
+                    &wake,
+                    probe,
+                    open,
+                ) {
                     worker_state.fail_output();
                     // Reject later sync under the same pending lock, and
                     // release any request queued before startup failed.
@@ -540,16 +575,31 @@ fn handle_output_error(
     wake();
 }
 
-fn audio_worker(
-    state: Arc<AudioState>,
-    processes: Processes,
+/// Says what is still unsaid this session about the audio kinds: that they
+/// could not be probed, and each kind in `left_out` that a chain went
+/// without, for want of the filter or of a second output channel. A notice that found no room is said the next time.
+fn tell(filters: &Filters, left_out: u32, errors: &SyncSender<AudioEvent>, wake: &Wake) {
+    for (notice, message) in filters.unsaid(left_out) {
+        if errors.try_send(AudioEvent::Message(message)).is_ok() {
+            filters.mark_said(notice);
+            wake();
+        }
+    }
+}
+
+/// The native output stream and what the mixer needs to feed it.
+struct Output {
+    stream: cpal::Stream,
+    ring: Arc<Ring>,
+    sample_rate: u32,
+    channels: usize,
+}
+
+fn open_output(
+    state: &Arc<AudioState>,
     errors: &SyncSender<AudioEvent>,
     wake: &Wake,
-) -> Result<(), MediaError> {
-    let _ = state.worker.set(thread::current());
-    if state.unavailable() {
-        return Ok(());
-    }
+) -> Result<Output, MediaError> {
     let device = cpal::default_host()
         .default_output_device()
         .ok_or_else(|| MediaError::Decode("No native audio output device is available".into()))?;
@@ -571,7 +621,7 @@ fn audio_worker(
         (
             config,
             Arc::clone(&ring),
-            Arc::clone(&state),
+            Arc::clone(state),
             errors.clone(),
             Arc::clone(wake),
         )
@@ -599,6 +649,37 @@ fn audio_worker(
             )));
         }
     };
+    Ok(Output {
+        stream,
+        ring,
+        sample_rate,
+        channels,
+    })
+}
+
+fn audio_worker(
+    state: Arc<AudioState>,
+    processes: Processes,
+    errors: &SyncSender<AudioEvent>,
+    wake: &Wake,
+    probe: impl FnOnce() -> Arc<Filters>,
+    open: impl FnOnce(&Arc<AudioState>, &SyncSender<AudioEvent>, &Wake) -> Result<Output, MediaError>,
+) -> Result<(), MediaError> {
+    let _ = state.worker.set(thread::current());
+    if state.unavailable() {
+        return Ok(());
+    }
+    // Before the device is looked for, so a host without one is probed too
+    // and the interface can say which kinds are missing. The worker waits
+    // here for the probe's short runs; a seek meanwhile stops none of them.
+    let filters = probe();
+    tell(&filters, 0, errors, wake);
+    let Output {
+        stream,
+        ring,
+        sample_rate,
+        channels,
+    } = open(&state, errors, wake)?;
     while let Some(request) = state.wait_request()? {
         let _ = stream.pause();
         if !request.playing {
@@ -651,7 +732,8 @@ fn audio_worker(
             sample_rate,
             channels,
             processes.clone(),
-        );
+        )
+        .with_filters(Arc::clone(&filters));
         let mut rendered = 0_u64;
         let mut enabled = false;
         while state.generation.load(Ordering::Acquire) == request.generation && !state.unavailable()
@@ -698,6 +780,10 @@ fn audio_worker(
                     break;
                 }
             };
+            let left_out = std::mem::take(&mut mixer.left_out);
+            if left_out != 0 {
+                tell(&filters, left_out, errors, wake);
+            }
             match publish_decoded(
                 &ring,
                 &state,
@@ -785,6 +871,22 @@ struct Voice {
     last_frame: usize,
     /// Source speed the decoder was started at.
     speed: f64,
+    /// Frames still to be read and dropped: the delay of the voice's chain.
+    lead: usize,
+}
+
+/// Reads until `bytes` is full or the stream ends, and says how much came.
+fn read_whole(stdout: &mut ChildStdout, bytes: &mut [u8]) -> std::io::Result<usize> {
+    let mut read = 0;
+    while read < bytes.len() {
+        match stdout.read(&mut bytes[read..]) {
+            Ok(0) => break,
+            Ok(count) => read += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(read)
 }
 
 mod plan;
@@ -817,9 +919,20 @@ struct Mixer {
     rate: u32,
     channels: usize,
     voices: BTreeMap<ClipId, Voice>,
-    /// Explicit Audio-track members own sound for their same-asset link.
-    /// Ownership includes muted members, so mute cannot reveal embedded sound.
-    audio_owners: BTreeSet<(AssetId, [u8; 16])>,
+    /// What sounds in this snapshot, as the core defines it for the interface
+    /// too: mute, solo, track volume and the links whose sound an Audio-track
+    /// clip owns.
+    sounding: Sounding,
+    /// The master limiter's gain: 1 while it is open.
+    limit: f32,
+    /// How far that gain rises toward 1 in one output frame.
+    release: f32,
+    /// The audio kinds this FFmpeg runs. A chain is fixed for the life of
+    /// its voice, and a voice never outlives this mixer's snapshot.
+    filters: Arc<Filters>,
+    /// What a chain went without since this was last read, as bits for
+    /// `Filters::unsaid`.
+    left_out: u32,
     processes: Processes,
     plan: plan::Plan,
     #[cfg(test)]
@@ -833,29 +946,61 @@ impl Mixer {
         channels: usize,
         processes: Processes,
     ) -> Self {
-        let audio_owners = project
-            .tracks
-            .iter()
-            .filter(|track| track.kind == TrackKind::Audio)
-            .flat_map(|track| track.clips.iter())
-            .filter_map(|clip| clip.asset_id().zip(clip.linked_id))
-            .map(|(asset_id, link_id)| (asset_id, link_id.into_bytes()))
-            .collect();
+        let sounding = Sounding::of(&project);
         Self {
             project,
             speed,
             rate,
             channels,
             voices: BTreeMap::new(),
-            audio_owners,
+            sounding,
+            limit: 1.0,
+            release: (1.0 - (-1.0 / (LIMITER_RELEASE_SECONDS * f64::from(rate))).exp()) as f32,
+            // Until a probe says otherwise every kind counts as available.
+            filters: Arc::default(),
+            left_out: 0,
             processes,
             plan: plan::Plan::default(),
             #[cfg(test)]
             decoder_audit: DecoderAudit::default(),
         }
     }
+    fn with_filters(mut self, filters: Arc<Filters>) -> Self {
+        self.filters = filters;
+        self
+    }
     fn clear(&mut self) {
         self.voices.clear();
+        self.limit = 1.0;
+    }
+
+    /// The master stage: a peak limiter with no lookahead. A frame whose
+    /// loudest channel is past the ceiling is turned down to it at once, and
+    /// the gain rises back with a 200 ms time constant. While the gain is 1
+    /// a frame within the ceiling is not touched, so a mix that never passes
+    /// it leaves as it was summed; after a peak every frame is turned down
+    /// until the gain is 1 again. The clamp behind it is for samples that
+    /// are not finite.
+    fn master(&mut self, output: &mut [f32]) {
+        for frame in output.chunks_exact_mut(self.channels) {
+            let peak = frame
+                .iter()
+                .fold(0_f32, |peak, sample| peak.max(sample.abs()));
+            if peak.is_finite() && (self.limit < 1.0 || peak > MASTER_CEILING) {
+                // Near 1 a step of the curve is under what an `f32` resolves;
+                // the floor keeps the gain rising until it is exactly 1.
+                let step = ((1.0 - self.limit) * self.release).max(f32::EPSILON);
+                self.limit = (self.limit + step).min(1.0).min(MASTER_CEILING / peak);
+                if self.limit < 1.0 {
+                    for sample in frame.iter_mut() {
+                        *sample *= self.limit;
+                    }
+                }
+            }
+            for sample in frame {
+                *sample = sample.clamp(-1.0, 1.0);
+            }
+        }
     }
 
     fn chunk(&mut self, start: Time, frames: usize) -> Result<Vec<f32>, MediaError> {
@@ -869,7 +1014,7 @@ impl Mixer {
         // retained decoder. Planning and mixing use the same sample bounds.
         self.plan.prepare(
             &project,
-            &self.audio_owners,
+            &self.sounding,
             plan::Window {
                 start,
                 frames,
@@ -909,7 +1054,7 @@ impl Mixer {
             // A decoder runs forward at one speed. Where a time map freezes,
             // reverses or ramps the clip is silent, and a new straight segment
             // starts a new decoder at its own source position.
-            let Some(clip_speed) = plan::steady_speed(clip, position) else {
+            let Some(clip_speed) = sound::steady_speed(clip, position) else {
                 self.voices.remove(&clip.id);
                 continue;
             };
@@ -924,16 +1069,18 @@ impl Mixer {
                 // Independently guard actual decoder reservations; admission
                 // must never become a way around the process resource budget.
                 if self.voices.len() >= MAX_VOICES {
-                    return Err(plan::voice_limit());
+                    return Err(plan::voice_limit(MAX_VOICES + 1, position));
                 }
                 let source = clip.source_time(position);
-                let effective = self.speed * clip_speed;
-                let changed_rate = (f64::from(self.rate) * effective).round();
-                if !(100.0..=1_536_000.0).contains(&changed_rate) {
-                    return Err(MediaError::Invalid(
-                        "Clip and preview speeds exceed the audio resampling range".into(),
-                    ));
-                }
+                let filters = chain::chain(
+                    clip,
+                    clip_speed,
+                    self.speed,
+                    self.rate,
+                    self.channels,
+                    &self.filters,
+                )?;
+                self.left_out |= chain::left_out(clip, self.channels, &self.filters);
                 let mut command = tool_command("ffmpeg");
                 command
                     .args([
@@ -960,10 +1107,7 @@ impl Mixer {
                     ])
                     .arg(self.channels.to_string())
                     .arg("-af")
-                    .arg(format!(
-                        "aresample={},asetrate={},aresample={}",
-                        self.rate, changed_rate as u32, self.rate
-                    ))
+                    .arg(filters)
                     .args(["-f", "f32le", "-c:a", "pcm_f32le", "pipe:1"]);
                 self.voices.insert(
                     clip.id,
@@ -972,6 +1116,7 @@ impl Mixer {
                         eof: false,
                         last_frame: interval.last,
                         speed: clip_speed,
+                        lead: chain::latency_frames(clip, self.rate, self.channels, &self.filters),
                     },
                 );
                 #[cfg(test)]
@@ -987,22 +1132,25 @@ impl Mixer {
             let mut bytes = vec![0; count * 4];
             if !voice.eof {
                 voice.process.begin_read();
-                let mut read = 0;
-                while read < bytes.len() {
-                    match voice.process.stdout.read(&mut bytes[read..]) {
-                        Ok(0) => {
-                            voice.eof = true;
-                            break;
-                        }
-                        Ok(count) => read += count,
-                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(error) => {
-                            return Err(voice
-                                .process
-                                .failure(&format!("Cannot decode audio: {error}")));
-                        }
+                // What the chain delays the sound by comes out first. It is
+                // read and dropped, so the voice's first frame is the one at
+                // its seek point.
+                let mut lead = vec![0; std::mem::take(&mut voice.lead) * self.channels * 4];
+                let outcome = read_whole(&mut voice.process.stdout, &mut lead).and_then(|led| {
+                    if led < lead.len() {
+                        return Ok(0);
                     }
-                }
+                    read_whole(&mut voice.process.stdout, &mut bytes)
+                });
+                let read = match outcome {
+                    Ok(read) => read,
+                    Err(error) => {
+                        return Err(voice
+                            .process
+                            .failure(&format!("Cannot decode audio: {error}")));
+                    }
+                };
+                voice.eof = read < bytes.len();
                 voice.process.end_read();
                 if read == 0
                     && voice
@@ -1016,14 +1164,17 @@ impl Mixer {
                     return Err(voice.process.failure("Audio decoder failed"));
                 }
             }
-            let animated = plan::gain_animated(clip);
-            let mut gain = clip.gain;
+            // A level that does not change inside the clip is read once for
+            // the interval; volume keys and fades are read at every frame.
+            let track = &project.tracks[interval.track];
+            let varies = sound::level_varies(clip);
+            let mut gain = track.gain * clip.gain;
             for (index, bytes) in bytes.chunks_exact(4).enumerate() {
-                if animated && index % self.channels == 0 {
+                if varies && index % self.channels == 0 {
                     let frame = interval.first + index / self.channels;
                     let at = start
                         + Time::from_seconds(frame as f64 / f64::from(self.rate) * self.speed);
-                    gain = editor_core::gain_at(clip, at);
+                    gain = sound::level_at(track, clip, at);
                 }
                 let sample = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
                 if sample.is_finite() {
@@ -1032,15 +1183,19 @@ impl Mixer {
             }
         }
         self.voices.retain(|_, voice| voice.last_frame == frames);
-        for sample in &mut output {
-            *sample = sample.clamp(-1.0, 1.0);
-        }
+        self.master(&mut output);
         Ok(output)
     }
 }
 
 #[cfg(test)]
+mod chain_tests;
+
+#[cfg(test)]
 mod fault_tests;
+
+#[cfg(test)]
+mod level_tests;
 
 #[cfg(test)]
 mod liveness_tests;
@@ -1048,7 +1203,7 @@ mod liveness_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use editor_core::{Asset, Clip, Track, TrackKind};
+    use editor_core::{Asset, Clip, MediaKind, Track, TrackKind};
     use std::{path::Path, process::Stdio};
 
     fn constant_pcm_asset(path: &Path) -> Asset {
@@ -1447,7 +1602,7 @@ mod tests {
             )
             .expect_err("a seventeenth overlapping voice must be rejected");
         assert!(
-            matches!(error, MediaError::Invalid(ref message) if message == "Preview audio supports at most 16 simultaneous audible clips; mute extra tracks"),
+            matches!(error, MediaError::Invalid(ref message) if message == "Preview audio supports at most 16 simultaneous audible clips (17 at 00:00:00); mute or solo tracks"),
             "the voice budget must reject the missing clip before any decoder I/O"
         );
         let remaining: Vec<_> = mixer

@@ -10,10 +10,16 @@ use crate::{
     agent,
     ai::{self, Planner},
     clipboard,
+    duck::{self, Ducking, Stepped},
+    extract::{self, Saving},
     file_drop::FileDrop,
-    pacing, rules,
+    normalize::{self, Normalizing},
+    pacing,
+    peaks::HeldPeaks,
+    record::Recording,
+    rules,
     settings::Settings,
-    speed,
+    speed, stems,
     textures::{self, Textures, Viewing},
     theme::{self, Palette, metrics},
     ui::{
@@ -23,7 +29,7 @@ use crate::{
         library::{LibraryInput, LibraryState},
         sheets::{
             self, Answer, Checkpoint, CheckpointAnswer, CheckpointsState, Conflict, ConflictAnswer,
-            Notice, Overlay, Pending,
+            DuckQuestion, Notice, Overlay, Pending,
         },
         timeline::{self, Reach, TimelineInput, TimelineState},
         toolbar::ToolbarInput,
@@ -38,8 +44,9 @@ use editor_core::{
     Playback, Project, ProjectQuery, Time, Track, TrackKind, Tracker, look,
 };
 use editor_media::{
-    AnalysisEvent, AnalysisService, AudioService, MediaEvent, MediaService, Region, SourceIdentity,
-    SteadyCache, SteadyEvent, SteadyJob, TrackJob,
+    AnalysisEvent, AnalysisService, AudioService, MediaEvent, MediaService, PeakCache,
+    RecordService, Region, SoundEvent, SoundService, SourceIdentity, SteadyCache, SteadyEvent,
+    SteadyJob, TrackJob,
 };
 use editor_store::{DocumentSession, RecoveredSession, RecoveryLease, SaveWorker, StoreError};
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Rect, pos2, vec2};
@@ -47,7 +54,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 const RECOVERY_INTERVAL: Duration = Duration::from_secs(15);
@@ -320,6 +327,18 @@ enum Job {
         /// The session of the file that was made for the copy.
         result: Result<Arc<DocumentSession>, String>,
     },
+    /// Where the sound of a media file, or of a clip's span of it, is to
+    /// be written: `None` when the dialog was left.
+    AudioPicked {
+        asked: Box<extract::Asked>,
+        to: Option<Result<PathBuf, String>>,
+    },
+    /// The path of a voiceover take asked for in the editor instance
+    /// `project` was made beside its document, or not.
+    TakePath {
+        project: uuid::Uuid,
+        result: Result<PathBuf, String>,
+    },
     Background(Result<String, String>),
 }
 
@@ -420,6 +439,29 @@ pub struct App {
     analysis: Option<AnalysisService>,
     /// Where camera paths are kept between sessions.
     steady_cache: SteadyCache,
+    /// The sound lane, started when a tile first wants its media's sound.
+    sound: Option<SoundService>,
+    /// Where peaks are kept between sessions.
+    peak_cache: PeakCache,
+    /// The peaks held for the waveforms in view.
+    peaks: HeldPeaks,
+    /// The clips waiting for their loudness, to be normalized.
+    normalizing: Normalizing,
+    /// The duck under way, waiting for the other clips' peaks.
+    ducking: Ducking,
+    /// The files the sound lane is writing, and those written and offered
+    /// to the project. A replaced project leaves them writing.
+    saved_audio: Saving,
+    /// The separations the sound lane is running. A replaced project leaves
+    /// them running; their stems are then only said.
+    separating: stems::Separating,
+    /// Whether this session's probe for a stem separator was started, and
+    /// whether its answer was taken.
+    separator_asked: bool,
+    separator_taken: bool,
+    /// The voiceover take under way: one at a time. A replaced project
+    /// stops it and keeps its file.
+    recording: Recording,
     /// The region being tracked there: one at a time.
     tracking: Option<Tracking>,
     /// What the media worker published besides frames while the frames of a
@@ -731,6 +773,11 @@ impl App {
                     beside.join("stabilization")
                 }),
         );
+        let peak_cache = PeakCache::at(
+            (launch.settings.as_deref())
+                .and_then(Path::parent)
+                .map_or_else(crate::peaks::cache_dir, |beside| beside.join("peaks")),
+        );
         let settings_path = launch.settings.or_else(Settings::default_path);
         let settings = settings_path
             .as_deref()
@@ -853,6 +900,16 @@ impl App {
             imports: VecDeque::new(),
             analysis: None,
             steady_cache,
+            sound: None,
+            peak_cache,
+            peaks: HeldPeaks::default(),
+            normalizing: Normalizing::default(),
+            ducking: Ducking::default(),
+            saved_audio: Saving::default(),
+            separating: stems::Separating::default(),
+            separator_asked: false,
+            separator_taken: false,
+            recording: Recording::default(),
             tracking: None,
             media_held: VecDeque::new(),
             file_drop: FileDrop::default(),
@@ -959,6 +1016,8 @@ impl App {
         for id in stale.changed.iter().chain(&stale.removed) {
             self.textures.forget_asset(*id);
             self.viewer.forget_lut(*id);
+            // Peaks read of the old file are not this media's sound.
+            self.peaks.media_replaced(*id, self.sound.as_ref());
         }
         if !stale.changed.is_empty() {
             // Frames of the old file may be queued or on their way. They
@@ -1143,6 +1202,17 @@ impl App {
         // And so was a camera being measured, and every path held.
         self.viewer.steady.clear();
         self.inspector.set_steady(None);
+        // And the sound being read for its waveforms, and every one held,
+        // and the clips waiting for their loudness.
+        self.peaks.project_replaced(self.sound.as_ref());
+        self.normalizing.clear();
+        self.ducking.clear();
+        self.inspector.set_ducking(None);
+        // A file being written is the person's and goes on; one written is
+        // no longer offered to the project that asked for it.
+        self.saved_audio.project_replaced();
+        // A take is stopped and kept; once closed, where it is is said.
+        self.recording.project_replaced();
         self.textures.clear();
         self.viewer.release_canvases();
         self.assets_seen = self.editor.project().assets.clone();
@@ -1159,13 +1229,17 @@ impl App {
         self.recovery_stale = false;
         self.autosave = Autosave::new(self.editor.revision(), Instant::now());
         // The part of the library in view is the person's, not the project's.
-        let tab = self.library.tab;
+        let (tab, kind) = (self.library.tab, self.library.kind);
         self.library = LibraryState::default();
-        self.library.tab = tab;
+        (self.library.tab, self.library.kind) = (tab, kind);
         // A worker still busy with the old project's checkpoints stays counted.
         self.checkpoints.list = None;
         self.checkpoints.name.clear();
-        if matches!(self.overlay, Overlay::Checkpoints | Overlay::Conflict(_)) {
+        // A duck waiting on its question was of the old project's clips.
+        if matches!(
+            self.overlay,
+            Overlay::Checkpoints | Overlay::Conflict(_) | Overlay::Duck(_)
+        ) {
             self.overlay = Overlay::None;
         }
         self.timeline.cancel_drag();
@@ -1531,6 +1605,32 @@ impl App {
         }
     }
 
+    /// Asks where the sound `source` names is to be saved. What is saved is
+    /// captured now; the file's name is settled where the dialog is awaited,
+    /// which may look at the disk.
+    fn pick_audio_file(
+        &mut self,
+        ctx: &egui::Context,
+        source: extract::Source,
+    ) -> Result<(), String> {
+        let asked = extract::Asked::of(self.editor.project(), self.editor.instance_id(), source)?;
+        let choice = self
+            .dialog
+            .clone()
+            .set_title("Save audio")
+            .add_filter("WAV audio", &[extract::EXTENSION])
+            .set_file_name(asked.file_name())
+            .save_file();
+        self.spawn(ctx, "aster-dialog", move || {
+            let picked = pollster::block_on(choice).map(|file| file.path().to_path_buf());
+            Job::AudioPicked {
+                to: picked.map(|picked| extract::target(picked, Path::exists)),
+                asked: Box::new(asked),
+            }
+        });
+        Ok(())
+    }
+
     fn import(&mut self, paths: Vec<PathBuf>) -> Option<String> {
         if paths.is_empty() {
             return None;
@@ -1695,6 +1795,15 @@ impl App {
                         self.notify(ctx, problem, true);
                     }
                 }
+                Job::AudioPicked { asked, to } => match to {
+                    None => {}
+                    Some(Err(problem)) => self.notify(ctx, problem, true),
+                    Some(Ok(to)) => {
+                        if let Err(problem) = self.save_audio(ctx, &asked, to) {
+                            self.notify(ctx, problem, true);
+                        }
+                    }
+                },
                 Job::Loaded {
                     epoch,
                     revision,
@@ -1976,6 +2085,16 @@ impl App {
                         _ => self.notify(ctx, format!("Duplicate saved as “{name}”"), false),
                     }
                 }
+                Job::TakePath { project, result } => {
+                    // Only the take that waits for this path opens a device.
+                    let wake = ctx.clone();
+                    let started = self.recording.path_answered(project, result, |path| {
+                        RecordService::start(path, move || wake.request_repaint())
+                    });
+                    if let Err(problem) = started {
+                        self.notify(ctx, problem, true);
+                    }
+                }
                 Job::Background(Ok(text)) => {
                     if !text.is_empty() {
                         self.notify(ctx, text, false);
@@ -1983,6 +2102,89 @@ impl App {
                 }
                 Job::Background(Err(text)) => self.notify(ctx, text, true),
             }
+        }
+    }
+
+    // ---- Voiceover ---------------------------------------------------------
+
+    /// Asks for a take: refused in words for a project without a file and
+    /// while one is under way, before anything is opened. The take's path
+    /// is made beside the document on a worker, and the microphone opened
+    /// when it answers; the timeline plays once the device does. See
+    /// [`crate::record`].
+    fn record(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        let document = self.document.as_ref().map(|session| session.path());
+        let instance = self.editor.instance_id();
+        let playing = self.playback.playing;
+        // A playing timeline is paused: it rolls from the playhead at 1× once
+        // the device runs.
+        let beside = self.recording.ask(instance, document, &mut self.playback)?;
+        if playing {
+            self.sync_audio();
+        }
+        // The timeline is what records, from its playhead.
+        self.close_source();
+        let spawned = self.spawn(ctx, "aster-take", move || Job::TakePath {
+            project: instance,
+            result: editor_store::new_take(&beside, SystemTime::now())
+                .map_err(|error| error.to_string()),
+        });
+        if !spawned {
+            self.recording.stop(&mut self.playback);
+        }
+        Ok(())
+    }
+
+    /// Ends the take under way, and the playback it was recorded over.
+    fn stop_recording(&mut self) {
+        if self.recording.stop(&mut self.playback) {
+            self.sync_audio();
+        }
+    }
+
+    /// Why a transport request is refused while a take is under way: the
+    /// take is placed where it was heard, so the playhead stays with it.
+    fn held_by_take(&self, to: &str) -> Result<(), String> {
+        match self.recording.busy() {
+            true => Err(format!("Stop recording to {to}.")),
+            false => Ok(()),
+        }
+    }
+
+    /// One frame of the take: what its service said, and its anchor when
+    /// due. `heard` is the sound device's position, as the transport read
+    /// it this frame.
+    fn step_recording(&mut self, ctx: &egui::Context, heard: Option<Time>) {
+        if !self.recording.busy() {
+            return;
+        }
+        let instance = self.editor.instance_id();
+        let framed = self.recording.frame(
+            self.editor.project(),
+            instance,
+            &mut self.playback,
+            heard,
+            Instant::now(),
+        );
+        if framed.transport {
+            self.sync_audio();
+        }
+        if let Some(problem) = framed.failed {
+            self.notify(ctx, problem, true);
+        }
+        if let Some(landed) = framed.landed {
+            if let Some(command) = landed.command
+                && let Err(error) = self.edit(command)
+            {
+                let path = landed.path.display();
+                self.notify(
+                    ctx,
+                    format!("The take could not be placed: {error}. It is kept in {path}"),
+                    true,
+                );
+                return;
+            }
+            self.notify(ctx, landed.said, landed.problem);
         }
     }
 
@@ -2162,6 +2364,363 @@ impl App {
                 }
             }
         }
+    }
+
+    // ---- Waveforms ------------------------------------------------------
+
+    /// Starts the sound lane, when it is first needed.
+    fn start_sound(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        if self.sound.is_none() {
+            let ctx = ctx.clone();
+            let service = SoundService::new(move || ctx.request_repaint())
+                .map_err(|error| error.to_string())?;
+            self.sound = Some(service);
+        }
+        Ok(())
+    }
+
+    /// Asks the sound lane about the peaks the tiles of this frame wanted
+    /// and did not have: see [`HeldPeaks::ask`].
+    fn ask_peaks(&mut self, ctx: &egui::Context) {
+        if !self.peaks.wanting() {
+            // Nothing to ask: sound read for tiles no longer drawn is given
+            // up all the same.
+            if let Some(sound) = &self.sound {
+                self.peaks.give_up_unwanted(sound);
+            }
+            return;
+        }
+        if let Err(error) = self.start_sound(ctx) {
+            // Said once, and not tried again for the media that asked.
+            for (id, _) in self.peaks.take_wants() {
+                self.peaks.refuse(id);
+            }
+            self.peaks.beats.give_up_wanted();
+            self.notify(ctx, format!("Waveforms are unavailable: {error}"), true);
+            return;
+        }
+        let Some(sound) = &self.sound else {
+            return;
+        };
+        let refused = self.peaks.ask(
+            sound,
+            &self.editor.snapshot(),
+            self.editor.instance_id(),
+            &self.peak_cache,
+        );
+        for text in refused {
+            self.notify(ctx, text, true);
+        }
+    }
+
+    /// Shows or hides the beats of these media for the session, and says
+    /// so. They are found when a tile of each is next drawn with its peaks
+    /// held: see [`crate::peaks::HeldBeats`].
+    fn show_beats(&mut self, assets: &[AssetId], shown: bool) -> String {
+        for asset in assets {
+            self.peaks.beats.show(*asset, shown);
+        }
+        let project = self.editor.project();
+        let names: Vec<&str> = (assets.iter())
+            .filter_map(|id| project.assets.get(id))
+            .map(|asset| asset.name.as_str())
+            .collect();
+        let names = names.join(", ");
+        if shown {
+            format!("Beats are shown on {names}")
+        } else {
+            format!("Beats are hidden on {names}")
+        }
+    }
+
+    /// Takes what the sound lane said. Peaks are held only when they are
+    /// this project's, of the media as it is now and the answer to what was
+    /// asked: see [`HeldPeaks::take`].
+    fn take_sound(&mut self, ctx: &egui::Context) {
+        while let Some(event) = self.sound.as_ref().and_then(SoundService::poll) {
+            let instance = self.editor.instance_id();
+            if let SoundEvent::Progress { request, done } = event
+                && (self.saved_audio.progress(request, done)
+                    || self.separating.progress(request, done))
+            {
+                continue;
+            }
+            if let SoundEvent::Separated { .. } = event {
+                let answer = (self.separating).answered(self.editor.project(), instance, event);
+                if let Some(answer) = answer {
+                    self.stems_answered(ctx, answer);
+                }
+                continue;
+            }
+            if let SoundEvent::Extracted { .. } = event {
+                let now = ctx.input(|i| i.time);
+                if let Some(said) = self.saved_audio.answered(instance, now, event) {
+                    self.notify(ctx, said.text, said.problem);
+                }
+                continue;
+            }
+            if let SoundEvent::Measured { .. } = event {
+                let written = (self.normalizing).answered(self.editor.project(), instance, event);
+                for written in written {
+                    self.write_normalized(ctx, written);
+                }
+                continue;
+            }
+            let failed = (self.peaks).answered(instance, self.editor.project(), event);
+            if let Some(text) = failed {
+                self.notify(ctx, text, true);
+            }
+        }
+        // Clips held for room in the lane, or for an answer about the same
+        // span, are asked for now.
+        if self.normalizing.holding()
+            && let Some(sound) = &self.sound
+        {
+            let problems = self.normalizing.pump(|job| sound.loudness(job));
+            for problem in problems {
+                self.notify(ctx, problem, true);
+            }
+        }
+    }
+
+    // ---- Saved audio --------------------------------------------------------
+
+    /// Has the sound lane write what `asked` names to `to`: see
+    /// [`extract`]. Nothing is edited.
+    fn save_audio(
+        &mut self,
+        ctx: &egui::Context,
+        asked: &extract::Asked,
+        to: PathBuf,
+    ) -> Result<(), String> {
+        extract::guard(self.editor.project(), &to)?;
+        self.start_sound(ctx)
+            .map_err(|error| format!("The sound cannot be saved: {error}"))?;
+        let Some(sound) = &self.sound else {
+            return Err("The sound cannot be saved.".to_owned());
+        };
+        let sent = sound
+            .extract(asked.job(self.editor.project(), to.clone()))
+            .map_err(|error| format!("The sound of {} was not saved: {error}", asked.name))?;
+        if let Some(said) = self.saved_audio.sent(asked, to, &sent) {
+            self.notify(ctx, said, false);
+        }
+        ctx.request_repaint();
+        Ok(())
+    }
+
+    /// Gives up the file being written as `request`, and says what came of
+    /// it. One the lane is already putting in place, or wrote, is not given
+    /// up, and its answer comes.
+    fn cancel_saved_audio(&mut self, ctx: &egui::Context, request: u64) {
+        let outcome = (self.sound.as_ref())
+            .map_or(editor_media::Cancel::GivenUp, |sound| sound.cancel(request));
+        if let Some(said) = self.saved_audio.cancelled(request, outcome) {
+            self.notify(ctx, said, false);
+        }
+    }
+
+    // ---- Stems ---------------------------------------------------------------
+
+    /// Has the stem separator split the whole sound of `clip`'s media into
+    /// the project's media folder: see [`stems`]. Nothing is edited until
+    /// the stems come. Refused in words without a separator, without a
+    /// saved document, and for a clip that is not heard.
+    fn separate_stems(&mut self, ctx: &egui::Context, clip: ClipId) -> Result<String, String> {
+        let separator = match editor_media::stem_separator() {
+            Some(Ok(separator)) => separator,
+            Some(Err(why)) => return Err(format!("{}. {why}", stems::NEEDS_TOOL)),
+            None => return Err(stems::LOOKING.to_owned()),
+        };
+        let asked = stems::Asked::of(self.editor.project(), self.editor.instance_id(), clip)?;
+        let to = stems::folder(self.document.as_ref().map(|session| session.path()))?;
+        self.start_sound(ctx)
+            .map_err(|error| format!("Stems cannot be separated: {error}"))?;
+        let Some(sound) = &self.sound else {
+            return Err("Stems cannot be separated.".to_owned());
+        };
+        let sent = sound
+            .separate(asked.job(separator, to.clone()))
+            .map_err(|error| format!("The stems of {} were not made: {error}", asked.name))?;
+        let replaced = self.separating.sent(&asked, &sent);
+        ctx.request_repaint();
+        Ok(replaced.unwrap_or_else(|| {
+            format!(
+                "Separating {} into {}. This can take minutes; waveforms wait behind it.",
+                asked.name,
+                to.display()
+            )
+        }))
+    }
+
+    /// Places stems that came, as one step, or says why they were not and
+    /// where their files are.
+    fn stems_answered(&mut self, ctx: &egui::Context, answer: stems::Answer) {
+        if let Some(command) = answer.command
+            && let Err(error) = self.edit(command)
+        {
+            self.notify(
+                ctx,
+                format!(
+                    "The stems could not be placed: {error}. They are kept in {}",
+                    stems::listed(&answer.files)
+                ),
+                true,
+            );
+            return;
+        }
+        self.notify(ctx, answer.said.text, answer.said.problem);
+    }
+
+    /// Gives up the separation under way as `request`, and says what came
+    /// of it. One the lane is already putting in place is not given up, and
+    /// its answer comes.
+    fn cancel_separate(&mut self, ctx: &egui::Context, request: u64) {
+        let outcome = (self.sound.as_ref())
+            .map_or(editor_media::Cancel::GivenUp, |sound| sound.cancel(request));
+        if let Some(said) = self.separating.cancelled(request, outcome) {
+            self.notify(ctx, said, false);
+        }
+    }
+
+    // ---- Loudness ---------------------------------------------------------
+
+    /// Has the sound lane measure each of `clips` that is normalized: see
+    /// [`Normalizing::ask`]. Nothing is edited until the figures come.
+    fn normalize(&mut self, ctx: &egui::Context, clips: &[ClipId]) -> Result<String, String> {
+        self.start_sound(ctx)
+            .map_err(|error| format!("Loudness cannot be measured: {error}"))?;
+        let Some(sound) = &self.sound else {
+            return Err("Loudness cannot be measured.".to_owned());
+        };
+        let instance = self.editor.instance_id();
+        let said = (self.normalizing).ask(self.editor.project(), instance, clips, |job| {
+            sound.loudness(job)
+        })?;
+        self.notify(ctx, said.clone(), false);
+        Ok(said)
+    }
+
+    /// Takes the step one answer made for a clip, and says what it did.
+    fn write_normalized(&mut self, ctx: &egui::Context, written: normalize::Written) {
+        let normalize::Written {
+            name,
+            command,
+            said,
+            problem,
+            ..
+        } = written;
+        if let Some(command) = command
+            && let Err(error) = self.edit(command)
+        {
+            self.notify(ctx, format!("{name} was not normalized: {error}"), true);
+            return;
+        }
+        self.notify(ctx, said, problem);
+    }
+
+    // ---- Ducking -----------------------------------------------------------
+
+    /// Ducks `clips` by `depth` under the other clips: see [`Ducking`]. A
+    /// clip that does not sound is refused in words before anything is
+    /// asked, and the person is asked first when volume keys would be
+    /// replaced.
+    fn duck(
+        &mut self,
+        ctx: &egui::Context,
+        clips: Vec<ClipId>,
+        depth: f32,
+    ) -> Result<Option<String>, String> {
+        let project = self.editor.project();
+        let keyed = duck::keyed(project, &duck::takers(project, &clips)?);
+        if keyed > 0 {
+            self.overlay = Overlay::Duck(DuckQuestion {
+                clips,
+                depth,
+                keyed,
+            });
+            return Ok(None);
+        }
+        self.start_ducking(ctx, &clips, depth).map(Some)
+    }
+
+    /// Starts the duck in place of one under way, and says so.
+    fn start_ducking(
+        &mut self,
+        ctx: &egui::Context,
+        clips: &[ClipId],
+        depth: f32,
+    ) -> Result<String, String> {
+        if let Some(Some(request)) = self.ducking.give_up(&mut self.peaks)
+            && let Some(sound) = &self.sound
+        {
+            sound.cancel(request);
+        }
+        let started = self.ducking.start(
+            self.editor.project(),
+            self.editor.instance_id(),
+            self.editor.revision(),
+            clips,
+            depth,
+        );
+        self.inspector
+            .set_ducking(self.ducking.progress(self.editor.project()));
+        let said = started?;
+        self.notify(ctx, said.clone(), false);
+        ctx.request_repaint();
+        Ok(said)
+    }
+
+    /// Gives up the duck under way, if there is one, and says so.
+    fn stop_ducking(&mut self, ctx: &egui::Context) {
+        let Some(cancel) = self.ducking.give_up(&mut self.peaks) else {
+            return;
+        };
+        if let (Some(request), Some(sound)) = (cancel, &self.sound) {
+            sound.cancel(request);
+        }
+        self.inspector.set_ducking(None);
+        self.notify(
+            ctx,
+            format!("{} was stopped; nothing was changed.", duck::LABEL),
+            false,
+        );
+    }
+
+    /// Takes the next voice's peaks when they are held, or wants them of
+    /// the held peaks and asks the lane for them here; and writes the duck
+    /// once every voice is taken.
+    fn step_ducking(&mut self, ctx: &egui::Context) {
+        if !self.ducking.busy() {
+            return;
+        }
+        let stepped = self.ducking.step(
+            self.editor.project(),
+            self.editor.instance_id(),
+            self.editor.revision(),
+            &mut self.peaks,
+        );
+        match stepped {
+            // Asked now, not by the frame that draws the tiles: this runs
+            // alone while the window is hidden, and the duck reads on.
+            None if self.peaks.wanting() => self.ask_peaks(ctx),
+            None => {}
+            // The next voice is wanted in a frame of its own.
+            Some(Stepped::Took) => ctx.request_repaint(),
+            Some(Stepped::Done(Ok((command, said)))) => match self.edit(*command) {
+                Ok(_) => self.notify(ctx, said, false),
+                Err(error) => self.notify(ctx, format!("Nothing was ducked: {error}"), true),
+            },
+            Some(Stepped::Done(Err(said))) => self.notify(ctx, said, true),
+            Some(Stepped::GivenUp { said, cancel }) => {
+                if let (Some(request), Some(sound)) = (cancel, &self.sound) {
+                    sound.cancel(request);
+                }
+                self.notify(ctx, said, true);
+            }
+        }
+        self.inspector
+            .set_ducking(self.ducking.progress(self.editor.project()));
     }
 
     /// Hands a region to the analysis worker. The one it was on is given
@@ -2791,6 +3350,51 @@ impl App {
                     .map(Some);
             }
             Action::SplitAtPlayhead => return self.split().map(Some),
+            Action::DetachAudio(clip) => {
+                // A volume still held in a field is the one the sound takes.
+                self.commit_drafts(ctx, true);
+                return self.detach_audio(clip).map(Some);
+            }
+            Action::Normalize(clips) => {
+                // Effects held in a field are the ones the sound is measured
+                // through.
+                self.commit_drafts(ctx, true);
+                return self.normalize(ctx, &clips).map(Some);
+            }
+            Action::Duck { clips, depth } => {
+                // A volume held in a field is the one the dips are under.
+                self.commit_drafts(ctx, true);
+                return self.duck(ctx, clips, depth);
+            }
+            Action::CancelDuck => self.stop_ducking(ctx),
+            Action::ShowBeats { assets, shown } => {
+                // The tiles that show them are drawn again, and want them.
+                ctx.request_repaint();
+                return Ok(Some(self.show_beats(&assets, shown)));
+            }
+            Action::MarkersFromBeats(clip) => {
+                let command = self.peaks.beats.markers(self.editor.project(), clip)?;
+                return self.edit(command).map(Some);
+            }
+            Action::SaveAudio(source) => self.pick_audio_file(ctx, source)?,
+            Action::CancelSaveAudio(request) => self.cancel_saved_audio(ctx, request),
+            Action::AddSavedAudio(request) => {
+                // The file is imported as any other: one "Import media" step.
+                if let Some(to) = self.saved_audio.take_offer(request)
+                    && let Some(problem) = self.import(vec![to])
+                {
+                    return Err(problem);
+                }
+            }
+            Action::DismissSavedAudio(request) => {
+                self.saved_audio.take_offer(request);
+            }
+            Action::SeparateStems(clip) => {
+                // A volume still held in a field is the one the stems take.
+                self.commit_drafts(ctx, true);
+                return self.separate_stems(ctx, clip).map(Some);
+            }
+            Action::CancelSeparate(request) => self.cancel_separate(ctx, request),
             Action::AddTransitions { places, kind } => {
                 self.commit_drafts(ctx, true);
                 let saved = &self.settings.transitions;
@@ -2849,6 +3453,12 @@ impl App {
             Action::InsertAsset { asset, place } => {
                 return self.insert_asset(asset, place).map(Some);
             }
+            Action::AddBackgroundMusic(asset) => {
+                // A length still held in a field is part of what the bed
+                // has to cover.
+                self.commit_drafts(ctx, true);
+                return self.background_music(asset).map(Some);
+            }
             Action::RemoveAsset(asset) => {
                 // The textures follow in `media_changed`.
                 let (command, said) = remove_asset_command(self.editor.project(), asset);
@@ -2858,7 +3468,10 @@ impl App {
                 }
                 return Ok(Some(done));
             }
-            Action::PreviewAsset(asset) => self.open_source(ctx, asset)?,
+            Action::PreviewAsset(asset) => {
+                self.held_by_take("preview media")?;
+                self.open_source(ctx, asset)?;
+            }
             Action::CloseSource => self.close_source(),
             Action::Source(transport) => {
                 let source = self.source.as_mut().ok_or("No media is being previewed.")?;
@@ -2876,6 +3489,9 @@ impl App {
             // The timeline's transport. Asking it for anything turns the
             // viewer back to the timeline.
             Action::TogglePlay => {
+                // Space ends a take as `Action::StopRecord`; the play button,
+                // K, L, a double-click and the panel do not.
+                self.held_by_take("play or pause")?;
                 self.close_source();
                 if self.playback.playing {
                     self.playback.pause();
@@ -2893,6 +3509,7 @@ impl App {
                 self.sync_audio();
             }
             Action::Seek(time) => {
+                self.held_by_take("move the playhead")?;
                 self.close_source();
                 let at = self.playback.position;
                 self.playback.seek(time);
@@ -2906,6 +3523,7 @@ impl App {
                 }
             }
             Action::Step(frames) => {
+                self.held_by_take("move the playhead")?;
                 self.close_source();
                 let was_playing = self.playback.playing;
                 let at = self.playback.position;
@@ -2919,6 +3537,7 @@ impl App {
                 self.timeline.follow(self.playback.position);
             }
             Action::JumpStart => {
+                self.held_by_take("move the playhead")?;
                 self.close_source();
                 let at = self.playback.position;
                 self.playback.seek(Time::ZERO);
@@ -2931,6 +3550,7 @@ impl App {
                 }
             }
             Action::JumpEnd => {
+                self.held_by_take("move the playhead")?;
                 self.close_source();
                 let end = self.editor.project().duration();
                 let at = self.playback.position;
@@ -2943,6 +3563,7 @@ impl App {
                 self.sync_audio();
             }
             Action::SetSpeed(speed) => {
+                self.held_by_take("change the speed")?;
                 self.playback
                     .set_speed(speed)
                     .map_err(|error| error.to_string())?;
@@ -2951,6 +3572,11 @@ impl App {
                 }
             }
             Action::ToggleLoop => self.looping = !self.looping,
+            Action::Record => {
+                self.commit_drafts(ctx, true);
+                self.record(ctx)?;
+            }
+            Action::StopRecord => self.stop_recording(),
 
             Action::ZoomTimeline(factor) => self.timeline.zoom_centered(factor),
             Action::FitTimeline => self.timeline.fit = true,
@@ -2977,7 +3603,10 @@ impl App {
             Action::ToggleKeyLane => {
                 let project = self.editor.project();
                 if !self.timeline.keys.can_toggle_lane(project, &self.selection) {
-                    return Err("Select a clip that has keyframes to see them.".to_owned());
+                    return Err(
+                        "Select a clip that has keyframes or sound to see its keyframes."
+                            .to_owned(),
+                    );
                 }
                 self.timeline.keys.toggle_lane(project, &self.selection);
             }
@@ -3269,6 +3898,20 @@ impl App {
         Ok(done)
     }
 
+    /// Puts the sound of `clip` on an audio track, linked to it. The picture
+    /// clip stays the one selected.
+    fn detach_audio(&mut self, clip: ClipId) -> Result<String, String> {
+        let command = rules::detach_audio(self.editor.project(), clip)?;
+        self.edit(command)
+    }
+
+    /// Lays the sound `asset` under the project as it is now, on a track of
+    /// its own. The selection stays where it was.
+    fn background_music(&mut self, asset: AssetId) -> Result<String, String> {
+        let command = rules::background_music(self.editor.project(), asset)?;
+        self.edit(command)
+    }
+
     fn agent_submit(&mut self, ctx: &egui::Context, line: String) {
         let line = line.trim().to_owned();
         self.agent.push(Entry::Asked(line.clone()));
@@ -3549,6 +4192,11 @@ impl App {
             };
             (presses > 0).then(|| frames.saturating_mul(presses as i64))
         };
+        // R asks for a take, or ends the one under way: the timeline is what
+        // records, whatever the viewer shows.
+        if let Some(action) = record_key(ctx, self.recording.busy()) {
+            actions.push(action);
+        }
         // While the source monitor is up, the transport keys are its own and
         // the keys that edit at the timeline's playhead are not heard.
         if let Some(source) = &self.source {
@@ -3610,7 +4258,7 @@ impl App {
             actions.push(Action::PreviewAsset(asset));
         }
         if pressed(Key::Space) {
-            actions.push(Action::TogglePlay);
+            actions.extend(play_key(Key::Space, &self.playback, self.recording.busy()));
         }
         if let Some(frames) = steps(Key::ArrowLeft, Held::Alone, -1) {
             actions.push(Action::Step(frames));
@@ -3705,15 +4353,9 @@ impl App {
         if let Some(frames) = steps(Key::J, Held::Alone, -second) {
             actions.push(Action::Step(frames));
         }
-        if pressed(Key::K) && self.playback.playing {
-            actions.push(Action::TogglePlay);
-        }
-        if pressed(Key::L) {
-            if self.playback.playing {
-                actions.push(Action::SetSpeed((self.playback.speed * 2.0).min(8.0)));
-            } else {
-                actions.push(Action::SetSpeed(1.0));
-                actions.push(Action::TogglePlay);
+        for key in [Key::K, Key::L] {
+            if pressed(key) {
+                actions.extend(play_key(key, &self.playback, self.recording.busy()));
             }
         }
         if pressed(Key::Delete) || pressed(Key::Backspace) {
@@ -3740,6 +4382,13 @@ impl App {
                 self.timeline.cancel_drag() | self.viewer.cancel() | held | picking | choosing;
             if cancelled {
                 self.inspector.cancel(&mut self.draft);
+            } else if self.recording.busy() {
+                // A take is ended before anything else is let go.
+                actions.push(Action::StopRecord);
+            } else if self.ducking.busy() {
+                // A duck reading the others' sound is let go before the
+                // selection it was made of.
+                actions.push(Action::CancelDuck);
             } else if !self.timeline.unmark() {
                 // A transition's marking is let go before its clip is.
                 self.selection.clear();
@@ -3813,6 +4462,7 @@ impl App {
             .update(Arc::clone(&project));
         self.textures.begin_frame();
         self.viewer.begin_frame();
+        self.peaks.begin_frame();
         self.show_steady(&project);
         // Layers given up since the last frame are no longer decoded for.
         self.textures.retire(self.media.as_ref());
@@ -3998,6 +4648,7 @@ impl App {
                     speed: self.playback.speed,
                     looping: self.looping,
                     media: self.media.as_ref(),
+                    record: self.recording.view(),
                 },
                 actions,
             ),
@@ -4052,6 +4703,7 @@ impl App {
             &mut self.timeline,
             &mut self.selection,
             &mut self.textures,
+            &mut self.peaks,
             &TimelineInput {
                 p: &p,
                 project: &project,
@@ -4060,9 +4712,18 @@ impl App {
                 media: self.media.as_ref(),
                 can_paste: self.clipboard.is_some(),
                 freeze_hold: self.inspector.freeze_hold(),
+                separator: stems::Tool::of(editor_media::stem_separator().as_ref()),
             },
             actions,
         );
+        // The sound the tiles drawn wanted and did not have is asked for
+        // now, in the frame that wanted it.
+        self.ask_peaks(&ctx);
+        // Peaks or beat grids turned away while a tile of the last frame
+        // still held their room are asked for again in a frame of their own.
+        if self.peaks.room_is_due() {
+            ctx.request_repaint();
+        }
         // Nothing is drawn after the lanes that shows a poster. One that was
         // turned away while posters of the last frame still held its room is
         // asked for again in a frame of its own.
@@ -4092,6 +4753,17 @@ impl App {
         // Sheets and what floats over the window.
         match self.overlay.clone() {
             Overlay::None | Overlay::Conflict(_) => {}
+            Overlay::Duck(question) => {
+                if let Some(replace) = sheets::replace_keys(&ctx, &p, question.keyed) {
+                    self.overlay = Overlay::None;
+                    if replace
+                        && let Err(problem) =
+                            self.start_ducking(&ctx, &question.clips, question.depth)
+                    {
+                        self.notify(&ctx, problem, true);
+                    }
+                }
+            }
             Overlay::Settings => {
                 if sheets::settings(&ctx, &p, &self.settings, actions) {
                     self.overlay = Overlay::None;
@@ -4145,7 +4817,11 @@ impl App {
         {
             self.recovery_sheet(&ctx, &p, offer);
         }
-        sheets::notices(&ctx, &p, &self.notices, viewer);
+        // Files being written, and written ones offered, above the notices.
+        let mut cards = self.saved_audio.cards();
+        cards.extend(self.separating.cards());
+        let top = sheets::saves(&ctx, &p, &cards, viewer, actions);
+        sheets::notices(&ctx, &p, &self.notices, viewer, top);
         if self.files_held {
             sheets::drop_target(&ctx, &p);
         }
@@ -4286,6 +4962,8 @@ impl App {
                     playhead: self.playback.position,
                     transition: (self.timeline.marked(project, &self.selection))
                         .map(|(_, edge)| edge),
+                    // Read, never waited for: the audio worker probes.
+                    missing: editor_media::missing_audio_filters().as_deref(),
                 },
                 actions,
             ),
@@ -4343,10 +5021,31 @@ impl eframe::App for App {
     /// [`end_frame`].
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.file_drop.attach(frame, ctx);
+        if !self.separator_asked {
+            // Once a session, on a thread of its own: the clip menu reads
+            // the answer and never waits for it.
+            self.separator_asked = true;
+            let wake = ctx.clone();
+            editor_media::look_for_separator(move || wake.request_repaint());
+        }
+        if !self.separator_taken
+            && let Some(found) = editor_media::stem_separator()
+        {
+            // A separator that is there and cannot be run is said once; most
+            // people have none, and the clip menu says so where it is asked.
+            self.separator_taken = true;
+            if let Err(why) = found
+                && !editor_media::separator_absent(&why)
+            {
+                self.notify(ctx, format!("Separate stems is unavailable: {why}"), true);
+            }
+        }
         self.take_jobs(ctx);
         self.take_media(ctx);
         self.take_analysis(ctx);
         self.take_steadies(ctx);
+        self.take_sound(ctx);
+        self.step_ducking(ctx);
         self.take_saves(ctx);
         self.take_agent_calls();
         self.take_ai();
@@ -4387,17 +5086,20 @@ impl eframe::App for App {
             }
         }
 
-        // Playback clock.
+        // Playback clock. The sound device is the master clock once it is
+        // running; until then, and without sound, the wall clock is. A take
+        // is anchored to the same reading.
+        let heard = (self.playback.playing || self.recording.busy())
+            .then(|| self.audio.as_ref().and_then(AudioService::position))
+            .flatten();
         if self.playback.playing {
             let duration = self.editor.project().duration();
-            // The sound device is the master clock once it is running; until
-            // then, and without sound, the wall clock is.
-            let heard = self.audio.as_ref().and_then(AudioService::position);
             self.playback
                 .tick_with_audio(Instant::now(), duration, heard);
             if !self.playback.playing {
-                // The clock stopped itself at the end.
-                if self.looping && duration > Time::ZERO {
+                // The clock stopped itself at the end. A take runs on past
+                // it, with the playhead held there: nothing loops under it.
+                if self.looping && duration > Time::ZERO && !self.recording.busy() {
                     self.playback.seek(Time::ZERO);
                     self.playback.play();
                     self.textures.jumped();
@@ -4410,6 +5112,11 @@ impl eframe::App for App {
                 ctx.request_repaint_after(wake);
             }
         }
+        self.step_recording(ctx, heard);
+        // The take's elapsed time and level, and nothing once it is placed.
+        if let Some(wait) = self.recording.repaint_after() {
+            ctx.request_repaint_after(wait);
+        }
 
         // A recovery copy of unsaved work, at most every few seconds. A
         // project without a file has one too, in the application's folder.
@@ -4420,8 +5127,11 @@ impl eframe::App for App {
             ctx.request_repaint_after(RECOVERY_INTERVAL);
         }
 
-        // Notices leave by themselves.
+        // Written files stop being offered, and notices leave, by themselves.
         let now = ctx.input(|i| i.time);
+        if let Some(next) = self.saved_audio.expire(now) {
+            ctx.request_repaint_after(Duration::from_secs_f64((next - now).max(0.0)));
+        }
         self.notices.retain(|notice| notice.until > now);
         if let Some(next) = self
             .notices
@@ -4494,6 +5204,8 @@ impl eframe::App for App {
         if let Some(audio) = &self.audio {
             audio.stop();
         }
+        // A take under way is closed and kept; nothing is placed.
+        self.recording.close();
         match self.recovery_base() {
             Some(base) => {
                 let dirty = self.editor.is_dirty();
@@ -4708,6 +5420,37 @@ fn strikes(events: &[egui::Event], key: Key, held: Held) -> usize {
 /// Whether `key` went down among `events` held as `held`.
 fn struck(events: &[egui::Event], key: Key, held: Held) -> bool {
     strikes(events, key, held) > 0
+}
+
+/// What `R` asks for in this frame: a take, or the end of the one under way
+/// when `busy`. Nothing while a field has the keyboard, where it is a letter.
+fn record_key(ctx: &egui::Context, busy: bool) -> Option<Action> {
+    if ctx.text_edit_focused() || !ctx.input(|i| struck(&i.events, Key::R, Held::Alone)) {
+        return None;
+    }
+    Some(if busy {
+        Action::StopRecord
+    } else {
+        Action::Record
+    })
+}
+
+/// What Space, K or L asks of the timeline's transport, playing as
+/// `playback` is. While a take is under way (`busy`) Space ends it, as R and
+/// Escape do; K and L ask once for what they would do, which is refused in
+/// words, and never end the take.
+fn play_key(key: Key, playback: &Playback, busy: bool) -> Vec<Action> {
+    match key {
+        Key::Space if busy => vec![Action::StopRecord],
+        Key::Space => vec![Action::TogglePlay],
+        Key::K if playback.playing => vec![Action::TogglePlay],
+        Key::L if playback.playing => {
+            vec![Action::SetSpeed((playback.speed * 2.0).min(8.0))]
+        }
+        Key::L if busy => vec![Action::TogglePlay],
+        Key::L => vec![Action::SetSpeed(1.0), Action::TogglePlay],
+        _ => Vec::new(),
+    }
 }
 
 /// Whether `key` is the application's to act on. The arrows and the two
@@ -5080,6 +5823,103 @@ mod tests {
             assert!(!struck(&others, Key::ArrowRight, held));
             assert!(!struck(&others, Key::ArrowLeft, held));
         }
+    }
+
+    #[test]
+    fn r_asks_for_a_take_or_ends_it_and_is_a_letter_in_a_field() {
+        let ctx = egui::Context::default();
+        let mut typed = String::new();
+        // One pass with R pressed, read as `shortcuts` reads it, before the
+        // panels; a field is drawn, and has the keyboard when `focus`.
+        let mut pass = |press: bool, focus: bool, busy: bool| {
+            let events = match press {
+                true => vec![egui::Event::Key {
+                    key: Key::R,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                }],
+                false => Vec::new(),
+            };
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut asked = None;
+            let output = ctx.run_ui(input, |ui| {
+                asked = record_key(ui.ctx(), busy);
+                let field = ui.text_edit_singleline(&mut typed);
+                if focus {
+                    field.request_focus();
+                } else {
+                    field.surrender_focus();
+                }
+            });
+            output.drop_without_applying_deltas();
+            asked
+        };
+        assert!(matches!(pass(true, false, false), Some(Action::Record)));
+        assert!(matches!(pass(true, false, true), Some(Action::StopRecord)));
+        assert!(pass(false, false, false).is_none());
+        // A field takes the keyboard, and from the next pass R is a letter.
+        pass(false, true, false);
+        assert!(pass(true, true, false).is_none());
+        assert!(pass(true, true, true).is_none());
+        // Once it lets go, R records again.
+        pass(false, false, false);
+        assert!(matches!(pass(true, false, false), Some(Action::Record)));
+        // Held with a modifier, it is another chord.
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: Key::R,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::COMMAND,
+            }],
+            ..Default::default()
+        };
+        let mut asked = None;
+        ctx.run_ui(input, |ui| asked = record_key(ui.ctx(), false))
+            .drop_without_applying_deltas();
+        assert!(asked.is_none());
+    }
+
+    #[test]
+    fn during_a_take_space_ends_it_and_k_and_l_ask_once_and_never_end_it() {
+        let stopped = Playback::default();
+        let mut playing = Playback::default();
+        playing.set_speed(2.0).unwrap();
+        playing.play();
+        let asked = |key, playback: &Playback, busy| {
+            play_key(key, playback, busy)
+                .iter()
+                .map(|action| match action {
+                    Action::StopRecord => "stop record".to_owned(),
+                    Action::TogglePlay => "toggle".to_owned(),
+                    Action::SetSpeed(speed) => format!("speed {speed}"),
+                    other => panic!("{key:?} asked for {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        // Without a take, as ever.
+        assert_eq!(asked(Key::Space, &stopped, false), ["toggle"]);
+        assert_eq!(asked(Key::K, &stopped, false), Vec::<String>::new());
+        assert_eq!(asked(Key::K, &playing, false), ["toggle"]);
+        assert_eq!(asked(Key::L, &stopped, false), ["speed 1", "toggle"]);
+        assert_eq!(asked(Key::L, &playing, false), ["speed 4"]);
+        // During a take, whether the timeline plays or has stopped at its
+        // end: only Space ends it, and K or L is one request `perform`
+        // refuses in words.
+        for playback in [&stopped, &playing] {
+            assert_eq!(asked(Key::Space, playback, true), ["stop record"]);
+            let l = asked(Key::L, playback, true);
+            assert_eq!(l.len(), 1, "{l:?}");
+            assert!(!l.contains(&"stop record".to_owned()));
+            assert!(!asked(Key::K, playback, true).contains(&"stop record".to_owned()));
+        }
+        assert_eq!(asked(Key::L, &stopped, true), ["toggle"]);
     }
 
     #[test]

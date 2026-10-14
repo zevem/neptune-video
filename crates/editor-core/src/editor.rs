@@ -577,6 +577,12 @@ fn fit_transitions(clip: &mut Clip, frame: Time) {
         }
     }
 }
+// A fade never outlasts its clip: each is cut to the clip, then the fade out
+// to what the fade in leaves.
+fn fit_fades(clip: &mut Clip) {
+    clip.fade_in = clip.fade_in.min(clip.duration);
+    clip.fade_out = clip.fade_out.min(clip.duration - clip.fade_in);
+}
 // A transition lasts at least one frame of the canvas it is now played on.
 fn lengthen_transitions(clip: &mut Clip, frame: Time) {
     for transition in [&mut clip.transition_in, &mut clip.transition_out]
@@ -798,6 +804,8 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
             hidden,
             muted,
             name,
+            gain,
+            solo,
         } => {
             let track = track_mut(project, track_id, false)?;
             if let Some(v) = locked {
@@ -811,6 +819,12 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
             }
             if let Some(v) = name {
                 track.name = v;
+            }
+            if let Some(v) = gain {
+                track.gain = v;
+            }
+            if let Some(v) = solo {
+                track.solo = v;
             }
         }
         Command::AddClip { track_id, clip } => track_mut(project, track_id, true)?.clips.push(clip),
@@ -940,6 +954,7 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
                 }
                 clip.duration = length;
                 fit_transitions(clip, frame);
+                fit_fades(clip);
             }
             if ripple {
                 let new_end = project
@@ -977,6 +992,9 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
                 right.duration = clip.end() - at;
                 right.transition_in = None;
                 fit_transitions(&mut right, frame);
+                // The cut is no edge to fade at: each half keeps its outer fade.
+                right.fade_in = Time::ZERO;
+                fit_fades(&mut right);
                 renew_look_ids(&mut right);
                 if selected.len() > 1 {
                     right.linked_id = Some(new_link);
@@ -986,6 +1004,8 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
                 left.duration = local;
                 left.transition_out = None;
                 fit_transitions(left, frame);
+                left.fade_out = Time::ZERO;
+                fit_fades(left);
                 track_mut(project, track_id, true)?.clips.push(right);
             }
         }
@@ -1008,6 +1028,8 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
                 let old = clip.duration;
                 clip.duration = clip.duration.scaled(1.0 / factor);
                 rescale_local(clip, old, frame);
+                // A fade is a timeline length: it is kept, not stretched.
+                fit_fades(clip);
                 // A time map keeps rate 1.0 and plays the same span over the new duration.
                 match &mut clip.retime {
                     Some(retime) => retime.rescale(old, clip.duration),
@@ -1016,6 +1038,15 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
             }
         }
         Command::SetGain { clip_id, gain } => clip_mut(project, clip_id)?.gain = gain,
+        Command::SetFades {
+            clip_id,
+            fade_in,
+            fade_out,
+        } => {
+            let clip = clip_mut(project, clip_id)?;
+            clip.fade_in = fade_in;
+            clip.fade_out = fade_out;
+        }
         Command::SetText {
             clip_id,
             text,
@@ -1136,6 +1167,7 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
                     follow_source(clip, &before, &after);
                     fit_transitions(clip, frame);
                 }
+                fit_fades(clip);
             }
         }
         Command::SetTransition {

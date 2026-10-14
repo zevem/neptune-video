@@ -127,43 +127,101 @@ impl Tab {
     }
 }
 
-/// The library's parts on one track, each as wide as its name needs and a
-/// share of what is left over, so that four fit the narrowest panel.
-fn tabs(ui: &mut Ui, p: &Palette, rect: Rect, tab: &mut Tab) {
+/// The kinds of media the Media tab lists. A lookup table is of none of
+/// them and is listed under All only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum KindFilter {
+    #[default]
+    All,
+    Video,
+    Sound,
+    Images,
+}
+
+impl KindFilter {
+    pub const ALL: [Self; 4] = [Self::All, Self::Video, Self::Sound, Self::Images];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Video => "Video",
+            Self::Sound => "Sound",
+            Self::Images => "Images",
+        }
+    }
+
+    /// What the control is called where its place does not say it.
+    fn name(self) -> &'static str {
+        match self {
+            Self::All => "Show all media",
+            Self::Video => "Show video only",
+            Self::Sound => "Show sound only",
+            Self::Images => "Show images only",
+        }
+    }
+
+    /// Whether media of `kind` is listed. A GIF is a picture file and is
+    /// found with the images.
+    pub fn admits(self, kind: MediaKind) -> bool {
+        match self {
+            Self::All => true,
+            Self::Video => kind == MediaKind::Video,
+            Self::Sound => kind == MediaKind::Audio,
+            Self::Images => matches!(kind, MediaKind::Image | MediaKind::Gif),
+        }
+    }
+
+    /// What an empty list is headed with.
+    fn none(self) -> &'static str {
+        match self {
+            Self::All => "Empty folder",
+            Self::Video => "No video",
+            Self::Sound => "No sound",
+            Self::Images => "No images",
+        }
+    }
+}
+
+/// One choice of several on one track, each as wide as its label needs and a
+/// share of what is left over, so that four fit the narrowest panel. Each
+/// option is given with its label and the name it is announced by.
+fn segments<T: Copy + PartialEq + std::hash::Hash + std::fmt::Debug + 'static, const N: usize>(
+    ui: &mut Ui,
+    p: &Palette,
+    rect: Rect,
+    salt: &'static str,
+    options: [(T, &'static str, &'static str); N],
+    chosen: &mut T,
+) {
     ui.painter()
         .rect_filled(rect, CornerRadius::same(metrics::CONTROL_RADIUS), p.control);
     let inner = rect.shrink(2.0);
     let names = |font: egui::FontId| {
-        Tab::ALL.map(|tab| {
+        options.map(|(_, label, _)| {
             ui.painter()
-                .layout_no_wrap(tab.label().to_owned(), font.clone(), p.fg)
+                .layout_no_wrap(label.to_owned(), font.clone(), p.fg)
         })
     };
     let mut galleys = names(theme::medium(12.0));
-    let needed = |galleys: &[std::sync::Arc<egui::Galley>; 4]| {
+    let needed = |galleys: &[std::sync::Arc<egui::Galley>; N]| {
         galleys.iter().map(|galley| galley.size().x).sum::<f32>()
     };
     if needed(&galleys) + 16.0 > inner.width() {
         galleys = names(theme::medium(11.0));
     }
-    let spare = ((inner.width() - needed(&galleys)) / Tab::ALL.len() as f32).max(0.0);
+    let spare = ((inner.width() - needed(&galleys)) / N as f32).max(0.0);
     let mut left = inner.left();
-    for (option, galley) in Tab::ALL.into_iter().zip(galleys) {
+    for ((option, _, name), galley) in options.into_iter().zip(galleys) {
         let cell = Rect::from_min_size(
             pos2(left, inner.top()),
             vec2(galley.size().x + spare, inner.height()),
         )
         .intersect(inner);
         left = cell.right();
-        let response = ui.interact(cell, Id::new(("library-tab", option)), Sense::click());
-        let selected = *tab == option;
+        let response = ui.interact(cell, Id::new((salt, option)), Sense::click());
+        let selected = *chosen == option;
         response.widget_info(|| {
-            egui::WidgetInfo::selected(
-                egui::WidgetType::RadioButton,
-                true,
-                selected,
-                option.label(),
-            )
+            egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, selected, name)
         });
         if selected {
             ui.painter().rect_filled(
@@ -191,7 +249,7 @@ fn tabs(ui: &mut Ui, p: &Palette, rect: Rect, tab: &mut Tab) {
             ink,
         );
         if response.clicked() {
-            *tab = option;
+            *chosen = option;
         }
     }
 }
@@ -202,6 +260,9 @@ pub struct LibraryState {
     pub tab: Tab,
     pub browser: BrowserState,
     pub search: String,
+    /// The kinds of media listed. The person's for the session: no file and
+    /// no setting keeps it.
+    pub kind: KindFilter,
     /// The folder in view; `None` is the top of the library.
     pub folder: Option<FolderId>,
     /// The name being typed for a folder that is about to be made.
@@ -378,7 +439,14 @@ pub fn show(
         pos2(rect.left() + 10.0, header.bottom()),
         vec2(rect.width() - 20.0, metrics::CONTROL_HEIGHT),
     );
-    tabs(ui, p, switch, &mut state.tab);
+    segments(
+        ui,
+        p,
+        switch,
+        "library-tab",
+        Tab::ALL.map(|tab| (tab, tab.label(), tab.label())),
+        &mut state.tab,
+    );
     let media = state.tab == Tab::Media;
 
     // Search.
@@ -434,6 +502,20 @@ pub fn show(
         );
         return (grid, sort);
     }
+    // The kinds listed, over whatever folder and order are in view.
+    let kinds = Rect::from_min_size(
+        pos2(rect.left() + 10.0, top),
+        vec2(rect.width() - 20.0, 22.0),
+    );
+    segments(
+        ui,
+        p,
+        kinds,
+        "library-kind",
+        KindFilter::ALL.map(|kind| (kind, kind.label(), kind.name())),
+        &mut state.kind,
+    );
+    top = kinds.bottom() + 8.0;
     // Where we are, when inside a folder.
     if let Some(folder) = state.folder.and_then(|id| project.folders.get(&id)) {
         let crumb = Rect::from_min_size(
@@ -530,43 +612,12 @@ pub fn show(
 
     // What this view lists.
     let query = state.search.trim().to_lowercase();
-    let mut items: Vec<Item> = Vec::new();
-    if query.is_empty() {
-        let mut folders: Vec<&MediaFolder> = project
-            .folders
-            .values()
-            .filter(|folder| folder.parent_id == state.folder)
-            .collect();
-        folders.sort_by_key(|folder| folder.name.to_lowercase());
-        items.extend(folders.into_iter().map(Item::Folder));
-    }
-    let mut assets: Vec<&Asset> = project
-        .assets
-        .values()
-        .filter(|asset| {
-            if query.is_empty() {
-                asset.folder_id == state.folder
-            } else {
-                asset.name.to_lowercase().contains(&query)
-            }
-        })
-        .collect();
-    sort_assets(&mut assets, sort);
-    items.extend(assets.into_iter().map(Item::Asset));
+    let items = listed(project, state.folder, &query, state.kind, sort);
 
     if items.is_empty() {
         if let Some(problem) = input.problem.filter(|_| project.assets.is_empty()) {
             widgets::empty_state(ui, p, list, Icon::Warning, "Media is unavailable", problem);
-        } else if !query.is_empty() {
-            widgets::empty_state(
-                ui,
-                p,
-                list,
-                Icon::Search,
-                "No matches",
-                "Nothing in this project has that name.",
-            );
-        } else if project.assets.is_empty() {
+        } else if project.assets.is_empty() && query.is_empty() {
             widgets::empty_state(
                 ui,
                 p,
@@ -587,7 +638,8 @@ pub fn show(
                 actions.push(Action::ImportFiles);
             }
         } else {
-            widgets::empty_state(ui, p, list, Icon::Folder, "Empty folder", "");
+            let (icon, title, detail) = nothing_listed(state.kind, &query, state.folder.is_some());
+            widgets::empty_state(ui, p, list, icon, title, detail);
         }
         return (grid, sort);
     }
@@ -641,6 +693,74 @@ pub fn show(
             }
         });
     (grid, sort)
+}
+
+/// What the Media tab lists: the folders of the folder in view, by name, then
+/// its media of the kinds asked for, in the order asked for. A search looks
+/// through every folder for a name and lists no folders. `query` is trimmed
+/// and in lower case.
+fn listed<'a>(
+    project: &'a Project,
+    folder: Option<FolderId>,
+    query: &str,
+    kind: KindFilter,
+    sort: LibrarySort,
+) -> Vec<Item<'a>> {
+    let mut items: Vec<Item> = Vec::new();
+    if query.is_empty() {
+        let mut folders: Vec<&MediaFolder> = project
+            .folders
+            .values()
+            .filter(|found| found.parent_id == folder)
+            .collect();
+        folders.sort_by_key(|folder| folder.name.to_lowercase());
+        items.extend(folders.into_iter().map(Item::Folder));
+    }
+    let mut assets: Vec<&Asset> = project
+        .assets
+        .values()
+        .filter(|asset| kind.admits(asset.kind))
+        .filter(|asset| {
+            if query.is_empty() {
+                asset.folder_id == folder
+            } else {
+                asset.name.to_lowercase().contains(query)
+            }
+        })
+        .collect();
+    sort_assets(&mut assets, sort);
+    items.extend(assets.into_iter().map(Item::Asset));
+    items
+}
+
+/// What stands where the list would be when a library with media in it has
+/// nothing to list here: the icon, the heading and what is meant by it.
+fn nothing_listed(
+    kind: KindFilter,
+    query: &str,
+    in_folder: bool,
+) -> (Icon, &'static str, &'static str) {
+    if !query.is_empty() {
+        let detail = match kind {
+            KindFilter::All => "Nothing in this project has that name.",
+            KindFilter::Video => "No video in this project has that name.",
+            KindFilter::Sound => "No sound in this project has that name.",
+            KindFilter::Images => "No image in this project has that name.",
+        };
+        return (Icon::Search, "No matches", detail);
+    }
+    let icon = icon_of_media(match kind {
+        KindFilter::All => return (Icon::Folder, "Empty folder", ""),
+        KindFilter::Video => MediaKind::Video,
+        KindFilter::Sound => MediaKind::Audio,
+        KindFilter::Images => MediaKind::Image,
+    });
+    let detail = if in_folder {
+        "Nothing of that kind is in this folder."
+    } else {
+        "Nothing of that kind is in this project."
+    };
+    (icon, kind.none(), detail)
 }
 
 fn folder_cell(
@@ -867,7 +987,9 @@ fn asset_cell(
     }
     // A lookup table is neither played nor placed on a track.
     let placeable = crate::rules::placeable(asset);
-    // Under the pointer, the picture offers to play its source.
+    // Under the pointer, the picture offers to play its source. A secondary
+    // click on the offer is one on the tile: it opens the tile's menu.
+    let mut menu_of = response.clone();
     if placeable && ui.rect_contains_pointer(rect) && !response.dragged() {
         let side = if grid { 30.0 } else { 22.0 };
         let badge = Rect::from_center_size(picture.center(), Vec2::splat(side));
@@ -891,6 +1013,9 @@ fn asset_cell(
         );
         if preview.clicked() {
             actions.push(Action::PreviewAsset(asset.id));
+        }
+        if preview.secondary_clicked() {
+            menu_of = response.union(preview);
         }
     }
     let painter = ui.painter();
@@ -1004,7 +1129,7 @@ fn asset_cell(
             p.fg,
         );
     }
-    response.context_menu(|ui| {
+    menu_of.context_menu(|ui| {
         menu_style(ui, 220.0);
         if placeable && menu_item(ui, p, Some(Icon::Play), "Preview", "Enter").clicked() {
             actions.push(Action::PreviewAsset(asset.id));
@@ -1016,6 +1141,38 @@ fn asset_cell(
                 place: None,
             });
             ui.close();
+        }
+        // Offered of a sound file; one that cannot be laid under the project
+        // as it is shows the row without being able to choose it, and says
+        // why.
+        if asset.kind == MediaKind::Audio {
+            let refused = crate::rules::bed_refusal(input.project, asset.id);
+            ui.add_enabled_ui(refused.is_none(), |ui| {
+                let row = menu_item(ui, p, Some(Icon::Music), "Add as background music", "");
+                if row.clicked() {
+                    actions.push(Action::AddBackgroundMusic(asset.id));
+                    ui.close();
+                }
+                if let Some(reason) = refused {
+                    row.on_disabled_hover_text(reason);
+                }
+            });
+        }
+        // Offered of media with sound; media whose sound has nothing to
+        // save shows the row without being able to choose it, and says why.
+        if asset.has_audio || asset.kind == MediaKind::Audio {
+            let source = crate::extract::Source::Asset(asset.id);
+            let refused = crate::extract::refusal(input.project, source);
+            ui.add_enabled_ui(refused.is_none(), |ui| {
+                let row = menu_item(ui, p, Some(Icon::Save), crate::extract::LABEL, "");
+                if row.clicked() {
+                    actions.push(Action::SaveAudio(source));
+                    ui.close();
+                }
+                if let Some(reason) = refused {
+                    row.on_disabled_hover_text(reason);
+                }
+            });
         }
         if menu_item(ui, p, Some(Icon::Copy), "Copy path", "").clicked() {
             ui.ctx().copy_text(asset.path.display().to_string());
@@ -1172,6 +1329,477 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The names of what the Media tab lists, folders in brackets.
+    fn listing(
+        project: &Project,
+        folder: Option<FolderId>,
+        query: &str,
+        kind: KindFilter,
+    ) -> Vec<String> {
+        listed(project, folder, query, kind, LibrarySort::default())
+            .into_iter()
+            .map(|item| match item {
+                Item::Folder(folder) => format!("[{}]", folder.name),
+                Item::Asset(asset) => asset.name.clone(),
+            })
+            .collect()
+    }
+
+    /// One of each kind at the top, and a folder holding a second sound.
+    fn mixed_library() -> (Project, FolderId) {
+        let mut project = Project::new("Library");
+        let folder = MediaFolder {
+            id: uuid::Uuid::new_v4(),
+            name: "Beds".to_owned(),
+            parent_id: None,
+        };
+        let folder_id = folder.id;
+        let mut inside = asset("drone.wav", MediaKind::Audio, 60.0, 70);
+        inside.folder_id = Some(folder_id);
+        let assets = std::sync::Arc::make_mut(&mut project.assets);
+        for held in [
+            asset("beach.mp4", MediaKind::Video, 30.0, 900),
+            asset("Alarm.wav", MediaKind::Audio, 4.0, 50),
+            asset("cover.png", MediaKind::Image, 5.0, 300),
+            asset("loop.gif", MediaKind::Gif, 2.0, 40),
+            asset("film.cube", MediaKind::Lut, 1.0, 20),
+            inside,
+        ] {
+            assets.insert(held.id, held);
+        }
+        std::sync::Arc::make_mut(&mut project.folders).insert(folder_id, folder);
+        (project, folder_id)
+    }
+
+    #[test]
+    fn the_kind_filter_lists_media_by_its_kind_in_the_folder_in_view() {
+        let (project, folder) = mixed_library();
+        let all = listing(&project, None, "", KindFilter::All);
+        assert_eq!(
+            all,
+            [
+                "[Beds]",
+                "Alarm.wav",
+                "beach.mp4",
+                "cover.png",
+                "film.cube",
+                "loop.gif"
+            ]
+        );
+        // The folders stay, to be walked into; the media is of one kind.
+        assert_eq!(
+            listing(&project, None, "", KindFilter::Video),
+            ["[Beds]", "beach.mp4"]
+        );
+        assert_eq!(
+            listing(&project, None, "", KindFilter::Sound),
+            ["[Beds]", "Alarm.wav"]
+        );
+        assert_eq!(
+            listing(&project, None, "", KindFilter::Images),
+            ["[Beds]", "cover.png", "loop.gif"]
+        );
+        // Inside the folder it is that folder's media that is filtered.
+        assert_eq!(
+            listing(&project, Some(folder), "", KindFilter::Sound),
+            ["drone.wav"]
+        );
+        assert!(listing(&project, Some(folder), "", KindFilter::Video).is_empty());
+        // A search looks through every folder, within the kind.
+        assert_eq!(
+            listing(&project, None, "a", KindFilter::Sound),
+            ["Alarm.wav", "drone.wav"]
+        );
+        assert_eq!(
+            listing(&project, Some(folder), "a", KindFilter::Video),
+            ["beach.mp4"]
+        );
+        assert!(listing(&project, None, "beach", KindFilter::Sound).is_empty());
+        // Every kind of media is under exactly one filter besides All, but a
+        // lookup table, which is under none.
+        for kind in [
+            MediaKind::Video,
+            MediaKind::Audio,
+            MediaKind::Image,
+            MediaKind::Gif,
+        ] {
+            let under = KindFilter::ALL[1..]
+                .iter()
+                .filter(|filter| filter.admits(kind));
+            assert_eq!(under.count(), 1, "{kind:?}");
+        }
+        assert!(
+            !KindFilter::ALL[1..]
+                .iter()
+                .any(|filter| filter.admits(MediaKind::Lut))
+        );
+
+        // The sort is the one asked for, over what the filter leaves.
+        let by_length = LibrarySort {
+            by: SortBy::Duration,
+            descending: true,
+        };
+        let sounds: Vec<&str> = listed(&project, None, "wav", KindFilter::Sound, by_length)
+            .into_iter()
+            .map(|item| match item {
+                Item::Asset(asset) => asset.name.as_str(),
+                Item::Folder(_) => panic!("a search lists no folder"),
+            })
+            .collect();
+        assert_eq!(sounds, ["drone.wav", "Alarm.wav"]);
+    }
+
+    #[test]
+    fn nothing_of_a_kind_says_so_and_where() {
+        let sound = icon_of_media(MediaKind::Audio);
+        assert_eq!(
+            nothing_listed(KindFilter::Sound, "", false),
+            (
+                sound,
+                "No sound",
+                "Nothing of that kind is in this project."
+            )
+        );
+        assert_eq!(
+            nothing_listed(KindFilter::Sound, "", true),
+            (sound, "No sound", "Nothing of that kind is in this folder.")
+        );
+        assert_eq!(nothing_listed(KindFilter::Video, "", true).1, "No video");
+        assert_eq!(nothing_listed(KindFilter::Images, "", true).1, "No images");
+        assert_eq!(
+            nothing_listed(KindFilter::All, "", true),
+            (Icon::Folder, "Empty folder", "")
+        );
+        assert_eq!(
+            nothing_listed(KindFilter::Images, "beach", false),
+            (
+                Icon::Search,
+                "No matches",
+                "No image in this project has that name."
+            )
+        );
+        assert_eq!(
+            nothing_listed(KindFilter::All, "beach", false).2,
+            "Nothing in this project has that name."
+        );
+    }
+
+    /// The Media tab on a 320 by 600 point panel, drawn frame after frame
+    /// with what the pointer does in each.
+    struct Panel {
+        ctx: egui::Context,
+        state: LibraryState,
+        selection: Selection,
+        actions: Vec<Action>,
+    }
+
+    impl Panel {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            crate::theme::install_fonts(&ctx);
+            Self {
+                ctx,
+                state: LibraryState::default(),
+                selection: Selection::default(),
+                actions: Vec::new(),
+            }
+        }
+
+        /// One frame; the words drawn in it, each with where it is.
+        fn frame(&mut self, project: &Project, events: Vec<egui::Event>) -> Vec<(String, Rect)> {
+            let palette = Palette::new(crate::theme::Appearance::Dark, Default::default());
+            let mut textures = Textures::default();
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(320.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let (state, selection, actions) =
+                (&mut self.state, &mut self.selection, &mut self.actions);
+            let mut output = self.ctx.run_ui(input, |ui| {
+                let rect = ui.max_rect();
+                show(
+                    ui,
+                    rect,
+                    state,
+                    selection,
+                    &mut textures,
+                    &LibraryInput {
+                        p: &palette,
+                        project,
+                        media: None,
+                        grid: false,
+                        sort: LibrarySort::default(),
+                        importing: 0,
+                        problem: None,
+                        previewing: None,
+                        playhead: Time::ZERO,
+                    },
+                    actions,
+                );
+            });
+            output.textures_delta.clear();
+            (output.shapes.iter())
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) => Some((
+                        text.galley.text().to_owned(),
+                        Rect::from_min_size(text.pos, text.galley.size()),
+                    )),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// A press and a release of `button` at `at`, and the frames that
+        /// take them; the words of the last.
+        fn click(
+            &mut self,
+            project: &Project,
+            at: egui::Pos2,
+            button: egui::PointerButton,
+        ) -> Vec<(String, Rect)> {
+            let pressed = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button,
+                pressed,
+                modifiers: Default::default(),
+            };
+            self.frame(project, vec![egui::Event::PointerMoved(at)]);
+            self.frame(project, vec![pressed(true)]);
+            self.frame(project, vec![pressed(false)]);
+            self.frame(project, Vec::new())
+        }
+    }
+
+    fn place(words: &[(String, Rect)], wanted: &str) -> Option<Rect> {
+        (words.iter())
+            .find(|(text, _)| text == wanted)
+            .map(|(_, rect)| *rect)
+    }
+
+    #[test]
+    fn a_click_on_a_kind_hides_the_rest_and_an_empty_result_says_so() {
+        let mut project = Project::new("Library");
+        let assets = std::sync::Arc::make_mut(&mut project.assets);
+        for held in [
+            asset("beach.mp4", MediaKind::Video, 30.0, 900),
+            asset("Alarm.wav", MediaKind::Audio, 4.0, 50),
+        ] {
+            assets.insert(held.id, held);
+        }
+        let mut panel = Panel::new();
+        let words = panel.frame(&project, Vec::new());
+        // The four kinds stand on one row, inside the panel, All chosen.
+        let cells = KindFilter::ALL.map(|kind| place(&words, kind.label()).unwrap());
+        for pair in cells.windows(2) {
+            assert!(pair[0].right() < pair[1].left());
+            assert!((pair[0].center().y - pair[1].center().y).abs() < 1.0);
+        }
+        assert!(cells[0].left() >= 10.0 && cells[3].right() <= 310.0);
+        assert_eq!(panel.state.kind, KindFilter::All);
+        assert!(place(&words, "beach.mp4").is_some() && place(&words, "Alarm.wav").is_some());
+
+        let words = panel.click(&project, cells[2].center(), egui::PointerButton::Primary);
+        assert_eq!(panel.state.kind, KindFilter::Sound);
+        assert!(place(&words, "beach.mp4").is_none() && place(&words, "Alarm.wav").is_some());
+
+        let words = panel.click(&project, cells[1].center(), egui::PointerButton::Primary);
+        assert_eq!(panel.state.kind, KindFilter::Video);
+        assert!(place(&words, "beach.mp4").is_some() && place(&words, "Alarm.wav").is_none());
+
+        // Nothing of the kind: the list says so, and the row is still there
+        // to choose another from.
+        let words = panel.click(&project, cells[3].center(), egui::PointerButton::Primary);
+        assert_eq!(panel.state.kind, KindFilter::Images);
+        assert!(place(&words, "No images").is_some(), "{words:?}");
+        assert!(place(&words, "Nothing of that kind is in this project.").is_some());
+        assert!(place(&words, "beach.mp4").is_none() && place(&words, "Alarm.wav").is_none());
+        let words = panel.click(&project, cells[0].center(), egui::PointerButton::Primary);
+        assert_eq!(panel.state.kind, KindFilter::All);
+        assert!(place(&words, "beach.mp4").is_some() && place(&words, "Alarm.wav").is_some());
+        // Choosing a kind edits nothing.
+        assert!(panel.actions.is_empty());
+    }
+
+    #[test]
+    fn a_sounds_menu_offers_background_music_and_a_pictures_does_not() {
+        let mut editor = editor_core::Editor::default();
+        let song = asset("song.wav", MediaKind::Audio, 4.0, 50);
+        let shot = asset("beach.mp4", MediaKind::Video, 30.0, 900);
+        let song_id = song.id;
+        editor
+            .dispatch(Command::AddAssets {
+                assets: vec![song, shot.clone()],
+            })
+            .unwrap();
+        const ROW: &str = "Add as background music";
+
+        // Nothing is on the timeline: the row is shown and cannot be chosen.
+        let empty = editor.project().clone();
+        let mut panel = Panel::new();
+        let words = panel.frame(&empty, Vec::new());
+        let song_at = place(&words, "song.wav").unwrap().center();
+        let words = panel.click(&empty, song_at, egui::PointerButton::Secondary);
+        let row = place(&words, ROW).expect("the row is offered of a sound");
+        // Resting on it says why, once the pointer has been still a while.
+        const REASON: &str =
+            "Put a clip on the timeline first: background music is as long as the project.";
+        assert!(place(&words, REASON).is_none());
+        panel.frame(&empty, vec![egui::Event::PointerMoved(row.center())]);
+        let mut said = false;
+        for _ in 0..90 {
+            let words = panel.frame(&empty, Vec::new());
+            said |= (words.iter()).any(|(text, _)| text.replace('\n', " ") == REASON);
+        }
+        assert!(said, "the disabled row gives its reason");
+        panel.click(&empty, row.center(), egui::PointerButton::Primary);
+        assert!(panel.actions.is_empty(), "{:?}", panel.actions);
+
+        // With a clip to lie under, choosing it asks for the bed of that sound.
+        let track_id = editor.project().tracks[0].id;
+        editor
+            .dispatch(Command::AddClip {
+                track_id,
+                clip: editor_core::Clip::from_asset(&shot, Time::ZERO),
+            })
+            .unwrap();
+        let project = editor.project().clone();
+        let mut panel = Panel::new();
+        let words = panel.frame(&project, Vec::new());
+        let song_at = place(&words, "song.wav").unwrap().center();
+        let shot_at = place(&words, "beach.mp4").unwrap().center();
+        let words = panel.click(&project, song_at, egui::PointerButton::Secondary);
+        let row = place(&words, ROW).expect("the row is offered of a sound");
+        panel.click(&project, row.center(), egui::PointerButton::Primary);
+        assert!(
+            matches!(panel.actions.as_slice(), [Action::AddBackgroundMusic(asset)] if *asset == song_id),
+            "{:?}",
+            panel.actions
+        );
+        // What it asks for is the one step the rules make.
+        editor
+            .dispatch(crate::rules::background_music(editor.project(), song_id).unwrap())
+            .unwrap();
+        assert_eq!(editor.undo_label(), Some("Add background music"));
+
+        // A video's menu has no such row.
+        let mut panel = Panel::new();
+        panel.frame(&project, Vec::new());
+        let words = panel.click(&project, shot_at, egui::PointerButton::Secondary);
+        assert!(place(&words, "Add to timeline").is_some(), "{words:?}");
+        assert!(place(&words, ROW).is_none());
+    }
+
+    #[test]
+    fn media_with_sound_offers_to_save_it_and_a_silent_picture_does_not() {
+        let song = asset("song.wav", MediaKind::Audio, 4.0, 50);
+        let mut talk = asset("talk.mp4", MediaKind::Video, 30.0, 900);
+        talk.has_audio = true;
+        let still = asset("cover.png", MediaKind::Image, 5.0, 300);
+        let mut project = Project::new("Library");
+        let assets = std::sync::Arc::make_mut(&mut project.assets);
+        for held in [song.clone(), talk.clone(), still] {
+            assets.insert(held.id, held);
+        }
+        const ROW: &str = crate::extract::LABEL;
+        // Chosen of a sound and of a video with sound, it asks for that
+        // media's sound by its id; nothing is edited.
+        for (name, id) in [("song.wav", song.id), ("talk.mp4", talk.id)] {
+            let mut panel = Panel::new();
+            let words = panel.frame(&project, Vec::new());
+            let at = place(&words, name).unwrap().center();
+            let words = panel.click(&project, at, egui::PointerButton::Secondary);
+            let row = place(&words, ROW).unwrap_or_else(|| panic!("{name}: {words:?}"));
+            panel.click(&project, row.center(), egui::PointerButton::Primary);
+            assert!(
+                matches!(
+                    panel.actions.as_slice(),
+                    [Action::SaveAudio(crate::extract::Source::Asset(asked))] if *asked == id
+                ),
+                "{name}: {:?}",
+                panel.actions
+            );
+        }
+        // A still has no such row.
+        let mut panel = Panel::new();
+        let words = panel.frame(&project, Vec::new());
+        let at = place(&words, "cover.png").unwrap().center();
+        let words = panel.click(&project, at, egui::PointerButton::Secondary);
+        assert!(place(&words, "Copy path").is_some(), "{words:?}");
+        assert!(place(&words, ROW).is_none());
+    }
+
+    #[test]
+    fn a_secondary_click_on_the_play_offer_opens_the_tiles_menu_and_a_click_plays() {
+        let song = asset("song.wav", MediaKind::Audio, 4.0, 50);
+        let song_id = song.id;
+        let mut project = Project::new("Library");
+        std::sync::Arc::make_mut(&mut project.assets).insert(song.id, song);
+        // Where the offer to play is on a listed tile: the middle of its
+        // picture, which stands left of the name.
+        let offer = |words: &[(String, Rect)]| {
+            let name = place(words, "song.wav").expect("the sound is listed");
+            let side = ROW_HEIGHT - 2.0 - 8.0;
+            pos2(
+                name.left() - 10.0 - side * 16.0 / 9.0 * 0.5,
+                name.top() - 6.0 + 4.0 + side * 0.5,
+            )
+        };
+
+        // A click on it plays the sound and opens no menu.
+        let mut panel = Panel::new();
+        let words = panel.frame(&project, Vec::new());
+        let at = offer(&words);
+        let words = panel.click(&project, at, egui::PointerButton::Primary);
+        assert!(
+            matches!(panel.actions.as_slice(), [Action::PreviewAsset(asked)] if *asked == song_id),
+            "{:?}",
+            panel.actions
+        );
+        assert!(place(&words, "Add to timeline").is_none(), "{words:?}");
+
+        // A secondary click on it opens the tile's own menu, as one elsewhere
+        // on the tile does, and plays nothing.
+        let mut panel = Panel::new();
+        let words = panel.frame(&project, Vec::new());
+        let elsewhere = place(&words, "song.wav").unwrap().center();
+        let words = panel.click(&project, at, egui::PointerButton::Secondary);
+        assert!(panel.actions.is_empty(), "{:?}", panel.actions);
+        const ROWS: [&str; 4] = [
+            "Preview",
+            "Add to timeline",
+            "Add as background music",
+            "Copy path",
+        ];
+        let on_offer: Vec<&str> = (words.iter())
+            .map(|(text, _)| text.as_str())
+            .filter(|text| ROWS.contains(text))
+            .collect();
+        assert_eq!(on_offer, ROWS, "{words:?}");
+        let mut panel = Panel::new();
+        panel.frame(&project, Vec::new());
+        let words = panel.click(&project, elsewhere, egui::PointerButton::Secondary);
+        let on_tile: Vec<&str> = (words.iter())
+            .map(|(text, _)| text.as_str())
+            .filter(|text| on_offer.contains(text))
+            .collect();
+        assert_eq!(on_tile, on_offer);
+        // Chosen from the menu opened on the offer, a row does what it says.
+        let mut panel = Panel::new();
+        panel.frame(&project, Vec::new());
+        let words = panel.click(&project, at, egui::PointerButton::Secondary);
+        let row = place(&words, "Add to timeline").expect("the menu is open");
+        panel.click(&project, row.center(), egui::PointerButton::Primary);
+        assert!(
+            matches!(
+                panel.actions.as_slice(),
+                [Action::InsertAsset { asset, place: None }] if *asset == song_id
+            ),
+            "{:?}",
+            panel.actions
+        );
     }
 
     #[test]

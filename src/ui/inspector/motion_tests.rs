@@ -429,6 +429,8 @@ fn a_locked_track_takes_no_follow() {
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     });
     bench.frame(Vec::new());
     assert!(bench.find("Tracker to follow").unwrap().disabled);

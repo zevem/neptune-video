@@ -11,16 +11,39 @@
 //! is long. Its inner end is a handle that changes how long it lasts, a cut
 //! or a free edge under the pointer offers to add one, and a tile of the
 //! library let go over a clip is given to that clip.
+//!
+//! A tile on an audio lane draws its media's sound as a waveform once the
+//! peaks of that media are held: see [`crate::peaks`]. Only the tiles drawn
+//! ask for them.
+//!
+//! The fades of a clip on an audio lane are drawn over its sound as the
+//! curve they follow. A selected tile, or the one under the pointer, has a
+//! handle at each top corner of its sound that sets how long that edge
+//! fades: see [`super::fades`].
+//!
+//! A tile on an audio lane also carries a line at its clip's volume, bent by
+//! the volume's keyframes. On a selected tile the line of a clip without
+//! such keyframes is dragged up and down to set the volume, and Alt-click on
+//! a line keys the volume there and opens the keyframe lane.
+//!
+//! A tile on an audio lane whose media's beats are shown carries a tick at
+//! each beat where it is heard, and while snapping is on the beats of the
+//! tiles drawn are places an edge, a trim, a fade or the playhead lands on:
+//! see [`crate::peaks::HeldBeats`].
 use super::{
     Action, Selection,
     browser::{self, Entry, EntryDrag},
+    fades::{self, FadeEdge},
     icon_of_track,
     keyframes::{self, KeyframesState},
-    shortcut, tone_of_track, transitions,
+    shortcut, tone_of_track, tracks, transitions,
     widgets::{self, icon_button, icon_button_tinted, icon_toggle, menu_item, menu_style},
 };
 use crate::{
+    duck,
     icons::{self, Icon},
+    normalize,
+    peaks::{self, HeldBeats, HeldPeaks},
     rules::{self, Edge},
     speed,
     textures::Textures,
@@ -28,10 +51,10 @@ use crate::{
     timefmt,
 };
 use editor_core::{
-    Asset, AssetId, Clip, ClipContent, ClipId, Command, Marker, Project, Time, Track, TrackId,
-    TrackKind, Transition, TransitionEdge, snap_time,
+    Asset, AssetId, Clip, ClipContent, ClipId, Command, Marker, ParamKey, Project, Time, Track,
+    TrackId, TrackKind, Transition, TransitionEdge, gain_at, look, snap_time, sound,
 };
-use editor_media::MediaService;
+use editor_media::{BeatGrid, MediaService, Peaks};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui,
     Vec2, pos2, vec2,
@@ -40,14 +63,51 @@ use eframe::egui::{
 const STRIP: f32 = metrics::PANEL_HEADER;
 const RULER: f32 = 26.0;
 const HEAD_WIDTH: f32 = 156.0;
+/// The side of a toggle in a track head, and how far one stands from the
+/// next.
+const HEAD_CELL: f32 = 22.0;
+const HEAD_CELL_STEP: f32 = 23.0;
+/// The most toggles a head has side by side in one row. A fourth would leave
+/// the name of a 156-point head twenty points.
+const HEAD_ROW: usize = 3;
+/// Where a track's name starts in its head, after the icon of its kind.
+const HEAD_NAME: f32 = 28.0;
+/// The lowest head that says its track's volume under the name.
+const HEAD_FIGURE: f32 = 40.0;
 const LANE_GAP: f32 = 4.0;
 const EDGE_GRIP: f32 = 7.0;
 const SNAP_POINTS: f32 = 8.0;
+/// How near two beats may be drawn: one closer than this to another is
+/// neither drawn nor snapped to.
+const BEAT_GAP: f32 = 4.0;
+/// How tall a beat's tick is, from the foot of its tile's sound.
+const BEAT_TICK: f32 = 7.0;
 /// The least a transition's marking is drawn wide, however short it is at
 /// the zoom in view.
 const MARK_MIN: f32 = 6.0;
 /// The width of the handle at a marking's inner end.
 const MARK_HANDLE: f32 = 10.0;
+/// The narrowest tile of a sound lane that carries the handles of its fades:
+/// room for both between the grips that trim it, and some of the tile to
+/// take hold of beside them.
+const FADE_TILE: f32 = 40.0;
+/// How tall the handle of a fade is.
+const FADE_HANDLE: f32 = 12.0;
+/// How far apart the points of a fade's curve are drawn.
+const FADE_STEP: f32 = 2.0;
+/// How much of the height of a tile's sound a volume of 100% stands at, and
+/// the volume at its top. A higher volume is drawn at the top.
+const VOLUME_WHOLE: f32 = 2.0 / 3.0;
+const VOLUME_TOP: f32 = 2.0;
+/// How far above or under the volume line a press takes hold of it.
+const VOLUME_REACH: f32 = 4.0;
+/// How far the pointer travels before a press on the line changes the
+/// volume.
+const VOLUME_TRAVEL: f32 = 3.0;
+/// How far the percent of a held volume line stands from the point it was
+/// taken hold of, and from a fade, a fade's handle or a grip it keeps clear
+/// of.
+const READOUT_GAP: f32 = 6.0;
 /// How near an edge the pointer offers to add a transition there, and the
 /// narrowest tile it is offered on.
 const ADD_REACH: f32 = 14.0;
@@ -93,6 +153,36 @@ enum Drag {
         edge: TransitionEdge,
         duration: Time,
     },
+    /// The handle of a fade of a clip's sound, and how long the fade would
+    /// be where it is held.
+    Fade {
+        clip: ClipId,
+        edge: FadeEdge,
+        duration: Time,
+        /// How far past the end of its fade the handle was taken hold of.
+        /// A handle stands clear of the grips, so that of a short fade is
+        /// not where the fade ends: the fade follows the travel.
+        grab: Time,
+    },
+    /// The volume line of a clip whose volume has no keyframes, and the
+    /// volume the clip would have where the line is held.
+    Volume {
+        clip: ClipId,
+        gain: f32,
+        /// The volume the clip had when the line was taken hold of.
+        stored: f32,
+        /// How high the line stood in the tile's sound when it was taken
+        /// hold of, and how high that sound is drawn.
+        level: f32,
+        height: f32,
+        /// How high the pointer was then: the line follows the travel.
+        from: f32,
+        /// The time of the project the line was taken hold of at: the held
+        /// percent is said beside it.
+        at: Time,
+        /// A press that never travels is a click and changes nothing.
+        moved: bool,
+    },
     Marquee {
         from: Pos2,
         /// What was selected before, kept while a modifier is held.
@@ -128,6 +218,9 @@ pub struct TimelineState {
     keyboard: Option<ClipId>,
     /// A clip to bring into view when the tracks are next laid out.
     reveal: Option<ClipId>,
+    /// The beats the tiles of this frame show, by clip, where they fall on
+    /// the timeline: what snapping takes besides edges and markers.
+    beats: Vec<(ClipId, Time)>,
 }
 
 /// The clip a key asks for, from the one selected and the playhead.
@@ -248,6 +341,7 @@ impl Default for TimelineState {
             badge: None,
             keyboard: None,
             reveal: None,
+            beats: Vec::new(),
         }
     }
 }
@@ -325,6 +419,8 @@ pub struct TimelineInput<'a> {
     pub can_paste: bool,
     /// How long a frame frozen from here is held.
     pub freeze_hold: Time,
+    /// Whether this session has a stem separator, for "Separate stems".
+    pub separator: crate::stems::Tool,
 }
 
 struct Row<'a> {
@@ -432,16 +528,220 @@ fn clips_drawn<'a>(
         })
 }
 
-/// The media whose posters the lanes show: that of the clips drawn on rows
-/// tall enough to carry one. Media comes up once for each of its clips.
+/// The media whose posters the lanes show: that of the clips drawn on
+/// picture rows tall enough to carry one. Media comes up once for each of
+/// its clips. A sound lane draws sound, of a video too: see [`wave_assets`].
 fn poster_assets<'a>(
     project: &'a Project,
     rows: &'a [Row<'a>],
     geometry: &Geometry,
 ) -> impl Iterator<Item = &'a Asset> + use<'a> {
     clips_drawn(rows, geometry)
-        .filter(|(row, _)| carries_poster(row.height))
+        .filter(|(row, _)| row.track.kind != TrackKind::Audio && carries_poster(row.height))
         .filter_map(move |(_, clip)| clip.asset_id().and_then(|id| project.assets.get(&id)))
+}
+
+/// The media whose sound the lanes draw: that of the clips drawn on sound
+/// rows. Media comes up once for each of its clips.
+fn wave_assets<'a>(
+    project: &'a Project,
+    rows: &'a [Row<'a>],
+    geometry: &Geometry,
+) -> impl Iterator<Item = &'a Asset> + use<'a> {
+    clips_drawn(rows, geometry)
+        .filter(|(row, _)| row.track.kind == TrackKind::Audio)
+        .filter_map(move |(_, clip)| clip.asset_id().and_then(|id| project.assets.get(&id)))
+}
+
+/// The sound a tile on an audio lane draws, and where its columns fall.
+struct Wave<'a> {
+    peaks: &'a Peaks,
+    geometry: &'a Geometry,
+    /// How far along the timeline the tile is drawn from where its clip is:
+    /// a clip being moved is drawn where it would land.
+    shift: Time,
+}
+
+/// The held sound of a clip on an audio track, to draw on its tile.
+fn wave_of<'a>(
+    project: &Project,
+    track: &Track,
+    clip: &Clip,
+    peaks: &'a HeldPeaks,
+    geometry: &'a Geometry,
+    shift: Time,
+) -> Option<Wave<'a>> {
+    if track.kind != TrackKind::Audio {
+        return None;
+    }
+    let asset = project.assets.get(&clip.asset_id()?)?;
+    Some(Wave {
+        peaks: peaks.held(asset)?,
+        geometry,
+        shift,
+    })
+}
+
+/// The columns of a waveform, one for each point of width from `left` to
+/// `right`: where a column starts, and the source times its two sides show.
+/// The times are the clip's own, through its rate and its time map, so a
+/// stretch played backwards has its later time first and a held frame has
+/// one time twice. `shift` is how far the tile is drawn from its clip.
+fn wave_columns(
+    clip: &Clip,
+    geometry: &Geometry,
+    shift: Time,
+    left: f32,
+    right: f32,
+) -> impl Iterator<Item = (f32, Time, Time)> {
+    let (origin, zoom) = (geometry.lanes.left() - geometry.scroll, geometry.zoom);
+    let source = move |x: f32| {
+        let at = Time::from_seconds(f64::from(x - origin) / f64::from(zoom));
+        clip.source_time(at - shift)
+    };
+    let count = (right - left).ceil().max(0.0) as usize;
+    (0..count).scan(source(left), move |from, index| {
+        let x = left + index as f32;
+        let to = source(x + 1.0);
+        Some((x, std::mem::replace(from, to), to))
+    })
+}
+
+/// Draws the sound of a clip over the part of `area` that is in view, as
+/// one mesh: a column a point wide from the least to the greatest sample of
+/// the source it shows. Silence is a line through the middle.
+fn paint_wave(painter: &egui::Painter, area: Rect, clip: &Clip, wave: &Wave, ink: Color32) {
+    let visible = area.intersect(painter.clip_rect());
+    if !visible.is_positive() {
+        return;
+    }
+    let (middle, half) = (area.center().y, area.height() * 0.5);
+    let columns = wave_columns(
+        clip,
+        wave.geometry,
+        wave.shift,
+        visible.left(),
+        visible.right(),
+    );
+    let mut mesh = egui::Mesh::default();
+    for (x, from, to) in columns {
+        // Source the file has no sound for is left bare.
+        let Some((min, max)) = wave.peaks.range(from, to) else {
+            continue;
+        };
+        let mut top = middle - f32::from(max) / 128.0 * half;
+        let mut bottom = middle - f32::from(min) / 128.0 * half;
+        if bottom - top < 1.0 {
+            let centre = (top + bottom) * 0.5;
+            (top, bottom) = (centre - 0.5, centre + 0.5);
+        }
+        let column = Rect::from_min_max(pos2(x, top), pos2((x + 1.0).min(visible.right()), bottom));
+        mesh.add_colored_rect(column, ink);
+    }
+    if !mesh.is_empty() {
+        painter.add(egui::Shape::mesh(mesh));
+    }
+}
+
+/// The beats of `grid` a tile of `clip` shows from `from` up to `to` at
+/// `zoom` points a second: those [`peaks::beats_through`] puts on the
+/// timeline, but any closer than [`BEAT_GAP`] points to another.
+fn beat_ticks(clip: &Clip, grid: &BeatGrid, from: Time, to: Time, zoom: f32) -> Vec<Time> {
+    let gap = Time::from_seconds(f64::from(BEAT_GAP / zoom));
+    // A neighbour that is too near may be just outside the span.
+    let near = peaks::beats_through(clip, grid, from - gap, to + gap);
+    let apart = |index: usize| {
+        let at = near[index];
+        let before = index.checked_sub(1).map(|index| near[index]);
+        let after = near.get(index + 1).copied();
+        before.is_none_or(|before| at - before >= gap)
+            && after.is_none_or(|after| after - at >= gap)
+    };
+    (0..near.len())
+        .filter(|index| from <= near[*index] && near[*index] < to && apart(*index))
+        .map(|index| near[index])
+        .collect()
+}
+
+/// The beats the tile of `clip` on `track` shows from `from` up to `to`:
+/// none unless the clip is on an audio lane, its media's beats are shown
+/// and held, and it is heard (`sounds`, as [`sound::audible_at`] asks).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one tile's beats need its clip, the beats held and the view"
+)]
+fn shown_ticks(
+    project: &Project,
+    sounding: &sound::Sounding,
+    beats: &HeldBeats,
+    track: &Track,
+    clip: &Clip,
+    from: Time,
+    to: Time,
+    zoom: f32,
+) -> Vec<Time> {
+    let grid = (track.kind == TrackKind::Audio)
+        .then(|| clip.asset_id().and_then(|id| project.assets.get(&id)))
+        .flatten()
+        .filter(|asset| beats.shown(asset.id))
+        .and_then(|asset| beats.grid(asset));
+    match grid {
+        Some(grid) if sounding.sounds(project, track, clip) => {
+            beat_ticks(clip, grid, from, to, zoom)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The beats the tiles drawn show, clip by clip, at their times on the
+/// timeline, from the view's start to its end. Has the beats wanted of the
+/// media on the sound rows drawn whose beats are shown.
+fn beats_drawn(
+    project: &Project,
+    rows: &[Row],
+    geometry: &Geometry,
+    beats: &mut HeldBeats,
+) -> Vec<(ClipId, Time)> {
+    if !beats.any_shown() {
+        return Vec::new();
+    }
+    for asset in wave_assets(project, rows, geometry) {
+        beats.want(asset);
+    }
+    let sounding = sound::Sounding::of(project);
+    let (from, to) = (
+        geometry.time(geometry.lanes.left()),
+        geometry.time(geometry.lanes.right()),
+    );
+    let mut drawn = Vec::new();
+    for (row, clip) in clips_drawn(rows, geometry) {
+        let ticks = shown_ticks(
+            project,
+            &sounding,
+            beats,
+            row.track,
+            clip,
+            from,
+            to,
+            geometry.zoom,
+        );
+        drawn.extend(ticks.into_iter().map(|at| (clip.id, at)));
+    }
+    drawn
+}
+
+/// Draws a tick at each of `ticks`, points across, rising from the foot of
+/// a tile's sound: one mesh.
+fn paint_beats(painter: &egui::Painter, area: Rect, ticks: &[f32], ink: Color32) {
+    let mut mesh = egui::Mesh::default();
+    let top = area.bottom() - BEAT_TICK.min(area.height());
+    for x in ticks {
+        let tick = Rect::from_min_max(pos2(x - 0.5, top), pos2(x + 0.5, area.bottom()));
+        mesh.add_colored_rect(tick, ink);
+    }
+    if !mesh.is_empty() {
+        painter.add(egui::Shape::mesh(mesh));
+    }
 }
 
 fn clip_tone(project: &Project, track: &Track, clip: &Clip) -> theme::Tone {
@@ -454,11 +754,14 @@ fn clip_tone(project: &Project, track: &Track, clip: &Clip) -> theme::Tone {
     }
 }
 
-/// Snaps a time to the nearest clip edge, marker or the playhead within
-/// reach. Returns the time and whether it snapped.
+/// Snaps a time to the nearest clip edge, marker, beat or the playhead
+/// within reach. `beats` are the beats it may land on, those of the tiles
+/// drawn less any of clips that are moving with it; `exclude` are the
+/// clips whose edges it does not. Returns the time and whether it snapped.
 fn snapped(
     input: &TimelineInput,
     geometry: &Geometry,
+    beats: &[(ClipId, Time)],
     time: Time,
     exclude: &[ClipId],
 ) -> (Time, bool) {
@@ -467,6 +770,15 @@ fn snapped(
     }
     let reach = geometry.span(SNAP_POINTS);
     let mut best = snap_time(input.project, time, reach, exclude);
+    let beat = (beats.iter())
+        .map(|(_, at)| *at)
+        .min_by_key(|at| (at.0 - time.0).abs());
+    if let Some(beat) = beat {
+        let to_beat = (beat.0 - time.0).abs();
+        if to_beat <= reach.0 && (best == time || to_beat < (best.0 - time.0).abs()) {
+            best = beat;
+        }
+    }
     let to_playhead = (input.playhead.0 - time.0).abs();
     if to_playhead <= reach.0 && (best == time || to_playhead < (best.0 - time.0).abs()) {
         best = input.playhead;
@@ -474,12 +786,17 @@ fn snapped(
     (best, best != time)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site; the timeline is drawn from all of it"
+)]
 pub fn show(
     ui: &mut Ui,
     rect: Rect,
     state: &mut TimelineState,
     selection: &mut Selection,
     textures: &mut Textures,
+    peaks: &mut HeldPeaks,
     input: &TimelineInput,
     actions: &mut Vec<Action>,
 ) {
@@ -592,6 +909,12 @@ pub fn show(
         p.secondary,
     );
 
+    // The beats the tiles show, which the ruler and the lanes snap to.
+    state.beats = if state.keys.graph {
+        Vec::new()
+    } else {
+        beats_drawn(project, &rows, &geometry, &mut peaks.beats)
+    };
     draw_ruler(ui, ruler, &geometry, state, input, actions);
     state.keys.begin(ui, &geometry, selection, input, actions);
     if state.keys.graph {
@@ -599,7 +922,7 @@ pub fn show(
     } else {
         track_heads(ui, heads, &rows, &geometry, &mut state.keys, input, actions);
         draw_lanes(
-            ui, lanes, &rows, &geometry, state, selection, textures, input, actions,
+            ui, lanes, &rows, &geometry, state, selection, textures, peaks, input, actions,
         );
     }
 
@@ -794,7 +1117,63 @@ fn tool_strip(
     });
 }
 
-/// A 22-point toggle inside a track head.
+/// The part of a row a track's head is drawn in.
+fn head_rect(heads: Rect, row: &Row) -> Rect {
+    Rect::from_min_size(
+        pos2(heads.left() + 6.0, row.top),
+        vec2(heads.width() - 10.0, row.height),
+    )
+}
+
+/// How many toggles the head of a track of this kind has: lock, then mute
+/// and solo where the track carries sound and hide where it carries picture.
+fn head_toggles(kind: TrackKind) -> usize {
+    match kind {
+        TrackKind::Video => 4,
+        TrackKind::Audio => 3,
+        TrackKind::Text => 2,
+    }
+}
+
+/// How many rows the toggles of a head stand in: one, or two where there are
+/// more than a row holds and the head is tall enough for both.
+fn head_lines(head: Rect, toggles: usize) -> usize {
+    if toggles > HEAD_ROW && head.height() >= HEAD_CELL_STEP + HEAD_CELL {
+        2
+    } else {
+        1
+    }
+}
+
+/// Where toggle `index` of `toggles` stands in a head. They fill columns from
+/// the trailing edge, each column top down.
+fn head_cell(head: Rect, toggles: usize, index: usize) -> Rect {
+    let lines = head_lines(head, toggles);
+    let (column, line) = (index / lines, index % lines);
+    let tall = (lines - 1) as f32 * HEAD_CELL_STEP + HEAD_CELL;
+    Rect::from_min_size(
+        pos2(
+            head.right() - 4.0 - HEAD_CELL - column as f32 * HEAD_CELL_STEP,
+            head.center().y - tall * 0.5 + line as f32 * HEAD_CELL_STEP,
+        ),
+        Vec2::splat(HEAD_CELL),
+    )
+}
+
+/// The room a head has for its track's name and volume, between the icon of
+/// its kind and its toggles.
+fn head_name_room(head: Rect, toggles: usize) -> egui::Rangef {
+    let columns = toggles.div_ceil(head_lines(head, toggles));
+    let right = head.right() - 4.0 - columns as f32 * HEAD_CELL_STEP;
+    egui::Rangef::new(
+        head.left() + HEAD_NAME,
+        (right - 2.0).max(head.left() + HEAD_NAME),
+    )
+}
+
+/// A 22-point toggle inside a track head. `ink` is its glyph's colour where
+/// that says more than on or off.
+#[expect(clippy::too_many_arguments, reason = "a toggle is all of these")]
 fn head_toggle(
     ui: &mut Ui,
     p: &Palette,
@@ -803,6 +1182,7 @@ fn head_toggle(
     icon: Icon,
     on: bool,
     label: &str,
+    ink: Option<Color32>,
 ) -> bool {
     let response = ui.interact(rect, id, Sense::click());
     response
@@ -819,7 +1199,9 @@ fn head_toggle(
             StrokeKind::Inside,
         );
     }
-    let color = if on {
+    let color = if let Some(ink) = ink {
+        ink
+    } else if on {
         p.fg
     } else if response.hovered() {
         p.secondary
@@ -833,6 +1215,89 @@ fn head_toggle(
         color,
     );
     response.on_hover_text(label).clicked()
+}
+
+/// What the mute toggle of a head is named. A track that another's solo
+/// silences says so: muting it would change nothing heard.
+fn mute_label(track: &Track, silenced: bool) -> &'static str {
+    match (track.muted, silenced) {
+        (true, _) => "Unmute track",
+        (false, true) => "Mute track (silenced by a solo)",
+        (false, false) => "Mute track",
+    }
+}
+
+/// The rows of a head's menu that set its track's volume: a field in
+/// percent, which is one edit when what is typed is entered or a drag is let
+/// go, and a way back to the volume a track starts with.
+fn volume_menu(ui: &mut Ui, p: &Palette, track: &Track, actions: &mut Vec<Action>) {
+    // What a drag holds until it is let go: the project is not edited under
+    // it.
+    let held = Id::new(("track-volume", track.id));
+    let read = tracks::percent(track);
+    let dragging = ui.data(|data| data.get_temp::<f32>(held));
+    let mut shown = dragging.unwrap_or(read);
+    let field = ui
+        .horizontal(|ui| {
+            ui.add_space(30.0);
+            ui.label(
+                egui::RichText::new("Volume")
+                    .font(theme::regular(13.0))
+                    .color(p.fg),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(8.0);
+                let field = ui.add_sized(
+                    [72.0, 22.0],
+                    egui::DragValue::new(&mut shown)
+                        .range(0.0..=tracks::MOST)
+                        .speed(1.0)
+                        .suffix(" %")
+                        .max_decimals(2)
+                        .update_while_editing(false),
+                );
+                field.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, "Track volume")
+                });
+                field
+            })
+            .inner
+        })
+        .inner;
+    // Escape gives a drag up, as it gives up what is typed: egui ends the
+    // drag on that frame with the button still down, which is no release.
+    let given_up = ui.input(|input| input.key_pressed(egui::Key::Escape));
+    if field.dragged() && !given_up {
+        ui.data_mut(|data| data.insert_temp(held, shown));
+    } else {
+        ui.data_mut(|data| data.remove_temp::<f32>(held));
+        // A drag is an edit only where it was let go; the field takes what
+        // is typed when it is entered. The field holds the volume the track
+        // has, so one left as it was is no edit, and one given the number it
+        // reads is: a track whose finer volume reads "0" can be silenced.
+        let entered = match dragging {
+            Some(_) => field.drag_stopped() && !given_up,
+            None => !field.dragged(),
+        };
+        if entered
+            && shown != read
+            && let Some(command) = tracks::volume(track, shown)
+            && !matches!(&command, Command::SetTrackState { gain: Some(gain), .. } if *gain == track.gain)
+        {
+            actions.push(Action::Edit(command));
+            // A typed volume is entered and done; one dragged or stepped
+            // with the arrows stays to be changed again.
+            if field.lost_focus() {
+                ui.close();
+            }
+        }
+    }
+    ui.add_enabled_ui(track.gain != 1.0, |ui| {
+        if menu_item(ui, p, None, "Reset volume", "").clicked() {
+            actions.extend(tracks::volume(track, 100.0).map(Action::Edit));
+            ui.close();
+        }
+    });
 }
 
 fn track_heads(
@@ -849,10 +1314,7 @@ fn track_heads(
     ui.set_clip_rect(heads);
     let ui = &mut ui;
     for row in rows {
-        let rect = Rect::from_min_size(
-            pos2(heads.left() + 6.0, row.top),
-            vec2(heads.width() - 10.0, row.height),
-        );
+        let rect = head_rect(heads, row);
         if row.lane > 0.0 {
             // What each row of the keyframe lane holds, under the head.
             let below = Rect::from_min_size(rect.left_bottom(), vec2(rect.width(), row.lane));
@@ -897,21 +1359,24 @@ fn track_heads(
         );
 
         // Toggles from the trailing edge: lock, then what the track carries.
-        let mut right = rect.right() - 4.0;
-        let mut toggle = |ui: &mut Ui, key: &str, icon: Icon, on: bool, label: &str| {
-            let cell = Rect::from_min_size(
-                pos2(right - 22.0, rect.center().y - 11.0),
-                Vec2::splat(22.0),
-            );
-            right -= 23.0;
-            head_toggle(ui, p, cell, id.with(key), icon, on, label)
-        };
+        // A head with four has them in two columns, hide under lock and
+        // solo under mute.
+        let toggles = head_toggles(track.kind);
+        let mut placed = 0;
+        let mut toggle =
+            |ui: &mut Ui, key: &str, icon: Icon, on: bool, label: &str, ink: Option<Color32>| {
+                let cell = head_cell(rect, toggles, placed);
+                placed += 1;
+                head_toggle(ui, p, cell, id.with(key), icon, on, label, ink)
+            };
         let state = |locked, hidden, muted| Command::SetTrackState {
             track_id: track.id,
             locked,
             hidden,
             muted,
             name: None,
+            gain: None,
+            solo: None,
         };
         if toggle(
             ui,
@@ -927,27 +1392,9 @@ fn track_heads(
             } else {
                 "Lock track"
             },
+            None,
         ) {
             actions.push(Action::Edit(state(Some(!track.locked), None, None)));
-        }
-        if track.kind != TrackKind::Text
-            && toggle(
-                ui,
-                "mute",
-                if track.muted {
-                    Icon::VolumeOff
-                } else {
-                    Icon::Volume
-                },
-                track.muted,
-                if track.muted {
-                    "Unmute track"
-                } else {
-                    "Mute track"
-                },
-            )
-        {
-            actions.push(Action::Edit(state(None, None, Some(!track.muted))));
         }
         if track.kind != TrackKind::Audio
             && toggle(
@@ -964,26 +1411,77 @@ fn track_heads(
                 } else {
                     "Hide track"
                 },
+                None,
             )
         {
             actions.push(Action::Edit(state(None, Some(!track.hidden), None)));
         }
+        if tracks::carries_sound(track) {
+            // Silenced by another track's solo, the cell is dimmer than one
+            // that is only off.
+            let silenced = tracks::silenced_by_solo(input.project, track);
+            if toggle(
+                ui,
+                "mute",
+                if track.muted {
+                    Icon::VolumeOff
+                } else {
+                    Icon::Volume
+                },
+                track.muted,
+                mute_label(track, silenced),
+                silenced.then(|| p.muted.gamma_multiply(0.45)),
+            ) {
+                actions.push(Action::Edit(state(None, None, Some(!track.muted))));
+            }
+            if toggle(
+                ui,
+                "solo",
+                Icon::Headphones,
+                track.solo,
+                if track.solo {
+                    "Unsolo track"
+                } else {
+                    "Solo track"
+                },
+                track.solo.then_some(p.accent),
+            ) {
+                actions.push(Action::Edit(tracks::solo(track, !track.solo)));
+            }
+        }
 
-        let name_left = rect.left() + 28.0;
+        // The name, and under it the volume of a track that is not at the
+        // one it starts with, where the head is tall enough for both.
+        let room = head_name_room(rect, toggles);
+        let figure = tracks::figure(track).filter(|_| rect.height() >= HEAD_FIGURE);
         let galley = widgets::truncated(
             ui,
             &track.name,
             theme::medium(12.0),
             if track.locked { p.muted } else { p.fg },
-            (right - name_left - 2.0).max(0.0),
+            room.span(),
         );
+        let lift = if figure.is_some() { 6.0 } else { 0.0 };
         ui.painter().galley(
-            pos2(name_left, rect.center().y - galley.size().y * 0.5),
+            pos2(room.min, rect.center().y - lift - galley.size().y * 0.5),
             galley,
             p.fg,
         );
+        if let Some(figure) = figure {
+            let galley =
+                widgets::truncated(ui, &figure, theme::regular(10.5), p.muted, room.span());
+            ui.painter().galley(
+                pos2(room.min, rect.center().y + 9.0 - galley.size().y * 0.5),
+                galley,
+                p.muted,
+            );
+        }
 
-        response.context_menu(|ui| {
+        // A click in the menu is the volume field's to take: each row closes
+        // the menu itself, so only a click outside it does.
+        let menu = egui::Popup::context_menu(&response)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        menu.show(|ui| {
             menu_style(ui, 200.0);
             ui.add_enabled_ui(!track.locked, |ui| {
                 if menu_item(ui, p, Some(Icon::Trash), "Remove track", "").clicked() {
@@ -994,6 +1492,10 @@ fn track_heads(
             if menu_item(ui, p, Some(Icon::Layers), "Add track of this kind", "").clicked() {
                 actions.push(Action::AddTrack(track.kind));
                 ui.close();
+            }
+            if tracks::carries_sound(track) {
+                ui.separator();
+                volume_menu(ui, p, track, actions);
             }
         });
     }
@@ -1051,7 +1553,7 @@ fn draw_ruler(
     if matches!(state.drag, Some(Drag::Scrub))
         && let Some(pos) = response.interact_pointer_pos()
     {
-        let (time, hit) = snapped(input, geometry, geometry.time(pos.x), &[]);
+        let (time, hit) = snapped(input, geometry, &state.beats, geometry.time(pos.x), &[]);
         // The playhead never snaps to itself.
         let time = if hit && time != input.playhead {
             time
@@ -1191,6 +1693,390 @@ fn mark_handle(tile: Rect, mark: Rect, edge: TransitionEdge) -> Rect {
         tile.center().x
     };
     Rect::from_center_size(pos2(x, mark.center().y), vec2(MARK_HANDLE, mark.height()))
+}
+
+/// The part of a tile on a sound lane its sound is drawn in: under the name,
+/// on a tile tall enough to give the name a row.
+fn sound_area(tile: Rect) -> Rect {
+    let inner = tile.shrink(1.0);
+    let top = if carries_poster(tile.height()) {
+        inner.top() + NAME_ROW
+    } else {
+        inner.top()
+    };
+    Rect::from_min_max(pos2(inner.left(), top), inner.max)
+}
+
+/// Where a fade of this length ends on its clip's tile, from the edge it is
+/// held to and no further than the tile.
+fn fade_end(tile: Rect, zoom: f32, edge: FadeEdge, length: Time) -> f32 {
+    let width = (length.as_seconds() as f32 * zoom).clamp(0.0, tile.width());
+    match edge {
+        FadeEdge::In => tile.left() + width,
+        FadeEdge::Out => tile.right() - width,
+    }
+}
+
+/// The time of the project a fade of this length ends at on its clip.
+fn fade_end_time(clip: &Clip, edge: FadeEdge, length: Time) -> Time {
+    match edge {
+        FadeEdge::In => clip.start + length,
+        FadeEdge::Out => clip.end() - length,
+    }
+}
+
+/// The handles of the two fades of a clip's sound, the fade in first: at the
+/// top corners of the tile's sound, each where its fade ends, clear of the
+/// grips that trim the clip as the handle of a transition is and of one
+/// another. A tile too narrow for them has none.
+fn fade_handles(tile: Rect, zoom: f32, fade_in: Time, fade_out: Time) -> Option<[Rect; 2]> {
+    if tile.width() < FADE_TILE {
+        return None;
+    }
+    let area = sound_area(tile);
+    let band = area.with_max_y(area.top() + FADE_HANDLE.min(area.height()));
+    let mut start = mark_handle(
+        tile,
+        band.with_max_x(fade_end(tile, zoom, FadeEdge::In, fade_in)),
+        TransitionEdge::In,
+    );
+    let mut end = mark_handle(
+        tile,
+        band.with_min_x(fade_end(tile, zoom, FadeEdge::Out, fade_out)),
+        TransitionEdge::Out,
+    );
+    // Fades that meet, or nearly, keep a handle each: side by side about
+    // where they meet, and still clear of the grips.
+    if end.left() < start.right() {
+        let clear = EDGE_GRIP + MARK_HANDLE;
+        let middle = ((start.center().x + end.center().x) * 0.5)
+            .clamp(tile.left() + clear, tile.right() - clear);
+        start = start.translate(vec2(middle - start.right(), 0.0));
+        end = end.translate(vec2(middle - end.left(), 0.0));
+    }
+    Some([start, end])
+}
+
+/// The curve of one fade over the part of `area` from `left` to `right`: a
+/// point every [`FADE_STEP`] of width and one at each end, each as high in
+/// the area as [`sound::fade_at`] says the sound is let through there. The
+/// fade is measured from the edge of `tile` it is held to. Empty when none
+/// of the fade is in that part.
+fn fade_curve(
+    clip: &Clip,
+    tile: Rect,
+    area: Rect,
+    zoom: f32,
+    edge: FadeEdge,
+    (left, right): (f32, f32),
+) -> Vec<Pos2> {
+    let length = fades::of(clip, edge);
+    let end = fade_end(tile, zoom, edge, length);
+    let (from, to) = match edge {
+        FadeEdge::In => (tile.left().max(left), end.min(right)),
+        FadeEdge::Out => (end.max(left), tile.right().min(right)),
+    };
+    if length.is_zero() || to <= from {
+        return Vec::new();
+    }
+    let point = |x: f32| {
+        let local = match edge {
+            FadeEdge::In => Time::from_seconds(f64::from(x - tile.left()) / f64::from(zoom)),
+            FadeEdge::Out => {
+                clip.duration - Time::from_seconds(f64::from(tile.right() - x) / f64::from(zoom))
+            }
+        };
+        pos2(
+            x,
+            area.bottom() - sound::fade_at(clip, local) * area.height(),
+        )
+    };
+    let steps = ((to - from) / FADE_STEP).ceil() as usize;
+    (0..steps)
+        .map(|step| from + step as f32 * FADE_STEP)
+        .chain([to])
+        .map(point)
+        .collect()
+}
+
+/// Draws the fades of a clip over its sound: what each takes away is
+/// darkened above the curve it follows.
+fn paint_fades(
+    painter: &egui::Painter,
+    tile: Rect,
+    area: Rect,
+    clip: &Clip,
+    zoom: f32,
+    ink: Color32,
+    opacity: f32,
+) {
+    let visible = area.intersect(painter.clip_rect());
+    if !visible.is_positive() {
+        return;
+    }
+    let shade = Color32::from_black_alpha((96.0 * opacity) as u8);
+    for edge in fades::EDGES {
+        let within = (visible.left(), visible.right());
+        let curve = fade_curve(clip, tile, area, zoom, edge, within);
+        if curve.len() < 2 {
+            continue;
+        }
+        let mut mesh = egui::Mesh::default();
+        for (index, point) in curve.iter().enumerate() {
+            mesh.colored_vertex(pos2(point.x, area.top()), shade);
+            mesh.colored_vertex(*point, shade);
+            if index > 0 {
+                let at = 2 * index as u32;
+                mesh.add_triangle(at - 2, at - 1, at);
+                mesh.add_triangle(at - 1, at, at + 1);
+            }
+        }
+        painter.add(egui::Shape::mesh(mesh));
+        painter.add(egui::Shape::line(
+            curve,
+            Stroke::new(1.5, ink.gamma_multiply(0.85 * opacity)),
+        ));
+    }
+}
+
+/// How high in a tile's sound the line of a volume stands, from 0 at the
+/// bottom to 1 at the top: 100% at two thirds, 200% and more at the top.
+fn volume_level(gain: f32) -> f32 {
+    if gain <= 1.0 {
+        gain.max(0.0) * VOLUME_WHOLE
+    } else {
+        let over = (gain.min(VOLUME_TOP) - 1.0) / (VOLUME_TOP - 1.0);
+        VOLUME_WHOLE + over * (1.0 - VOLUME_WHOLE)
+    }
+}
+
+/// The volume whose line stands this high: [`volume_level`] the other way.
+fn volume_at_level(level: f32) -> f32 {
+    let level = level.clamp(0.0, 1.0);
+    if level <= VOLUME_WHOLE {
+        level / VOLUME_WHOLE
+    } else {
+        1.0 + (level - VOLUME_WHOLE) / (1.0 - VOLUME_WHOLE) * (VOLUME_TOP - 1.0)
+    }
+}
+
+/// The least and the greatest volume a clip is given.
+fn volume_bounds() -> (f32, f32) {
+    (look::clip_spec().iter())
+        .find(|spec| spec.key == ParamKey::Gain)
+        .map_or((0.0, 8.0), |spec| (spec.min, spec.max))
+}
+
+/// The volume a line taken hold of at `level` has once the pointer has gone
+/// `rise` points up in a sound `height` points high: a whole percent, within
+/// what a clip is given. A line that stands where the `stored` volume is
+/// drawn keeps that volume, which may be finer or louder than a line shows.
+fn volume_dragged(stored: f32, level: f32, rise: f32, height: f32) -> f32 {
+    let (least, most) = volume_bounds();
+    let whole = |gain: f32| ((gain * 100.0).round() / 100.0).clamp(least, most);
+    let wanted = whole(volume_at_level(level + rise / height.max(1.0)));
+    if wanted == whole(stored.min(VOLUME_TOP)) {
+        stored
+    } else {
+        wanted
+    }
+}
+
+/// The time of its clip a point of a tile shows, from the clip's start.
+fn tile_time(tile: Rect, zoom: f32, x: f32) -> Time {
+    Time::from_seconds(f64::from(x - tile.left()) / f64::from(zoom))
+}
+
+/// Where the volume line of `clip` is at `x` of its tile.
+fn volume_y(clip: &Clip, tile: Rect, area: Rect, zoom: f32, x: f32) -> f32 {
+    let gain = gain_at(clip, clip.start + tile_time(tile, zoom, x));
+    area.bottom() - volume_level(gain) * area.height()
+}
+
+/// The volume line of a clip over the part of `area` from `left` to `right`:
+/// level at the clip's volume, or, where keyframes drive it, the track's own
+/// evaluation a point every [`keyframes::SAMPLE`] of width and one at each
+/// key, as the graph draws a curve. Empty when none of the tile is in that
+/// part.
+fn volume_line(
+    clip: &Clip,
+    tile: Rect,
+    area: Rect,
+    zoom: f32,
+    (left, right): (f32, f32),
+) -> Vec<Pos2> {
+    let (from, to) = (tile.left().max(left), tile.right().min(right));
+    if to <= from {
+        return Vec::new();
+    }
+    let point = |x: f32, local: Time| {
+        let gain = gain_at(clip, clip.start + local);
+        pos2(x, area.bottom() - volume_level(gain) * area.height())
+    };
+    let local = |x: f32| tile_time(tile, zoom, x);
+    let Some(track) =
+        (clip.animation.iter()).find(|track| track.target.is_none() && track.key == ParamKey::Gain)
+    else {
+        return vec![point(from, local(from)), point(to, local(to))];
+    };
+    // From one key to the next, so a corner and a held step are drawn where
+    // they are and not between two samples.
+    let mut stops = vec![(from, local(from))];
+    stops.extend(
+        (track.keys.iter())
+            .map(|key| (tile.left() + key.at.as_seconds() as f32 * zoom, key.at))
+            .filter(|(x, _)| *x > from && *x < to),
+    );
+    stops.push((to, local(to)));
+    let step = keyframes::SAMPLE;
+    let mut points = Vec::with_capacity(((to - from) / step) as usize + stops.len() * 2);
+    for pair in stops.windows(2) {
+        let ((start, first), (end, last)) = (pair[0], pair[1]);
+        points.push(point(start, first));
+        let mut x = start + step;
+        while x < end {
+            points.push(point(x, local(x)));
+            x += step;
+        }
+        points.push(point(end, Time((last.0 - 1).max(first.0))));
+    }
+    points.push(point(to, local(to)));
+    points
+}
+
+/// The percent a held volume line says.
+fn volume_percent(clip: &Clip) -> String {
+    format!("{}%", (clip.gain * 100.0).round())
+}
+
+/// Where the percent of a held volume line is drawn on its tile, `size`
+/// large: beside the point at `x` it was taken hold of, after it or, where
+/// the room after it is too narrow, before it; above the line at `y`, or
+/// under it where the name's row leaves no room above. It is kept inside the
+/// tile's sound and clear of the grips, of both fades' curves and of their
+/// handles, so a point taken hold of over a fade has it said just past that
+/// fade. `None` when the room between the fades is too narrow for it.
+fn volume_readout(
+    tile: Rect,
+    area: Rect,
+    clip: &Clip,
+    zoom: f32,
+    (x, y): (f32, f32),
+    size: Vec2,
+) -> Option<Rect> {
+    let mut low = area.left() + EDGE_GRIP + READOUT_GAP;
+    let mut high = area.right() - EDGE_GRIP - READOUT_GAP;
+    if !clip.fade_in.is_zero() {
+        low = low.max(fade_end(tile, zoom, FadeEdge::In, clip.fade_in) + READOUT_GAP);
+    }
+    if !clip.fade_out.is_zero() {
+        high = high.min(fade_end(tile, zoom, FadeEdge::Out, clip.fade_out) - READOUT_GAP);
+    }
+    if let Some([fade_in, fade_out]) = fade_handles(tile, zoom, clip.fade_in, clip.fade_out) {
+        low = low.max(fade_in.right() + READOUT_GAP);
+        high = high.min(fade_out.left() - READOUT_GAP);
+    }
+    if high - low < size.x || area.height() < size.y {
+        return None;
+    }
+    let after = x + READOUT_GAP;
+    let left = if after + size.x <= high {
+        after
+    } else {
+        x - READOUT_GAP - size.x
+    };
+    let left = left.clamp(low, high - size.x);
+    let top = if y - area.top() >= size.y + 1.0 {
+        y - 1.0 - size.y
+    } else {
+        y + 2.0
+    };
+    let top = top.clamp(area.top(), area.bottom() - size.y);
+    Some(Rect::from_min_size(pos2(left, top), size))
+}
+
+/// Draws the volume line of a clip over its sound, a dot at each volume
+/// keyframe in view, and beside a held line the volume it is held at, as
+/// [`volume_readout`] places it. Held, `held` is the accent and where
+/// across the line was taken hold of. Whether the held percent was said:
+/// when the fades leave it no room, the name's row says it.
+fn paint_volume(
+    painter: &egui::Painter,
+    tile: Rect,
+    area: Rect,
+    clip: &Clip,
+    zoom: f32,
+    (ink, held): (Color32, Option<(Color32, f32)>),
+    opacity: f32,
+) -> bool {
+    let visible = area.intersect(painter.clip_rect());
+    if !visible.is_positive() {
+        return false;
+    }
+    let within = (visible.left(), visible.right());
+    let line = volume_line(clip, tile, area, zoom, within);
+    if line.is_empty() {
+        return false;
+    }
+    let stroke = match held {
+        Some((accent, _)) => Stroke::new(1.5, accent),
+        None => Stroke::new(1.0, ink.gamma_multiply(0.8 * opacity)),
+    };
+    painter.add(egui::Shape::line(line, stroke));
+    let keys = (clip.animation.iter())
+        .find(|track| track.target.is_none() && track.key == ParamKey::Gain)
+        .map_or(&[][..], |track| &track.keys);
+    for key in keys {
+        let x = tile.left() + key.at.as_seconds() as f32 * zoom;
+        if x >= within.0 - 2.0 && x <= within.1 + 2.0 {
+            let gain = gain_at(clip, clip.start + key.at);
+            let y = area.bottom() - volume_level(gain) * area.height();
+            painter.circle_filled(pos2(x, y), 2.0, stroke.color);
+        }
+    }
+    let Some((_, x)) = held else {
+        return false;
+    };
+    let galley = painter.layout_no_wrap(volume_percent(clip), theme::mono(10.0), ink);
+    let y = volume_y(clip, tile, area, zoom, x);
+    match volume_readout(tile, area, clip, zoom, (x, y), galley.size()) {
+        Some(readout) => {
+            painter.galley(readout.min, galley, ink);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The volume line of a clip's tile where `pos` is on it, as how high it
+/// stands there and how high the tile's sound is: on a sound lane that takes
+/// an edit, of a clip whose media has sound, on a tile wide enough to have a
+/// body between the grips that trim it.
+fn volume_grip(
+    project: &Project,
+    rows: &[Row],
+    geometry: &Geometry,
+    track: &Track,
+    clip: &Clip,
+    pos: Pos2,
+) -> Option<(f32, f32)> {
+    if track.kind != TrackKind::Audio || track.locked || !fades::has_sound(project, clip) {
+        return None;
+    }
+    let row = rows.iter().find(|row| row.track.id == track.id)?;
+    let tile = clip_rect(geometry, row, clip.start, clip.end());
+    let area = sound_area(tile);
+    if tile.width() < FADE_TILE || area.height() < 1.0 {
+        return None;
+    }
+    let y = volume_y(clip, tile, area, geometry.zoom, pos.x);
+    ((pos.y - y).abs() <= VOLUME_REACH)
+        .then(|| ((area.bottom() - y) / area.height(), area.height()))
+}
+
+/// What the handle of a fade is called.
+fn fade_name(clip: &Clip, edge: FadeEdge) -> String {
+    format!("{} of {}", fades::name(edge), clip.name)
 }
 
 /// An edge under the pointer that could be given a transition, and the
@@ -1350,6 +2236,7 @@ fn draw_lanes(
     state: &mut TimelineState,
     selection: &mut Selection,
     textures: &mut Textures,
+    peaks: &mut HeldPeaks,
     input: &TimelineInput,
     actions: &mut Vec<Action>,
 ) {
@@ -1393,11 +2280,13 @@ fn draw_lanes(
     }
 
     // The tiles that carry the chevron of a keyframe lane: a selected clip
-    // with animation, and the clip whose lane is open.
-    let open = state.keys.lane_clip();
+    // with animation, and the clip whose lane is open, which for a clip
+    // with sound may be the empty row of its volume.
+    let open = (state.keys.lane_rows(project)).and_then(|_| state.keys.lane_clip());
     let mut toggles: Vec<(ClipId, Rect)> = Vec::new();
     for (row, clip) in clips_drawn(rows, geometry) {
-        if clip.animation.is_empty() || !(selection.contains(clip.id) || open == Some(clip.id)) {
+        let animated = !clip.animation.is_empty() && selection.contains(clip.id);
+        if !(animated || open == Some(clip.id)) {
             continue;
         }
         let tile = clip_rect(geometry, row, clip.start, clip.end());
@@ -1439,11 +2328,60 @@ fn draw_lanes(
     // The edge under the pointer that could be given a transition. Asked of
     // the layer and not of the lanes' response, which the badge covers.
     let carrying = egui::DragAndDrop::has_any_payload(ui.ctx());
-    let spot = pointer
+    let free = pointer
         .filter(|pos| lanes.contains(*pos) && ui.rect_contains_pointer(lanes))
-        .filter(|_| state.drag.is_none() && !carrying)
+        .filter(|_| state.drag.is_none() && !carrying);
+    let spot = free
         .and_then(|pos| add_spot(rows, geometry, pos))
         .filter(|spot| !handles.iter().any(|(.., rect)| rect.intersects(spot.badge)));
+    // The handles of the fades of the sound tiles in view, on tracks that
+    // take an edit: of the selected clips, of the clip under the pointer
+    // and of the one whose fade is held, which is where it is held. Asked
+    // of the layer too: a handle covers the lanes where it stands.
+    let held_fade = match &state.drag {
+        Some(Drag::Fade {
+            clip,
+            edge,
+            duration,
+            ..
+        }) => Some((*clip, *edge, *duration)),
+        _ => None,
+    };
+    let under = free.and_then(|pos| match hit(rows, geometry, pos) {
+        Hit::Clip { clip, .. } => Some(clip.id),
+        _ => None,
+    });
+    // A tile being carried or trimmed is drawn where it is held, and its
+    // handles would stand where it was: none is shown until it is let go.
+    let reshaping = match &state.drag {
+        Some(Drag::Move { moved, .. }) => *moved,
+        Some(Drag::Trim { delta, .. }) => *delta != Time::ZERO,
+        _ => false,
+    };
+    let mut faders: Vec<(ClipId, FadeEdge, Rect)> = Vec::new();
+    for (row, clip) in clips_drawn(rows, geometry) {
+        if reshaping || row.track.kind != TrackKind::Audio || row.track.locked {
+            continue;
+        }
+        let held = held_fade.filter(|held| held.0 == clip.id);
+        if !(selection.contains(clip.id) || under == Some(clip.id) || held.is_some()) {
+            continue;
+        }
+        let length = |edge| {
+            held.filter(|held| held.1 == edge)
+                .map_or(fades::of(clip, edge), |held| held.2)
+        };
+        let tile = clip_rect(geometry, row, clip.start, clip.end());
+        let (fade_in, fade_out) = (length(FadeEdge::In), length(FadeEdge::Out));
+        if let Some(rects) = fade_handles(tile, geometry.zoom, fade_in, fade_out) {
+            faders.extend(
+                fades::EDGES
+                    .into_iter()
+                    .zip(rects)
+                    .map(|(edge, rect)| (clip.id, edge, rect)),
+            );
+        }
+    }
     // What a press on the lane, a chevron or a handle does is theirs, not
     // the clips'. The badge takes no press from the edge it sits on: see
     // `offer` below.
@@ -1451,6 +2389,7 @@ fn draw_lanes(
         band.is_some_and(|band| band.contains(pos))
             || toggles.iter().any(|(_, rect)| rect.contains(pos))
             || handles.iter().any(|(.., rect)| rect.contains(pos))
+            || faders.iter().any(|(.., rect)| rect.contains(pos))
     };
 
     // ---- Pointer: press, drag, release ------------------------------------
@@ -1463,12 +2402,40 @@ fn draw_lanes(
         state.snap_guide = None;
         state.keyboard = None;
         match hit(rows, geometry, pos) {
+            // Alt on a volume line keys the volume at the frame under the
+            // pointer, at the volume it has there, and opens the lane the
+            // key is then in.
+            Hit::Clip {
+                track,
+                clip,
+                edge: None,
+                ..
+            } if modifiers.alt
+                && volume_grip(project, rows, geometry, track, clip, pos).is_some() =>
+            {
+                selection.only(clip.id);
+                selection.asset = None;
+                state.transition = None;
+                state.drag = None;
+                let at = rules::quantize(geometry.time(pos.x), rate).clamp(clip.start, clip.end());
+                let keyed = keyframes::key_volume(clip, at - clip.start);
+                actions.extend(keyed.map(Action::Edit));
+                state.keys.set_lane(Some(clip.id));
+            }
             Hit::Clip {
                 track,
                 clip,
                 edge,
                 marking,
             } => {
+                // The line of a clip that was selected before this press,
+                // and whose volume no keyframe drives, is taken hold of:
+                // anywhere else, and on any other clip, the press is the
+                // clip's.
+                let line = (edge.is_none() && !extend && selection.contains(clip.id))
+                    .then(|| volume_grip(project, rows, geometry, track, clip, pos))
+                    .flatten()
+                    .filter(|_| !sound::volume_keyed(clip));
                 if extend {
                     selection.toggle(clip.id);
                 } else if !selection.contains(clip.id) {
@@ -1490,6 +2457,17 @@ fn draw_lanes(
                         clip: clip.id,
                         edge,
                         delta: Time::ZERO,
+                    })
+                } else if let Some((level, height)) = line {
+                    Some(Drag::Volume {
+                        clip: clip.id,
+                        gain: clip.gain,
+                        stored: clip.gain,
+                        level,
+                        height,
+                        from: pos.y,
+                        at: geometry.time(pos.x),
+                        moved: false,
                     })
                 } else if selection.contains(clip.id) {
                     Some(Drag::Move {
@@ -1563,9 +2541,15 @@ fn draw_lanes(
                 }
                 let moving = rules::related(project, &selection.clips, true);
                 let wanted = geometry.time(pos.x.max(lanes.left() - 2000.0)) - *origin;
+                // The beats of the clips held move with them.
+                let beats: Vec<(ClipId, Time)> = (state.beats.iter())
+                    .filter(|(id, _)| !moving.contains(id))
+                    .copied()
+                    .collect();
                 // Whichever edge of the held clip is nearer a guide wins.
-                let (start, start_hit) = snapped(input, geometry, clip.start + wanted, &moving);
-                let (end, end_hit) = snapped(input, geometry, clip.end() + wanted, &moving);
+                let (start, start_hit) =
+                    snapped(input, geometry, &beats, clip.start + wanted, &moving);
+                let (end, end_hit) = snapped(input, geometry, &beats, clip.end() + wanted, &moving);
                 let mut guide = None;
                 let mut next = rules::quantize(clip.start + wanted, rate) - clip.start;
                 let start_reach = (start.0 - (clip.start + wanted).0).abs();
@@ -1624,7 +2608,7 @@ fn draw_lanes(
                     Edge::End => clip.end(),
                 };
                 let raw = geometry.time(pos.x);
-                let (time, hit) = snapped(input, geometry, raw, &[clip.id]);
+                let (time, hit) = snapped(input, geometry, &state.beats, raw, &[clip.id]);
                 let time = if hit {
                     time
                 } else {
@@ -1644,7 +2628,7 @@ fn draw_lanes(
                 && let Some((shortest, longest)) = transitions::lengths(project, clip)
             {
                 let raw = geometry.time(pos.x);
-                let (time, hit) = snapped(input, geometry, raw, &[clip.id]);
+                let (time, hit) = snapped(input, geometry, &state.beats, raw, &[clip.id]);
                 let time = if hit {
                     time
                 } else {
@@ -1656,6 +2640,54 @@ fn draw_lanes(
                 };
                 *duration = wanted.clamp(shortest, longest);
                 state.snap_guide = (hit && *duration == wanted).then_some(time);
+            }
+        }
+        Some(Drag::Fade {
+            clip,
+            edge,
+            duration,
+            grab,
+        }) => {
+            if let (Some(pos), Some((_, clip))) = (pointer, project.clip(*clip)) {
+                let stored = fades::of(clip, *edge);
+                let raw = geometry.time(pos.x) - *grab;
+                if raw == fade_end_time(clip, *edge, stored) {
+                    // Where it was taken hold of the fade is the one it
+                    // has, on a frame or not.
+                    *duration = stored;
+                    state.snap_guide = None;
+                } else {
+                    let (time, hit) = snapped(input, geometry, &state.beats, raw, &[clip.id]);
+                    let time = if hit {
+                        time
+                    } else {
+                        rules::quantize(raw, rate)
+                    };
+                    let wanted = match edge {
+                        FadeEdge::In => time - clip.start,
+                        FadeEdge::Out => clip.end() - time,
+                    };
+                    // No further than the clip's other fade, nor than the
+                    // clip.
+                    *duration = wanted.clamp(Time::ZERO, fades::room(clip, *edge));
+                    state.snap_guide = (hit && *duration == wanted).then_some(time);
+                }
+            }
+        }
+        Some(Drag::Volume {
+            gain,
+            stored,
+            level,
+            height,
+            from,
+            moved,
+            ..
+        }) => {
+            if let Some(pos) = pointer {
+                *moved |= (pos.y - *from).abs() >= VOLUME_TRAVEL;
+                if *moved {
+                    *gain = volume_dragged(*stored, *level, *from - pos.y, *height);
+                }
             }
         }
         Some(Drag::Marquee { from, base }) if dragging || released => {
@@ -1733,6 +2765,41 @@ fn draw_lanes(
                     )));
                 }
             }
+            Drag::Fade {
+                clip,
+                edge,
+                duration,
+                ..
+            } => {
+                // The clip and the edge taken hold of, whatever is selected
+                // by now.
+                if let Some((_, held)) = project.clip(clip)
+                    && fades::of(held, edge) != duration
+                {
+                    actions.push(Action::Edit(fades::set_command(held, edge, duration)));
+                }
+            }
+            Drag::Volume {
+                clip, gain, moved, ..
+            } => {
+                // The clip taken hold of, as it is now: keyframes written
+                // since drive its volume, and the line is no longer one.
+                if moved {
+                    if let Some((_, held)) = project.clip(clip)
+                        && !sound::volume_keyed(held)
+                        && held.gain != gain
+                    {
+                        actions.push(Action::Edit(Command::SetGain {
+                            clip_id: clip,
+                            gain,
+                        }));
+                    }
+                } else if !extend {
+                    // A plain click on one of several selected clips keeps
+                    // only that one.
+                    selection.only(clip);
+                }
+            }
             Drag::Marquee { from, .. } => {
                 // A press that did not travel is a click on empty space: it
                 // clears the selection and moves the playhead there.
@@ -1757,10 +2824,27 @@ fn draw_lanes(
         }
     }
     let textures = &*textures;
+    // And those on sound lanes draw their media's sound: asked for here and
+    // nowhere else, so a tile that is not drawn asks for nothing.
+    for asset in wave_assets(project, rows, geometry) {
+        peaks.want(asset);
+    }
+    let peaks = &*peaks;
     let moving: Vec<ClipId> = match &state.drag {
         Some(Drag::Move { moved: true, .. }) => rules::related(project, &selection.clips, true),
         _ => Vec::new(),
     };
+    let held_volume = match &state.drag {
+        Some(Drag::Volume {
+            clip,
+            gain,
+            at,
+            moved: true,
+            ..
+        }) => Some((*clip, *gain, geometry.x(*at))),
+        _ => None,
+    };
+    let held_keys = state.keys.overriding(project);
     for (row, clip) in clips_drawn(rows, geometry) {
         let mut start = clip.start;
         let mut end = clip.end();
@@ -1783,7 +2867,31 @@ fn draw_lanes(
         }
         let rect = clip_rect(geometry, row, start, end);
         let chevron = toggles.iter().any(|(id, _)| *id == clip.id);
+        // A fade that is held is drawn as long as it is held, a volume line
+        // where it is held, and one bent by keys that are held as those
+        // keys would bend it.
+        let mut shown: Option<Clip> = None;
+        if let Some((_, edge, duration)) = held_fade.filter(|held| held.0 == clip.id) {
+            let shown = shown.get_or_insert_with(|| clip.clone());
+            match edge {
+                FadeEdge::In => shown.fade_in = duration,
+                FadeEdge::Out => shown.fade_out = duration,
+            }
+        }
+        let lifted = held_volume.filter(|held| held.0 == clip.id);
+        if let Some((_, gain, _)) = lifted {
+            shown.get_or_insert_with(|| clip.clone()).gain = gain;
+        }
+        if row.track.kind == TrackKind::Audio
+            && let Some(animation) = (held_keys.as_ref())
+                .filter(|held| held.clip == clip.id)
+                .and_then(|held| held.animation.as_ref())
+        {
+            (shown.get_or_insert_with(|| clip.clone()).animation).clone_from(animation);
+        }
+        let clip = shown.as_ref().unwrap_or(clip);
         let marks = Marks {
+            volume: lifted.map(|(.., x)| x),
             zoom: geometry.zoom,
             selected: (state.transition)
                 .filter(|(id, _)| *id == clip.id)
@@ -1791,6 +2899,10 @@ fn draw_lanes(
             held: held_mark
                 .filter(|held| held.0 == clip.id)
                 .map(|held| (held.1, held.2)),
+            beats: (state.beats.iter())
+                .filter(|(id, _)| *id == clip.id)
+                .map(|(_, at)| geometry.x(*at))
+                .collect(),
         };
         paint_clip(
             ui,
@@ -1804,6 +2916,7 @@ fn draw_lanes(
             if chevron { LANE_TOGGLE } else { 0.0 },
             &marks,
             textures,
+            wave_of(project, row.track, clip, peaks, geometry, Time::ZERO),
             input,
         );
         if state.keyboard == Some(clip.id) {
@@ -1824,7 +2937,8 @@ fn draw_lanes(
         );
     }
 
-    // The clips being moved, where they would land.
+    // The clips being moved, where they would land, with the beats they
+    // show there.
     if let Some(Drag::Move {
         delta,
         target,
@@ -1832,6 +2946,11 @@ fn draw_lanes(
         ..
     }) = &state.drag
     {
+        let sounding = peaks
+            .beats
+            .any_shown()
+            .then(|| sound::Sounding::of(project));
+        let (from, to) = (geometry.time(lanes.left()), geometry.time(lanes.right()));
         for id in &moving {
             let Some((track, clip)) = project.clip(*id) else {
                 continue;
@@ -1844,13 +2963,24 @@ fn draw_lanes(
                 continue;
             };
             let rect = clip_rect(geometry, row, clip.start + *delta, clip.end() + *delta);
+            let beats = sounding.as_ref().map_or_else(Vec::new, |sounding| {
+                let (from, to) = (from - *delta, to - *delta);
+                let zoom = geometry.zoom;
+                shown_ticks(project, sounding, &peaks.beats, track, clip, from, to, zoom)
+            });
             let marks = Marks {
+                volume: None,
                 zoom: geometry.zoom,
                 selected: None,
                 held: None,
+                beats: (beats.into_iter())
+                    .map(|at| geometry.x(at + *delta))
+                    .collect(),
             };
+            let wave = wave_of(project, track, clip, peaks, geometry, *delta);
             paint_clip(
-                ui, &painter, rect, project, track, clip, true, 0.92, 0.0, &marks, textures, input,
+                ui, &painter, rect, project, track, clip, true, 0.92, 0.0, &marks, textures, wave,
+                input,
             );
         }
     }
@@ -1913,6 +3043,78 @@ fn draw_lanes(
             handle
                 .on_hover_cursor(CursorIcon::ResizeHorizontal)
                 .on_hover_text("Drag to change how long the transition lasts");
+        }
+        // ---- Fades: the handles ------------------------------------------
+        for (id, edge, rect) in &faders {
+            let Some((_, clip)) = project.clip(*id) else {
+                continue;
+            };
+            let handle = over_lanes.interact(
+                *rect,
+                Id::new(("fade-handle", *id, *edge)),
+                Sense::click_and_drag(),
+            );
+            handle.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, fade_name(clip, *edge))
+            });
+            let held = held_fade.filter(|held| (held.0, held.1) == (*id, *edge));
+            let hot = held.is_some() || handle.hovered() || handle.has_focus();
+            let centre = rect.center();
+            let painter = over_lanes.painter();
+            painter.circle_filled(centre, 4.0, if hot { p.accent } else { p.elevated });
+            painter.circle_stroke(centre, 4.0, Stroke::new(1.0, p.fg));
+            if handle.has_focus() {
+                painter.rect_stroke(
+                    rect.expand(1.0),
+                    CornerRadius::same(3),
+                    Stroke::new(1.5, p.accent),
+                    StrokeKind::Inside,
+                );
+            }
+            // How long the held fade would be, beside its handle and inside
+            // the tile.
+            if let Some((.., duration)) = held {
+                let (align, x) = match edge {
+                    FadeEdge::In => (Align2::LEFT_CENTER, rect.right() + 3.0),
+                    FadeEdge::Out => (Align2::RIGHT_CENTER, rect.left() - 3.0),
+                };
+                painter.text(
+                    pos2(x, centre.y),
+                    align,
+                    format!("{:.2} s", duration.as_seconds()),
+                    theme::mono(10.0),
+                    p.fg,
+                );
+            }
+            if handle.clicked() || handle.drag_started() {
+                // Taking hold of a clip's fade selects the clip.
+                if !selection.contains(*id) {
+                    selection.only(*id);
+                }
+                state.transition = None;
+                state.keys.let_go();
+            }
+            if handle.drag_started() {
+                let stored = fades::of(clip, *edge);
+                // From where the press landed, not from where the pointer
+                // has got to since.
+                let taken = ui
+                    .input(|i| i.pointer.press_origin())
+                    .map_or(rect.center().x, |pos| pos.x);
+                state.snap_guide = None;
+                state.drag = Some(Drag::Fade {
+                    clip: *id,
+                    edge: *edge,
+                    duration: stored,
+                    grab: geometry.time(taken) - fade_end_time(clip, *edge, stored),
+                });
+            }
+            handle
+                .on_hover_cursor(CursorIcon::ResizeHorizontal)
+                .on_hover_text(match edge {
+                    FadeEdge::In => "Drag to set how long the sound fades in",
+                    FadeEdge::Out => "Drag to set how long the sound fades out",
+                });
         }
         state.badge = None;
         if let Some(spot) = &spot
@@ -1977,7 +3179,7 @@ fn draw_lanes(
                     .find(|row| row.track.kind == rules::home_track(asset) && !row.track.locked)
             });
         let raw = geometry.time(pos.x);
-        let (time, hit) = snapped(input, geometry, raw, &[]);
+        let (time, hit) = snapped(input, geometry, &state.beats, raw, &[]);
         let time = if hit {
             time
         } else {
@@ -2063,6 +3265,18 @@ fn draw_lanes(
             Hit::Clip { edge: Some(_), .. } => {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
             }
+            // A volume line a press would take hold of, or key with Alt.
+            Hit::Clip { track, clip, .. }
+                if (modifiers.alt
+                    || (selection.contains(clip.id) && !sound::volume_keyed(clip)))
+                    && volume_grip(project, rows, geometry, track, clip, pos).is_some() =>
+            {
+                ui.ctx().set_cursor_icon(if modifiers.alt {
+                    CursorIcon::Cell
+                } else {
+                    CursorIcon::ResizeVertical
+                });
+            }
             Hit::Clip { track, .. } if !track.locked => {
                 ui.ctx().set_cursor_icon(CursorIcon::Grab);
             }
@@ -2070,7 +3284,10 @@ fn draw_lanes(
         }
     }
     match &state.drag {
-        Some(Drag::Trim { .. }) => ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal),
+        Some(Drag::Trim { .. } | Drag::Fade { .. }) => {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+        }
+        Some(Drag::Volume { .. }) => ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical),
         Some(Drag::Move { moved: true, .. }) => ui.ctx().set_cursor_icon(CursorIcon::Grabbing),
         _ => {}
     }
@@ -2092,6 +3309,8 @@ fn draw_lanes(
     let menu_clip = state.menu_clip;
     let menu_time = state.menu_time;
     let mut marked = None;
+    let mut keyed = None;
+    let mut separated = None;
     response.context_menu(|ui| {
         menu_style(ui, 220.0);
         // The edge of the clip nearer where the menu was opened, and the
@@ -2135,6 +3354,146 @@ fn draw_lanes(
                         Err(reason) => Action::Notify(reason),
                     };
                     item(ui, Icon::Pause, "Freeze frame", "F", action);
+                });
+                // Offered of a picture clip with sound; one whose sound is
+                // on an audio clip already, or whose track is locked, shows
+                // it without being able to choose it.
+                let sounds = (project.clip(clip))
+                    .is_some_and(|(track, held)| rules::carries_sound(project, track, held));
+                if sounds {
+                    let free = rules::detach_refusal(project, clip).is_none();
+                    ui.add_enabled_ui(free, |ui| {
+                        item(
+                            ui,
+                            Icon::Volume,
+                            "Detach audio",
+                            "",
+                            Action::DetachAudio(clip),
+                        );
+                    });
+                }
+            }
+            // The fades of the selected clips' sound, by rows the keyboard
+            // reaches: offered of a clip whose media has sound, and shown
+            // without being able to be chosen where no selected clip would
+            // be changed.
+            let fades_sound = menu_clip
+                .and_then(|id| project.clip(id))
+                .is_some_and(|(_, held)| fades::has_sound(project, held));
+            if fades_sound {
+                for (label, asked) in fades::MENU {
+                    let made = fades::command(project, &selection.clips, asked);
+                    ui.add_enabled_ui(made.is_ok(), |ui| {
+                        let icon = match asked {
+                            fades::Asked::Set(..) => Icon::Volume,
+                            fades::Asked::Remove => Icon::Trash,
+                        };
+                        let action = match made {
+                            Ok(command) => Action::Edit(command),
+                            Err(reason) => Action::Notify(reason),
+                        };
+                        item(ui, icon, label, "", action);
+                    });
+                }
+            }
+            // A key of the clip's volume at the playhead, at the volume it
+            // has there: the lane it is in then opens. Shown without being
+            // able to be chosen where none would be written.
+            if let Some(clip) = menu_clip.filter(|_| fades_sound) {
+                let made = keyframes::volume_key(project, clip, input.playhead);
+                ui.add_enabled_ui(made.is_ok(), |ui| {
+                    if menu_item(ui, p, Some(Icon::Diamond), "Key volume", "").clicked() {
+                        keyed = made.ok().map(|command| (clip, command));
+                        ui.close();
+                    }
+                });
+                // The selected clips' loudness is measured and each one's
+                // volume set as its figures come. Shown without being able
+                // to be chosen where none of them would be measured.
+                let taken = normalize::takers(project, &selection.clips);
+                ui.add_enabled_ui(taken.is_ok(), |ui| {
+                    let action = match taken {
+                        Ok(clips) => Action::Normalize(clips),
+                        Err(reason) => Action::Notify(reason),
+                    };
+                    item(ui, Icon::Volume, "Normalize loudness", "", action);
+                });
+                // On a clip of an audio lane: the selected clips are lowered
+                // wherever the others are heard, at the default depth, once
+                // their sound is read. Shown without being able to be chosen
+                // where none of them would be ducked.
+                let on_audio =
+                    (project.clip(clip)).is_some_and(|(track, _)| track.kind == TrackKind::Audio);
+                if on_audio {
+                    // The whole selection goes: a clip passed over is
+                    // still no voice.
+                    let taken = duck::takers(project, &selection.clips);
+                    ui.add_enabled_ui(taken.is_ok(), |ui| {
+                        let action = match taken {
+                            Ok(_) => Action::Duck {
+                                clips: selection.clips.clone(),
+                                depth: duck::DEPTH,
+                            },
+                            Err(reason) => Action::Notify(reason),
+                        };
+                        item(ui, Icon::Volume, duck::LABEL, "", action);
+                    });
+                }
+                // The beats of the clip's media, on each of its tiles, for
+                // the session; and while they are shown, a marker on each
+                // beat of this clip, shown without being able to be chosen
+                // until they are found.
+                let asset = (project.clip(clip))
+                    .and_then(|(_, held)| held.asset_id())
+                    .filter(|_| on_audio);
+                if let Some(asset) = asset {
+                    let shown = peaks.beats.shown(asset);
+                    let label = if shown { "Hide beats" } else { "Show beats" };
+                    let action = Action::ShowBeats {
+                        assets: vec![asset],
+                        shown: !shown,
+                    };
+                    item(ui, Icon::Music, label, "", action);
+                    if shown {
+                        let made = peaks.beats.markers(project, clip);
+                        ui.add_enabled_ui(made.is_ok(), |ui| {
+                            let action = match made {
+                                Ok(command) => Action::Edit(command),
+                                Err(reason) => Action::Notify(reason),
+                            };
+                            item(ui, Icon::Flag, peaks::BEAT_MARKERS, "", action);
+                        });
+                    }
+                }
+            }
+            // The span of its media's sound the clip plays, to a file:
+            // offered of a clip whose media has sound, and shown without
+            // being able to be chosen when that span has none.
+            if let Some(clip) = menu_clip.filter(|_| fades_sound) {
+                let source = crate::extract::Source::Clip(clip);
+                let refused = crate::extract::refusal(project, source);
+                ui.add_enabled_ui(refused.is_none(), |ui| {
+                    let action = match refused {
+                        None => Action::SaveAudio(source),
+                        Some(reason) => Action::Notify(reason),
+                    };
+                    item(ui, Icon::Save, crate::extract::LABEL, "", action);
+                });
+                // The whole of its media's sound, split by the stem
+                // separator and placed under the clip when it comes. Shown
+                // without being able to be chosen, and saying why, without a
+                // separator or for a clip that is not heard.
+                let refused = (input.separator.refusal().map(str::to_owned))
+                    .or_else(|| crate::stems::refusal(project, clip));
+                ui.add_enabled_ui(refused.is_none(), |ui| {
+                    let row = menu_item(ui, p, Some(Icon::Music), crate::stems::LABEL, "");
+                    if row.clicked() {
+                        separated = Some(clip);
+                        ui.close();
+                    }
+                    if let Some(reason) = refused {
+                        row.on_disabled_hover_text(reason);
+                    }
                 });
             }
             match (edge, place) {
@@ -2254,6 +3613,13 @@ fn draw_lanes(
     if let Some((clip, edge)) = marked {
         state.mark(selection, clip, edge);
     }
+    if let Some(clip) = separated {
+        actions.push(Action::SeparateStems(clip));
+    }
+    if let Some((clip, command)) = keyed {
+        actions.push(Action::Edit(command));
+        state.keys.set_lane(Some(clip));
+    }
 }
 
 /// A marker with the default colour at `time`.
@@ -2290,14 +3656,20 @@ pub fn trim_command(clip: &Clip, edge: Edge, delta: Time) -> Command {
     }
 }
 
-/// How a clip's transitions are marked on its tile.
+/// How a clip's transitions are marked on its tile, and whether its volume
+/// line is held.
 struct Marks {
+    /// The volume line is being dragged, and where across it was taken hold
+    /// of: the clip drawn has the volume it is held at.
+    volume: Option<f32>,
     /// Points per second.
     zoom: f32,
     /// The edge whose transition is selected.
     selected: Option<TransitionEdge>,
     /// The edge whose transition is being dragged, and how long it would be.
     held: Option<(TransitionEdge, Time)>,
+    /// Where the beats the tile shows are, points across.
+    beats: Vec<f32>,
 }
 
 #[expect(
@@ -2317,6 +3689,8 @@ fn paint_clip(
     indent: f32,
     marks: &Marks,
     textures: &Textures,
+    // The sound of a clip on an audio lane, once its peaks are held.
+    wave: Option<Wave>,
     input: &TimelineInput,
 ) {
     let p = input.p;
@@ -2330,8 +3704,53 @@ fn paint_clip(
     let tall = carries_poster(rect.height());
     let label_height = if tall { NAME_ROW } else { rect.height() };
 
-    // The poster frame at the head of a picture clip.
-    if tall
+    // A held volume line whose fades leave its sound no room for its percent
+    // says it in the name's row.
+    let mut unsaid = false;
+    // A sound lane draws sound, of a video too; a picture lane the poster
+    // frame at the head of the clip.
+    if track.kind == TrackKind::Audio {
+        let area = sound_area(rect);
+        match &wave {
+            // The sound of the clip, under its name. It is the source's:
+            // the clip's volume does not show in it.
+            Some(wave) => {
+                let ink = tone.gamma_multiply(0.9 * opacity);
+                paint_wave(&clipped, area, clip, wave, ink);
+            }
+            // Until its peaks are held, a level line says this is sound,
+            // where the silence of a waveform is drawn.
+            None => {
+                clipped.hline(
+                    inner.x_range(),
+                    area.center().y,
+                    Stroke::new(1.0, tone.gamma_multiply(0.7 * opacity)),
+                );
+            }
+        }
+        let ink = if p.dark {
+            Color32::WHITE
+        } else {
+            theme::mix(tone, Color32::BLACK, 0.72)
+        };
+        // The beats of its music, at the foot of the sound.
+        paint_beats(
+            &clipped,
+            area,
+            &marks.beats,
+            ink.gamma_multiply(0.75 * opacity),
+        );
+        // The fades of the sound, over it: how much of it is let through
+        // from each edge.
+        paint_fades(&clipped, rect, area, clip, marks.zoom, ink, opacity);
+        // The clip's volume, over both: a line where it stands, bent by its
+        // keyframes.
+        if fades::has_sound(project, clip) {
+            let inks = (ink, marks.volume.map(|x| (p.accent, x)));
+            let said = paint_volume(&clipped, rect, area, clip, marks.zoom, inks, opacity);
+            unsaid = marks.volume.is_some() && !said;
+        }
+    } else if tall
         && let ClipContent::Media { asset_id } = &clip.content
         && let Some(texture) = textures.poster(*asset_id)
     {
@@ -2347,13 +3766,6 @@ fn paint_clip(
             image,
             Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
             Color32::WHITE.gamma_multiply(opacity),
-        );
-    } else if track.kind == TrackKind::Audio {
-        // No waveform data yet: a level line says this is sound.
-        clipped.hline(
-            inner.x_range(),
-            inner.center().y + 6.0,
-            Stroke::new(1.0, tone.gamma_multiply(0.7 * opacity)),
         );
     }
 
@@ -2398,10 +3810,10 @@ fn paint_clip(
     // How the clip is retimed, at the trailing end of its name's row. The
     // name gives way to it.
     let mut named = inner.width() - 12.0 - indent;
+    let mut right = inner.right() - if clip.linked_id.is_some() { 20.0 } else { 5.0 };
     if inner.width() > 96.0
         && let Some(badge) = speed::badge(clip)
     {
-        let right = inner.right() - if clip.linked_id.is_some() { 20.0 } else { 5.0 };
         let galley = widgets::truncated(
             ui,
             &badge,
@@ -2424,6 +3836,33 @@ fn paint_clip(
             galley,
             Color32::WHITE,
         );
+        right = pill.left() - 4.0;
+    }
+    // The percent of a held volume line its fades leave no room for, at the
+    // trailing end of the name's row, before how the clip is retimed. The
+    // name gives way to it too, wholly where not even its ellipsis would fit.
+    let mut said_in_row = false;
+    if unsaid && tall {
+        let white = Color32::WHITE;
+        let galley = clipped.layout_no_wrap(volume_percent(clip), theme::mono(10.0), white);
+        let pill = Rect::from_min_size(
+            pos2(right - galley.size().x - 8.0, inner.top() + 2.5),
+            vec2(galley.size().x + 8.0, 13.0),
+        );
+        if pill.left() >= inner.left() + 2.0 {
+            named = pill.left() - inner.left() - 10.0 - indent;
+            clipped.rect_filled(
+                pill,
+                CornerRadius::same(4),
+                Color32::from_black_alpha((96.0 * opacity) as u8),
+            );
+            clipped.galley(
+                pos2(pill.left() + 4.0, pill.center().y - galley.size().y * 0.5),
+                galley,
+                white,
+            );
+            said_in_row = true;
+        }
     }
 
     if inner.width() > 22.0 {
@@ -2444,7 +3883,9 @@ fn paint_clip(
         } else {
             inner.center().y - galley.size().y * 0.5
         };
-        clipped.galley(pos2(inner.left() + 6.0 + indent, y), galley, ink);
+        if !(said_in_row && galley.size().x > named) {
+            clipped.galley(pos2(inner.left() + 6.0 + indent, y), galley, ink);
+        }
     }
     if clip.linked_id.is_some() && inner.width() > 60.0 {
         icons::paint(
@@ -2488,10 +3929,29 @@ fn paint_clip(
 }
 
 #[cfg(test)]
+#[path = "beats_tests.rs"]
+mod beating;
+
+#[cfg(test)]
+#[path = "fades_tests.rs"]
+mod fading;
+
+#[cfg(test)]
+#[path = "heads_tests.rs"]
+mod heads;
+
+#[cfg(test)]
+#[path = "volume_tests.rs"]
+mod volume;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::peaks::{Answer, Taken};
     use editor_core::MediaKind;
+    use editor_media::{KeptPeaks, SourceIdentity};
     use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
+    use uuid::Uuid;
 
     fn seconds(seconds: i64) -> Time {
         Time(seconds * 1_000_000)
@@ -3025,10 +4485,10 @@ mod tests {
         let geometry = lanes(Time::ZERO, 300.0, 400.0);
         let rows = rows(&project, &geometry, 0.0);
         assert_eq!(clips_drawn(&rows, &geometry).count(), 3);
-        // A sound lane is tall enough: the sound of a video draws its
-        // poster. The low lane draws none, so none is asked for.
+        // A sound lane is tall enough and draws the sound of its video, not
+        // the poster; the low lane draws none. Neither asks for one.
         let asked = media_asked_for(&project, &rows, &geometry);
-        assert_eq!(asked, BTreeSet::from([media[0], media[1]]));
+        assert_eq!(asked, BTreeSet::from([media[0]]));
         assert!(carries_poster(lane_height(TrackKind::Video)));
         assert!(carries_poster(lane_height(TrackKind::Audio)));
         assert!(!carries_poster(lane_height(TrackKind::Text)));
@@ -3047,5 +4507,452 @@ mod tests {
         let rows = rows(&project, &geometry, 0.0);
         assert_eq!(clips_drawn(&rows, &geometry).count(), 30);
         assert_eq!(media_asked_for(&project, &rows, &geometry).len(), 1);
+    }
+
+    /// A project of `count` one-second sounds end to end on each of two
+    /// sound tracks under a picture track of one video with sound, every
+    /// clip of its own media.
+    fn sounds(count: i64) -> Project {
+        let mut project = Project::new("Sounds");
+        project.tracks.clear();
+        let mut picture = Track::new("Video 1", TrackKind::Video);
+        let mut video = Asset::new("/media/talk.mp4".into(), MediaKind::Video, seconds(count));
+        video.has_audio = true;
+        picture.clips.push(Clip::from_asset(&video, Time::ZERO));
+        Arc::make_mut(&mut project.assets).insert(video.id, video);
+        project.tracks.push(Arc::new(picture));
+        for lane in 0..2 {
+            let mut track = Track::new(format!("Audio {lane}"), TrackKind::Audio);
+            for index in 0..count {
+                let path = PathBuf::from(format!("/media/sound-{lane}-{index}.wav"));
+                let asset = Asset::new(path, MediaKind::Audio, seconds(1));
+                track.clips.push(Clip::from_asset(&asset, seconds(index)));
+                Arc::make_mut(&mut project.assets).insert(asset.id, asset);
+            }
+            project.tracks.push(Arc::new(track));
+        }
+        project
+    }
+
+    fn sound_asked_for(project: &Project, rows: &[Row], geometry: &Geometry) -> BTreeSet<AssetId> {
+        wave_assets(project, rows, geometry)
+            .map(|asset| asset.id)
+            .collect()
+    }
+
+    #[test]
+    fn sound_is_asked_for_only_by_the_sound_tiles_drawn() {
+        let project = sounds(40);
+        // Lanes that show the picture row and the first sound row: 58 and
+        // 44 points with 4 between and above.
+        let geometry = lanes(Time(10_500_000), 300.0, 80.0);
+        let laid = rows(&project, &geometry, 0.0);
+        let asked = sound_asked_for(&project, &laid, &geometry);
+        let first: BTreeSet<AssetId> =
+            clips_in_view(laid[1].track, Time(10_500_000), Time(13_500_000))
+                .filter_map(Clip::asset_id)
+                .collect();
+        assert_eq!(first.len(), 4);
+        // Not the picture clip's sound, nor the row below the lanes, nor a
+        // clip of this row that is out of view.
+        assert_eq!(asked, first);
+        // Sound is not a poster, and a picture is not sound.
+        let posters = media_asked_for(&project, &laid, &geometry);
+        assert_eq!(posters, media_of(&laid[..1]));
+        assert!(posters.is_disjoint(&asked));
+
+        // Scrolled down to the second sound row, the first asks for nothing.
+        let scrolled = rows(&project, &geometry, 110.0);
+        assert!(scrolled[1].top + scrolled[1].height <= geometry.lanes.top());
+        let asked = sound_asked_for(&project, &scrolled, &geometry);
+        assert_eq!(asked.len(), 4);
+        assert!(asked.is_subset(&media_of(&scrolled[2..])));
+        assert!(asked.is_disjoint(&first));
+
+        // Drawn frame after frame, the tiles in view ask once and no other
+        // tile asks at all.
+        let mut held = HeldPeaks::default();
+        let mut asked = BTreeSet::new();
+        for frame in 0..3 {
+            held.begin_frame();
+            for asset in wave_assets(&project, &laid, &geometry) {
+                held.want(asset);
+            }
+            let wants = held.take_wants();
+            assert_eq!(wants.len(), if frame == 0 { 4 } else { 0 });
+            for (request, (id, _)) in wants.into_iter().enumerate() {
+                held.asked(id, request as u64);
+                asked.insert(id);
+            }
+        }
+        assert_eq!(asked, first);
+    }
+
+    /// A clip of a ten second sound that starts at two seconds of the
+    /// timeline.
+    fn voice() -> Clip {
+        let asset = Asset::new("/media/voice.wav".into(), MediaKind::Audio, seconds(10));
+        Clip::from_asset(&asset, seconds(2))
+    }
+
+    /// The columns of a clip's waveform across its whole tile, in lanes a
+    /// hundred points to the second scrolled to `view_start`.
+    fn columns(clip: &Clip, view_start: Time, shift: Time) -> Vec<(f32, Time, Time)> {
+        let geometry = lanes(view_start, 2000.0, 200.0);
+        let (left, right) = (
+            geometry.x(clip.start + shift),
+            geometry.x(clip.end() + shift),
+        );
+        wave_columns(clip, &geometry, shift, left, right).collect()
+    }
+
+    #[test]
+    fn a_waveform_column_shows_the_source_its_point_of_the_clip_plays() {
+        // At its own rate a point of width is a hundredth of a second of the
+        // source, and the tile starts where the source does.
+        let mut plain = voice();
+        plain.duration = seconds(4);
+        let drawn = columns(&plain, Time::ZERO, Time::ZERO);
+        assert_eq!(drawn.len(), 400);
+        assert_eq!(drawn[0], (200.0, Time::ZERO, Time(10_000)));
+        assert_eq!(drawn[399], (599.0, Time(3_990_000), seconds(4)));
+        // Each column starts where the one before it ended.
+        assert!(drawn.windows(2).all(|pair| pair[0].2 == pair[1].1));
+
+        // At twice the rate each point covers twice the source.
+        let mut fast = plain.clone();
+        fast.playback_rate = 2.0;
+        let quick = columns(&fast, Time::ZERO, Time::ZERO);
+        assert_eq!(quick.len(), 400);
+        for (one, two) in drawn.iter().zip(&quick) {
+            assert_eq!(one.0, two.0);
+            assert_eq!((two.2 - two.1).0, 2 * (one.2 - one.1).0);
+        }
+        assert_eq!(quick[399].2, seconds(8));
+
+        // A trimmed clip starts at its `source_in`, wherever it is scrolled.
+        let mut trimmed = plain.clone();
+        trimmed.source_in = Time(1_500_000);
+        for view_start in [Time::ZERO, seconds(1)] {
+            let cut = columns(&trimmed, view_start, Time::ZERO);
+            assert_eq!(cut[0].1, Time(1_500_000));
+            assert_eq!(cut[399].2, Time(5_500_000));
+        }
+        // Only the part in view is worked out: a tile whose head is
+        // scrolled away starts at the source its first point in view plays.
+        let geometry = lanes(seconds(3), 150.0, 200.0);
+        let part: Vec<_> = wave_columns(
+            &trimmed,
+            &geometry,
+            Time::ZERO,
+            geometry.lanes.left(),
+            geometry.lanes.right(),
+        )
+        .collect();
+        assert_eq!(part.len(), 150);
+        assert_eq!(part[0], (0.0, Time(2_500_000), Time(2_510_000)));
+        assert_eq!(part[149].2, seconds(4));
+
+        // A clip being moved is drawn where it would land, with its own
+        // sound.
+        let moved = columns(&plain, Time::ZERO, seconds(3));
+        assert_eq!(moved[0], (500.0, Time::ZERO, Time(10_000)));
+        assert_eq!(moved.len(), 400);
+    }
+
+    #[test]
+    fn at_the_widest_zoom_a_bucket_of_peaks_is_drawn_by_six_or_seven_columns() {
+        // Two seconds of the clip fill lanes 1280 points wide, scrolled to
+        // where it starts.
+        let clip = voice();
+        let geometry = Geometry {
+            lanes: Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 200.0)),
+            zoom: MAX_ZOOM,
+            scroll: 2.0 * MAX_ZOOM,
+        };
+        let (left, right) = (geometry.lanes.left(), geometry.lanes.right());
+        let drawn: Vec<_> = wave_columns(&clip, &geometry, Time::ZERO, left, right).collect();
+        assert_eq!(drawn.len(), 1280);
+        assert_eq!(drawn[0].1, Time::ZERO);
+        assert_eq!(drawn[1279].2, seconds(2));
+        assert!(drawn.windows(2).all(|pair| pair[0].2 == pair[1].1));
+        // A point is a 640th of a second of the source, to the microsecond.
+        assert!(
+            drawn
+                .iter()
+                .all(|column| (1562..=1563).contains(&(column.2 - column.1).0))
+        );
+        // A bucket is a hundredth of a second: 6.4 points. Six or seven
+        // columns start in each, and the sound is no finer than that.
+        let mut starts = [0usize; 200];
+        for column in &drawn {
+            starts[(column.1.0 / 10_000) as usize] += 1;
+        }
+        assert!(starts.iter().all(|count| (6..=7).contains(count)));
+        assert_eq!(starts.iter().sum::<usize>(), 1280);
+        // Buckets by turns quiet and loud: every column inside one bucket
+        // reads that bucket alone, and one across an edge reads both.
+        let peaks = Peaks {
+            buckets: (0..1000i32)
+                .map(|index| {
+                    let level = 20 + 60 * (index % 2);
+                    [(-level) as i8 as u8, level as u8, 0, 0]
+                })
+                .collect(),
+        };
+        let heights: Vec<i8> = drawn
+            .iter()
+            .map(|column| peaks.range(column.1, column.2).expect("sound").1)
+            .collect();
+        let runs: Vec<usize> = heights
+            .chunk_by(|one, other| one == other)
+            .map(<[i8]>::len)
+            .collect();
+        assert_eq!(runs.len(), 200, "a run of columns for each bucket");
+        // The loud take the columns across their edges.
+        assert!(runs.iter().all(|run| (5..=8).contains(run)), "{runs:?}");
+    }
+
+    #[test]
+    fn a_waveform_follows_the_time_map_backwards_and_through_a_held_frame() {
+        use editor_core::{Ease, Retime, TimeKey};
+        let key = |at: i64, source: i64| TimeKey {
+            at: seconds(at),
+            source: seconds(source),
+            ease: Ease::Linear,
+        };
+        // Two seconds forwards, one held, then the same two backwards.
+        let mut clip = voice();
+        clip.duration = seconds(5);
+        clip.source_in = seconds(1);
+        clip.retime = Some(Retime {
+            keys: vec![key(0, 0), key(2, 2), key(3, 2), key(5, 0)],
+        });
+        let drawn = columns(&clip, Time::ZERO, Time::ZERO);
+        assert_eq!(drawn.len(), 500);
+        assert_eq!(drawn[0], (200.0, seconds(1), Time(1_010_000)));
+        // The held second is one source time, from side to side.
+        assert!(
+            drawn[200..300]
+                .iter()
+                .all(|column| (column.1, column.2) == (seconds(3), seconds(3)))
+        );
+        // Backwards, a column has its later time first, and the stretch is
+        // the forward one mirrored.
+        assert_eq!(drawn[300], (500.0, seconds(3), Time(2_990_000)));
+        for (index, column) in drawn[300..].iter().enumerate() {
+            let mirror = drawn[199 - index];
+            assert_eq!((column.1, column.2), (mirror.2, mirror.1));
+        }
+        assert_eq!(drawn[499].2, seconds(1));
+
+        // The peaks read either end first: what is drawn is the same.
+        let peaks = Peaks {
+            buckets: (0..1000)
+                .map(|index| [(-(index % 100)) as i8 as u8, (index % 100) as u8, 0, 0])
+                .collect(),
+        };
+        for (index, column) in drawn[300..].iter().enumerate() {
+            let mirror = drawn[199 - index];
+            assert_eq!(
+                peaks.range(column.1, column.2),
+                peaks.range(mirror.1, mirror.2)
+            );
+            assert!(peaks.range(column.1, column.2).is_some());
+        }
+        // A held frame shows the one bucket it is in, flat.
+        let flat: BTreeSet<_> = drawn[200..300]
+            .iter()
+            .map(|column| peaks.range(column.1, column.2))
+            .collect();
+        assert_eq!(flat.len(), 1);
+    }
+    /// The waveforms one pass of the whole timeline draws over `project` in
+    /// a window of this size: the columns of each mesh of bare colour.
+    fn waves_drawn(
+        project: &Project,
+        held: &mut HeldPeaks,
+        state: &mut TimelineState,
+        size: Vec2,
+    ) -> Vec<Vec<Rect>> {
+        fn meshes(shape: &egui::Shape, found: &mut Vec<Vec<Rect>>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| meshes(shape, found)),
+                egui::Shape::Mesh(mesh) if mesh.texture_id == egui::TextureId::default() => {
+                    let columns = mesh.vertices.chunks_exact(4);
+                    found.push(
+                        columns
+                            .map(|corners| Rect::from_min_max(corners[0].pos, corners[3].pos))
+                            .collect(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let palette = Palette::new(theme::Appearance::Dark, theme::Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &palette);
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            ..Default::default()
+        };
+        held.begin_frame();
+        let mut output = ctx.run_ui(input, |ui| {
+            show(
+                ui,
+                ui.max_rect(),
+                state,
+                &mut Selection::default(),
+                &mut Textures::default(),
+                held,
+                &TimelineInput {
+                    p: &palette,
+                    project,
+                    playhead: Time::ZERO,
+                    snapping: false,
+                    media: None,
+                    can_paste: false,
+                    freeze_hold: seconds(2),
+                    separator: crate::stems::Tool::Missing,
+                },
+                &mut Vec::new(),
+            );
+        });
+        // No renderer takes the font texture: epaint is told it is meant.
+        output.textures_delta.clear();
+        let mut found = Vec::new();
+        for clipped in &output.shapes {
+            meshes(&clipped.shape, &mut found);
+        }
+        found
+    }
+
+    #[test]
+    fn a_sound_tile_draws_one_mesh_over_what_is_in_view_once_its_peaks_are_held() {
+        // A thirty second sound and the sound of a thirty second video, each
+        // on a sound track of its own.
+        let mut project = Project::new("Waves");
+        project.tracks.clear();
+        let mut media = Vec::new();
+        for (kind, name) in [
+            (MediaKind::Audio, "voice.wav"),
+            (MediaKind::Video, "talk.mp4"),
+        ] {
+            let mut asset = Asset::new(format!("/media/{name}").into(), kind, seconds(30));
+            asset.has_audio = true;
+            let mut track = Track::new(name, TrackKind::Audio);
+            track.clips.push(Clip::from_asset(&asset, seconds(1)));
+            media.push(asset.clone());
+            Arc::make_mut(&mut project.assets).insert(asset.id, asset);
+            project.tracks.push(Arc::new(track));
+        }
+        let size = vec2(900.0, 300.0);
+        let mut state = TimelineState::default();
+        let mut held = HeldPeaks::default();
+
+        // Before the peaks arrive nothing but the level line is drawn, and
+        // both tiles have asked.
+        assert!(waves_drawn(&project, &mut held, &mut state, size).is_empty());
+        let wants = held.take_wants();
+        assert_eq!(wants.len(), 2);
+        // The voice's are held: its tile draws them and the other does not.
+        let instance = Uuid::from_u128(7);
+        let peaks = Arc::new(Peaks {
+            buckets: (0..3000u32)
+                .map(|index| {
+                    // Silence for two seconds, then sound.
+                    let level = if index < 200 { 0 } else { 100 };
+                    [(-level) as i8 as u8, level as u8, 0, 0]
+                })
+                .collect(),
+        });
+        for (request, (id, _)) in wants.into_iter().enumerate() {
+            held.asked(id, request as u64);
+        }
+        let voice = &media[0];
+        let taken = held.take(
+            instance,
+            Some(voice),
+            0,
+            instance,
+            voice.id,
+            &SourceIdentity::of(voice),
+            Answer::Kept(KeptPeaks::Held(peaks.clone())),
+        );
+        assert_eq!(taken, Taken::Kept);
+        let drawn = waves_drawn(&project, &mut held, &mut state, size);
+        assert_eq!(
+            drawn.len(),
+            1,
+            "one mesh for the one tile whose peaks are held"
+        );
+        let columns = &drawn[0];
+        // The lanes begin after the heads; the tile begins a second in, at
+        // eighty points to the second, and runs out of the window. A column
+        // for each point of it that is in view, and none for the rest.
+        let lanes = Rect::from_min_max(pos2(HEAD_WIDTH, STRIP + RULER), size.to_pos2());
+        let left = lanes.left() + 80.0 + 1.0;
+        assert_eq!(columns[0].left(), left);
+        assert_eq!(columns.len(), (lanes.right() - left).ceil() as usize);
+        assert!(columns.len() < 30 * 80);
+        assert!(columns.iter().all(|column| column.width() <= 1.0));
+        assert!(columns.last().unwrap().right() <= lanes.right());
+        // Under the name, inside the tile.
+        let top = lanes.top() + LANE_GAP + 1.0 + NAME_ROW;
+        let bottom = lanes.top() + LANE_GAP + lane_height(TrackKind::Audio) - 1.0;
+        assert!(
+            columns
+                .iter()
+                .all(|column| column.top() >= top && column.bottom() <= bottom)
+        );
+        // Silence is a line through the middle; sound stands about it.
+        let middle = (top + bottom) * 0.5;
+        let quiet = columns[100];
+        assert_eq!((quiet.top(), quiet.bottom()), (middle - 0.5, middle + 0.5));
+        let loud = columns[columns.len() - 1];
+        let reach = 100.0 / 128.0 * (bottom - top) * 0.5;
+        assert!((loud.top() - (middle - reach)).abs() < 1e-3, "{loud:?}");
+        assert!((loud.bottom() - (middle + reach)).abs() < 1e-3, "{loud:?}");
+
+        // Scrolled so that the tile's head is out of view, the mesh still
+        // starts at the lanes and is no longer than they are wide.
+        state.scroll.x = 800.0;
+        let drawn = waves_drawn(&project, &mut held, &mut state, size);
+        assert_eq!(drawn.len(), 1);
+        assert_eq!(drawn[0][0].left(), lanes.left());
+        assert_eq!(drawn[0].len(), lanes.width().ceil() as usize);
+
+        // With the other's held too, the sound of a video is drawn as sound.
+        let talk = &media[1];
+        let taken = held.take(
+            instance,
+            Some(talk),
+            1,
+            instance,
+            talk.id,
+            &SourceIdentity::of(talk),
+            Answer::Kept(KeptPeaks::Held(peaks)),
+        );
+        assert_eq!(taken, Taken::Kept);
+        assert_eq!(waves_drawn(&project, &mut held, &mut state, size).len(), 2);
+
+        // At the widest zoom, a second into the tiles: still a column a
+        // point and no more of them than the lanes are wide, though the
+        // tiles are 19,200 points long.
+        state.zoom = MAX_ZOOM;
+        state.scroll.x = 2.0 * MAX_ZOOM;
+        let drawn = waves_drawn(&project, &mut held, &mut state, size);
+        assert_eq!(drawn.len(), 2);
+        for columns in &drawn {
+            assert_eq!(columns[0].left(), lanes.left());
+            assert_eq!(columns.len(), lanes.width().ceil() as usize);
+            assert!(columns.iter().all(|column| column.width() <= 1.0));
+        }
+        // The silence ends two seconds into the sound, a second into view.
+        let edge = MAX_ZOOM as usize;
+        let tall = |column: &Rect| column.height() > 1.0;
+        assert!(!drawn[0][..edge - 1].iter().any(tall));
+        assert!(drawn[0][edge..].iter().all(tall));
     }
 }

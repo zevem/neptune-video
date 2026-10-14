@@ -53,6 +53,24 @@ fn freeze(input: &ToolbarInput) -> Action {
     }
 }
 
+/// The menu's "Detach audio": the one selected clip, as the row is chosen.
+/// A clip whose sound cannot be detached is told why when the edit is made.
+fn detach(input: &ToolbarInput) -> Action {
+    match input.clips {
+        [clip] => Action::DetachAudio(*clip),
+        _ => Action::Notify("Select one video clip to detach its audio.".to_owned()),
+    }
+}
+
+/// The menu's "Save audio as…": the one selected clip's span of its sound,
+/// as the row is chosen. A clip without sound is told why when it is asked.
+fn save_audio(input: &ToolbarInput) -> Action {
+    match input.clips {
+        [clip] => Action::SaveAudio(crate::extract::Source::Clip(*clip)),
+        _ => Action::Notify("Select one clip to save its audio.".to_owned()),
+    }
+}
+
 /// A history label short enough for a tooltip. A step the agent planned is
 /// named by its whole summary.
 fn brief(label: &str) -> String {
@@ -201,6 +219,8 @@ fn menu(ui: &mut Ui, input: &ToolbarInput, actions: &mut Vec<Action>) {
             },
         );
         item(ui, Icon::Pause, "Freeze frame", "F", freeze(input));
+        item(ui, Icon::Volume, "Detach audio", "", detach(input));
+        item(ui, Icon::Save, crate::extract::LABEL, "", save_audio(input));
         item(ui, Icon::Diamond, "Keyframes", "U", Action::ToggleKeyLane);
         item(ui, Icon::Curve, "Graph editor", "G", Action::ToggleGraph);
         item(
@@ -310,7 +330,82 @@ fn title(ui: &mut Ui, rect: Rect, input: &ToolbarInput, actions: &mut Vec<Action
 
 #[cfg(test)]
 mod tests {
-    use super::brief;
+    use super::{Action, ToolbarInput, brief, detach, save_audio};
+    use crate::theme::{Accent, Appearance, Palette};
+    use editor_core::{Project, Time};
+
+    #[test]
+    fn the_menu_detaches_the_audio_of_the_one_selected_clip() {
+        let p = Palette::new(Appearance::default(), Accent::default());
+        let project = Project::new("Menu");
+        let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let chosen = |clips: &[editor_core::ClipId]| {
+            detach(&ToolbarInput {
+                p: &p,
+                name: "Menu",
+                dirty: false,
+                saved_once: false,
+                saving: false,
+                conflict: false,
+                undo: None,
+                redo: None,
+                recent: &[],
+                library: true,
+                inspector: true,
+                project: &project,
+                clips,
+                playhead: Time::ZERO,
+                freeze_hold: Time::ZERO,
+            })
+        };
+        // The clip is named when the row is chosen; whether its sound can be
+        // detached is answered when the edit is made.
+        assert!(matches!(chosen(&[first]), Action::DetachAudio(clip) if clip == first));
+        for clips in [&[][..], &[first, second][..]] {
+            let Action::Notify(notice) = chosen(clips) else {
+                panic!("{} clips are not one", clips.len());
+            };
+            assert_eq!(notice, "Select one video clip to detach its audio.");
+        }
+    }
+
+    #[test]
+    fn the_menu_saves_the_audio_of_the_one_selected_clip() {
+        let p = Palette::new(Appearance::default(), Accent::default());
+        let project = Project::new("Menu");
+        let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let chosen = |clips: &[editor_core::ClipId]| {
+            save_audio(&ToolbarInput {
+                p: &p,
+                name: "Menu",
+                dirty: false,
+                saved_once: false,
+                saving: false,
+                conflict: false,
+                undo: None,
+                redo: None,
+                recent: &[],
+                library: true,
+                inspector: true,
+                project: &project,
+                clips,
+                playhead: Time::ZERO,
+                freeze_hold: Time::ZERO,
+            })
+        };
+        // The clip is named when the row is chosen; whether it has sound to
+        // save is answered when the dialog would be shown.
+        assert!(matches!(
+            chosen(&[first]),
+            Action::SaveAudio(crate::extract::Source::Clip(clip)) if clip == first
+        ));
+        for clips in [&[][..], &[first, second][..]] {
+            let Action::Notify(notice) = chosen(clips) else {
+                panic!("{} clips are not one", clips.len());
+            };
+            assert_eq!(notice, "Select one clip to save its audio.");
+        }
+    }
 
     #[test]
     fn a_long_history_label_is_cut_for_its_tooltip() {

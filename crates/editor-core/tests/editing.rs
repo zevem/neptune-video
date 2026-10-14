@@ -118,6 +118,8 @@ fn lock_blocks_mutations_but_allows_unlock() {
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     })
     .unwrap();
     let before = e.snapshot();
@@ -135,6 +137,8 @@ fn lock_blocks_mutations_but_allows_unlock() {
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     })
     .unwrap();
     assert!(
@@ -305,6 +309,8 @@ fn ripple_edits_reject_locked_sync_tracks_atomically() {
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     })
     .unwrap();
     let before = e.snapshot();
@@ -574,6 +580,8 @@ fn active_layers_have_half_open_boundaries_and_ignore_hidden_tracks() {
         hidden: Some(true),
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     })
     .unwrap();
     assert_eq!(e.project().active_clips(seconds(5.0)).count(), 0);

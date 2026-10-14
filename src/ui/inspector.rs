@@ -4,6 +4,7 @@
 //! Fields write into a draft while they are dragged or focused. The viewer
 //! draws from the same draft, and the application turns it into one command
 //! when the interaction ends, so a drag is one undo step.
+mod audio;
 mod clip;
 mod color;
 mod curve;
@@ -18,8 +19,8 @@ mod transition;
 pub use color::{Channel, key_colour_command};
 
 use super::{
-    Action, ClipDraft, ColourPick, Selection, SteadyShown, TrackProgress, TrackRegion,
-    icon_of_media, tone_of_media,
+    Action, ClipDraft, ColourPick, DuckProgress, Selection, SteadyShown, TrackProgress,
+    TrackRegion, icon_of_media, tone_of_media,
     viewer::trim_number,
     widgets::{self, Kind, number, row, section},
 };
@@ -54,6 +55,10 @@ pub struct InspectorInput<'a> {
     /// The edge of the selected clip whose transition is shown in the
     /// clip's place: the one whose marking is selected in the timeline.
     pub transition: Option<editor_core::TransitionEdge>,
+    /// The audio kinds the session's FFmpeg does not run, as its probe
+    /// answered; `None` while it has not, and every kind is shown as one
+    /// that runs.
+    pub missing: Option<&'a [EffectKind]>,
 }
 
 /// The parts a clip's values are shown in, one at a time. A clip is offered
@@ -66,6 +71,8 @@ pub enum Section {
     Color,
     Speed,
     Motion,
+    /// A clip on an audio track's: its playback and its audio effects.
+    Audio,
 }
 
 impl Section {
@@ -76,6 +83,7 @@ impl Section {
             Self::Color => "Color",
             Self::Speed => "Speed",
             Self::Motion => "Motion",
+            Self::Audio => "Audio",
         }
     }
 }
@@ -170,6 +178,10 @@ pub struct InspectorState {
     region: Option<TrackRegion>,
     /// The tracking under way, as the application last said.
     tracking: Option<TrackProgress>,
+    /// The duck under way, as the application last said.
+    ducking: Option<DuckProgress>,
+    /// How far a duck asked for here lowers the clip, in dB.
+    pub duck_db: f32,
     /// The tracker being renamed, and what has been typed for it.
     rename: Option<(Uuid, String)>,
     /// What is known of the selected clip's camera path, as the application
@@ -200,6 +212,8 @@ impl Default for InspectorState {
             typed: None,
             region: None,
             tracking: None,
+            ducking: None,
+            duck_db: 20.0 * crate::duck::DEPTH.log10(),
             rename: None,
             steady: None,
             readings: Vec::new(),
@@ -266,6 +280,11 @@ impl InspectorState {
     /// Says what the analysis worker is tracking, or that it is idle.
     pub fn set_tracking(&mut self, tracking: Option<TrackProgress>) {
         self.tracking = tracking;
+    }
+
+    /// Says what the duck under way is reading, or that none is.
+    pub fn set_ducking(&mut self, ducking: Option<DuckProgress>) {
+        self.ducking = ducking;
     }
 
     /// Says what is known of the selected clip's camera path.

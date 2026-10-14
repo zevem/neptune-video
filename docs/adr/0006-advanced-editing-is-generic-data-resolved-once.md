@@ -77,6 +77,16 @@ version 2; version 1 is read through serde defaults and never written, so an
 older build refuses the file through its future-schema protection instead of
 saving it back without the new data.
 
+2026-10-14: Two figures above have changed since; the reasoning stands. The
+24 KiB cap on the provider schema is now `MAX_SCHEMA_BYTES`, 23 KiB, with
+`MAX_SYSTEM_BYTES`, 6 KiB, for the planner instructions beside it
+([planner.rs](../../crates/editor-agent/src/planner.rs)): 29 KiB between them
+on the Claude command line, as before. The audio-editing work set this split
+on the owner's behalf (its owner decision 1) because its seven audio kinds
+did not fit 5 KiB of instructions. The file is schema version 3 since the
+same work; versions 1 and 2 are read and never written. See
+[ADR 0007](0007-sound-is-levels-in-the-mixer-and-filters-in-the-decoder.md).
+
 The binding rules, and the dated changes made to them during implementation,
 are in [the advanced-editing design](../../.scratch/advanced-editing/spec.md).
 Everything here is preview at preview resolution: no export path exists, and

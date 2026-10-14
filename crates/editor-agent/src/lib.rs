@@ -179,6 +179,7 @@ pub fn handle(editor: &mut Editor, request: AgentRequest) -> AgentResponse {
                 "set_transform",
                 "set_playback_rate",
                 "set_gain",
+                "set_fades",
                 "set_text",
                 "set_effects",
                 "set_masks",

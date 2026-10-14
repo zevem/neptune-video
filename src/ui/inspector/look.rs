@@ -43,17 +43,20 @@ pub(super) enum Family {
     Key,
     Color,
     Motion,
+    /// Heard, not drawn: the kinds a clip on an audio track takes.
+    Audio,
 }
 
 impl Family {
     /// Every family, in the order the library lists them.
-    pub(super) const ALL: [Self; 6] = [
+    pub(super) const ALL: [Self; 7] = [
         Self::Stylize,
         Self::Blur,
         Self::Distort,
         Self::Key,
         Self::Color,
         Self::Motion,
+        Self::Audio,
     ];
 
     /// The families the Look section adds, in the order of its menu. Colour
@@ -68,6 +71,7 @@ impl Family {
             Self::Key => "Key",
             Self::Color => "Colour",
             Self::Motion => "Motion",
+            Self::Audio => "Audio",
         }
     }
 }
@@ -90,6 +94,13 @@ pub(super) fn family(kind: EffectKind) -> Family {
         | EffectKind::CurveBlue
         | EffectKind::Lut => Family::Color,
         EffectKind::Stabilize => Family::Motion,
+        EffectKind::HighPass
+        | EffectKind::EqBand
+        | EffectKind::Compressor
+        | EffectKind::Limiter
+        | EffectKind::Denoise
+        | EffectKind::Pitch
+        | EffectKind::CenterCut => Family::Audio,
     }
 }
 
@@ -122,13 +133,31 @@ pub(super) fn effect_name(kind: EffectKind) -> &'static str {
         EffectKind::ChromaKey => "Chroma key",
         EffectKind::DifferenceMatte => "Difference matte",
         EffectKind::Stabilize => "Stabilize",
+        EffectKind::HighPass => "High-pass",
+        EffectKind::EqBand => "EQ band",
+        EffectKind::Compressor => "Compressor",
+        EffectKind::Limiter => "Limiter",
+        EffectKind::Denoise => "Noise reduction",
+        EffectKind::Pitch => "Pitch",
+        EffectKind::CenterCut => "Reduce centre",
     }
 }
 
 /// The name a parameter's row has.
 pub(super) fn label(target: AnimTarget, key: ParamKey) -> &'static str {
-    use EffectKind::{Distort, Glitch, Grain, Stabilize, Vignette};
+    use EffectKind::{
+        Compressor, Denoise, Distort, EqBand, Glitch, Grain, HighPass, Limiter, Pitch, Stabilize,
+        Vignette,
+    };
     match (target, key) {
+        // A key of an audio kind means what the sound does with it.
+        (AnimTarget::Effect(HighPass | EqBand), ParamKey::Frequency) => "Frequency",
+        (AnimTarget::Effect(EqBand), ParamKey::Gain) => "Gain",
+        (AnimTarget::Effect(Compressor), ParamKey::Amount) => "Ratio",
+        (AnimTarget::Effect(Compressor), ParamKey::Gain) => "Make-up",
+        (AnimTarget::Effect(Limiter), ParamKey::Threshold) => "Ceiling",
+        (AnimTarget::Effect(Denoise), ParamKey::Threshold) => "Noise floor",
+        (AnimTarget::Effect(Pitch), ParamKey::Amount) => "Shift",
         (AnimTarget::Effect(Stabilize), ParamKey::Smoothness) => "Strength",
         (AnimTarget::Effect(Stabilize), ParamKey::CropZoom) => "Crop zoom",
         (AnimTarget::Effect(Grain | Vignette), ParamKey::Radius) => "Size",
@@ -187,10 +216,23 @@ pub(super) fn label(target: AnimTarget, key: ParamKey) -> &'static str {
 
 /// How a parameter's value is shown: its unit, and from the table's range
 /// how fine its field is. A length or an amount is a part of something and
-/// is shown in hundredths of it.
+/// is shown in hundredths of it. An audio kind's levels are decibels, its
+/// frequencies hertz dragged along a logarithmic scale, as they are heard.
 pub(super) fn presented(target: AnimTarget, spec: &ParamSpec) -> (&'static str, Field) {
-    use EffectKind::Distort;
+    use EffectKind::{Compressor, Distort, EqBand, Pitch};
+    let audio = matches!(target, AnimTarget::Effect(kind) if kind.is_audio());
     let (scale, suffix) = match (target, spec.key) {
+        (_, ParamKey::Frequency | ParamKey::Gain | ParamKey::Threshold) if audio => (
+            1.0,
+            if spec.key == ParamKey::Frequency {
+                " Hz"
+            } else {
+                " dB"
+            },
+        ),
+        (AnimTarget::Effect(Compressor), ParamKey::Amount) => (1.0, ":1"),
+        (AnimTarget::Effect(EqBand), ParamKey::Width) => (1.0, " oct"),
+        (AnimTarget::Effect(Pitch), ParamKey::Amount) => (1.0, " st"),
         (
             _,
             ParamKey::Angle
@@ -223,6 +265,7 @@ pub(super) fn presented(target: AnimTarget, spec: &ParamSpec) -> (&'static str, 
         // dragged half a degree at a time, as the clip's own rotation is.
         speed: f64::from(span / 300.0).clamp(0.001, if suffix == "°" { 0.5 } else { 1.0 }),
         width: FIELD,
+        log: audio && spec.key == ParamKey::Frequency,
     };
     (label(target, spec.key), field)
 }
@@ -241,7 +284,7 @@ pub(super) fn set_param(effect: &mut Effect, key: ParamKey, value: f32) {
 
 /// A change to the stack that is not to one effect's own values.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Reorder {
+pub(super) enum Reorder {
     Up(usize),
     Down(usize),
     Remove(usize),
@@ -285,6 +328,33 @@ impl Pane<'_> {
             },
         );
         self.key_controls(ui, &row, Some(id), target, &keys, stored_of);
+        if reset { Some(spec.default) } else { changed }
+    }
+
+    /// As [`Self::param_row`], for a value that takes no keyframes: the
+    /// field and its reset, and no diamond. An audio effect's values are
+    /// read once when its sound starts, so the project keys none of them.
+    pub(super) fn plain_param_row(
+        &mut self,
+        ui: &mut Ui,
+        id: Uuid,
+        target: AnimTarget,
+        spec: &ParamSpec,
+        stored: f32,
+    ) -> Option<f32> {
+        let p = self.p;
+        let (label, field) = presented(target, spec);
+        let what = label.to_lowercase();
+        let mut changed = None;
+        let mut reset = false;
+        widgets::fitted_row(ui, p, label, |ui| {
+            // The field keeps its place at the trailing edge whether or not
+            // the reset is beside it.
+            changed = self.field(ui, Some(id), spec.key, stored, &field, label);
+            reset = !is_default(stored, spec)
+                && widgets::small_icon_button(ui, p, Icon::Rotate, &format!("Reset {what}"))
+                    .clicked();
+        });
         if reset { Some(spec.default) } else { changed }
     }
 
@@ -434,53 +504,65 @@ impl Pane<'_> {
             });
         });
 
-        self.next.effects = if edited.is_empty() && reorder.is_none() {
-            held
-        } else {
-            let mut stack = list.to_vec();
-            for (index, effect) in edited {
-                stack[index] = effect;
-            }
-            match reorder {
-                Some(Reorder::Up(index)) if index > 0 => stack.swap(index, index - 1),
-                Some(Reorder::Down(index)) if index + 1 < stack.len() => {
-                    stack.swap(index, index + 1);
-                }
-                Some(Reorder::Remove(index)) => {
-                    // What was being keyframed on it goes with it.
-                    let removed = stack.remove(index).id;
-                    self.next.keys.retain(|key| key.target != Some(removed));
-                }
-                Some(Reorder::Add(kind)) => {
-                    let effect = Effect::new(kind);
-                    self.state.effect = Some(effect.id);
-                    stack.push(effect);
-                }
-                _ => {}
-            }
-            // A stack back at the stored one is no draft.
-            (stack != clip.effects).then_some(stack)
-        };
+        let restacked = self.restack(list, edited, reorder);
+        self.next.effects = restacked.unwrap_or(held);
     }
 
-    /// One effect of the stack: its heading, and its rows while it is open.
-    /// Hands back the effect as edited, when it was.
-    fn effect_rows(
+    /// The stack `list` with its effects as `edited` and changed by
+    /// `reorder`, to be held in the draft: `Some(None)` when that is the
+    /// stored stack again, `None` when nothing was changed.
+    pub(super) fn restack(
+        &mut self,
+        list: &[Effect],
+        edited: Vec<(usize, Effect)>,
+        reorder: Option<Reorder>,
+    ) -> Option<Option<Vec<Effect>>> {
+        if edited.is_empty() && reorder.is_none() {
+            return None;
+        }
+        let mut stack = list.to_vec();
+        for (index, effect) in edited {
+            stack[index] = effect;
+        }
+        match reorder {
+            Some(Reorder::Up(index)) if index > 0 => stack.swap(index, index - 1),
+            Some(Reorder::Down(index)) if index + 1 < stack.len() => {
+                stack.swap(index, index + 1);
+            }
+            Some(Reorder::Remove(index)) => {
+                // What was being keyframed on it goes with it.
+                let removed = stack.remove(index).id;
+                self.next.keys.retain(|key| key.target != Some(removed));
+            }
+            Some(Reorder::Add(kind)) => {
+                let effect = Effect::new(kind);
+                self.state.effect = Some(effect.id);
+                stack.push(effect);
+            }
+            _ => {}
+        }
+        // A stack back at the stored one is no draft.
+        Some((stack != self.clip.effects).then_some(stack))
+    }
+
+    /// The heading of one effect of the stack: its name, which opens and
+    /// closes its rows, and beside it the switch, the moves and the removal.
+    /// `switch` is the switch's glyph and the verb that names it ("Show
+    /// Glow"). Hands back whether the rows are open and whether the switch
+    /// was pressed.
+    pub(super) fn effect_head(
         &mut self,
         ui: &mut Ui,
         effect: &Effect,
         index: usize,
         count: usize,
         reorder: &mut Option<Reorder>,
-    ) -> Option<Effect> {
+        switch: (Icon, &str),
+    ) -> (bool, bool) {
         let p = self.p;
         let name = effect_name(effect.kind);
         let open = self.state.effect == Some(effect.id);
-        let mut edited: Option<Effect> = None;
-        let mut edit = |change: &dyn Fn(&mut Effect)| {
-            change(edited.get_or_insert_with(|| effect.clone()));
-        };
-
+        let mut switched = false;
         ui.horizontal(|ui| {
             ui.set_min_height(widgets::SMALL_BUTTON);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -504,16 +586,15 @@ impl Pane<'_> {
                 if small(ui, Icon::ArrowUp, index > 0, &format!("Move {name} up")) {
                     *reorder = Some(Reorder::Up(index));
                 }
-                let shown = widgets::small_icon_toggle(
+                let (icon, verb) = switch;
+                switched = widgets::small_icon_toggle(
                     ui,
                     p,
-                    Icon::Eye,
+                    icon,
                     effect.enabled,
-                    &format!("Show {name}"),
-                );
-                if shown.clicked() {
-                    edit(&|effect| effect.enabled = !effect.enabled);
-                }
+                    &format!("{verb} {name}"),
+                )
+                .clicked();
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     if widgets::disclosure(ui, p, open, name, !effect.enabled).clicked() {
                         self.state.effect = (!open).then_some(effect.id);
@@ -521,6 +602,31 @@ impl Pane<'_> {
                 });
             });
         });
+        (open, switched)
+    }
+
+    /// One effect of the stack: its heading, and its rows while it is open.
+    /// Hands back the effect as edited, when it was.
+    fn effect_rows(
+        &mut self,
+        ui: &mut Ui,
+        effect: &Effect,
+        index: usize,
+        count: usize,
+        reorder: &mut Option<Reorder>,
+    ) -> Option<Effect> {
+        let p = self.p;
+        let name = effect_name(effect.kind);
+        let mut edited: Option<Effect> = None;
+        let mut edit = |change: &dyn Fn(&mut Effect)| {
+            change(edited.get_or_insert_with(|| effect.clone()));
+        };
+
+        let (open, switched) =
+            self.effect_head(ui, effect, index, count, reorder, (Icon::Eye, "Show"));
+        if switched {
+            edit(&|effect| effect.enabled = !effect.enabled);
+        }
         if !open {
             return edited;
         }

@@ -72,6 +72,8 @@ pub enum Icon {
     Curve,
     FitValues,
     Transition,
+    Headphones,
+    Record,
 }
 
 fn arc(cx: f32, cy: f32, radius: f32, from: f32, to: f32, steps: usize) -> Vec<[f32; 2]> {
@@ -600,5 +602,14 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             rectangle(3.5, 6.0, 17.0, 12.0, 2.5);
             line(&[[8.5, 18.0], [15.5, 6.0]]);
         }
+        Icon::Headphones => {
+            // A band over the head and a cup at each end of it: one track
+            // heard by itself.
+            line(&arc(12.0, 13.0, 7.5, 180.0, 360.0, 14));
+            rectangle(3.5, 13.0, 4.0, 6.5, 1.5);
+            rectangle(16.5, 13.0, 4.0, 6.5, 1.5);
+        }
+        // A filled disc, the mark every recorder has used.
+        Icon::Record => dot(12.0, 12.0, 6.0),
     }
 }

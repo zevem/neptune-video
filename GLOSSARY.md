@@ -97,6 +97,17 @@ timeline.
 A track whose sound is excluded from playback while its clips remain in the
 timeline.
 
+**Solo**:
+A track switch that, while any video or audio track has it, leaves only the
+soloed tracks heard. It is saved with the project and undone like mute; mute
+wins over solo, and a text track has none.
+_Avoid_: Preview-only or session state; solo is project data
+
+**Track volume**:
+A factor over the volume of every clip on a track, 0 to 800 percent, where
+100 leaves the clips as they are.
+_Avoid_: Gain alone, which is a clip's own volume
+
 ## Picture and playback
 
 **Canvas**:
@@ -138,7 +149,7 @@ _Avoid_: Clip speed, which is the clip's own rate or time map
 One adjustable picture operation on a clip, such as a glow, a blur, a grade or
 a chroma key: a kind, its parameters, a mix and an on/off switch. A clip's
 effects form a stack applied in order, sixteen at most.
-_Avoid_: Filter, plugin
+_Avoid_: Filter, plugin; audio effect, which works on a clip's sound
 
 **Look preset**:
 A named starting point (Cinematic, Teal & orange, Vintage, Faded, Noir, Warm,
@@ -292,6 +303,76 @@ _Avoid_: Track, keyframe lane
 **Subject segmentation**:
 Automatic separation of a person or object from its background without a key
 colour or clean plate. Not a current feature.
+
+## Sound
+
+**Audio effect**:
+One adjustable operation on the sound of a clip on an audio track: a
+high-pass, an equalizer band, a compressor, a limiter, noise reduction, pitch
+or centre reduction. It sits in the clip's effect stack, at full mix and
+without keyframes, and is heard through that clip's own decoder. It is not a
+sound effect.
+_Avoid_: Sound effect, filter, plugin
+
+**Sound effect**:
+An imported sound placed as a clip, such as a whoosh or a hit. It is media,
+not an operation on a clip; no sound effects come with the editor.
+_Avoid_: Audio effect, which is an operation on a clip's sound
+
+**Fade**:
+A length at a clip's start (fade in) or end (fade out) over which its sound
+rises from or falls to silence on one equal-power curve. It stays at the
+edge when the clip is trimmed or split, and the two together fit in the clip.
+_Avoid_: Transition, which belongs to the picture; volume keyframes
+
+**Waveform**:
+The drawing of a clip's sound on its tile on an audio track, read from the
+media's first sound stream and mixed to one channel. It shows the source, not
+the clip's volume, fades or effects.
+
+**Peak file**:
+A media file's sound reduced to a hundred levels a second, derived from the
+media and kept in a bounded cache outside the project. It feeds the waveform,
+the ducking gate and beat finding, and can always be read again.
+
+**Detached audio**:
+A video's sound placed as a clip of its own on an audio track, linked to the
+picture clip over the same span. It is the same media; no file is written.
+
+**Owned sound**:
+The sound of a picture clip that a linked clip of the same media on an audio
+track plays instead. An owned picture clip is not heard, and offers no volume,
+fade or audio controls of its own.
+
+**Take**:
+One voiceover recording: a WAV file written to the project's media folder
+and placed as a clip in one history step. The file is the person's and is
+never deleted by the editor.
+_Avoid_: Clip, which is the take's placement on the timeline
+
+**Media folder**:
+The `<document stem> media` folder (the project file's name without `.aster`,
+then ` media`) beside a saved project, made on the first take or separation.
+It holds takes and stems and is never emptied by the editor.
+
+**Beat grid**:
+The beats found in a sound's peak file, held in memory while they are shown.
+It is not saved; a marker made from a beat is.
+
+**Stem**:
+One part of a sound split by the external stem separator (Vocals or
+Instruments), written as a WAV file to the media folder and placed as a clip
+linked under the clip it came from.
+
+**Ducking**:
+Lowering a clip with written volume keyframes wherever other clips are heard,
+found by signal energy, not by recognizing speech.
+
+**Sound lane**:
+The bounded background worker that reads peaks, measures loudness, finds
+beats, writes a sound to a file and runs the stem separator. Its results name
+the project, request and media they were made for.
+_Avoid_: Analysis lane, which tracks and stabilizes pictures
 
 ## History and agents
 

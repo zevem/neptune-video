@@ -1504,6 +1504,7 @@ mod tests {
     /// earlier, and the steps after it are served from what that run kept.
     #[test]
     fn stepping_backwards_decodes_the_frames_decoded_forwards() {
+        let _heavy = crate::heavy_test();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("long-gop.mp4");
         // One keyframe for the whole file, as camera footage has few.
@@ -1947,6 +1948,7 @@ mod tests {
     /// on the frame path alone, and the walk is paced as playback paces it.
     #[test]
     fn a_paced_walk_backwards_at_preview_size_is_measured() {
+        let _heavy = crate::heavy_test();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("hd.mp4");
         let encoded = tool_command("ffmpeg")

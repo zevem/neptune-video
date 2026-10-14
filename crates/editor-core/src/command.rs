@@ -54,6 +54,8 @@ pub enum Command {
         hidden: Option<bool>,
         muted: Option<bool>,
         name: Option<String>,
+        gain: Option<f32>,
+        solo: Option<bool>,
     },
     AddClip {
         track_id: TrackId,
@@ -91,6 +93,13 @@ pub enum Command {
     SetGain {
         clip_id: ClipId,
         gain: f32,
+    },
+    /// Both fades of one clip, as timeline lengths from its edges. Linked
+    /// clips keep their own.
+    SetFades {
+        clip_id: ClipId,
+        fade_in: Time,
+        fade_out: Time,
     },
     SetText {
         clip_id: ClipId,
@@ -200,6 +209,7 @@ impl Command {
             Self::SetTransform { .. } => "Transform clip",
             Self::SetPlaybackRate { .. } => "Change clip speed",
             Self::SetGain { .. } => "Change clip volume",
+            Self::SetFades { .. } => "Change fades",
             Self::SetText { .. } => "Edit text",
             Self::LinkClips { .. } => "Link clips",
             Self::UnlinkClips { .. } => "Unlink clips",

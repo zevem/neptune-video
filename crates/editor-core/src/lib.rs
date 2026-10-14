@@ -12,6 +12,7 @@ mod playback;
 mod query;
 pub mod render;
 pub mod retime;
+pub mod sound;
 
 pub use animate::{AnimTrack, Ease, Keyframe, ParamKey};
 pub use command::*;

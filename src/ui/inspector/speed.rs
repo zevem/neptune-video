@@ -22,13 +22,19 @@ use crate::{
         widgets::{self, Kind, row, section},
     },
 };
-use editor_core::{MediaKind, PreparedEdit, Project, Time, retime::MAX_TIME_KEYS};
+use editor_core::{
+    MediaKind, PreparedEdit, Project, Time, TrackKind, retime::MAX_TIME_KEYS, sound,
+};
 use eframe::egui::{
     self, CornerRadius, CursorIcon, Key, Pos2, Rect, Response, Sense, Shape, Stroke, StrokeKind,
     Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// What a picture clip with sound says under its speed when some of it is
+/// silent: everywhere else its speed changes its pitch.
+const SILENT: &str = "Sound is silent where the clip is held, reversed or ramped; elsewhere speed changes its pitch.";
 
 /// The side of a point's target, and the radius it is drawn at.
 const TARGET: f32 = 20.0;
@@ -538,6 +544,11 @@ impl Pane<'_> {
                     });
                 }
             });
+            // A picture clip's sound is not where its pitch is kept.
+            if self.asset.is_some_and(|asset| asset.has_audio) && !sound::owned(self.project, clip)
+            {
+                self.pitch_row(ui);
+            }
         });
 
         section(ui, p, "Freeze frame");
@@ -706,9 +717,74 @@ impl Pane<'_> {
             );
         }
         if self.asset.is_some_and(|asset| asset.has_audio) && curve.silent() {
+            self.note(ui, SILENT);
+        }
+    }
+
+    /// The "Keep pitch" switch of a clip on an audio track, under its speed:
+    /// on is a `Pitch` in its stack, one undo step each way. A `Pitch` that
+    /// shifts the pitch holds the switch on. A line says when a speed the
+    /// clip plays at is past what keeps pitch. A picture clip has a line in
+    /// its place: its sound has to be on an audio track first.
+    pub(super) fn pitch_row(&mut self, ui: &mut Ui) {
+        let p = self.p;
+        let clip = self.clip;
+        let on_audio =
+            (self.project.clip(clip.id)).is_some_and(|(track, _)| track.kind == TrackKind::Audio);
+        if !on_audio {
+            ui.label(
+                egui::RichText::new(speed::DETACH_TO_KEEP_PITCH)
+                    .font(theme::regular(12.0))
+                    .color(p.muted),
+            );
+            return;
+        }
+        let semitones = sound::pitch(clip);
+        let shifted = semitones.filter(|semitones| *semitones != 0.0);
+        row(ui, p, "Keep pitch", |ui| {
+            ui.add_enabled_ui(shifted.is_none(), |ui| {
+                let switch = widgets::switch(ui, p, semitones.is_some(), "Keep pitch")
+                    .on_hover_text("Speed changes how fast the sound plays, not its pitch")
+                    .on_disabled_hover_text(format!(
+                        "Pitch is shifted {:+} semitones; speed leaves it there",
+                        shifted.unwrap_or_default()
+                    ));
+                if switch.clicked() {
+                    let settled = self.settled();
+                    let project = settled.as_deref().unwrap_or(self.project);
+                    self.actions.push(
+                        match speed::keep_pitch_command(project, clip.id, semitones.is_none()) {
+                            Ok(command) => Action::Edit(command),
+                            Err(reason) => Action::Notify(reason),
+                        },
+                    );
+                }
+            });
+        });
+        let Some(semitones) = semitones else {
+            return;
+        };
+        // The speeds the clip is heard at, the one being typed or dragged
+        // included.
+        let rate = self.next.rate;
+        let speeds: Vec<f64> = match (&self.next.retime, &clip.retime) {
+            (Some((map, _)), _) | (None, Some(map)) => (Curve::of_map(map).heard_speeds())
+                .map(|speed| speed * rate)
+                .collect(),
+            (None, None) => vec![rate],
+        };
+        if speeds
+            .iter()
+            .any(|speed| !sound::pitch_kept(*speed, semitones))
+        {
+            let (least, most) = speed::pitch_kept_speeds(semitones);
             self.note(
                 ui,
-                "Sound is silent where the clip is held, reversed or ramped.",
+                &format!(
+                    "Pitch is kept from {} to {}.",
+                    speed::times(least),
+                    speed::times(most)
+                ),
             );
         }
     }
