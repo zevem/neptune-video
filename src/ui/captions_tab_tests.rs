@@ -186,6 +186,8 @@ fn a_new_language_renames_only_a_track_named_for_its_last() {
             hidden: None,
             muted: None,
             name: Some("Dub".into()),
+            gain: None,
+            solo: None,
         })
         .unwrap();
     editor
@@ -346,6 +348,8 @@ fn a_caption_added_by_hand_fits_before_the_next_and_takes_its_neighbours_look() 
             hidden: None,
             muted: None,
             name: None,
+            gain: None,
+            solo: None,
         })
         .unwrap();
     assert!(added(editor.project(), track, seconds(10.0)).is_err());

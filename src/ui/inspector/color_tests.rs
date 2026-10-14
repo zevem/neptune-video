@@ -759,6 +759,8 @@ fn a_locked_track_takes_no_colour_edit() {
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     });
     let before = bench.steps();
     bench.frame(Vec::new());

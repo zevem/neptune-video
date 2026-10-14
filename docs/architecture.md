@@ -10,9 +10,9 @@ the evidence in
 
 | Component | Owns | Boundary |
 | --- | --- | --- |
-| `editor-core` | Project settings, assets, folders, tracks, clips, markers, effects, masks, animation tracks, time maps, transitions, trackers, title styles, text animations, word times, graphics, caption languages, SubRip/WebVTT text, edit validation, history, frame timing, the pure `resolve` to a render plan, and export data: settings, formats, presets, capability data, validation into an `ExportPlan`, output frame and sample spans, output geometry and render job reports | No windows, filesystem, font files, decoder handles, GPU or live workers |
-| `editor-store` | Versioned documents, protected document sessions, atomic replacement, autosave and recovery bindings | Immutable project/history snapshots and explicit destination ownership in, load/save/conflict results out |
-| `editor-media` | File/folder import, source probing, image/GIF/video decoding, cached frames, PCM audio mixing, `.cube` table reading, the analysis lane (region tracking, camera-motion measurement and its on-disk cache), the text renderer and title lane (fonts, shaping, title pictures), the speech lane (model downloads, offline 16 kHz mix, whisper.cpp), export encoding (encoder probe, FFmpeg arguments, the stdin-fed encoder, output check), the export source reader, the offline sound render for export, and the proxy lane and cache | Owned metadata, frame/audio results, title pictures, words, analysis results and proxy answers carrying project, request and source identity; codec, font and live worker details remain private. The export calls block and run on a thread the desktop owns |
+| `editor-core` | Project settings, assets, folders, tracks, clips, markers, effects, masks, animation tracks, time maps, transitions, trackers, fades, track volume and solo, title styles, text animations, word times, graphics, caption languages, SubRip/WebVTT text, edit validation, history, frame timing, the pure `resolve` to a render plan, the pure `sound` rules (what sounds, its level, pitch keeping, ducking keys), and export data: settings, formats, presets, capability data, validation into an `ExportPlan`, output frame and sample spans, output geometry and render job reports | No windows, filesystem, font files, decoder handles, GPU or live workers |
+| `editor-store` | Versioned documents, protected document sessions, atomic replacement, autosave, recovery bindings and the project's media folder for takes and stems | Immutable project/history snapshots and explicit destination ownership in, load/save/conflict results out |
+| `editor-media` | File/folder import, source probing, image/GIF/video decoding, cached frames, PCM audio mixing with the voice filter chain and its probe, voiceover capture to WAV, `.cube` table reading, the analysis lane (region tracking, camera-motion measurement and its on-disk cache), the sound lane (peaks and their on-disk cache, loudness, beats, a sound written to a file, stem separation), the text renderer and title lane (fonts, shaping, title pictures), the speech lane (model downloads, offline 16 kHz mix, whisper.cpp), export encoding (encoder probe, FFmpeg arguments, the stdin-fed encoder, output check), the export source reader, the offline sound render for export, and the proxy lane and cache | Owned metadata, frame/audio results, title pictures, words, analysis results and proxy answers carrying project, request and source identity; codec, font and live worker details remain private. The export calls block and run on a thread the desktop owns |
 | Desktop composition | Controller integration, worker scheduling, clipboard, file dialogs, input, playback clock, title textures, the preset file and subtitle file reads and writes, preview quality and which proxies the viewer reads | Converts UI actions and completions into targeted commands |
 | Render queue (`src/export`) | `RenderQueue`, the `aster-render` thread, the job runner and `FrameRenderer` | Takes immutable project snapshots; publishes job reports and finished events; never edits a project |
 | Compositor (`src/compose`) | Off-screen wgpu passes, WGSL pixel math, `ComposeBudget`, lookup-table textures, the layer assembly the viewer and export share, readback | Draws a render plan's non-plain runs into one canvas texture while the interface is drawn, never asking for a repaint and falling back to the mesh path; draws every layer of an export frame on the render thread at the output size, with no fallback |
@@ -124,8 +124,8 @@ plan's layers. See [advanced editing](#advanced-editing).
 The media runtime exposes an optional audio-device clock after initial buffering.
 Desktop playback follows it when audio output is available, with a monotonic
 fallback when silent. Actual device synchronization and display latency still
-need native measurements; pitch-preserving speed changes and hardware decoding
-remain future work.
+need native measurements; hardware decoding remains future work. Speed keeps
+pitch only on a clip with a `Pitch` audio effect (see the codec boundary).
 
 ## Advanced editing
 
@@ -184,6 +184,55 @@ project data, so the viewer hands it to `resolve` as `ClipOverride.reading`
 and resolves a second time when a follower and a steadied layer share a frame.
 A stabilization result is never an edit: the path is kept in the cache and in
 the window's bounded table, and the project holds only the `Stabilize` effect.
+
+## Audio editing
+
+[ADR 0008](adr/0008-sound-is-levels-in-the-mixer-and-filters-in-the-decoder.md)
+records the decision; [the design](../.scratch/audio-editing/spec.md) holds the
+binding rules, the owner decisions and their dated changes. This section says
+where things live; how the mixer, the chain and the recorder work is under
+[the codec boundary](#codec-boundary).
+
+| Concern | Owner |
+| --- | --- |
+| `Track.gain`, `Track.solo`, `Clip.fade_in`, `Clip.fade_out` and their bounds | [model.rs](../crates/editor-core/src/model.rs) |
+| The seven audio `EffectKind`s and their `spec` rows; `EffectKind::is_audio` | [look.rs](../crates/editor-core/src/look.rs) |
+| `SetFades`, the two `SetTrackState` fields, `fit_fades` after trim, split, rate and retime | [command.rs](../crates/editor-core/src/command.rs), [editor.rs](../crates/editor-core/src/editor.rs) |
+| What sounds and when (`sounds`, `owned`, `soloed_out`, `audible_at`, `Sounding`), the level (`fade_at`, `level_at`), pitch keeping (`pitch`, `pitch_kept`, `PITCH_KEPT`) and ducking keys (`duck`, `duck_keys`) | [sound.rs](../crates/editor-core/src/sound.rs) |
+| Mixer admission, the level stage and the master limiter | [audio.rs](../crates/editor-media/src/audio.rs), [audio/plan.rs](../crates/editor-media/src/audio/plan.rs) |
+| Filter strings, the delay table and the filter probe | [audio/chain.rs](../crates/editor-media/src/audio/chain.rs) |
+| The sound lane: peaks and their cache, loudness, beats, Save audio as, stem separation and the separator probe | [sound.rs](../crates/editor-media/src/sound.rs) and `sound/{peaks,loudness,beats,extract,separate}.rs` |
+| Voiceover capture | [record.rs](../crates/editor-media/src/record.rs) |
+| The media folder and a take's path | [media.rs](../crates/editor-store/src/media.rs) |
+| Peaks and beat grids the window holds | [src/peaks.rs](../src/peaks.rs) (`HeldPeaks`, `HeldBeats`) |
+| Detach audio and background music batches | [src/rules.rs](../src/rules.rs) |
+| Audio presets, the kinds a person adds and their refusals | [src/audio.rs](../src/audio.rs) |
+| Keep pitch | [src/speed.rs](../src/speed.rs) |
+| Normalize, Duck under speech, Save audio as, Separate stems, the take | [src/normalize.rs](../src/normalize.rs), [src/duck.rs](../src/duck.rs), [src/extract.rs](../src/extract.rs), [src/stems.rs](../src/stems.rs), [src/record.rs](../src/record.rs) |
+| Waveforms, fade handles, the volume line, beat ticks and snapping, the track head's solo and volume | [timeline.rs](../src/ui/timeline.rs), with the shared rules in [fades.rs](../src/ui/fades.rs) and [tracks.rs](../src/ui/tracks.rs) |
+| The Audio section, fade rows, Normalize and Ducking cards | [inspector/audio.rs](../src/ui/inspector/audio.rs), [inspector/clip.rs](../src/ui/inspector/clip.rs) |
+| The record control; cards of a sound being saved and a separation | [viewer.rs](../src/ui/viewer.rs), [sheets.rs](../src/ui/sheets.rs) |
+| Command-panel phrases | [src/agent.rs](../src/agent.rs) |
+
+Every sound edit is an ordinary command through `Action → App →
+Editor::apply`: `SetFades`, `SetTrackState`, `SetGain`, `SetKeyframes`,
+`SetEffects`, `AddMarker`, or a `Batch` of `AddAssets`, `AddTrack`, `AddClip`
+and `LinkClips`, one history entry each. The sound lane is a worker of its own
+beside the analysis lane, so a long tracking run holds up no waveform: one
+thread with one FFmpeg or separator process at a time, a thread that only
+reads the peak cache and finds beats, sixteen jobs waiting on each, and
+replacement by target ((kind, media) or (kind, media, span)), so a loudness
+measurement does not stop the same media's waveform. Its answers carry the
+request, project, asset and source identity, and the desktop drops any it no
+longer waits for. A measurement, a duck or placed stems are written only after
+the clip, its media and the project are checked again; a stale answer writes
+nothing and says so. `cancel_all` on a project replace spares a file being
+written and a separation, which are the person's: their files are named, and
+nothing is offered to the project that came after.
+
+A person starts every one of these jobs and the recording; none is a command,
+so an agent and the headless CLI can write their results and cannot start
+them. Bounds are in [performance](performance.md#audio-editing-budgets).
 
 ## Titles, captions and speech
 
@@ -244,7 +293,7 @@ aside rather than overwritten when this build cannot read it.
 
 ## Export and rendering
 
-[ADR 0008](adr/0008-export-renders-originals-through-the-preview-compositor.md)
+[ADR 0009](adr/0009-export-renders-originals-through-the-preview-compositor.md)
 records the decision; [the design](../.scratch/export-and-rendering/spec.md)
 holds the binding rules and their dated changes. This section says where
 things live.
@@ -514,10 +563,12 @@ undo/redo, unchanged/current baselines and safe unsaved restoration. Headless
 integration evidence is linked in the [agent protocol](agent-protocol.md).
 
 Project documents are versioned independently of live runtime handles. The
-writer emits schema version 2; version 1 is read as a strict subset through
-serde defaults and is not written, so a build that knows only version 1
-refuses a version 2 file through its future-schema protection. The clipboard
-text follows the same rule. Derived stabilization data is not in the document.
+writer emits schema version 4; versions 1 to 3 are read as strict subsets
+through serde defaults and are not written, so a build that knows only an
+older version refuses a version 4 file through its future-schema protection.
+Version 3 added titles, graphics and captions; version 4 added fades, track
+volume and solo, and audio effects.
+The clipboard text follows the same rule. Derived stabilization data is not in the document.
 Loading passes through core validation. A future schema, damaged or unreadable document
 is protected from replacement; restore available recovery as unsaved work and
 save to a new destination. Missing source media remains an offline asset with
@@ -531,7 +582,13 @@ flushes accepted work with a bounded wait and reports failure. Filesystem
 atomicity and durability need native failure tests on each supported OS.
 
 Imported media remains a source reference unless the person explicitly copies
-it into managed storage. Edits do not alter original source files. Project
+it into managed storage. Edits do not alter original source files. The editor
+creates media in one place only: voiceover takes and separated stems are
+written to the `<document stem> media/` folder beside the saved document
+(`editor_store::media_folder`, `new_take`), made on first use, never emptied
+or deleted by the editor and refused for a project without a file. They are
+stored by absolute path, as imports are, so they do not move with a moved
+project; relative paths are a follow-up that changes no file format today. Project
 duplication gives the document a new identity and independent save destination
 while retaining references to the same source media.
 
@@ -561,11 +618,99 @@ delays retain exact display intervals without inventing a fixed-rate grid.
 
 Native audio uses CPAL with background FFmpeg decoding/mixing and a bounded
 lock-free callback ring. The initial mixer accepts up to 16 simultaneous audible
-clips, with explicit failure beyond that budget; gain, source trim, clip rate,
-preview speed and mute participate in mixing. Hidden video still contributes
-unmuted sound unless an explicit Audio-track clip owns the same linked asset's
-sound; the explicit clip remains authoritative when muted. Linked different
-assets still mix independently. Rate changes currently change pitch.
+clips, with explicit failure beyond that budget that names how many sound and
+when. What is in the mix is decided in one place, `editor_core::sound`: a clip
+sounds when its track is not muted, not soloed out and not at volume 0, its
+asset has sound, its own volume is not 0 without volume keyframes, and no
+Audio-track clip of the same asset in its link owns that sound. Hidden video
+still sounds. The explicit Audio-track clip remains authoritative when its
+track is muted or soloed out, so neither reveals embedded sound. Linked
+different assets still mix independently. A clip's level is track volume times
+clip volume (stored or keyed) times its edge fades, read once for a clip where
+it does not change and at every output frame where it does; source trim, clip
+rate and preview speed participate as before. The sum ends in a peak limiter
+with a ceiling of 0 dBFS in place of a hard clamp: a frame past the ceiling is
+turned down to it at once and the gain rises back with a 200 ms time constant.
+A frame within the ceiling is not altered while the gain is 1; after a peak the
+frames that follow are turned down as well until the gain is 1 again, 1.4 s
+after a peak of twice the ceiling at 48 kHz. It has no lookahead and limits
+sample peaks, not true peaks. All of this runs on the audio worker; the device
+callback only copies. A clip's speed changes its pitch unless the clip has an
+enabled `Pitch` effect, and the preview speed always does.
+
+A clip on an audio track may carry audio effects, and they are heard through
+the `-af` of that clip's own decoder: `audio/chain.rs` is the one place filter
+syntax is written. After the speed stage it writes each enabled audio effect
+in stack order (`highpass`, `equalizer`, `acompressor`, `alimiter`, `afftdn`,
+and `aformat` with `pan` for centre reduction), with decibels made linear
+where the filter wants linear and a frequency held under 0.45 of the output
+rate; a clip without audio effects gets the string it always had. Centre
+reduction is left out for an output of one channel, where the sum of its two
+channels would be silence, and that is said once. `Pitch` is no filter after
+the speed stage but the speed stage itself: without one, `asetrate` takes the
+rate times preview speed times clip speed, as it always did; with the first
+enabled `Pitch`, its ratio `P` is taken out of the clip speed, one `atempo`
+stage takes what is left held to 0.5..2, and `asetrate` takes the rest, so the
+clip keeps its speed and its pitch is `P` while the hold does not bite.
+Which `Pitch` is read and the 0.5..2 hold are `editor_core::sound`'s, which
+the inspector reads too. `atempo` is never chained: each stage makes the
+sound arrive early by an amount that moves from one event to the next (8 to
+59 ms measured), which no frame drop can correct, so that lead is not
+compensated. FFmpeg reads a chain once, when the decoder starts, so a value
+is heard after the edit commits and the decoders restart, and a
+compressor's envelope or the noise estimate starts cold at every seek. The
+constant delay of a chain (25 ms for noise reduction, 5 ms for the limiter)
+is turned into frames at the device's rate and that many leading frames of the
+voice are read and dropped.
+
+Which audio kinds the host's FFmpeg runs is found by running them, once a
+session: a control run of `anull` over 50 ms of silence and then each kind's
+own string at its defaults, on the audio worker before it looks for an output
+device, with processes of the probe's own that a seek does not stop. A kind
+whose run fails is left out of every chain and said once, when a clip first
+goes without it; if the control fails nothing is known, every kind counts as
+available and that is said once. `editor_media::missing_audio_filters()` hands
+the finished answer to the interface and never waits. A chain that passed the
+probe at its defaults and is refused at another value ends that decoder, which
+stops the preview's sound with FFmpeg's message.
+
+A voiceover take is recorded by `RecordService` in
+[record.rs](../crates/editor-media/src/record.rs): CPAL's default input
+device, at its own rate, one or two channels as delivered (more are refused),
+written to a 32-bit float WAV at a path the desktop chose (ticket 17's
+`editor_store::new_take`). The input callback only copies into a bounded
+lock-free ring of two seconds, or counts the frames that found it full; one
+thread, `aster-record`, opens the device and the file, drains the ring every
+20 ms and rewrites the header's two sizes and syncs once a second of sound, so
+a crash leaves a file that plays to within a second of its end. `start`,
+`stop` and `poll` return at once: opening, writing and closing are the
+thread's, and `Started`, `Level`, `Finished(Take)` or `Failed` come through
+`poll`. A file at the path is refused and left as it was (`create_new`), and
+no file is made before the device plays, so a device that will not open or
+play answers `Failed` with nothing in the media folder; the service never
+deletes one, and a device error, a failed write or the take's limit (2 hours,
+or the most a classic WAV header can count) ends the take with what was
+written, cut to the samples counted. The service is its own clock: `frames()`
+counts the frames that reached the ring since the device began to play, which
+is their place in the file and may be past 0 when `Started` is read, and
+nothing about the timeline bounds a take.
+
+The desktop's [record.rs](../src/record.rs) owns the take as session state
+beside playback, never in the project. Record (the transport's control or R)
+is refused in words for a project without a file or while a take is under
+way; otherwise `new_take` runs on a short worker whose answer carries the
+editor instance, and only the take still waiting in that instance starts the
+service. `Started` starts the timeline from its playhead at 1×. The take is
+anchored to the playback clock: the first frame after `Started` that reads an
+`AudioService::position` pairs it with `frames()`, and without one within a
+second, or with nothing playing, the transport's position is used. The
+project's end stops the transport only. When `Finished` arrives the media is
+built from the `Take` itself, without an import or a probe, and enters with
+`AddTrack` when no unlocked audio track has room and `AddClip` as one `Batch`,
+"Record voiceover", through the ordinary command path; `MediaService::import`
+is not used, so a user import answered meanwhile keeps its own step. A
+replaced project stops the take and is given nothing; the file is named in a
+notice. An agent cannot start or stop a take.
 
 The analysis lane is separate from preview decoding: its own thread, one
 FFmpeg process at a time reading luma no larger than 384 pixels a side, four

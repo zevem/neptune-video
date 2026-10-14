@@ -79,6 +79,8 @@ fn query_updates_follow_move_undo_redo_and_hidden_tracks() {
             locked: None,
             muted: None,
             name: None,
+            gain: None,
+            solo: None,
         })
         .unwrap();
     query.update(editor.snapshot());

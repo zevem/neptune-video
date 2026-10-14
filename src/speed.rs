@@ -12,8 +12,8 @@
 //! change is nought at both ends. Any other easing the map came with is kept
 //! as it is until its speeds are changed.
 use editor_core::{
-    Clip, ClipContent, ClipId, Command, Ease, MediaKind, Project, Retime, Time, TimeKey, Track,
-    TrackKind, retime::MAX_TIME_KEYS,
+    Clip, ClipContent, ClipId, Command, Ease, Effect, EffectKind, MediaKind, ParamKey, ParamValue,
+    Project, Retime, Time, TimeKey, Track, TrackKind, look, retime::MAX_TIME_KEYS, sound,
 };
 use std::borrow::Cow;
 
@@ -542,6 +542,14 @@ impl Curve {
         (self.pieces.iter()).any(|piece| piece.moved <= 0 || piece.ease() != Ease::Linear)
     }
 
+    /// The speeds its sound is heard at: those of the stretches that run
+    /// forwards at one speed.
+    pub fn heard_speeds(&self) -> impl Iterator<Item = f64> + '_ {
+        (self.pieces.iter())
+            .filter(|piece| piece.moved > 0 && piece.ease() == Ease::Linear)
+            .map(Piece::mean)
+    }
+
     /// The lowest source the clip reaches, and how much source it spans.
     fn extent(&self) -> (Time, i64) {
         let mut source = self.start.0;
@@ -862,6 +870,163 @@ pub fn badge(clip: &Clip) -> Option<Cow<'static, str>> {
     } else {
         times(one).into()
     })
+}
+
+// ---- Pitch -----------------------------------------------------------------
+//
+// A clip's speed changes its pitch unless it has an enabled `Pitch` effect;
+// then its speed leaves pitch alone and the effect's semitones are its only
+// shift. There is no other switch: "keep pitch" is a `Pitch` at 0. The core
+// says which `Pitch` is read and while what speeds it holds
+// (`editor_core::sound`); the voice chain plays it.
+
+/// What a picture clip says in place of keeping its pitch: only a clip on an
+/// audio track carries audio effects.
+pub const DETACH_TO_KEEP_PITCH: &str = "Detach audio to keep pitch";
+
+/// The clip whose pitch can be kept or shifted, or why `clip_id` is not one:
+/// sound on an audio track whose track is not locked. `detach` is what a
+/// picture clip is told.
+fn pitch_target<'a>(
+    project: &'a Project,
+    clip_id: ClipId,
+    detach: &str,
+) -> Result<&'a Clip, String> {
+    let (track, clip) = (project.clip(clip_id)).ok_or("The clip no longer exists.")?;
+    if !crate::ui::fades::has_sound(project, clip) {
+        return Err("That clip has no sound.".to_owned());
+    }
+    if track.kind != TrackKind::Audio {
+        return Err(format!("{detach}."));
+    }
+    if track.locked {
+        return Err("Unlock the clip's track to change its pitch.".to_owned());
+    }
+    Ok(clip)
+}
+
+/// The clip's stack with `effect` at its end, when it has room for one more.
+fn with_effect(clip: &Clip, effect: Effect) -> Result<Vec<Effect>, String> {
+    if clip.effects.len() >= look::MAX_EFFECTS {
+        return Err(format!(
+            "That clip holds {} effects, the most it takes.",
+            look::MAX_EFFECTS
+        ));
+    }
+    let mut effects = clip.effects.clone();
+    effects.push(effect);
+    Ok(effects)
+}
+
+fn pitch_effect(semitones: f32) -> Effect {
+    let mut effect = Effect::new(EffectKind::Pitch);
+    if semitones != 0.0 {
+        effect.params = vec![ParamValue {
+            key: ParamKey::Amount,
+            value: semitones,
+        }];
+    }
+    effect
+}
+
+/// The semitones a `Pitch` takes.
+pub fn pitch_range() -> (f32, f32) {
+    (look::spec(EffectKind::Pitch).iter())
+        .find(|spec| spec.key == ParamKey::Amount)
+        .map_or((-12.0, 12.0), |spec| (spec.min, spec.max))
+}
+
+/// The clip speeds at which a `Pitch` of `semitones` is heard at that pitch.
+pub fn pitch_kept_speeds(semitones: f32) -> (f64, f64) {
+    let ratio = sound::pitch_ratio(semitones);
+    (
+        sound::PITCH_KEPT.start() * ratio,
+        sound::PITCH_KEPT.end() * ratio,
+    )
+}
+
+/// One undo step that shifts the clip's sound by `semitones` and so makes
+/// its speed keep pitch: the `Pitch` that is read is changed, or one is
+/// added at the end of the stack. Says why not in words.
+pub fn pitch_command(
+    project: &Project,
+    clip_id: ClipId,
+    semitones: f32,
+) -> Result<Command, String> {
+    let (least, most) = pitch_range();
+    if !(least..=most).contains(&semitones) {
+        return Err(format!("A pitch is from {least} to {most} semitones."));
+    }
+    let clip = pitch_target(project, clip_id, "Detach audio to change its pitch")?;
+    let mut effects = clip.effects.clone();
+    let read =
+        (effects.iter_mut()).find(|effect| effect.enabled && effect.kind == EffectKind::Pitch);
+    let effects = match read {
+        Some(effect) if effect.param(ParamKey::Amount) == Some(semitones) => {
+            return Err("That clip is already at that pitch.".to_owned());
+        }
+        Some(effect) => {
+            effect.params.retain(|param| param.key != ParamKey::Amount);
+            effect.params.push(ParamValue {
+                key: ParamKey::Amount,
+                value: semitones,
+            });
+            effects
+        }
+        None => with_effect(clip, pitch_effect(semitones))?,
+    };
+    Ok(batch(
+        "Change pitch",
+        vec![Command::SetEffects {
+            clip_id: clip.id,
+            effects,
+        }],
+    ))
+}
+
+/// One undo step of the "Keep pitch" switch. On adds a `Pitch` at 0. Off
+/// removes every enabled `Pitch`, all at 0, so none is left to be read; one
+/// that shifts the pitch is left, since taking it away would undo a shift
+/// nobody asked to undo, and a later one would be read in place of the
+/// first. Says why not in words.
+pub fn keep_pitch_command(
+    project: &Project,
+    clip_id: ClipId,
+    keep: bool,
+) -> Result<Command, String> {
+    let clip = pitch_target(project, clip_id, DETACH_TO_KEEP_PITCH)?;
+    let read = |effect: &Effect| effect.enabled && effect.kind == EffectKind::Pitch;
+    let (label, effects) = match (keep, sound::pitch(clip)) {
+        (true, Some(_)) => return Err("That clip already keeps its pitch.".to_owned()),
+        (true, None) => ("Keep pitch", with_effect(clip, pitch_effect(0.0))?),
+        (false, None) => return Err("That clip's speed already changes its pitch.".to_owned()),
+        (false, Some(semitones)) if semitones != 0.0 => {
+            return Err(format!(
+                "That clip's pitch is shifted {semitones:+} semitones; set it to 0 first."
+            ));
+        }
+        (false, Some(_)) => {
+            let later = (clip.effects.iter().filter(|effect| read(effect)))
+                .map(|effect| effect.param(ParamKey::Amount).unwrap_or_default())
+                .find(|semitones| *semitones != 0.0);
+            if let Some(semitones) = later {
+                return Err(format!(
+                    "Another pitch effect on that clip would then shift it {semitones:+} \
+                     semitones; remove it first."
+                ));
+            }
+            let mut effects = clip.effects.clone();
+            effects.retain(|effect| !read(effect));
+            ("Let speed change pitch", effects)
+        }
+    };
+    Ok(batch(
+        label,
+        vec![Command::SetEffects {
+            clip_id: clip.id,
+            effects,
+        }],
+    ))
 }
 
 #[cfg(test)]
@@ -1205,5 +1370,210 @@ mod tests {
         assert_eq!(badge(clip(&project, id)).as_deref(), Some("0.5×"));
         assert_eq!(times(1.25), "1.25×");
         assert_eq!(times(4.0), "4×");
+    }
+
+    /// A sound of ten seconds on the audio track and the four second video
+    /// of [`shot`] on the video track, which has sound too.
+    fn sound_and_shot() -> (Project, ClipId, ClipId) {
+        let (mut project, picture) = shot(0.0);
+        let id = project.clip(picture).unwrap().1.asset_id().unwrap();
+        Arc::make_mut(&mut project.assets)
+            .get_mut(&id)
+            .unwrap()
+            .has_audio = true;
+        let asset = Asset::new(
+            PathBuf::from("/media/voice.wav"),
+            MediaKind::Audio,
+            seconds(10.0),
+        );
+        let voice = Clip::from_asset(&asset, Time::ZERO);
+        let id = voice.id;
+        Arc::make_mut(&mut project.assets).insert(asset.id, asset);
+        let audio = (project.tracks.iter())
+            .position(|track| track.kind == TrackKind::Audio)
+            .unwrap();
+        Arc::make_mut(&mut project.tracks[audio]).clips.push(voice);
+        project.validate().unwrap();
+        (project, id, picture)
+    }
+
+    fn kinds(project: &Project, id: ClipId) -> Vec<(EffectKind, f32)> {
+        (clip(project, id).effects.iter())
+            .map(|effect| {
+                let amount = effect.param(ParamKey::Amount).unwrap_or_default();
+                (effect.kind, amount)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn keep_pitch_adds_a_pitch_at_0_and_takes_away_every_one_at_0() {
+        let (project, voice, _) = sound_and_shot();
+        let mut editor = Editor::new(project.clone()).unwrap();
+        let on = keep_pitch_command(editor.project(), voice, true).unwrap();
+        assert_eq!(on.label(), "Keep pitch");
+        editor.dispatch(on).unwrap();
+        assert_eq!(kinds(editor.project(), voice), [(EffectKind::Pitch, 0.0)]);
+        assert_eq!(sound::pitch(clip(editor.project(), voice)), Some(0.0));
+        // It is kept as it is saved.
+        let text = serde_json::to_string(editor.project()).unwrap();
+        let read: Project = serde_json::from_str(&text).unwrap();
+        read.validate().unwrap();
+        assert_eq!(sound::pitch(clip(&read, voice)), Some(0.0));
+        assert_eq!(
+            keep_pitch_command(editor.project(), voice, true).unwrap_err(),
+            "That clip already keeps its pitch."
+        );
+
+        let off = keep_pitch_command(editor.project(), voice, false).unwrap();
+        assert_eq!(off.label(), "Let speed change pitch");
+        editor.dispatch(off).unwrap();
+        assert!(clip(editor.project(), voice).effects.is_empty());
+        assert_eq!(editor.history().count(), 2);
+        assert!(editor.undo());
+        assert_eq!(kinds(editor.project(), voice), [(EffectKind::Pitch, 0.0)]);
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &project);
+        assert_eq!(
+            keep_pitch_command(&project, voice, false).unwrap_err(),
+            "That clip's speed already changes its pitch."
+        );
+
+        // A shift is left where it is, and so is anything else in the stack.
+        let shifted = applied(&project, pitch_command(&project, voice, 2.0).unwrap());
+        assert_eq!(
+            keep_pitch_command(shifted.project(), voice, false).unwrap_err(),
+            "That clip's pitch is shifted +2 semitones; set it to 0 first."
+        );
+        let mut stacked = Editor::new(project.clone()).unwrap();
+        stacked
+            .dispatch(Command::SetEffects {
+                clip_id: voice,
+                effects: vec![
+                    Effect::new(EffectKind::Compressor),
+                    Effect::new(EffectKind::Pitch),
+                    Effect::new(EffectKind::Limiter),
+                ],
+            })
+            .unwrap();
+        let off = keep_pitch_command(stacked.project(), voice, false).unwrap();
+        stacked.dispatch(off).unwrap();
+        assert_eq!(
+            kinds(stacked.project(), voice),
+            [(EffectKind::Compressor, 3.0), (EffectKind::Limiter, 0.0)]
+        );
+
+        // Off leaves no enabled `Pitch` to be read in place of the first: a
+        // later one at 0 goes too, a disabled one stays, and a later shift
+        // is refused rather than heard.
+        let at = |semitones: f32, enabled: bool| {
+            let mut effect = pitch_effect(semitones);
+            effect.enabled = enabled;
+            effect
+        };
+        let mut repeated = Editor::new(project.clone()).unwrap();
+        repeated
+            .dispatch(Command::SetEffects {
+                clip_id: voice,
+                effects: vec![at(0.0, true), at(5.0, false), at(0.0, true)],
+            })
+            .unwrap();
+        let off = keep_pitch_command(repeated.project(), voice, false).unwrap();
+        repeated.dispatch(off).unwrap();
+        assert_eq!(kinds(repeated.project(), voice), [(EffectKind::Pitch, 5.0)]);
+        assert_eq!(sound::pitch(clip(repeated.project(), voice)), None);
+        let mut later = Editor::new(project.clone()).unwrap();
+        later
+            .dispatch(Command::SetEffects {
+                clip_id: voice,
+                effects: vec![at(0.0, true), at(5.0, true)],
+            })
+            .unwrap();
+        assert_eq!(sound::pitch(clip(later.project(), voice)), Some(0.0));
+        assert_eq!(
+            keep_pitch_command(later.project(), voice, false).unwrap_err(),
+            "Another pitch effect on that clip would then shift it +5 semitones; remove it \
+             first."
+        );
+    }
+
+    #[test]
+    fn a_pitch_is_set_on_the_pitch_that_is_read_or_added_and_refused_in_words() {
+        let (project, voice, picture) = sound_and_shot();
+        let up = applied(&project, pitch_command(&project, voice, 2.0).unwrap());
+        assert_eq!(kinds(up.project(), voice), [(EffectKind::Pitch, 2.0)]);
+        assert_eq!(up.undo_label(), Some("Change pitch"));
+        let mut down = Editor::new(up.project().clone()).unwrap();
+        down.dispatch(pitch_command(up.project(), voice, -3.0).unwrap())
+            .unwrap();
+        assert_eq!(kinds(down.project(), voice), [(EffectKind::Pitch, -3.0)]);
+        assert_eq!(
+            pitch_command(down.project(), voice, -3.0).unwrap_err(),
+            "That clip is already at that pitch."
+        );
+        // A disabled `Pitch` is not the one read: one is added after it.
+        let mut off = Effect::new(EffectKind::Pitch);
+        off.enabled = false;
+        let mut disabled = Editor::new(project.clone()).unwrap();
+        disabled
+            .dispatch(Command::SetEffects {
+                clip_id: voice,
+                effects: vec![off],
+            })
+            .unwrap();
+        disabled
+            .dispatch(pitch_command(disabled.project(), voice, 5.0).unwrap())
+            .unwrap();
+        let stack = &clip(disabled.project(), voice).effects;
+        assert_eq!(stack.len(), 2);
+        assert!(!stack[0].enabled && stack[1].enabled);
+        assert_eq!(sound::pitch(clip(disabled.project(), voice)), Some(5.0));
+
+        for (semitones, refused) in [
+            (12.5, "A pitch is from -12 to 12 semitones."),
+            (f32::NAN, "A pitch is from -12 to 12 semitones."),
+        ] {
+            assert_eq!(
+                pitch_command(&project, voice, semitones).unwrap_err(),
+                refused
+            );
+        }
+        assert_eq!(
+            pitch_command(&project, picture, 2.0).unwrap_err(),
+            "Detach audio to change its pitch."
+        );
+        assert_eq!(
+            keep_pitch_command(&project, picture, true).unwrap_err(),
+            "Detach audio to keep pitch."
+        );
+        // A full stack and a locked track.
+        let mut full = Editor::new(project.clone()).unwrap();
+        full.dispatch(Command::SetEffects {
+            clip_id: voice,
+            effects: (0..look::MAX_EFFECTS)
+                .map(|_| Effect::new(EffectKind::Compressor))
+                .collect(),
+        })
+        .unwrap();
+        assert_eq!(
+            keep_pitch_command(full.project(), voice, true).unwrap_err(),
+            "That clip holds 16 effects, the most it takes."
+        );
+        let mut locked = project.clone();
+        for track in &mut locked.tracks {
+            Arc::make_mut(track).locked = true;
+        }
+        assert_eq!(
+            pitch_command(&locked, voice, 2.0).unwrap_err(),
+            "Unlock the clip's track to change its pitch."
+        );
+    }
+
+    #[test]
+    fn a_pitch_is_kept_over_its_own_speeds() {
+        assert_eq!(pitch_range(), (-12.0, 12.0));
+        assert_eq!(pitch_kept_speeds(0.0), (0.5, 2.0));
+        assert_eq!(pitch_kept_speeds(12.0), (1.0, 4.0));
+        assert_eq!(pitch_kept_speeds(-12.0), (0.25, 1.0));
     }
 }

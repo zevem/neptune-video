@@ -1,10 +1,12 @@
 //! Versioned project storage, atomic replacement and structurally shared recovery.
 mod document;
 mod lease;
+mod media;
 mod recovery;
 mod worker;
 pub use document::{DocumentSession, load_project_with_session, save_project_with_session};
 pub use lease::RecoveryLease;
+pub use media::{media_folder, new_take};
 pub use worker::*;
 
 use editor_core::{Editor, Project};
@@ -18,9 +20,10 @@ use std::{
 
 /// Written by every save; older builds refuse it instead of stripping data.
 /// Version 3 added styled, animated and timed titles, graphics, caption
-/// languages and font assets.
-pub const SCHEMA_VERSION: u32 = 3;
-/// Oldest version read; versions 1 and 2 are strict subsets through serde
+/// languages and font assets. Version 4 added clip fades, track volume and
+/// solo, and audio effects.
+pub const SCHEMA_VERSION: u32 = 4;
+/// Oldest version read; versions 1 to 3 are strict subsets through serde
 /// defaults.
 const MIN_SCHEMA_VERSION: u32 = 1;
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
@@ -320,10 +323,7 @@ pub fn list_checkpoints(path: &Path) -> Result<Vec<CheckpointInfo>, StoreError> 
         if path.extension().is_none_or(|ext| ext != "aster") {
             continue;
         }
-        let file: ProjectFile = serde_json::from_reader(checked_reader(&path)?)?;
-        if file.schema_version > SCHEMA_VERSION {
-            return Err(StoreError::FutureSchema(file.schema_version));
-        }
+        let file: ProjectFile = serde_json::from_value(read_versioned(&path)?)?;
         entries.push(CheckpointInfo {
             path,
             label: file.checkpoint_label.unwrap_or_else(|| "Checkpoint".into()),

@@ -940,6 +940,8 @@ fn locked_track_refuses_every_clip_command() {
                     hidden: None,
                     muted: None,
                     name: None,
+                    gain: None,
+                    solo: None,
                 },
             ],
         })
@@ -1009,6 +1011,8 @@ fn locked_track_refuses_every_clip_command() {
                     hidden: None,
                     muted: None,
                     name: None,
+                    gain: None,
+                    solo: None,
                 },
             ],
         })
@@ -1930,6 +1934,75 @@ fn split_keeps_back_and_steep_easings_of_animation() {
             }
         }
     }
+}
+
+#[test]
+fn a_key_inserted_on_the_curve_keeps_every_sampled_value() {
+    let range = (-1000.0, 1000.0);
+    for (param, keys) in animated() {
+        let whole = AnimTrack {
+            target: None,
+            key: param,
+            keys,
+        };
+        for at in [0.0, 0.5, 2.0, 3.999, 4.5, 5.0, 6.5, 8.25, 9.0, 9.999, 10.0] {
+            let at = seconds(at);
+            let mut track = whole.clone();
+            let keyed = whole.keys.iter().any(|key| key.at == at);
+            assert_eq!(track.insert(at, range), !keyed, "{param:?} {at:?}");
+            if keyed {
+                // A key that is there already is left as it is.
+                assert_eq!(track, whole);
+                continue;
+            }
+            assert!(track.keys.windows(2).all(|pair| pair[0].at < pair[1].at));
+            assert!(track.keys.iter().all(|key| key.ease.validate()));
+            let there = track.keys.iter().find(|key| key.at == at).unwrap();
+            assert_eq!(there.value, whole.sample(at), "{param:?} {at:?}");
+            // The keys it was put among are all still there.
+            for key in &whole.keys {
+                assert!(
+                    track
+                        .keys
+                        .iter()
+                        .any(|k| (k.at, k.value) == (key.at, key.value))
+                );
+            }
+            for step in 0..=2000 {
+                let time = Time(step * seconds(10.0).0 / 2000);
+                let (expected, found) = (whole.sample(time), track.sample(time));
+                let tolerance = 2e-4 * expected.abs().max(1.0);
+                assert!(
+                    (expected - found).abs() <= tolerance,
+                    "{param:?} key {at:?} at {time:?}: {expected} became {found}"
+                );
+            }
+        }
+    }
+    // A key in a held stretch holds too, and one clamped into the range of
+    // its parameter is still a key there.
+    let mut held = AnimTrack {
+        target: None,
+        key: ParamKey::Gain,
+        keys: vec![key(2.0, 0.0, Ease::Hold), key(3.0, 2.0, Ease::Linear)],
+    };
+    assert!(held.insert(seconds(2.5), (0.0, 8.0)));
+    assert_eq!(
+        held.keys,
+        [
+            key(2.0, 0.0, Ease::Hold),
+            key(2.5, 0.0, Ease::Hold),
+            key(3.0, 2.0, Ease::Linear)
+        ]
+    );
+    // There is no curve to put a key on without one.
+    let mut empty = AnimTrack {
+        target: None,
+        key: ParamKey::Gain,
+        keys: Vec::new(),
+    };
+    assert!(!empty.insert(seconds(1.0), (0.0, 8.0)));
+    assert!(empty.keys.is_empty());
 }
 
 #[test]

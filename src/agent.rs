@@ -7,18 +7,20 @@
 //! External agents do not come through here; they use the live session the
 //! application hosts (see `editor_agent::AgentHost`).
 use crate::{
-    languages, rules, speed, timefmt,
+    audio, duck, languages, normalize, rules, speed, timefmt,
     ui::{
         Action, Selection,
         browser::{self, Entry},
-        captions_tab, inspector,
+        captions_tab,
+        fades::{self, Asked, FadeEdge},
+        inspector,
         library::Tab,
         timeline::marker_at,
-        transitions, with_key,
+        tracks, transitions, with_key,
     },
 };
 use editor_core::{
-    BlendMode, CanvasSettings, Clip, ClipContent, Command, Effect, EffectKind, ParamKey,
+    BlendMode, CanvasSettings, Clip, ClipContent, Command, Effect, EffectKind, MediaKind, ParamKey,
     ParamValue, Project, TextAnimation, TextAnimationKind, Time, Track, TrackKind, Transform,
     Transition, TransitionEdge,
 };
@@ -33,7 +35,7 @@ pub struct Context<'a> {
 }
 
 /// What the panel lists as examples. Each one is accepted by [`interpret`].
-pub const EXAMPLES: [(&str, &str); 24] = [
+pub const EXAMPLES: [(&str, &str); 34] = [
     (
         "split",
         "Split the selected clips, or every clip, at the playhead",
@@ -68,6 +70,38 @@ pub const EXAMPLES: [(&str, &str); 24] = [
         "Play it backwards, or hold the frame at the playhead",
     ),
     (
+        "detach audio",
+        "Put the selected video clip's sound on an audio track, linked",
+    ),
+    (
+        "separate stems",
+        "Split the selected clip's sound into vocals and instruments with Demucs",
+    ),
+    (
+        "fade in 1s · fade out 2s · remove fades",
+        "Fade the selected clips' sound at their edges",
+    ),
+    (
+        "normalize",
+        "Measure the selected clips and set each one's volume to -14 LUFS",
+    ),
+    (
+        "duck under speech · duck 18 db",
+        "Lower the selected clips wherever other clips are heard",
+    ),
+    (
+        "show beats · markers from beats",
+        "Ticks at the beats of the selected music, or a marker on each",
+    ),
+    (
+        "pitch up 2 · pitch down 3 · keep pitch",
+        "Shift a sound's pitch in semitones, or let its speed keep it",
+    ),
+    (
+        "enhance voice · reduce noise 60% · add eq",
+        "Audio effects on the selected clips on audio tracks",
+    ),
+    (
         "add keyframe opacity 50% · chroma key green",
         "Animate a value at the playhead, or key out a screen",
     ),
@@ -88,8 +122,16 @@ pub const EXAMPLES: [(&str, &str); 24] = [
         "preview shot.mp4 · close preview",
         "Play library media without adding it",
     ),
+    (
+        "add background music song.wav",
+        "Repeat library sound under the whole project, on a new track",
+    ),
     ("add marker Intro · add track audio", "Markers and tracks"),
     ("mute track Audio 1 · lock track Video 1", "Track switches"),
+    (
+        "solo track Audio 1 · set track volume Audio 1 50%",
+        "Hear a track by itself, or set how loud it is",
+    ),
     ("canvas 9:16 · rename project Film", "Project settings"),
     (
         "checkpoint Rough cut · restore Rough cut",
@@ -555,6 +597,202 @@ fn freeze(rest: &str, context: &Context) -> Result<Vec<Action>, String> {
         .map(|command| vec![Action::Edit(command)])
 }
 
+/// `detach audio`: the selected picture clip's sound becomes a linked clip
+/// on an audio track. A clip with nothing to detach is refused here, in the
+/// words the application would use.
+fn detach_audio(context: &Context) -> Result<Vec<Action>, String> {
+    let clip = one_selected(context)?;
+    match rules::detach_refusal(context.project, clip.id) {
+        Some(reason) => Err(reason),
+        None => Ok(vec![Action::DetachAudio(clip.id)]),
+    }
+}
+
+/// `separate stems`: the whole sound of the selected clip's media is split
+/// by the stem separator, and the stems placed under the clip when they
+/// come. Nothing is edited here; a clip that is not heard is refused in the
+/// words the clip menu uses, and the application refuses it without a
+/// separator or a saved project.
+fn separate_stems(context: &Context) -> Result<Vec<Action>, String> {
+    let clip = one_selected(context)?;
+    match crate::stems::refusal(context.project, clip.id) {
+        Some(reason) => Err(reason),
+        None => Ok(vec![Action::SeparateStems(clip.id)]),
+    }
+}
+
+/// `add background music song.wav`: that sound of the library, or the one
+/// selected there when none is named, under the whole project on a new
+/// track. Of several media of that name it is the one a bed can be made of,
+/// then a sound file, then the first. A bed that cannot be made is refused
+/// here, in the words the application would use.
+fn background_music(name: &str, context: &Context) -> Result<Vec<Action>, String> {
+    let project = context.project;
+    let wanted = name.trim().to_lowercase();
+    let asset = if wanted.is_empty() {
+        (context.selection.asset).ok_or(
+            "Say which sound, such as “add background music song.wav”, or select one in the library.",
+        )?
+    } else {
+        let named =
+            || (project.assets.values()).filter(|asset| asset.name.to_lowercase() == wanted);
+        named()
+            .find(|asset| rules::bed_refusal(project, asset.id).is_none())
+            .or_else(|| named().find(|asset| asset.kind == MediaKind::Audio))
+            .or_else(|| named().next())
+            .ok_or("There is no media with that name in the library.")?
+            .id
+    };
+    match rules::bed_refusal(project, asset) {
+        Some(reason) => Err(reason),
+        None => Ok(vec![Action::AddBackgroundMusic(asset)]),
+    }
+}
+
+/// `fade in 1s`, `fade out 2s`, `remove fades`: the sound of the selected
+/// clips fades at that edge for that long, held to the room the clip's other
+/// fade leaves, or at neither. A clip without sound, and a picture clip
+/// whose sound its linked audio clip owns, is refused in words.
+fn fade(asked: Asked, context: &Context) -> Result<Vec<Action>, String> {
+    fades::command(context.project, &context.selection.clips, asked)
+        .map(|command| vec![Action::Edit(command)])
+}
+
+/// `normalize`: the sound of each selected clip that is heard is measured,
+/// and its volume set from the figures when they come. Nothing is edited
+/// here; a clip that would not be measured is refused in the words the
+/// clip menu uses.
+fn normalize(context: &Context) -> Result<Vec<Action>, String> {
+    normalize::takers(context.project, &context.selection.clips)
+        .map(|clips| vec![Action::Normalize(clips)])
+}
+
+/// `duck under speech`, `duck 18 db`: each selected clip that is heard is
+/// lowered wherever the clips not selected are, by 12 dB or the depth
+/// given, as volume keyframes once their sound is read. Nothing is edited
+/// here; a clip that would not be ducked is refused in the words the clip
+/// menu uses.
+fn duck_under(rest: &str, context: &Context) -> Result<Vec<Action>, String> {
+    let rest = rest.trim().to_lowercase();
+    let depth = if rest.is_empty() {
+        duck::DEPTH
+    } else {
+        let amount = rest.strip_suffix("db").unwrap_or(&rest).trim();
+        (amount.parse::<f32>().ok())
+            .filter(|db| db.is_finite())
+            .and_then(duck::depth_of_db)
+            .ok_or_else(|| {
+                format!(
+                    "Give the depth in dB, from {} to {}, such as “duck under speech 18 db”.",
+                    duck::SHALLOWEST_DB,
+                    duck::DEEPEST_DB
+                )
+            })?
+    };
+    // The whole selection goes: a clip passed over is still no voice.
+    duck::takers(context.project, &context.selection.clips)?;
+    Ok(vec![Action::Duck {
+        clips: context.selection.clips.clone(),
+        depth,
+    }])
+}
+
+/// `show beats`, `hide beats`: the beats of the media of the selected clips
+/// on audio tracks are shown on its tiles, or no longer, for the session.
+/// Nothing is edited; a selection with no such clip is refused in words.
+fn show_beats(shown: bool, context: &Context) -> Result<Vec<Action>, String> {
+    let project = context.project;
+    let mut assets = Vec::new();
+    for id in &context.selection.clips {
+        let asset = (project.clip(*id))
+            .filter(|(track, _)| track.kind == TrackKind::Audio)
+            .and_then(|(_, clip)| clip.asset_id());
+        if let Some(asset) = asset.filter(|asset| !assets.contains(asset)) {
+            assets.push(asset);
+        }
+    }
+    if assets.is_empty() {
+        return Err("Select a clip on an audio track: beats are shown on those.".to_owned());
+    }
+    Ok(vec![Action::ShowBeats { assets, shown }])
+}
+
+/// `markers from beats`: a marker on each beat the selected clip on an
+/// audio track shows, as one step, once its media's beats are found. The
+/// beats are the window's alone, so the application makes the markers.
+fn markers_from_beats(context: &Context) -> Result<Vec<Action>, String> {
+    let clip = one_selected(context)?;
+    let on_audio =
+        (context.project.clip(clip.id)).is_some_and(|(track, _)| track.kind == TrackKind::Audio);
+    if !on_audio {
+        return Err("Select a clip on an audio track: beats are shown on those.".to_owned());
+    }
+    Ok(vec![Action::MarkersFromBeats(clip.id)])
+}
+
+/// `pitch up 2`, `pitch down 3`: the selected clip on an audio track is
+/// shifted that many semitones from its own pitch, which its speed then
+/// leaves alone. The shift is set, not added to: said twice it is the same.
+fn pitch(rest: &str, sign: f32, context: &Context) -> Result<Vec<Action>, String> {
+    let clip = one_selected(context)?;
+    let rest = rest.trim().to_lowercase();
+    let amount = (["semitones", "semitone", "st"].iter())
+        .find_map(|unit| rest.strip_suffix(unit))
+        .unwrap_or(&rest)
+        .trim();
+    let semitones = (amount.parse::<f32>().ok())
+        .filter(|semitones| semitones.is_finite() && *semitones >= 0.0)
+        .ok_or("Give semitones, such as “pitch up 2”.")?;
+    // Down by none is no shift, not a shift of -0.
+    speed::pitch_command(context.project, clip.id, sign * semitones + 0.0)
+        .map(|command| vec![Action::Edit(command)])
+}
+
+/// `keep pitch`: the selected clip on an audio track keeps its pitch
+/// whatever its speed, as the inspector's switch has it.
+fn keep_pitch(context: &Context) -> Result<Vec<Action>, String> {
+    let clip = one_selected(context)?;
+    speed::keep_pitch_command(context.project, clip.id, true)
+        .map(|command| vec![Action::Edit(command)])
+}
+
+/// `enhance voice`, `add eq`: a preset's effects at the end of the stack of
+/// each selected clip on an audio track, as one step. Said twice, they are
+/// added twice.
+fn audio_preset(preset: audio::Preset, context: &Context) -> Result<Vec<Action>, String> {
+    let clips = &context.selection.clips;
+    audio::give_command(context.project, clips, audio::Given::Preset(preset))
+        .map(|command| vec![Action::Edit(command)])
+}
+
+/// `reduce noise 60%`: that much of the noise is taken out of the selected
+/// clips on audio tracks, by the noise reduction they have or one added at
+/// its own noise floor. Without a percentage it is the effect's default.
+fn reduce_noise(rest: &str, context: &Context) -> Result<Vec<Action>, String> {
+    let rest = rest.trim();
+    let rest = rest.strip_prefix("by ").unwrap_or(rest);
+    let amount = if rest.is_empty() {
+        let target = editor_core::AnimTarget::Effect(EffectKind::Denoise);
+        editor_core::look::param_spec(target, ParamKey::Amount).map_or(0.4, |spec| spec.default)
+    } else {
+        percent(rest).ok_or("Give a percentage, such as “reduce noise 60%”.")? / 100.0
+    };
+    audio::noise_command(context.project, &context.selection.clips, amount)
+        .map(|command| vec![Action::Edit(command)])
+}
+
+/// The length a line gives a fade: half a second when it gives none.
+fn fade_length(rest: &str, project: &Project) -> Result<Time, String> {
+    let rest = rest.trim();
+    let rest = rest.strip_prefix("for ").unwrap_or(rest);
+    if rest.is_empty() {
+        return Ok(fades::QUICK);
+    }
+    timefmt::parse(rest, project.settings.frame_rate)
+        .filter(|length| *length >= Time::ZERO)
+        .ok_or_else(|| "Give a length such as 1s or 12f.".to_owned())
+}
+
 /// `follow Tracker 1`: the selected clip goes where the tracker's point
 /// goes, from where it is at the playhead, as the inspector's list has it.
 fn follow(rest: &str, context: &Context) -> Result<Vec<Action>, String> {
@@ -723,6 +961,30 @@ pub fn interpret(line: &str, context: &Context) -> Result<Vec<Action>, String> {
         })?,
         "reverse" | "reverse clip" => reverse(context)?,
         "freeze" | "freeze frame" => freeze("", context)?,
+        "detach audio" => detach_audio(context)?,
+        "separate stems" | "separate" | "split stems" => separate_stems(context)?,
+        "add background music" => background_music("", context)?,
+        "fade in" => fade(Asked::Set(FadeEdge::In, fades::QUICK), context)?,
+        "fade out" => fade(Asked::Set(FadeEdge::Out, fades::QUICK), context)?,
+        "remove fades" | "remove fade" => fade(Asked::Remove, context)?,
+        "normalize" | "normalize loudness" | "normalise" | "normalise loudness" => {
+            normalize(context)?
+        }
+        "duck" | "duck under speech" => duck_under("", context)?,
+        "keep pitch" => keep_pitch(context)?,
+        "show beats" => show_beats(true, context)?,
+        "hide beats" => show_beats(false, context)?,
+        "markers from beats" | "mark beats" => markers_from_beats(context)?,
+        "enhance voice" => audio_preset(audio::Preset::Voice, context)?,
+        "add eq" | "add 3-band eq" | "add 3 band eq" => {
+            audio_preset(audio::Preset::ThreeBandEq, context)?
+        }
+        "add compressor" => given(Entry::Effect(EffectKind::Compressor), context)?,
+        "add limiter" => given(Entry::Effect(EffectKind::Limiter), context)?,
+        "reduce noise" => reduce_noise("", context)?,
+        "pitch up" | "pitch down" => {
+            return Err("Say how many semitones, such as “pitch up 2”.".to_owned());
+        }
         "chroma key" | "green screen" | "remove background" => chroma_key("", context)?,
         "add transition" => add_transition("", context)?,
         "remove transition" => remove_transition("", context)?,
@@ -755,11 +1017,27 @@ pub fn interpret(line: &str, context: &Context) -> Result<Vec<Action>, String> {
                 chroma_key(rest, context)?
             } else if let Some(rest) = after("freeze frame ").or_else(|| after("freeze ")) {
                 freeze(&rest.to_lowercase(), context)?
+            } else if let Some(rest) = after("fade in ") {
+                let length = fade_length(&rest.to_lowercase(), project)?;
+                fade(Asked::Set(FadeEdge::In, length), context)?
+            } else if let Some(rest) = after("fade out ") {
+                let length = fade_length(&rest.to_lowercase(), project)?;
+                fade(Asked::Set(FadeEdge::Out, length), context)?
+            } else if let Some(rest) = after("reduce noise ") {
+                reduce_noise(rest, context)?
+            } else if let Some(rest) = after("duck under speech ").or_else(|| after("duck ")) {
+                duck_under(rest, context)?
+            } else if let Some(rest) = after("pitch up ") {
+                pitch(rest, 1.0, context)?
+            } else if let Some(rest) = after("pitch down ") {
+                pitch(rest, -1.0, context)?
             } else if let Some(rest) = after("remove tracker ").or_else(|| after("delete tracker "))
             {
                 remove_tracker(rest, context)?
             } else if let Some(rest) = after("follow ") {
                 follow(rest, context)?
+            } else if let Some(rest) = after("add background music ") {
+                background_music(rest, context)?
             } else if let Some(rest) = after("preview ") {
                 let wanted = rest.to_lowercase();
                 let asset = project
@@ -910,6 +1188,8 @@ pub fn interpret(line: &str, context: &Context) -> Result<Vec<Action>, String> {
                     _ => return Err("A canvas is 16:9, 9:16 or 1:1.".to_owned()),
                 };
                 vec![Action::Edit(Command::SetSettings { settings })]
+            } else if let Some(rest) = after("set track volume ") {
+                vec![Action::Edit(track_volume(rest, project)?)]
             } else if let Some(command) = track_switch(&lower, line, project)? {
                 vec![Action::Edit(command)]
             } else {
@@ -1058,29 +1338,59 @@ fn translate(rest: &str, context: &Context) -> Result<Vec<Action>, String> {
     }])
 }
 
-/// `mute track Audio 1`, `unlock track Video 1`, `hide track Text 1`…
+/// `mute track Audio 1`, `unlock track Video 1`, `hide track Text 1`,
+/// `solo track Audio 1`…
 fn track_switch(lower: &str, line: &str, project: &Project) -> Result<Option<Command>, String> {
-    for (verb, locked, hidden, muted) in [
-        ("lock", Some(true), None, None),
-        ("unlock", Some(false), None, None),
-        ("hide", None, Some(true), None),
-        ("show", None, Some(false), None),
-        ("mute", None, None, Some(true)),
-        ("unmute", None, None, Some(false)),
+    for (verb, locked, hidden, muted, solo) in [
+        ("lock", Some(true), None, None, None),
+        ("unlock", Some(false), None, None, None),
+        ("hide", None, Some(true), None, None),
+        ("show", None, Some(false), None, None),
+        ("mute", None, None, Some(true), None),
+        ("unmute", None, None, Some(false), None),
+        ("solo", None, None, None, Some(true)),
+        ("unsolo", None, None, None, Some(false)),
     ] {
         let prefix = format!("{verb} track ");
         if lower.starts_with(&prefix) {
             let track = track_named(project, line.get(prefix.len()..).unwrap_or_default())?;
+            // The mix ignores a text track's solo, and its head offers none.
+            if solo.is_some() && !tracks::carries_sound(track) {
+                return Err("A text track has no sound to solo.".to_owned());
+            }
             return Ok(Some(Command::SetTrackState {
                 track_id: track.id,
                 locked,
                 hidden,
                 muted,
                 name: None,
+                gain: None,
+                solo,
             }));
         }
     }
     Ok(None)
+}
+
+/// `set track volume Audio 1 50%`: the track named before the last word,
+/// at that many percent. A volume the project would refuse is refused here
+/// in words, not held to the bound.
+fn track_volume(rest: &str, project: &Project) -> Result<Command, String> {
+    let expected = "Name the track, then a percentage: “set track volume Audio 1 50%”.";
+    let (name, value) = rest.trim().rsplit_once(' ').ok_or(expected)?;
+    let value = percent(value).ok_or(expected)?;
+    // "Audio 1" alone is a name that ends in a number, not Audio at 1%.
+    if track_named(project, rest).is_ok() {
+        return Err(expected.to_owned());
+    }
+    let track = track_named(project, name)?;
+    if !tracks::carries_sound(track) {
+        return Err("A text track has no sound to set the volume of.".to_owned());
+    }
+    if !(0.0..=tracks::MOST).contains(&value) {
+        return Err(format!("A track's volume is from 0% to {}%.", tracks::MOST));
+    }
+    tracks::volume(track, value).ok_or_else(|| expected.to_owned())
 }
 
 #[cfg(test)]
@@ -1153,7 +1463,7 @@ mod tests {
     }
 
     /// What is done to a picture: these examples are tried on a video clip.
-    const OF_A_PICTURE: [&str; 9] = [
+    const OF_A_PICTURE: [&str; 15] = [
         "add effect",
         "remove effect",
         "apply look",
@@ -1163,6 +1473,12 @@ mod tests {
         "reverse",
         "freeze frame",
         "chroma key",
+        "detach audio",
+        "separate stems",
+        "fade ",
+        "remove fades",
+        "normalize",
+        "duck",
     ];
 
     #[test]
@@ -1177,6 +1493,23 @@ mod tests {
                 }
                 // Following needs a tracker: it has a test of its own.
                 if example.starts_with("follow ") || example == "stop following" {
+                    continue;
+                }
+                // A bed needs a sound in the library: it has a test of its own.
+                if example.starts_with("add background music") {
+                    continue;
+                }
+                // A pitch needs a clip on an audio track: so does its test.
+                if example.starts_with("pitch ") || example == "keep pitch" {
+                    continue;
+                }
+                // So do beats.
+                if example.ends_with(" beats") {
+                    continue;
+                }
+                // So does an audio effect.
+                let audio = ["enhance voice", "reduce noise", "add eq"];
+                if audio.iter().any(|phrase| example.starts_with(phrase)) {
                     continue;
                 }
                 let (project, selection) =
@@ -1194,7 +1527,8 @@ mod tests {
     }
 
     /// A four second video clip from the start of the first video track,
-    /// selected, with a glow and a dissolve at its start.
+    /// selected, with a glow and a dissolve at its start. Its media has
+    /// sound, which fades out over its last quarter second.
     fn project_with_shot() -> (Project, Selection, editor_core::ClipId) {
         let mut editor = editor_core::Editor::default();
         let mut shot = editor_core::Asset::new(
@@ -1203,6 +1537,7 @@ mod tests {
             Time::from_seconds(6.0),
         );
         shot.name = "shot.mp4".to_owned();
+        shot.has_audio = true;
         let track = (editor.project().tracks.iter())
             .find(|track| track.kind == TrackKind::Video)
             .unwrap()
@@ -1211,6 +1546,7 @@ mod tests {
         clip.duration = Time::from_seconds(4.0);
         clip.effects.push(Effect::new(EffectKind::Glow));
         clip.transition_in = Some(transitions::default_of(&[], transitions::DEFAULT_KIND));
+        clip.fade_out = Time::from_seconds(0.25);
         let id = clip.id;
         for command in [
             Command::AddAssets { assets: vec![shot] },
@@ -1236,6 +1572,10 @@ mod tests {
                 Action::Edit(command) => command,
                 Action::AddTransitions { places, kind } => {
                     transitions::add_command(editor.project(), &[], &places, kind)?
+                }
+                Action::DetachAudio(clip) => rules::detach_audio(editor.project(), clip)?,
+                Action::AddBackgroundMusic(asset) => {
+                    rules::background_music(editor.project(), asset)?
                 }
                 other => panic!("{line} asked for {other:?}"),
             };
@@ -1269,8 +1609,22 @@ mod tests {
             unknown.contains("glow") && unknown.contains("chroma key"),
             "{unknown}"
         );
-        // A table, a plate and a stabilization are not added by name.
+        // A table, a plate and a stabilization are not added by name, nor
+        // is a pitch, which is kept or shifted by its own phrases.
         assert!(run("add effect lut", &project, &selection).is_err());
+        assert!(unknown.contains("compressor") && !unknown.contains("pitch"));
+        let refused = run("add effect pitch", &project, &selection).unwrap_err();
+        assert!(refused.starts_with("No effect is called"), "{refused}");
+        // An audio kind is named, and a picture clip is told why it takes
+        // none.
+        for phrase in [
+            "add effect compressor",
+            "add effect high_pass",
+            "add limiter",
+        ] {
+            let refused = run(phrase, &project, &selection).unwrap_err();
+            assert_eq!(refused, audio::DETACH_FIRST, "{phrase}");
+        }
         let nothing = run("add effect glow", &project, &Selection::default()).unwrap_err();
         assert!(nothing.starts_with("Select a clip"), "{nothing}");
         // A title takes no effect, and the line says so.
@@ -1504,6 +1858,537 @@ mod tests {
         let (titled, title) = project_with_title();
         assert!(run("reverse", &titled, &title).is_err());
         assert!(run("freeze frame", &titled, &title).is_err());
+    }
+
+    #[test]
+    fn a_sound_is_laid_under_the_project_by_name() {
+        let (project, selection, _) = project_with_shot();
+        let mut editor = editor_core::Editor::new(project).unwrap();
+        let mut song = editor_core::Asset::new(
+            "/media/song.wav".into(),
+            editor_core::MediaKind::Audio,
+            Time::from_seconds(3.0),
+        );
+        song.name = "Song.wav".to_owned();
+        let id = song.id;
+        editor
+            .dispatch(Command::AddAssets { assets: vec![song] })
+            .unwrap();
+        let project = editor.project().clone();
+        // The example the panel lists, in any case.
+        let asked = run("add background music song.wav", &project, &selection).unwrap();
+        assert!(matches!(asked.as_slice(), [Action::AddBackgroundMusic(asset)] if *asset == id));
+        let after = applied("Add Background Music SONG.WAV", &project, &selection).unwrap();
+        let bed = after.tracks.last().unwrap();
+        assert_eq!((bed.name.as_str(), bed.kind), ("Music", TrackKind::Audio));
+        // Four seconds of project under a three second sound.
+        assert_eq!(bed.clips.len(), 2);
+        assert!(bed.clips.iter().all(|clip| clip.gain == 0.5));
+        assert_eq!(bed.clips[1].fade_out, Time::from_seconds(1.0));
+
+        // Without a name it is the sound selected in the library.
+        let chosen = Selection {
+            asset: Some(id),
+            ..Selection::default()
+        };
+        let asked = run("add background music", &project, &chosen).unwrap();
+        assert!(matches!(asked.as_slice(), [Action::AddBackgroundMusic(asset)] if *asset == id));
+        let unnamed = run("add background music", &project, &selection).unwrap_err();
+        assert!(unnamed.starts_with("Say which sound"), "{unnamed}");
+        let unknown = run("add background music nothing.wav", &project, &selection).unwrap_err();
+        assert_eq!(unknown, "There is no media with that name in the library.");
+        // A video is not a sound file, and an empty project has no length.
+        let picture = run("add background music shot.mp4", &project, &selection).unwrap_err();
+        assert_eq!(picture, "Background music is made of a sound file.");
+        let mut empty = editor_core::Editor::default();
+        let song = project.assets[&id].clone();
+        empty
+            .dispatch(Command::AddAssets { assets: vec![song] })
+            .unwrap();
+        let refused = run(
+            "add background music song.wav",
+            empty.project(),
+            &Selection::default(),
+        )
+        .unwrap_err();
+        assert!(
+            refused.starts_with("Put a clip on the timeline first"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn of_media_with_one_name_the_bed_is_of_the_sound() {
+        // The same file name from two folders, and a name that differs in
+        // case alone: whichever the library holds first, the phrase takes the
+        // sound a bed can be made of. Ids are random, so the order is tried
+        // both ways over the runs.
+        for _ in 0..16 {
+            let (project, selection, _) = project_with_shot();
+            let mut editor = editor_core::Editor::new(project).unwrap();
+            let named = |name: &str, kind, length| {
+                let mut asset = editor_core::Asset::new(
+                    format!("/media/{}/{name}", uuid::Uuid::new_v4()).into(),
+                    kind,
+                    Time::from_seconds(length),
+                );
+                asset.name = name.to_owned();
+                asset
+            };
+            let video = named("Theme", editor_core::MediaKind::Video, 8.0);
+            let short = named("theme", editor_core::MediaKind::Audio, 0.05);
+            let song = named("THEME", editor_core::MediaKind::Audio, 3.0);
+            let (short_id, id) = (short.id, song.id);
+            let assets = vec![video, short, song];
+            editor.dispatch(Command::AddAssets { assets }).unwrap();
+            let asked = run("add background music theme", editor.project(), &selection).unwrap();
+            assert!(
+                matches!(asked.as_slice(), [Action::AddBackgroundMusic(asset)] if *asset == id)
+            );
+            // With no sound of that name that a bed can be made of, the
+            // refusal is the sound file's, not the video's.
+            editor
+                .dispatch(Command::RemoveAssets {
+                    asset_ids: vec![id],
+                })
+                .unwrap();
+            let refused = run("add background music theme", editor.project(), &selection);
+            assert!(
+                refused
+                    .as_ref()
+                    .is_err_and(|why| why.starts_with("That sound is shorter")),
+                "{refused:?} {short_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_clips_sound_is_detached_by_name_once() {
+        let (project, selection, id) = project_with_shot();
+        let asked = run("Detach audio", &project, &selection).unwrap();
+        assert!(matches!(asked.as_slice(), [Action::DetachAudio(clip)] if *clip == id));
+        let after = applied("detach audio", &project, &selection).unwrap();
+        let link = after.clip(id).unwrap().1.linked_id;
+        let sound: Vec<&Clip> = (after.tracks.iter())
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| &track.clips)
+            .collect();
+        assert!(link.is_some() && sound.len() == 1 && sound[0].linked_id == link);
+        // The sound is on the linked audio clip now, and the line says so.
+        let again = run("detach audio", &after, &selection).unwrap_err();
+        assert!(again.contains("linked audio clip"), "{again}");
+        // A title has no sound, and nothing selected is no clip.
+        let (titled, title) = project_with_title();
+        let silent = run("detach audio", &titled, &title).unwrap_err();
+        assert_eq!(silent, "That clip has no sound to detach.");
+        let nothing = run("detach audio", &project, &Selection::default()).unwrap_err();
+        assert!(nothing.starts_with("Select a clip"), "{nothing}");
+    }
+
+    #[test]
+    fn stems_are_asked_of_the_one_selected_clip_that_is_heard() {
+        let (project, selection, id) = project_with_shot();
+        for line in ["separate stems", "Separate", "split stems"] {
+            let asked = run(line, &project, &selection).unwrap();
+            assert!(
+                matches!(asked.as_slice(), [Action::SeparateStems(clip)] if *clip == id),
+                "{line}: {asked:?}"
+            );
+        }
+        // Detached, the picture's sound is the audio clip's: asked there.
+        let after = applied("detach audio", &project, &selection).unwrap();
+        let owned = run("separate stems", &after, &selection).unwrap_err();
+        assert_eq!(
+            owned,
+            "Sound is on the linked audio clip: separate it there."
+        );
+        // A title has no sound, and nothing selected is no clip.
+        let (titled, title) = project_with_title();
+        let silent = run("separate stems", &titled, &title).unwrap_err();
+        assert_eq!(silent, "That clip has no sound to separate.");
+        let nothing = run("separate stems", &project, &Selection::default()).unwrap_err();
+        assert!(nothing.starts_with("Select a clip"), "{nothing}");
+    }
+
+    #[test]
+    fn the_sound_of_the_selected_clips_fades_by_name() {
+        let (project, selection, id) = project_with_shot();
+        let fades = |project: &Project| {
+            let clip = project.clip(id).unwrap().1;
+            (clip.fade_in, clip.fade_out)
+        };
+        let quarter = Time::from_seconds(0.25);
+        let after = applied("Fade in 1s", &project, &selection).unwrap();
+        assert_eq!(fades(&after), (Time::from_seconds(1.0), quarter));
+        let after = applied("fade out 2s", &project, &selection).unwrap();
+        assert_eq!(fades(&after), (Time::ZERO, Time::from_seconds(2.0)));
+        // Frames, a length after "for", and half a second when none is given.
+        let after = applied("fade in for 15f", &project, &selection).unwrap();
+        assert_eq!(fades(&after).0, Time::from_seconds(0.5));
+        let after = applied("fade in", &project, &selection).unwrap();
+        assert_eq!(fades(&after).0, fades::QUICK);
+        // Longer than the clip has room for beside its other fade is held
+        // to that room: four seconds less the quarter that fades out.
+        let after = applied("fade in 9s", &project, &selection).unwrap();
+        assert_eq!(fades(&after), (Time::from_seconds(3.75), quarter));
+        // A length of nothing takes that fade away, and both go by name.
+        let after = applied("fade out 0", &project, &selection).unwrap();
+        assert_eq!(fades(&after), (Time::ZERO, Time::ZERO));
+        let none = run("remove fades", &after, &selection).unwrap_err();
+        assert_eq!(none, "There are no fades to remove.");
+        let faded = applied("fade in 1s", &project, &selection).unwrap();
+        let after = applied("remove fades", &faded, &selection).unwrap();
+        assert_eq!(fades(&after), (Time::ZERO, Time::ZERO));
+        assert!(run("fade in soon", &project, &selection).is_err());
+        assert!(run("fade in -1s", &project, &selection).is_err());
+        let nothing = run("fade in 1s", &project, &Selection::default()).unwrap_err();
+        assert!(nothing.starts_with("Select a clip"), "{nothing}");
+
+        // A clip without sound is refused in words: a title here.
+        let (titled, title) = project_with_title();
+        for line in ["fade in 1s", "fade out 2s", "remove fades"] {
+            let silent = run(line, &titled, &title).unwrap_err();
+            assert_eq!(silent, "That clip has no sound to fade.", "{line}");
+        }
+        // So is a picture clip whose sound its linked audio clip owns, in
+        // the words the inspector has in place of its rows.
+        let detached = applied("detach audio", &project, &selection).unwrap();
+        for line in ["fade in 1s", "fade out 2s", "remove fades"] {
+            let owned = run(line, &detached, &selection).unwrap_err();
+            assert_eq!(owned, "Sound is on the linked audio clip.", "{line}");
+        }
+        // The audio clip that owns the sound fades, and carries the fade
+        // the picture had when its sound was detached.
+        let sound = (detached.tracks.iter())
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| &track.clips)
+            .next()
+            .unwrap();
+        assert_eq!(sound.fade_out, quarter);
+        let mut owner = Selection::default();
+        owner.only(sound.id);
+        let after = applied("fade in 1s", &detached, &owner).unwrap();
+        let faded = after.clip(sound.id).unwrap().1;
+        assert_eq!(faded.fade_in, Time::from_seconds(1.0));
+        assert_eq!(fades(&after), fades(&detached), "the picture's are left");
+        // Unlinked, the picture's sound is its own again.
+        let unlinked = applied("unlink", &detached, &selection).unwrap();
+        let after = applied("fade in 1s", &unlinked, &selection).unwrap();
+        assert_eq!(fades(&after).0, Time::from_seconds(1.0));
+    }
+
+    #[test]
+    fn normalize_asks_for_the_selected_clips_that_are_heard_and_refuses_the_rest_in_words() {
+        let (project, selection, id) = project_with_shot();
+        // Nothing is edited by the line: the clips are measured first.
+        for line in ["normalize", "Normalize loudness", "normalise"] {
+            let asked = run(line, &project, &selection).unwrap();
+            assert!(
+                matches!(asked.as_slice(), [Action::Normalize(clips)] if *clips == [id]),
+                "{line}: {asked:?}"
+            );
+        }
+        let (titled, title) = project_with_title();
+        let silent = run("normalize", &titled, &title).unwrap_err();
+        assert_eq!(silent, "That clip has no sound to normalize.");
+        let nothing = run("normalize", &project, &Selection::default()).unwrap_err();
+        assert_eq!(nothing, "Select a clip first.");
+        // A picture whose sound its linked audio clip owns is told so, and
+        // the audio clip is the one measured.
+        let detached = applied("detach audio", &project, &selection).unwrap();
+        let owned = run("normalize", &detached, &selection).unwrap_err();
+        assert_eq!(owned, "Sound is on the linked audio clip.");
+        let sound = (detached.tracks.iter())
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| &track.clips)
+            .next()
+            .unwrap()
+            .id;
+        let both = Selection {
+            clips: vec![id, sound],
+            ..Selection::default()
+        };
+        let asked = run("normalize", &detached, &both).unwrap();
+        assert!(matches!(asked.as_slice(), [Action::Normalize(clips)] if *clips == [sound]));
+        // A muted track's clip is not heard.
+        let track = (detached.tracks.iter())
+            .find(|track| track.kind == TrackKind::Audio)
+            .unwrap()
+            .name
+            .clone();
+        let mut only = Selection::default();
+        only.only(sound);
+        let muted = applied(&format!("mute track {track}"), &detached, &only).unwrap();
+        let unheard = run("normalize", &muted, &only).unwrap_err();
+        assert_eq!(unheard, "That clip is not heard: its track is muted.");
+    }
+
+    #[test]
+    fn duck_asks_for_the_selected_clips_that_are_heard_at_the_depth_given() {
+        let (project, selection, id) = project_with_shot();
+        let depth_of = |line: &str| match run(line, &project, &selection).unwrap().as_slice() {
+            [Action::Duck { clips, depth }] if *clips == [id] => *depth,
+            other => panic!("{line}: {other:?}"),
+        };
+        // Nothing is edited by the line: the others' sound is read first.
+        for line in ["duck", "duck under speech", "Duck Under Speech"] {
+            assert_eq!(depth_of(line), duck::DEPTH, "{line}");
+        }
+        for line in ["duck 18 db", "duck under speech -18dB", "duck 18"] {
+            assert!((depth_of(line) - 0.125_89).abs() < 1e-4, "{line}");
+        }
+        for line in ["duck 0.5 db", "duck 80 db", "duck deeply"] {
+            let refused = run(line, &project, &selection).unwrap_err();
+            assert!(
+                refused.starts_with("Give the depth in dB, from 1 to 60"),
+                "{line}"
+            );
+        }
+        let (titled, title) = project_with_title();
+        let silent = run("duck", &titled, &title).unwrap_err();
+        assert_eq!(silent, "That clip has no sound to duck.");
+        let nothing = run("duck", &project, &Selection::default()).unwrap_err();
+        assert_eq!(nothing, "Select a clip first.");
+        // A picture whose sound its linked audio clip owns is told so, and
+        // the audio clip is the one ducked. The whole selection is asked
+        // for: a clip passed over is no voice either.
+        let detached = applied("detach audio", &project, &selection).unwrap();
+        let owned = run("duck under speech", &detached, &selection).unwrap_err();
+        assert_eq!(owned, "Sound is on the linked audio clip.");
+        let sound = (detached.tracks.iter())
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| &track.clips)
+            .next()
+            .unwrap()
+            .id;
+        let both = Selection {
+            clips: vec![id, sound],
+            ..Selection::default()
+        };
+        let asked = run("duck", &detached, &both).unwrap();
+        assert!(matches!(asked.as_slice(), [Action::Duck { clips, .. }] if *clips == [id, sound]));
+    }
+
+    #[test]
+    fn beats_are_shown_and_marked_for_the_selected_clips_on_audio_tracks() {
+        let (project, selection, id) = project_with_shot();
+        // A picture shows none: its sound goes to an audio track first.
+        for line in ["show beats", "hide beats", "markers from beats"] {
+            assert_eq!(
+                run(line, &project, &selection).unwrap_err(),
+                "Select a clip on an audio track: beats are shown on those.",
+                "{line}"
+            );
+        }
+        assert_eq!(
+            run("markers from beats", &project, &Selection::default()).unwrap_err(),
+            "Select a clip first."
+        );
+        let detached = applied("detach audio", &project, &selection).unwrap();
+        let sound = (detached.tracks.iter())
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| &track.clips)
+            .next()
+            .unwrap()
+            .id;
+        let asset = detached.clip(sound).unwrap().1.asset_id().unwrap();
+        // Of the picture and its sound, the media is shown once.
+        let both = Selection {
+            clips: vec![id, sound],
+            ..Selection::default()
+        };
+        for (line, on) in [("show beats", true), ("Hide Beats", false)] {
+            let asked = run(line, &detached, &both).unwrap();
+            assert!(
+                matches!(asked.as_slice(), [Action::ShowBeats { assets, shown }]
+                    if *assets == [asset] && *shown == on),
+                "{line}: {asked:?}"
+            );
+        }
+        // Markers are asked for of one clip, and made where the beats are.
+        let mut owner = Selection::default();
+        owner.only(sound);
+        for line in ["markers from beats", "mark beats"] {
+            let asked = run(line, &detached, &owner).unwrap();
+            assert!(
+                matches!(asked.as_slice(), [Action::MarkersFromBeats(clip)] if *clip == sound),
+                "{line}"
+            );
+        }
+        assert_eq!(
+            run("markers from beats", &detached, &both).unwrap_err(),
+            "Select one clip; several are selected."
+        );
+    }
+
+    #[test]
+    fn a_sound_on_an_audio_track_is_pitched_in_semitones_and_keeps_its_pitch() {
+        let (project, selection, _) = project_with_shot();
+        // Only a clip on an audio track carries a pitch: the picture says so.
+        for (line, refused) in [
+            ("keep pitch", "Detach audio to keep pitch."),
+            ("pitch up 2", "Detach audio to change its pitch."),
+        ] {
+            assert_eq!(run(line, &project, &selection).unwrap_err(), refused);
+        }
+        let detached = applied("detach audio", &project, &selection).unwrap();
+        let sound = (detached.tracks.iter())
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| &track.clips)
+            .next()
+            .unwrap()
+            .id;
+        let mut owner = Selection::default();
+        owner.only(sound);
+        let read = |project: &Project| editor_core::sound::pitch(project.clip(sound).unwrap().1);
+
+        let kept = applied("keep pitch", &detached, &owner).unwrap();
+        assert_eq!(read(&kept), Some(0.0));
+        assert_eq!(
+            run("keep pitch", &kept, &owner).unwrap_err(),
+            "That clip already keeps its pitch."
+        );
+        // The shift is set, not added to, and the `Pitch` that keeps the
+        // pitch is the one that is changed.
+        let up = applied("pitch up 2", &kept, &owner).unwrap();
+        assert_eq!(read(&up), Some(2.0));
+        assert_eq!(up.clip(sound).unwrap().1.effects.len(), 1);
+        let down = applied("Pitch down 3 semitones", &up, &owner).unwrap();
+        assert_eq!(read(&down), Some(-3.0));
+        assert_eq!(
+            read(&applied("pitch up 12st", &detached, &owner).unwrap()),
+            Some(12.0)
+        );
+        assert_eq!(
+            read(&applied("pitch down 0", &down, &owner).unwrap()),
+            Some(0.0)
+        );
+        assert_eq!(
+            run("pitch down 3", &down, &owner).unwrap_err(),
+            "That clip is already at that pitch."
+        );
+
+        for (line, refused) in [
+            ("pitch up 13", "A pitch is from -12 to 12 semitones."),
+            ("pitch up -2", "Give semitones, such as “pitch up 2”."),
+            ("pitch down a lot", "Give semitones, such as “pitch up 2”."),
+            ("pitch up", "Say how many semitones, such as “pitch up 2”."),
+        ] {
+            assert_eq!(run(line, &detached, &owner).unwrap_err(), refused, "{line}");
+        }
+        let nothing = run("keep pitch", &detached, &Selection::default()).unwrap_err();
+        assert!(nothing.starts_with("Select a clip"), "{nothing}");
+        // A clip without sound is refused in words.
+        let (titled, title) = project_with_title();
+        assert_eq!(
+            run("pitch up 2", &titled, &title).unwrap_err(),
+            "That clip has no sound."
+        );
+    }
+
+    #[test]
+    fn a_sound_on_an_audio_track_is_given_audio_effects_by_phrase() {
+        use EffectKind as K;
+        let (project, selection, _) = project_with_shot();
+        // A picture with sound is told to detach it first, by every phrase.
+        for line in [
+            "enhance voice",
+            "add eq",
+            "add compressor",
+            "add limiter",
+            "reduce noise 60%",
+        ] {
+            assert_eq!(
+                run(line, &project, &selection).unwrap_err(),
+                audio::DETACH_FIRST,
+                "{line}"
+            );
+        }
+        let detached = applied("detach audio", &project, &selection).unwrap();
+        // Detached, the picture is still selected; it is pointed to its
+        // linked sound, not told to detach it again, and nothing changes.
+        for line in [
+            "enhance voice",
+            "add eq",
+            "add compressor",
+            "reduce noise 60%",
+            "add effect high-pass",
+        ] {
+            assert_eq!(
+                run(line, &detached, &selection).unwrap_err(),
+                audio::ON_LINKED,
+                "{line}"
+            );
+        }
+        let sound = (detached.tracks.iter())
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| &track.clips)
+            .next()
+            .unwrap()
+            .id;
+        let mut owner = Selection::default();
+        owner.only(sound);
+        let kinds = |project: &Project| -> Vec<EffectKind> {
+            (project.clip(sound).unwrap().1.effects.iter())
+                .map(|effect| effect.kind)
+                .collect()
+        };
+
+        let voiced = applied("Enhance voice", &detached, &owner).unwrap();
+        assert_eq!(
+            kinds(&voiced),
+            [K::HighPass, K::Denoise, K::EqBand, K::Compressor]
+        );
+        let eq = applied("add eq", &detached, &owner).unwrap();
+        let bands: Vec<Option<f32>> = (eq.clip(sound).unwrap().1.effects.iter())
+            .map(|effect| effect.param(ParamKey::Frequency))
+            .collect();
+        assert_eq!(bands, [Some(120.0), Some(1_000.0), Some(8_000.0)]);
+        for (line, kind) in [
+            ("add compressor", K::Compressor),
+            ("add limiter", K::Limiter),
+        ] {
+            assert_eq!(kinds(&applied(line, &detached, &owner).unwrap()), [kind]);
+        }
+        // By the effect's own name too, and taken away by it.
+        let high = applied("add effect high-pass", &detached, &owner).unwrap();
+        assert_eq!(kinds(&high), [K::HighPass]);
+        let none = applied("remove effect high pass", &high, &owner).unwrap();
+        assert!(kinds(&none).is_empty());
+
+        // Noise reduction is set where it is and added where it is not.
+        let amount = |project: &Project| {
+            (project.clip(sound).unwrap().1.effects.iter())
+                .find(|effect| effect.kind == K::Denoise)
+                .and_then(|effect| effect.param(ParamKey::Amount))
+        };
+        let reduced = applied("reduce noise 60%", &detached, &owner).unwrap();
+        assert_eq!(amount(&reduced), Some(0.6));
+        assert_eq!(
+            run("reduce noise 60%", &reduced, &owner).unwrap_err(),
+            "That clip already reduces noise by 60%."
+        );
+        let reduced = applied("reduce noise by 25%", &voiced, &owner).unwrap();
+        assert_eq!(amount(&reduced), Some(0.25));
+        assert_eq!(kinds(&reduced).len(), 4, "the one there is set");
+        let plain = applied("reduce noise", &detached, &owner).unwrap();
+        assert_eq!(amount(&plain), Some(0.4));
+        for (line, refused) in [
+            ("reduce noise 140%", "Noise reduction is from 0% to 100%."),
+            (
+                "reduce noise a lot",
+                "Give a percentage, such as “reduce noise 60%”.",
+            ),
+        ] {
+            assert_eq!(run(line, &detached, &owner).unwrap_err(), refused, "{line}");
+        }
+        let nothing = run("enhance voice", &detached, &Selection::default()).unwrap_err();
+        assert_eq!(nothing, "Select a clip first.");
+        let (titled, title) = project_with_title();
+        assert_eq!(
+            run("add eq", &titled, &title).unwrap_err(),
+            "Only a sound on an audio track takes an audio effect."
+        );
     }
 
     #[test]
@@ -1742,6 +2627,63 @@ mod tests {
                 Action::CaptionsFromSpeech
             ]
         ));
+    }
+
+    #[test]
+    fn a_track_is_soloed_and_given_a_volume_by_name() {
+        let project = Project::default();
+        let none = Selection::default();
+        let track = |project: &Project, name: &str| {
+            let track = project.tracks.iter().find(|track| track.name == name);
+            track.map(|track| (track.solo, track.gain)).unwrap()
+        };
+
+        // Each phrase is one step, which `applied` counts; names are found
+        // whatever their case.
+        let soloed = applied("Solo track audio 1", &project, &none).unwrap();
+        assert_eq!(track(&soloed, "Audio 1"), (true, 1.0));
+        assert_eq!(track(&soloed, "Video 1"), (false, 1.0));
+        let after = applied("unsolo track Audio 1", &soloed, &none).unwrap();
+        assert_eq!(after, project);
+        // A video track has sound to solo; a text track has none.
+        let after = applied("solo track Video 1", &project, &none).unwrap();
+        assert!(track(&after, "Video 1").0);
+        for line in ["solo track Text 1", "unsolo track Text 1"] {
+            let refused = run(line, &project, &none).unwrap_err();
+            assert_eq!(refused, "A text track has no sound to solo.", "{line}");
+        }
+
+        let after = applied("set track volume Audio 1 50%", &project, &none).unwrap();
+        assert_eq!(track(&after, "Audio 1"), (false, 0.5));
+        assert_eq!(track(&after, "Video 1"), (false, 1.0));
+        // The sign is not needed, and the bounds are the project's own.
+        let after = applied("set track volume video 1 800", &project, &none).unwrap();
+        assert_eq!(track(&after, "Video 1").1, 8.0);
+        let after = applied("set track volume Audio 1 0%", &project, &none).unwrap();
+        assert_eq!(track(&after, "Audio 1").1, 0.0);
+        for line in [
+            "set track volume Audio 1 801%",
+            "set track volume Audio 1 -1%",
+        ] {
+            let refused = run(line, &project, &none).unwrap_err();
+            assert_eq!(refused, "A track's volume is from 0% to 800%.", "{line}");
+        }
+        // Without a number, without a name and of a track that is not there.
+        for line in [
+            "set track volume Audio 1",
+            "set track volume 50%",
+            "set track volume Audio 1 loud",
+            "set track volume Audio 1 inf",
+        ] {
+            let refused = run(line, &project, &none).unwrap_err();
+            assert!(refused.starts_with("Name the track"), "{line}: {refused}");
+        }
+        let missing = run("set track volume Nope 50%", &project, &none).unwrap_err();
+        assert!(missing.contains("Audio 1"), "{missing}");
+        let silent = run("set track volume Text 1 50%", &project, &none).unwrap_err();
+        assert_eq!(silent, "A text track has no sound to set the volume of.");
+        // The clip's own volume is still its own phrase.
+        assert!(run("set volume 80%", &project, &none).is_err());
     }
 
     #[test]

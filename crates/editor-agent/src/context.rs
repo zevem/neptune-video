@@ -362,6 +362,10 @@ struct FocusedTrack<'a> {
     locked: bool,
     hidden: bool,
     muted: bool,
+    #[serde(skip_serializing_if = "unity")]
+    gain: f32,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    solo: bool,
     clip_count: usize,
     omitted_clips: usize,
     clips: Vec<LeanClip<'a>>,
@@ -423,6 +427,10 @@ struct LeanTrack<'a> {
     locked: bool,
     hidden: bool,
     muted: bool,
+    #[serde(skip_serializing_if = "unity")]
+    gain: f32,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    solo: bool,
     clips: Vec<LeanClip<'a>>,
 }
 
@@ -436,6 +444,8 @@ impl<'a> From<&'a Track> for LeanTrack<'a> {
             locked,
             hidden,
             muted,
+            gain,
+            solo,
             clips,
         } = track;
         Self {
@@ -446,6 +456,8 @@ impl<'a> From<&'a Track> for LeanTrack<'a> {
             locked: *locked,
             hidden: *hidden,
             muted: *muted,
+            gain: *gain,
+            solo: *solo,
             clips: clips.iter().map(LeanClip).collect(),
         }
     }
@@ -480,6 +492,8 @@ impl Serialize for LeanClip<'_> {
             transition_in,
             transition_out,
             follow,
+            fade_in,
+            fade_out,
         } = self.0;
         SummarizedClip {
             id: *id,
@@ -501,6 +515,8 @@ impl Serialize for LeanClip<'_> {
             transition_in,
             transition_out,
             follow,
+            fade_in: *fade_in,
+            fade_out: *fade_out,
         }
         .serialize(serializer)
     }
@@ -516,6 +532,11 @@ fn empty<T>(values: &&Vec<T>) -> bool {
 
 fn none<T>(value: &&Option<T>) -> bool {
     value.is_none()
+}
+
+/// A track at its default volume sends no `gain`, as the document does.
+fn unity(gain: &f32) -> bool {
+    *gain == 1.0
 }
 
 /// Mirrors `Clip`'s wire shape around summarized animation.
@@ -547,6 +568,10 @@ struct SummarizedClip<'a> {
     transition_out: &'a Option<Transition>,
     #[serde(skip_serializing_if = "none")]
     follow: &'a Option<Follow>,
+    #[serde(skip_serializing_if = "Time::is_zero")]
+    fade_in: Time,
+    #[serde(skip_serializing_if = "Time::is_zero")]
+    fade_out: Time,
 }
 
 /// A timed title's words are a count and a span: a proposal edits text,
@@ -833,6 +858,8 @@ fn focused<'a>(
             locked: track.locked,
             hidden: track.hidden,
             muted: track.muted,
+            gain: track.gain,
+            solo: track.solo,
             clip_count: track.clips.len(),
             omitted_clips: track.clips.len() - selected_clips.len(),
             clips: selected_clips,
@@ -1378,6 +1405,100 @@ mod tests {
         let assets = value["project"]["assets"].as_object().unwrap();
         assert!(assets.contains_key(&source.to_string()));
         assert!(!assets.contains_key(&tracked_asset.to_string()));
+    }
+
+    #[test]
+    fn fades_track_volume_and_solo_are_sent_when_set_and_absent_at_their_defaults() {
+        let mut project = Project::new("Sound");
+        let mut asset = Asset::new(
+            PathBuf::from("/media/a.mp4"),
+            MediaKind::Video,
+            Time(30_000_000),
+        );
+        asset.has_audio = true;
+        let mut faded = Clip::from_asset(&asset, Time::ZERO);
+        faded.duration = Time(2_000_000);
+        faded.fade_in = Time(250_000);
+        faded.fade_out = Time(500_000);
+        // A long track takes the summarized shape, which names every field itself.
+        let mut summarized = faded.clone();
+        summarized.id = Uuid::new_v4();
+        summarized.start = Time(2_000_000);
+        summarized.animation = vec![opacity_track(MAX_INLINE_KEYS + 1)];
+        let mut plain = summarized.clone();
+        plain.id = Uuid::new_v4();
+        plain.start = Time(4_000_000);
+        plain.fade_in = Time::ZERO;
+        plain.fade_out = Time::ZERO;
+        Arc::make_mut(&mut project.assets).insert(asset.id, asset);
+        let track = Arc::make_mut(&mut project.tracks[0]);
+        track.gain = 0.5;
+        track.solo = true;
+        track.clips.extend([faded, summarized, plain]);
+        let context = captured(project, vec![], Time::ZERO);
+        let value: Value =
+            serde_json::from_str(&prompt(&context, "Fade the music out").unwrap()).unwrap();
+        assert!(value.get("context_scope").is_none());
+
+        let tracks = value["project"]["tracks"].as_array().unwrap();
+        assert_eq!(tracks[0]["gain"], 0.5);
+        assert_eq!(tracks[0]["solo"], true);
+        for track in &tracks[1..] {
+            assert!(track.get("gain").is_none() && track.get("solo").is_none());
+        }
+        let shown = tracks[0]["clips"].as_array().unwrap();
+        assert!(shown[0].get("animation").is_none());
+        assert!(shown[1]["animation"][0]["keys"].is_null());
+        for clip in &shown[..2] {
+            assert_eq!(clip["fade_in"], 250_000);
+            assert_eq!(clip["fade_out"], 500_000);
+        }
+        assert!(shown[2]["animation"][0]["keys"].is_null());
+        assert!(shown[2].get("fade_in").is_none() && shown[2].get("fade_out").is_none());
+    }
+
+    #[test]
+    fn focused_view_sends_fades_track_volume_and_solo_and_omits_their_defaults() {
+        let mut project = large_project();
+        let track = Arc::make_mut(&mut project.tracks[0]);
+        track.gain = 2.0;
+        track.solo = true;
+        let faded = &mut track.clips[0];
+        faded.fade_in = Time(20_000);
+        faded.fade_out = Time(30_000);
+        faded.animation = vec![opacity_track(MAX_INLINE_KEYS + 1)];
+        let (faded, exact) = (faded.id, &mut track.clips[1]);
+        exact.fade_out = Time(40_000);
+        let exact = exact.id;
+        let context = captured(project, vec![faded, exact], Time::ZERO);
+        let value: Value =
+            serde_json::from_str(&prompt(&context, "Shorten the fades").unwrap()).unwrap();
+        assert_eq!(value["context_scope"]["mode"], "focused");
+
+        let tracks = value["project"]["tracks"].as_array().unwrap();
+        assert!(tracks.len() > 1);
+        assert_eq!(tracks[0]["gain"], 2.0);
+        assert_eq!(tracks[0]["solo"], true);
+        for track in &tracks[1..] {
+            assert!(track.get("gain").is_none() && track.get("solo").is_none());
+        }
+        let shown = clips(&value);
+        let clip = |id: ClipId| {
+            *shown
+                .iter()
+                .find(|clip| clip["id"] == id.to_string())
+                .unwrap()
+        };
+        assert!(clip(faded)["animation"][0]["keys"].is_null());
+        assert_eq!(clip(faded)["fade_in"], 20_000);
+        assert_eq!(clip(faded)["fade_out"], 30_000);
+        assert!(clip(exact).get("fade_in").is_none());
+        assert_eq!(clip(exact)["fade_out"], 40_000);
+        let unfaded = shown
+            .iter()
+            .find(|clip| clip["id"] != faded.to_string() && clip["id"] != exact.to_string())
+            .unwrap();
+        assert!(unfaded.get("fade_in").is_none() && unfaded.get("fade_out").is_none());
     }
 
     #[test]

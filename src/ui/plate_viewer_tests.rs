@@ -211,6 +211,7 @@ impl Stage {
                     speed: 1.0,
                     looping: false,
                     media: Some(service),
+                    record: Default::default(),
                 },
                 &mut actions,
             );

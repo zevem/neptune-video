@@ -255,7 +255,7 @@ fn attempt(
     if let Some((key, value)) = environment {
         command.env(key, value);
     }
-    let mut process =
+    let process =
         Process::spawn("ffmpeg", &mut command, &processes).map_err(|error| error.to_string())?;
     let status = process
         .wait_until(Instant::now() + PROBE_DEADLINE)

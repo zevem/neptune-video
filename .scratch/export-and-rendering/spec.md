@@ -11,7 +11,7 @@ the chosen size, with synchronized sound. Preview gains a quality setting
 and proxies for large media; export never reads a proxy.
 
 This document is the binding design. Code comments, tests and the later ADR
-0008 follow it; a change to a decision is a dated comment below.
+0009 follow it; a change to a decision is a dated comment below.
 
 ## Decisions
 
@@ -486,7 +486,7 @@ were not run here).
 | 08 | Agent render operations | 01 |
 | 09 | Window integration | 06, 07, 08, 10 |
 | 10 | Preview quality and proxy switching | 04 |
-| 11 | ADR 0008, glossary, architecture, performance, usage and installation | 01–08, 10 |
+| 11 | ADR 0009, glossary, architecture, performance, usage and installation | 01–08, 10 |
 | 12 | Native verification and interface captures on Linux | 09 |
 | 13 | Other platforms and hardware encoders | 12 |
 | 14 | Export throughput, memory and proxy benefit | 12 |

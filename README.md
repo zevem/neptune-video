@@ -97,7 +97,7 @@ is a source build; signed installers and codec bundling remain release work.
 ## Documentation
 
 - [Core-feature spec](.scratch/core-editor/spec.md) and [backend contract](.scratch/core-editor/backend-contract.md)
-- [Export and rendering spec](.scratch/export-and-rendering/spec.md) and [ADR 0008](docs/adr/0008-export-renders-originals-through-the-preview-compositor.md)
+- [Export and rendering spec](.scratch/export-and-rendering/spec.md) and [ADR 0009](docs/adr/0009-export-renders-originals-through-the-preview-compositor.md)
 - [Installation](docs/installation.md) and [user guide](docs/usage.md)
 - [Agent protocol](docs/agent-protocol.md)
 - [Native AI editing](docs/native-ai.md)

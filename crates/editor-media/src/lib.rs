@@ -1,5 +1,6 @@
-//! Background media import, bounded preview decoding, motion analysis,
-//! native audio output and export encoding.
+//! Background media import, bounded preview decoding, motion and sound
+//! analysis, stem separation by an external tool, native audio output,
+//! voiceover capture and export encoding.
 //! No public operation performs file, process or device I/O on the caller
 //! thread, except the `export` APIs: they are blocking calls made on a worker
 //! thread the desktop owns, and each owns the processes it starts.
@@ -12,7 +13,9 @@ mod import;
 mod lut;
 mod process;
 pub mod proxy;
+mod record;
 mod service;
+mod sound;
 pub mod speech;
 pub mod text;
 
@@ -22,13 +25,23 @@ pub use analysis::{
     STEADY_CACHE_ENTRIES, STEADY_LOADS, STEADY_SECONDS, STEADY_SUGGEST_FRAMES, Sampling,
     SourceIdentity, Steadied, SteadyCache, SteadyEvent, SteadyJob, TrackJob, Tracked,
 };
-pub use audio::AudioService;
+pub use audio::{AudioService, missing_audio_filters};
 pub use lut::{Cube, CubeError, MAX_CUBE_BYTES, MAX_CUBE_SIZE, MIN_CUBE_SIZE};
 pub use proxy::{
     PROXY_ABOVE_BITRATE, PROXY_ABOVE_SIDE, PROXY_BUDGET, PROXY_PROFILE, PROXY_QUEUE, PROXY_SIDE,
     Proxy, ProxyEvent, ProxyService, ProxyStatus, proxy_size, wants_proxy,
 };
+pub use record::{
+    MAX_TAKE_SECONDS, RECORD_RING_SECONDS, RecordEvent, RecordService, Take, WAV_HEADER_BYTES,
+};
 pub use service::MediaService;
+pub use sound::{
+    BeatGrid, Cancel, ExtractJob, Extracting, KeptPeaks, LOUDNESS_FLOOR, Loudness, LoudnessJob,
+    MAX_BEATS, MAX_PEAK_BUCKETS, PEAK_ALGORITHM, PEAK_CACHE_BYTES, PEAK_CACHE_ENTRIES, PEAK_LOADS,
+    PEAKS_PER_SECOND, Peak, PeakCache, PeakJob, Peaks, SEPARATOR, SEPARATOR_VARIABLE, SOUND_QUEUE,
+    STEMS, SeparateJob, Separator, SoundEvent, SoundService, beats, look_for_separator, part_path,
+    separator_absent, separator_program, stem_separator,
+};
 
 use editor_core::{Asset, AssetId, MediaFolder, Time};
 use std::{path::PathBuf, sync::Arc};
@@ -151,6 +164,9 @@ pub enum MediaError {
     },
     #[error("{0}")]
     Decode(String),
+    /// No input device to record from.
+    #[error("No microphone")]
+    NoMicrophone,
 }
 
 pub(crate) type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -194,6 +210,18 @@ pub(crate) fn fitted_dimensions(
         (f64::from(source[0]) * ratio).round().max(1.0) as u32,
         (f64::from(source[1]) * ratio).round().max(1.0) as u32,
     ])
+}
+
+/// Held for its whole run by each test that paces or times itself by the
+/// wall clock and by each test that keeps FFmpeg busy, so that no timing is
+/// taken beside another test's encodes. A test that failed holding it has
+/// already said why; the next one still runs.
+#[cfg(test)]
+pub(crate) fn heavy_test() -> std::sync::MutexGuard<'static, ()> {
+    static HEAVY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    HEAVY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[cfg(test)]

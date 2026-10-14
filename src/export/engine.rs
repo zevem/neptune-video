@@ -182,12 +182,13 @@ impl Engine {
         scratch.make_temp().map_err(|error| {
             Failure::Other(format!("Cannot make the export's working folder: {error}"))
         })?;
+        let mut sound_notes = Vec::new();
         let sound = match &plan.audio {
             Some(audio) => {
                 let path = scratch.temp.join("sound.f32");
                 let render = AudioRender::new();
                 handle.on_cancel(render.canceller());
-                render
+                sound_notes = render
                     .render(
                         Arc::clone(&ticket.project),
                         audio.samples,
@@ -226,7 +227,7 @@ impl Engine {
 
         // Encode, falling back once from hardware to software under Auto.
         let mut current = plan.clone();
-        let mut notes = Vec::new();
+        let mut notes = sound_notes;
         // The hardware encoder's failure, once the software one runs.
         let mut first: Option<(String, String)> = None;
         loop {

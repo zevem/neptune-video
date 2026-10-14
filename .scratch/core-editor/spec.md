@@ -81,7 +81,7 @@ the implementation resolution does not close the broader production gates.
 
 2026-10-14: Export is now specified and implemented in
 [export and rendering](../export-and-rendering/spec.md), with
-[ADR 0008](../../docs/adr/0008-export-renders-originals-through-the-preview-compositor.md).
+[ADR 0009](../../docs/adr/0009-export-renders-originals-through-the-preview-compositor.md).
 The "Export … outside this first core-feature request" sentence above stays as
 the record of this phase. Codec deployment and licensing remain with
 [ticket 03](issues/03-codec-and-distribution.md).

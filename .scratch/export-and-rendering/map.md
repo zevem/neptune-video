@@ -4,7 +4,7 @@
 
 Phase 7 on the Linux host (i9-13900HX, RTX 4060 Laptop, Ubuntu 26.04.1,
 FFmpeg 8.0.1). The [spec](spec.md) is the binding design;
-[ADR 0008](../../docs/adr/0008-export-renders-originals-through-the-preview-compositor.md)
+[ADR 0009](../../docs/adr/0009-export-renders-originals-through-the-preview-compositor.md)
 records the decision. Implementation fanned out by module; the window
 integration landed last.
 

@@ -53,9 +53,17 @@ pub enum EffectKind {
     ChromaKey,
     DifferenceMatte,
     Stabilize,
+    // Audio kinds: legal only on clips on audio tracks.
+    HighPass,
+    EqBand,
+    Compressor,
+    Limiter,
+    Denoise,
+    Pitch,
+    CenterCut,
 }
 impl EffectKind {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 27] = [
         Self::Glow,
         Self::Shake,
         Self::Distort,
@@ -76,6 +84,13 @@ impl EffectKind {
         Self::ChromaKey,
         Self::DifferenceMatte,
         Self::Stabilize,
+        Self::HighPass,
+        Self::EqBand,
+        Self::Compressor,
+        Self::Limiter,
+        Self::Denoise,
+        Self::Pitch,
+        Self::CenterCut,
     ];
     pub fn is_curve(self) -> bool {
         matches!(
@@ -85,6 +100,19 @@ impl EffectKind {
     }
     pub fn needs_asset(self) -> bool {
         matches!(self, Self::Lut | Self::DifferenceMatte)
+    }
+    /// A kind that shapes a clip's sound and draws nothing.
+    pub fn is_audio(self) -> bool {
+        matches!(
+            self,
+            Self::HighPass
+                | Self::EqBand
+                | Self::Compressor
+                | Self::Limiter
+                | Self::Denoise
+                | Self::Pitch
+                | Self::CenterCut
+        )
     }
 }
 
@@ -193,6 +221,30 @@ const STABILIZE: &[ParamSpec] = &[
     p(ParamKey::Smoothness, 0.0, 1.0, 0.5),
     p(ParamKey::CropZoom, 1.0, 2.0, 1.1),
 ];
+// Audio kinds: frequency is Hz, gain and threshold are dB.
+const HIGH_PASS: &[ParamSpec] = &[p(ParamKey::Frequency, 20.0, 2_000.0, 80.0)];
+// Width is octaves.
+const EQ_BAND: &[ParamSpec] = &[
+    p(ParamKey::Frequency, 20.0, 20_000.0, 1_000.0),
+    p(ParamKey::Gain, -24.0, 24.0, 0.0),
+    p(ParamKey::Width, 0.1, 4.0, 1.0),
+];
+// Amount is the ratio and gain the make-up.
+const COMPRESSOR: &[ParamSpec] = &[
+    p(ParamKey::Threshold, -60.0, 0.0, -18.0),
+    p(ParamKey::Amount, 1.0, 20.0, 3.0),
+    p(ParamKey::Gain, 0.0, 24.0, 0.0),
+];
+// Threshold is the ceiling.
+const LIMITER: &[ParamSpec] = &[p(ParamKey::Threshold, -24.0, 0.0, -1.0)];
+// Threshold is the noise floor: the level under which sound counts as noise.
+const DENOISE: &[ParamSpec] = &[
+    p(ParamKey::Amount, 0.0, 1.0, 0.4),
+    p(ParamKey::Threshold, -80.0, -20.0, -40.0),
+];
+// Amount is semitones.
+const PITCH: &[ParamSpec] = &[p(ParamKey::Amount, -12.0, 12.0, 0.0)];
+const CENTER_CUT: &[ParamSpec] = &[p(ParamKey::Amount, 0.0, 1.0, 1.0)];
 // Mask centre and size are fractions of the layer box, origin top left.
 const MASK: &[ParamSpec] = &[
     p(ParamKey::CenterX, -1.0, 2.0, 0.5),
@@ -246,6 +298,13 @@ pub fn spec(kind: EffectKind) -> &'static [ParamSpec] {
         EffectKind::ChromaKey => CHROMA_KEY,
         EffectKind::DifferenceMatte => DIFFERENCE_MATTE,
         EffectKind::Stabilize => STABILIZE,
+        EffectKind::HighPass => HIGH_PASS,
+        EffectKind::EqBand => EQ_BAND,
+        EffectKind::Compressor => COMPRESSOR,
+        EffectKind::Limiter => LIMITER,
+        EffectKind::Denoise => DENOISE,
+        EffectKind::Pitch => PITCH,
+        EffectKind::CenterCut => CENTER_CUT,
     }
 }
 
@@ -372,8 +431,14 @@ impl Effect {
         } else {
             self.points.is_empty()
         };
+        // A filter is in the decoder's chain or it is not: there is no part mix.
+        let mix = if self.kind.is_audio() {
+            self.mix == 1.0
+        } else {
+            unit(&self.mix)
+        };
         points
-            && unit(&self.mix)
+            && mix
             && params_valid(&self.params, spec(self.kind))
             && self.asset_id.is_some() == self.kind.needs_asset()
     }

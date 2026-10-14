@@ -173,6 +173,8 @@ pub fn relabel(project: &Project, track_id: TrackId, language: &str) -> Option<C
             hidden: None,
             muted: None,
             name: Some(free_track_name(project, language, Some(track_id))),
+            gain: None,
+            solo: None,
         });
     }
     Some(Command::Batch {
@@ -904,6 +906,8 @@ pub fn show(
             hidden: Some(!hidden),
             muted: None,
             name: None,
+            gain: None,
+            solo: None,
         }));
     }
     top = first.bottom() + 6.0;

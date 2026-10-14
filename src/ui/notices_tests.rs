@@ -62,7 +62,14 @@ fn painted(
             if let Some(jobs) = jobs {
                 render_queue::show(ui.ctx(), &palette, jobs, &[]);
             }
-            super::notices(ui.ctx(), &palette, notices, viewer, jobs.is_some());
+            super::notices(
+                ui.ctx(),
+                &palette,
+                notices,
+                viewer,
+                viewer.top() + 10.0,
+                jobs.is_some(),
+            );
         });
         texts.clear();
         for clipped in &output.shapes {

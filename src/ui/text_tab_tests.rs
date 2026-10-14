@@ -410,6 +410,8 @@ fn a_look_with_nothing_to_go_to_says_why() {
             hidden: None,
             muted: None,
             name: None,
+            gain: None,
+            solo: None,
         })
         .unwrap();
     assert!(matches!(
@@ -542,6 +544,7 @@ impl Bench {
                 &mut self.timeline,
                 &mut self.selection,
                 &mut self.textures,
+                &mut crate::peaks::HeldPeaks::default(),
                 &TimelineInput {
                     p: &self.palette,
                     project: &project,
@@ -550,6 +553,7 @@ impl Bench {
                     media: None,
                     can_paste: false,
                     freeze_hold: seconds(2.0),
+                    separator: crate::stems::Tool::Missing,
                 },
                 &mut actions,
             );

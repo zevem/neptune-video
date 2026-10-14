@@ -320,4 +320,4 @@ into an exported picture, written beside it as SRT or VTT, or carried inside
 MP4, MOV and WebM files; titles are drawn by the export through the
 compositor at the output scale. The "no export path exists" statements above
 are superseded by
-[ADR 0008](../../docs/adr/0008-export-renders-originals-through-the-preview-compositor.md).
+[ADR 0009](../../docs/adr/0009-export-renders-originals-through-the-preview-compositor.md).

@@ -98,6 +98,28 @@ Codecs are therefore a runtime dependency, rather than a pure-Rust codec stack
 or a bundled installer guarantee. Supported formats depend on the installed
 FFmpeg build. Deployment, codec licensing and notices need a release policy.
 
+Sound editing runs FFmpeg filters as well: `aresample`, `asetrate` and
+`atempo` for speed and pitch; `highpass`, `equalizer`, `acompressor`,
+`alimiter`, `afftdn`, and `aformat` with `pan`, for the audio effects;
+`ebur128` for Normalize loudness; and the `lavfi` source `anullsrc` for the
+probe. No minimum FFmpeg version is set. Once a session, before the first
+sound, Aster runs a control (`anull`) and then each audio effect's own filter
+string at its defaults over 50 ms of silence; a kind whose run fails is left
+out of the sound, said once, and shown as "Not available in this FFmpeg
+build" in the inspector. A project that holds such an effect still opens and
+saves it. The probe proves the defaults only: a build that refuses another
+value stops the preview's sound with FFmpeg's message. Every filter here is
+in Homebrew FFmpeg 8.1.2, the only build the sound features were tested with;
+FFmpeg's `rubberband` filter is not used.
+
+Waveform peaks are kept in Aster's user cache directory (`peaks`, beside the
+`stabilization` cache), or in a `peaks` folder beside the settings file when
+`--settings` is given; the cache is bounded and can be deleted at any time.
+Voiceover uses the system's default input device through CPAL. No packaged
+build exists, so the microphone usage description a packaged macOS app must
+declare has not been set up, and no microphone permission prompt has been
+tried on any platform.
+
 ### Export encoders
 
 Export and proxies encode with the same FFmpeg. Which formats can be exported
@@ -135,6 +157,52 @@ and `libx265` are GPL-licensed. Aster bundles no encoder: these come from the
 FFmpeg you install, under its terms. Codec licensing for a distributed
 release is part of the open
 [codec and distribution ticket](../.scratch/core-editor/issues/03-codec-and-distribution.md).
+
+## Stem separator
+
+"Separate stems" runs an external stem separator the person installs, as
+FFmpeg is: Aster neither bundles nor downloads a separator, its model or its
+runtime. The supported tool is the Demucs command line, version 4
+(`adefossez/demucs`, the maintained fork of the archived
+`facebookresearch/demucs`; 4.1.0 on PyPI, 11 July 2026), which needs Python
+3.10 or later:
+
+```sh
+uv tool install demucs --with numpy     # or: python3 -m pip install -U demucs numpy
+```
+
+Demucs 4.1.0 imports NumPy without installing it: on macOS 26.5.2 with
+Python 3.12, `uvx demucs --help` ended with `ModuleNotFoundError: No module
+named 'numpy'` until NumPy was installed beside it. Aster then says once that
+Separate stems is unavailable, with that last line.
+
+Aster runs `demucs` from `PATH`, or the executable that `ASTER_SEPARATOR`
+names, for instance a script that runs `python3 -m demucs "$@"`. Once a
+session it runs the tool with `--help`, which must end well within a minute
+and name `--two-stems`; otherwise "Separate stems" stays unavailable. A
+separation runs
+
+```text
+demucs --two-stems vocals -n htdemucs -o "<document> media/<media> (stems).part" --filename {stem}.{ext} <media file>
+```
+
+where `<document> media` is the project's media folder beside the saved
+document and `<media>` is the media's name without its extension. It takes
+the `vocals.wav` and `no_vocals.wav` the tool writes, 16-bit stereo at
+44.1 kHz, puts them in the media folder as `<media> (Vocals).wav` and
+`<media> (Instruments).wav` (with ` 2`, ` 3`… when a name is taken; no file
+is replaced), and removes the `.part` folder. Demucs fetches its pretrained
+model itself the first time it runs; that network request is the tool's,
+not Aster's.
+
+The Demucs code is MIT licensed. The licence of its pretrained weights is not
+settled: the author wrote in 2023 that the weights "are provided for research
+purpose" (`facebookresearch/demucs` issue 508). The text of the Hugging Face
+model card that now hosts them names no licence; an unanswered discussion
+there says its metadata is tagged MIT, which was not checked.
+Whether a given use of the weights is allowed is for the person who installs
+the tool to judge; Aster recommends Demucs as a tool to install, not its
+weights for any particular use.
 
 ## Speech recognition
 

@@ -53,13 +53,15 @@ impl AudioRender {
     /// would mix them at `span.rate` with `span.channels` channels. Silence
     /// fills where nothing sounds. `progress` is told 0..=1 as it goes. On
     /// failure or cancellation `out` is removed and every decoder reaped.
+    /// Answers what the mix left out: audio effects this FFmpeg cannot run,
+    /// which playback leaves out too.
     pub fn render(
         &self,
         project: Arc<Project>,
         span: SampleSpan,
         out: &Path,
         progress: &dyn Fn(f32),
-    ) -> Result<(), MediaError> {
+    ) -> Result<Vec<String>, MediaError> {
         let cancelled = || self.cancelled.load(Ordering::Acquire);
         let result = write(project, span, out, &self.processes, &cancelled, progress);
         if result.is_err() {
@@ -81,7 +83,7 @@ pub fn render_audio(
     out: &Path,
     cancel: &AtomicBool,
     progress: &dyn Fn(f32),
-) -> Result<(), MediaError> {
+) -> Result<Vec<String>, MediaError> {
     let render = AudioRender::new();
     let check = || cancel.load(Ordering::Acquire) || render.cancelled.load(Ordering::Acquire);
     let result = write(project, span, out, &render.processes, &check, progress);
@@ -101,7 +103,7 @@ fn write(
     processes: &Processes,
     cancelled: &dyn Fn() -> bool,
     progress: &dyn Fn(f32),
-) -> Result<(), MediaError> {
+) -> Result<Vec<String>, MediaError> {
     if !(1..=8).contains(&span.channels) {
         return Err(MediaError::Invalid(
             "Export sound must have between 1 and 8 channels".into(),
@@ -122,6 +124,7 @@ fn write(
         OfflineMix::with_layout(project, span.start, span.rate, channels, processes.clone());
     let mut written = 0_u64;
     let mut bytes = Vec::new();
+    let mut left_out = Vec::new();
     progress(0.0);
     while written < span.frames {
         if cancelled() {
@@ -144,6 +147,7 @@ fn write(
             .map_err(|error| io("Cannot write the export's sound", error))?;
         written += frames;
         progress((written as f64 / span.frames as f64) as f32);
+        left_out.extend(mix.left_out());
     }
     file.flush()
         .map_err(|error| io("Cannot write the export's sound", error))?;
@@ -152,7 +156,7 @@ fn write(
         return Err(MediaError::Cancelled);
     }
     progress(1.0);
-    Ok(())
+    Ok(left_out)
 }
 
 /// The mixer's voice limit, said of the export rather than the preview.

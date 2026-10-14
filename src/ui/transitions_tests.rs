@@ -269,6 +269,7 @@ impl Bench {
                 &mut self.timeline,
                 &mut self.selection,
                 &mut self.textures,
+                &mut crate::peaks::HeldPeaks::default(),
                 &TimelineInput {
                     p: &self.palette,
                     project: &project,
@@ -277,6 +278,7 @@ impl Bench {
                     media: None,
                     can_paste: false,
                     freeze_hold: seconds(2.0),
+                    separator: crate::stems::Tool::Missing,
                 },
                 &mut actions,
             );
@@ -294,6 +296,7 @@ impl Bench {
                     textures: &self.textures,
                     playhead: self.playhead,
                     transition,
+                    missing: None,
                     families: None,
                     brand: &[],
                 },
@@ -648,6 +651,8 @@ fn a_free_edge_offers_a_transition_and_a_locked_track_offers_none() {
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     });
     bench.move_to(end + vec2(-5.0, 0.0));
     bench.frame(Vec::new());
@@ -815,6 +820,8 @@ fn a_locked_track_s_transition_is_shown_and_not_editable() {
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     });
     bench.frame(Vec::new());
     let steps = bench.steps();
@@ -892,6 +899,152 @@ fn each_tab_lists_its_tiles_from_the_tables_and_the_search_narrows_them() {
     // Each tab keeps its own search: the media are not narrowed by it.
     bench.tab(Tab::Media);
     assert!(bench.library.search.is_empty());
+}
+
+#[test]
+fn the_effects_tab_lists_the_picture_kinds_it_listed_before_then_the_audio_kinds() {
+    use EffectKind as K;
+    // Under their headings, in the order of the table within each.
+    let listed: Vec<(&str, EffectKind)> = (browser::entries(Tab::Effects).into_iter())
+        .map(|(heading, entry)| match entry {
+            browser::Entry::Effect(kind) => (heading, kind),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let before = [
+        ("Stylize", K::Glow),
+        ("Stylize", K::Grain),
+        ("Stylize", K::Shadow),
+        ("Stylize", K::Vignette),
+        ("Stylize", K::Glitch),
+        ("Blur and sharpen", K::MotionBlur),
+        ("Blur and sharpen", K::Sharpen),
+        ("Blur and sharpen", K::Blur),
+        ("Distort", K::Shake),
+        ("Distort", K::Distort),
+        ("Key", K::ChromaKey),
+        ("Colour", K::Grade),
+        ("Colour", K::HslBand),
+        ("Colour", K::CurveMaster),
+        ("Colour", K::CurveRed),
+        ("Colour", K::CurveGreen),
+        ("Colour", K::CurveBlue),
+    ];
+    // The audio kinds come last, under their own heading, and Pitch is
+    // kept or shifted in the Playback card, not given from here.
+    let audio = [
+        K::HighPass,
+        K::EqBand,
+        K::Compressor,
+        K::Limiter,
+        K::Denoise,
+        K::CenterCut,
+    ]
+    .map(|kind| ("Audio", kind));
+    assert_eq!(listed, [before.as_slice(), &audio].concat());
+    assert!(!browser::offered(K::Pitch));
+    for kind in EffectKind::ALL.into_iter().filter(|kind| kind.is_audio()) {
+        assert_eq!(inspector::effect_family(kind).1, "Audio");
+        assert!(!inspector::effect_title(kind).is_empty());
+    }
+    // A search for the heading finds its tiles, by their names.
+    let (mut bench, ..) = Bench::new();
+    bench.tab(Tab::Effects);
+    assert!(bench.has("Glow"));
+    let search = bench.search();
+    bench.click_at(search);
+    bench.typed("audio");
+    for name in [
+        "High-pass",
+        "EQ band",
+        "Compressor",
+        "Limiter",
+        "Noise reduction",
+    ] {
+        assert!(bench.has(name), "{name}");
+    }
+    assert!(!bench.has("Glow") && !bench.has("Pitch"));
+}
+
+#[test]
+fn an_audio_tile_goes_to_a_sound_and_a_picture_is_told_why_not() {
+    let (mut bench, shot, _) = Bench::new();
+    // A video with sound before the two silent ones, and a sound on the
+    // audio track.
+    let mut talk = Asset::new(
+        PathBuf::from("/media/talk.mp4"),
+        MediaKind::Video,
+        seconds(10.0),
+    );
+    talk.name = "talk.mp4".to_owned();
+    talk.has_audio = true;
+    let mut voice = Asset::new(
+        PathBuf::from("/media/voice.wav"),
+        MediaKind::Audio,
+        seconds(10.0),
+    );
+    voice.name = "voice.wav".to_owned();
+    bench.edit(Command::AddAssets {
+        assets: vec![talk.clone(), voice.clone()],
+    });
+    let mut picture = Clip::from_asset(&talk, Time::ZERO);
+    picture.duration = seconds(0.9);
+    let picture_id = picture.id;
+    let track_id = bench.track(TrackKind::Video);
+    bench.edit(Command::AddClip {
+        track_id,
+        clip: picture,
+    });
+    let mut sound = Clip::from_asset(&voice, Time::ZERO);
+    sound.duration = seconds(3.0);
+    let sound_id = sound.id;
+    let track_id = bench.track(TrackKind::Audio);
+    bench.edit(Command::AddClip {
+        track_id,
+        clip: sound,
+    });
+    bench.selection.clear();
+    bench.tab(Tab::Effects);
+    let search = bench.search();
+    bench.click_at(search);
+    bench.typed("audio");
+
+    // Let go over a picture, it changes nothing and says why: one with
+    // sound is told to detach it, one without that it has none to take one.
+    let before = bench.editor.project().clone();
+    let steps = bench.steps();
+    for (at, said) in [
+        (0.45, crate::audio::DETACH_FIRST),
+        (2.5, "Only a sound on an audio track takes an audio effect."),
+    ] {
+        let tile = bench.at("Compressor");
+        let over = bench.spot(at);
+        bench.carry(tile, over);
+        bench.release(over);
+        assert_eq!(bench.steps(), steps);
+        assert_eq!(*bench.editor.project(), before);
+        assert_eq!(bench.said.last().map(String::as_str), Some(said));
+    }
+    assert!(bench.clip(picture_id).effects.is_empty() && bench.clip(shot).effects.is_empty());
+
+    // Given to the selected clips, it goes to the sound among them alone.
+    bench.selection.clips = vec![shot, picture_id, sound_id];
+    bench.double_click("Limiter");
+    assert_eq!(
+        bench.steps(),
+        steps + 1,
+        "{:?} {:?}",
+        bench.refused,
+        bench.said
+    );
+    let kinds: Vec<EffectKind> = (bench.clip(sound_id).effects.iter())
+        .map(|effect| effect.kind)
+        .collect();
+    assert_eq!(kinds, [EffectKind::Limiter]);
+    assert_eq!(*bench.clip(picture_id), *before.clip(picture_id).unwrap().1);
+    assert!(bench.editor.undo());
+    assert_eq!(*bench.editor.project(), before);
+    assert!(bench.refused.is_empty(), "{:?}", bench.refused);
 }
 
 #[test]
@@ -1049,6 +1202,8 @@ fn a_tile_let_go_over_a_locked_track_is_refused_and_changes_nothing() {
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     });
     let before = bench.editor.project().clone();
     let steps = bench.steps();

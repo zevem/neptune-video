@@ -651,4 +651,4 @@ distant keyframes, effects, larger preview frames or other adapters.
 size; plain half-transparent layers blend in linear light there and in gamma
 space in the viewer's mesh path. The "no export path exists" statements above
 are superseded by
-[ADR 0008](../../docs/adr/0008-export-renders-originals-through-the-preview-compositor.md).
+[ADR 0009](../../docs/adr/0009-export-renders-originals-through-the-preview-compositor.md).

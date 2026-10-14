@@ -54,6 +54,7 @@ impl Entry {
     /// What kind of thing it is, as a sentence names it.
     fn noun(self) -> &'static str {
         match self {
+            Self::Effect(kind) if kind.is_audio() => "an audio effect",
             Self::Effect(_) => "an effect",
             Self::Transition(_) => "a transition",
             Self::Look(_) => "a look",
@@ -62,10 +63,12 @@ impl Entry {
 }
 
 /// Whether the library offers an effect kind: one a clip takes as it is
-/// made and the canvas draws. A table or a clean plate is chosen in the
-/// Color section, and nothing draws a stabilization yet.
+/// made and the canvas draws or the sound goes through. A table or a clean
+/// plate is chosen in the Color section, nothing draws a stabilization yet,
+/// and a pitch is kept or shifted from the Playback card. The audio kinds
+/// are listed under their own heading and go to clips on audio tracks only.
 pub fn offered(kind: EffectKind) -> bool {
-    !kind.needs_asset() && kind != EffectKind::Stabilize
+    !kind.needs_asset() && kind != EffectKind::Stabilize && kind != EffectKind::Pitch
 }
 
 /// What a tab lists, each under its heading: the effects by family, in the
@@ -95,7 +98,8 @@ pub fn entries(tab: Tab) -> Vec<(&'static str, Entry)> {
     }
 }
 
-/// Whether a clip takes effects and looks: a picture on a video track.
+/// Whether a clip takes picture effects and looks: a picture on a video
+/// track. A sound on an audio track takes audio effects (`crate::audio`).
 fn takes_effects(project: &Project, clip: ClipId) -> bool {
     project.clip(clip).is_some_and(|(track, clip)| {
         track.kind == TrackKind::Video && matches!(clip.content, ClipContent::Media { .. })
@@ -131,6 +135,14 @@ pub fn apply(
         ))
     };
     match entry {
+        // Heard, not drawn: it goes to the sounds of the clips, and a
+        // picture is told why it takes none.
+        Entry::Effect(kind) if kind.is_audio() => {
+            match crate::audio::give_command(project, clips, crate::audio::Given::Kind(kind)) {
+                Ok(command) => Action::Edit(command),
+                Err(reason) => Action::Notify(reason),
+            }
+        }
         Entry::Effect(kind) => {
             let mut commands: Vec<Command> = (pictures().into_iter())
                 .filter_map(|id| project.clip(id))
@@ -365,6 +377,9 @@ fn tile(
         carry.galley(chip.min + vec2(10.0, 5.0), label, p.fg);
     }
     response.on_hover_text(match entry {
+        Entry::Effect(kind) if kind.is_audio() => {
+            "Double-click to add to the selected clips on audio tracks, or drag onto one"
+        }
         Entry::Effect(_) => "Double-click to add to the selected clips, or drag onto a clip",
         Entry::Look(_) => "Double-click to give the selected clips this look, or drag onto a clip",
         Entry::Transition(_) => {
@@ -733,5 +748,51 @@ fn effect_swatch(painter: &egui::Painter, rect: Rect, kind: EffectKind, p: &Pale
         K::Stabilize => {
             painter.rect_stroke(subject, CornerRadius::same(4), thin, StrokeKind::Inside);
         }
+        K::HighPass | K::EqBand | K::Compressor | K::Limiter | K::Denoise | K::Pitch => {
+            audio_swatch(painter, rect, kind, p);
+        }
+        K::CenterCut => {
+            // Left, centre and right: the centre is what is taken down.
+            for (x, alpha) in [(0.26, 1.0), (0.5, 0.25), (0.74, 1.0)] {
+                painter.circle_filled(at(rect, x, 0.5), unit * 0.18, ink.gamma_multiply(alpha));
+            }
+            painter.circle_stroke(at(rect, 0.5, 0.5), unit * 0.18, Stroke::new(1.0, p.accent));
+        }
+    }
+}
+
+/// What an audio kind does to a sound, as a line on a plot: what passes at
+/// each frequency for a filter, what comes out for what goes in for a level,
+/// a quieter noise under a waveform for noise reduction.
+fn audio_swatch(painter: &egui::Painter, rect: Rect, kind: EffectKind, p: &Palette) {
+    use EffectKind as K;
+    let plot = part(rect, 0.16, 0.2, 0.84, 0.8);
+    let axis = Stroke::new(1.0, theme::mix(p.sunken, p.secondary, 0.4));
+    let line = Stroke::new(1.5, p.accent);
+    painter.line_segment([plot.left_bottom(), plot.right_bottom()], axis);
+    // A curve of 24 steps over the plot, from `y(x)`, both in `0..=1`.
+    let curve = |y: &dyn Fn(f32) -> f32| {
+        let points: Vec<Pos2> = (0..=24)
+            .map(|step| {
+                let x = step as f32 / 24.0;
+                at(plot, x, 1.0 - y(x).clamp(0.0, 1.0))
+            })
+            .collect();
+        painter.add(Shape::line(points, line));
+    };
+    match kind {
+        K::HighPass => curve(&|x| 0.7 * (x / 0.35).min(1.0).powf(0.6)),
+        K::EqBand => curve(&|x| 0.45 + 0.3 * (-((x - 0.55) / 0.12).powi(2)).exp()),
+        K::Compressor => curve(&|x| if x < 0.5 { x } else { 0.5 + (x - 0.5) * 0.3 }),
+        K::Limiter => curve(&|x| x.min(0.7)),
+        K::Denoise => {
+            curve(&|x| 0.55 + 0.3 * (x * std::f32::consts::TAU * 2.0).sin());
+            // What is left of the noise along the floor.
+            for step in 0..9 {
+                let x = 0.06 + step as f32 * 0.11;
+                painter.circle_filled(at(plot, x, 0.92), 0.9, p.secondary.gamma_multiply(0.5));
+            }
+        }
+        _ => {}
     }
 }

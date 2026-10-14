@@ -1213,6 +1213,7 @@ mod tests {
 
     #[test]
     fn paced_gif_playback_keeps_up_when_latest_requests_arrive_at_project_frame_rate() {
+        let _heavy = crate::heavy_test();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("paced.gif");
         let mut encoder =

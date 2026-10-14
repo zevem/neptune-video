@@ -11,11 +11,14 @@
 use super::{InspectorInput, InspectorState, ProjectDraft, Section, card, fact, title};
 use crate::{
     icons::{self, Icon},
+    normalize,
     speed::{self, Curve},
     theme::{self, Palette},
     timefmt,
     ui::{
-        Action, ClipDraft, EASINGS, icon_of_media, icon_of_track, tone_of_media, tone_of_track,
+        Action, ClipDraft, EASINGS,
+        fades::{self, FadeEdge},
+        icon_of_media, icon_of_track, tone_of_media, tone_of_track,
         viewer::fitted_size,
         widgets::{self, KeyRow, KeyState, Kind, row, section},
         with_key,
@@ -23,7 +26,7 @@ use crate::{
 };
 use editor_core::{
     AnimTarget, AnimTrack, Asset, BlendMode, Clip, ClipContent, Command, Ease, MediaKind, ParamKey,
-    Project, Time, Track, TrackKind, Transform, look,
+    Project, Time, Track, TrackKind, Transform, look, sound,
 };
 use eframe::egui::{
     self, CornerRadius, Key, Rect, Response, Sense, SetOpenCommand, Stroke, StrokeKind, Ui,
@@ -61,6 +64,10 @@ pub(super) struct Field {
     /// Shown units a point of drag moves the value by.
     pub speed: f64,
     pub width: f32,
+    /// Dragged by a part of the value rather than by `speed`, so that each
+    /// point of drag is the same step to the ear: an octave takes as long
+    /// at 100 Hz as at 10 kHz.
+    pub log: bool,
 }
 
 const POSITION: Field = Field {
@@ -71,6 +78,7 @@ const POSITION: Field = Field {
     decimals: 0,
     speed: 1.0,
     width: PAIRED_FIELD,
+    log: false,
 };
 const ROTATION: Field = Field {
     min: -3600.0,
@@ -89,6 +97,7 @@ const PERCENT: Field = Field {
     decimals: 0,
     speed: 0.5,
     width: FIELD,
+    log: false,
 };
 
 const BLENDS: [(BlendMode, &str); 9] = [
@@ -104,11 +113,11 @@ const BLENDS: [(BlendMode, &str); 9] = [
 ];
 
 /// The sections a clip is offered: none of them holds a value the project
-/// would refuse for it. A clip on an audio track has sound alone, and no
-/// sections; a title has no look, colour or speed.
+/// would refuse for it. A clip on an audio track has sound alone, in one
+/// section; a title has no look, colour or speed.
 pub(super) fn sections(track: &Track, clip: &Clip) -> &'static [Section] {
     match (track.kind, &clip.content) {
-        (TrackKind::Audio, _) => &[],
+        (TrackKind::Audio, _) => &[Section::Audio],
         (_, ClipContent::Text { .. }) => &[
             Section::Video,
             Section::Text,
@@ -324,6 +333,9 @@ pub(super) struct Pane<'a> {
     /// Half a canvas frame: the playhead within this of a keyframe is on it.
     pub reach: Time,
     pub next: &'a mut ClipDraft,
+    /// The audio kinds the session's FFmpeg does not run; `None` until its
+    /// probe has finished.
+    pub missing: Option<&'a [editor_core::EffectKind]>,
     /// The canvas's values being edited, which are the project's.
     pub canvas: &'a mut ProjectDraft,
     pub state: &'a mut InspectorState,
@@ -384,8 +396,8 @@ pub(super) fn head(
     Some(section)
 }
 
-/// The rows of one of a clip's sections; of a clip that has no sections,
-/// its sound's.
+/// The rows of one of a clip's sections; of a clip that has none, its
+/// sound's.
 #[expect(clippy::too_many_arguments, reason = "one call site in the frame")]
 pub(super) fn rows(
     ui: &mut Ui,
@@ -417,12 +429,13 @@ pub(super) fn rows(
         local: (input.playhead - clip.start).clamp(Time::ZERO, clip.duration),
         reach: Time(rate.frame_time(1).0 / 2),
         next: &mut next,
+        missing: input.missing,
         canvas: project_draft,
         state: &mut *state,
         actions,
     };
     ui.add_enabled_ui(!track.locked, |ui| match section {
-        None => pane.sound(ui),
+        None | Some(Section::Audio) => pane.audio(ui),
         Some(Section::Video) => pane.video(ui),
         Some(Section::Look) => pane.look(ui),
         Some(Section::Speed) => pane.speed(ui),
@@ -433,7 +446,7 @@ pub(super) fn rows(
         Some(Section::Animate) => pane.animate(ui),
     });
 
-    if matches!(section, None | Some(Section::Video)) {
+    if matches!(section, None | Some(Section::Video | Section::Audio)) {
         section_timing(ui, p, clip, rate);
     }
     // What an interaction an Escape gave up still writes is dropped.
@@ -521,11 +534,19 @@ impl<'a> Pane<'a> {
     ) -> Option<f32> {
         let mut shown = self.shown(target, key, stored) * field.scale;
         let range = field.min * field.scale..=field.max * field.scale;
+        // Read again each frame of a drag, so the value grows by a part of
+        // itself: the whole range in the three hundred points a field's
+        // drag takes.
+        let speed = if field.log && field.min > 0.0 {
+            f64::from(shown.max(field.min * field.scale) * (field.max / field.min).ln() / 300.0)
+        } else {
+            field.speed
+        };
         let changed = widgets::named_number(
             ui,
             &mut shown,
             range,
-            field.speed,
+            speed,
             field.suffix,
             field.decimals,
             field.width,
@@ -971,7 +992,7 @@ impl<'a> Pane<'a> {
         }
         if self.asset.is_some_and(|asset| asset.has_audio) {
             section(ui, p, "Sound");
-            card(ui, p, |ui| self.volume_row(ui));
+            card(ui, p, |ui| self.sound_rows(ui));
         }
     }
 
@@ -1019,8 +1040,9 @@ impl<'a> Pane<'a> {
         });
     }
 
-    /// A clip on an audio track: it carries sound and nothing that is drawn.
-    fn sound(&mut self, ui: &mut Ui) {
+    /// How a clip on an audio track plays: it carries sound and nothing
+    /// that is drawn.
+    pub(super) fn sound(&mut self, ui: &mut Ui) {
         let p = self.p;
         let timed = self
             .asset
@@ -1033,11 +1055,87 @@ impl<'a> Pane<'a> {
         card(ui, p, |ui| {
             if timed {
                 self.speed_row(ui);
+                if audible {
+                    self.pitch_row(ui);
+                }
             }
             if audible {
-                self.volume_row(ui);
+                self.sound_rows(ui);
             }
         });
+    }
+
+    /// The volume and the fades of the clip's sound. A picture clip whose
+    /// sound its linked audio clip owns has one line in their place that
+    /// says where the sound is: a value set here would enter the history
+    /// and never be heard. A clip that is only muted, soloed out or at
+    /// volume 0 keeps its rows.
+    fn sound_rows(&mut self, ui: &mut Ui) {
+        if sound::owned(self.project, self.clip) {
+            ui.label(
+                egui::RichText::new(fades::OWNED)
+                    .font(theme::regular(12.0))
+                    .color(self.p.muted),
+            );
+            return;
+        }
+        self.volume_row(ui);
+        for edge in fades::EDGES {
+            self.fade_row(ui, edge);
+        }
+        self.normalize_row(ui);
+    }
+
+    /// Measures the clip's loudness and sets its volume from it, as the
+    /// clip menu does. Shown and not to be chosen, with the reason on
+    /// hover, for a clip that is not heard.
+    fn normalize_row(&mut self, ui: &mut Ui) {
+        let p = self.p;
+        let refused = normalize::refusal(self.project, self.clip.id);
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(refused.is_none(), |ui| {
+                let button =
+                    widgets::button(ui, p, Some(Icon::Volume), normalize::LABEL, Kind::Plain)
+                        .on_hover_text(format!(
+                            "Set the volume so the clip reaches {} LUFS, its peak at most {} dBTP",
+                            normalize::TARGET,
+                            normalize::CEILING
+                        ))
+                        .on_disabled_hover_text(refused.as_deref().unwrap_or_default());
+                if button.clicked() {
+                    self.actions.push(Action::Normalize(vec![self.clip.id]));
+                }
+            });
+        });
+    }
+
+    /// How long one edge of the clip fades, in seconds, held to the room
+    /// the other fade leaves. The field reads hundredths of a second and a
+    /// fade may be held finer, as one a handle left on a frame is: a field
+    /// left reading what it read has changed nothing.
+    fn fade_row(&mut self, ui: &mut Ui, edge: FadeEdge) {
+        let (held, other) = match edge {
+            FadeEdge::In => (self.next.fade_in, self.next.fade_out),
+            FadeEdge::Out => (self.next.fade_out, self.next.fade_in),
+        };
+        let room = (self.clip.duration - other).max(Time::ZERO);
+        let name = fades::name(edge);
+        let mut shown = held.as_seconds() as f32;
+        let read = |seconds: f32| format!("{:.2}", f64::from(seconds));
+        let before = read(shown);
+        let range = 0.0..=room.as_seconds() as f32;
+        let changed = row(ui, self.p, name, |ui| {
+            widgets::named_number(ui, &mut shown, range, 0.01, " s", 2, FIELD, name).changed()
+        });
+        // The field takes what it reads for typed when the focus leaves it.
+        if changed && read(shown) != before {
+            // The field holds a rounded number of seconds: the room is exact.
+            let length = Time::from_seconds(f64::from(shown)).clamp(Time::ZERO, room);
+            match edge {
+                FadeEdge::In => self.next.fade_in = length,
+                FadeEdge::Out => self.next.fade_out = length,
+            }
+        }
     }
 
     pub(super) fn speed_row(&mut self, ui: &mut Ui) {

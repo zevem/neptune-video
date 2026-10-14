@@ -66,6 +66,7 @@ fn capabilities_name_every_command_in_the_schema() {
         "set_tracker",
         "remove_tracker",
         "set_follow",
+        "set_fades",
     ] {
         assert!(named.contains(&name), "{name}");
     }
@@ -140,6 +141,193 @@ fn invalid_agent_transaction_has_no_partial_effects() {
     assert!(matches!(response.result, AgentResult::Error { .. }));
     assert_eq!(editor.project().name, "Untitled");
     assert_eq!(editor.revision(), 0);
+}
+#[test]
+fn serialized_fades_track_volume_and_solo_are_validated_inspected_and_undone() {
+    use editor_core::{Asset, Clip, MediaKind, Project, Time};
+    let mut project = Project::new("Sound");
+    let mut asset = Asset::new("/media/a.mp4".into(), MediaKind::Video, Time(8_000_000));
+    asset.has_audio = true;
+    let mut clip = Clip::from_asset(&asset, Time::ZERO);
+    clip.duration = Time(4_000_000);
+    let (clip_id, track_id) = (clip.id, project.tracks[0].id);
+    std::sync::Arc::make_mut(&mut project.assets).insert(asset.id, asset);
+    std::sync::Arc::make_mut(&mut project.tracks[0])
+        .clips
+        .push(clip);
+    let mut editor = Editor::new(project).unwrap();
+    let before = editor.snapshot();
+    // The text an external agent writes, read as the CLI reads a line.
+    let send = |editor: &mut Editor, command: serde_json::Value| {
+        let line = serde_json::json!({
+            "request_id": "sound",
+            "operation": "apply",
+            "expected_revision": editor.revision(),
+            "command": command,
+        })
+        .to_string();
+        apply(editor, serde_json::from_str(&line).unwrap()).result
+    };
+
+    for refused in [
+        serde_json::json!({"type":"set_fades","clip_id":clip_id,"fade_in":3_000_000,"fade_out":1_000_001}),
+        serde_json::json!({"type":"set_fades","clip_id":clip_id,"fade_in":-1,"fade_out":0}),
+        serde_json::json!({"type":"set_track_state","track_id":track_id,"gain":8.5}),
+        serde_json::json!({"type":"batch","label":"Mix","commands":[
+            {"type":"set_track_state","track_id":track_id,"solo":true},
+            {"type":"set_fades","clip_id":clip_id,"fade_in":0,"fade_out":4_000_001},
+        ]}),
+    ] {
+        assert!(
+            matches!(send(&mut editor, refused), AgentResult::Error { code, .. } if code == "invalid_edit")
+        );
+        assert!(std::sync::Arc::ptr_eq(&before, &editor.snapshot()));
+        assert_eq!(editor.revision(), 0);
+    }
+
+    assert!(matches!(
+        send(
+            &mut editor,
+            serde_json::json!({"type":"set_fades","clip_id":clip_id,"fade_in":500_000,"fade_out":1_000_000}),
+        ),
+        AgentResult::Applied { changed: true, .. }
+    ));
+    assert!(matches!(
+        send(
+            &mut editor,
+            serde_json::json!({"type":"set_track_state","track_id":track_id,"gain":0.5,"solo":true}),
+        ),
+        AgentResult::Applied { changed: true, .. }
+    ));
+    let revision = editor.revision();
+    let inspected = apply(&mut editor, request(AgentOperation::Inspect, None));
+    let inspected = serde_json::to_value(&inspected).unwrap();
+    let track = &inspected["result"]["project"]["tracks"][0];
+    assert_eq!(track["gain"], 0.5);
+    assert_eq!(track["solo"], true);
+    assert_eq!(track["clips"][0]["fade_in"], 500_000);
+    assert_eq!(track["clips"][0]["fade_out"], 1_000_000);
+    let other = &inspected["result"]["project"]["tracks"][1];
+    assert!(other.get("gain").is_none() && other.get("solo").is_none());
+
+    for step in [revision, revision + 1] {
+        assert!(matches!(
+            apply(&mut editor, request(AgentOperation::Undo, Some(step))).result,
+            AgentResult::History { changed: true }
+        ));
+    }
+    assert_eq!(&*before, editor.project());
+}
+#[test]
+fn serialized_audio_effects_are_validated_inspected_and_undone() {
+    use editor_core::{Asset, Clip, MediaKind, Project, Time};
+    let mut project = Project::new("Voice");
+    let mut shot = Asset::new("/media/a.mp4".into(), MediaKind::Video, Time(8_000_000));
+    shot.has_audio = true;
+    let voice = Asset::new("/media/voice.wav".into(), MediaKind::Audio, Time(8_000_000));
+    let (picture, sound) = (
+        Clip::from_asset(&shot, Time::ZERO),
+        Clip::from_asset(&voice, Time::ZERO),
+    );
+    let (picture_id, sound_id) = (picture.id, sound.id);
+    let assets = std::sync::Arc::make_mut(&mut project.assets);
+    assets.insert(shot.id, shot);
+    assets.insert(voice.id, voice);
+    std::sync::Arc::make_mut(&mut project.tracks[0])
+        .clips
+        .push(picture);
+    std::sync::Arc::make_mut(&mut project.tracks[1])
+        .clips
+        .push(sound);
+    let mut editor = Editor::new(project).unwrap();
+    let before = editor.snapshot();
+    let send = |editor: &mut Editor, command: serde_json::Value| {
+        let line = serde_json::json!({
+            "request_id": "voice",
+            "operation": "apply",
+            "expected_revision": editor.revision(),
+            "command": command,
+        })
+        .to_string();
+        apply(editor, serde_json::from_str(&line).unwrap()).result
+    };
+    let effect = |kind: &str, mix: f32, params: serde_json::Value| {
+        serde_json::json!({
+            "id": uuid::Uuid::new_v4(), "kind": kind, "enabled": true, "mix": mix,
+            "params": params, "points": [], "asset_id": null,
+        })
+    };
+    let set = |clip_id, effects: Vec<serde_json::Value>| serde_json::json!({"type":"set_effects","clip_id":clip_id,"effects":effects});
+    let hz = |value: f32| serde_json::json!([{"key":"frequency","value":value}]);
+
+    // On a picture, part mixed, out of range, a picture kind, and one too many.
+    for refused in [
+        set(
+            picture_id,
+            vec![effect("denoise", 1.0, serde_json::json!([]))],
+        ),
+        set(
+            sound_id,
+            vec![effect("limiter", 0.5, serde_json::json!([]))],
+        ),
+        set(sound_id, vec![effect("high_pass", 1.0, hz(2_000.5))]),
+        set(sound_id, vec![effect("blur", 1.0, serde_json::json!([]))]),
+        set(
+            sound_id,
+            (0..17)
+                .map(|_| effect("eq_band", 1.0, serde_json::json!([])))
+                .collect(),
+        ),
+        serde_json::json!({"type":"batch","label":"Voice","commands":[
+            set(sound_id, vec![effect("pitch", 1.0, serde_json::json!([]))]),
+            set(picture_id, vec![effect("pitch", 1.0, serde_json::json!([]))]),
+        ]}),
+    ] {
+        assert!(
+            matches!(send(&mut editor, refused), AgentResult::Error { code, .. } if code == "invalid_edit")
+        );
+        assert!(std::sync::Arc::ptr_eq(&before, &editor.snapshot()));
+        assert_eq!(editor.revision(), 0);
+    }
+
+    let names = [
+        "high_pass",
+        "eq_band",
+        "compressor",
+        "limiter",
+        "denoise",
+        "pitch",
+        "center_cut",
+    ];
+    let mut stack: Vec<_> = (names.iter())
+        .map(|kind| effect(kind, 1.0, serde_json::json!([])))
+        .collect();
+    stack[0]["params"] = hz(120.0);
+    assert!(matches!(
+        send(&mut editor, set(sound_id, stack.clone())),
+        AgentResult::Applied { changed: true, .. }
+    ));
+    let revision = editor.revision();
+    let inspected = apply(&mut editor, request(AgentOperation::Inspect, None));
+    let inspected = serde_json::to_value(&inspected).unwrap();
+    let effects = &inspected["result"]["project"]["tracks"][1]["clips"][0]["effects"];
+    assert_eq!(effects, &serde_json::Value::Array(stack));
+
+    // A parameter of one is not keyed.
+    let keyed = serde_json::json!({
+        "type":"set_keyframes","clip_id":sound_id,"target":effects[0]["id"],"key":"frequency",
+        "keys":[{"at":0,"value":120.0,"ease":{"type":"linear"}}],
+    });
+    assert!(
+        matches!(send(&mut editor, keyed), AgentResult::Error { code, .. } if code == "invalid_edit")
+    );
+    assert_eq!(editor.revision(), revision);
+
+    assert!(matches!(
+        apply(&mut editor, request(AgentOperation::Undo, Some(revision))).result,
+        AgentResult::History { changed: true }
+    ));
+    assert_eq!(&*before, editor.project());
 }
 #[test]
 fn newline_protocol_round_trips() {

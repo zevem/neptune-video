@@ -5,8 +5,11 @@
 //! name, so it is reached by the keyboard as by the pointer. A held drag is a
 //! draft drawn here and on the canvas; it becomes one command when it is let
 //! go and nothing when it is given up.
+//!
+//! A clip with sound and no keyframe yet has a lane too: one empty row for
+//! its volume, which the clip menu and the volume line on its tile key.
 use super::{
-    Action, EASINGS, Selection, inspector,
+    Action, EASINGS, Selection, fades, inspector,
     timeline::{Geometry, TimelineInput},
     widgets::{self, menu_item, menu_style},
 };
@@ -18,7 +21,7 @@ use crate::{
 };
 use editor_core::{
     AnimTarget, AnimTrack, Clip, ClipId, ClipOverride, Command, Ease, FrameRate, Keyframe,
-    ParamKey, Project, Time, Track, look,
+    ParamKey, Project, Time, Track, gain_at, look, sound,
 };
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Response, Sense, Shape,
@@ -40,7 +43,7 @@ const TRAVEL: f32 = 3.0;
 /// curves and their keys fit.
 pub const GRAPH_LABELLED: f32 = 64.0;
 /// Points between samples of a curve.
-const SAMPLE: f32 = 2.0;
+pub(super) const SAMPLE: f32 = 2.0;
 /// A step of an easing handle moved with the arrows.
 const HANDLE_STEP: f32 = 0.05;
 
@@ -382,6 +385,80 @@ fn pasted(clip: &Clip, copied: &[Copied], at: Time) -> (Vec<AnimTrack>, Vec<KeyR
     (changed, written)
 }
 
+/// Whether the clip's volume is keyed where the clip is: its media has sound
+/// and no linked audio clip owns that sound. A clip that is only muted,
+/// soloed out or at volume 0 is, as it keeps its volume row in the inspector.
+pub fn takes_volume(project: &Project, clip: &Clip) -> bool {
+    fades::has_sound(project, clip) && !sound::owned(project, clip)
+}
+
+/// The row a lane has for a clip with no keyframe yet: its volume.
+static VOLUME_ROW: AnimTrack = AnimTrack {
+    target: None,
+    key: ParamKey::Gain,
+    keys: Vec::new(),
+};
+
+/// The rows of a clip's lane: one for each animated parameter, and an empty
+/// one for the volume of a clip that has none and whose volume can be keyed.
+fn lane_tracks<'a>(project: &Project, clip: &'a Clip) -> &'a [AnimTrack] {
+    if clip.animation.is_empty() && takes_volume(project, clip) {
+        std::slice::from_ref(&VOLUME_ROW)
+    } else {
+        &clip.animation
+    }
+}
+
+/// The one command that keys the clip's volume `local` after its start at
+/// the volume it has there, so that nothing heard changes: a key that lands
+/// between two others divides their stretch as a split does, and a held or
+/// eased stretch keeps its shape. None when a key is there already, or the
+/// stretch cannot be carried by keys.
+pub fn key_volume(clip: &Clip, local: Time) -> Option<Command> {
+    let lane = (None, ParamKey::Gain);
+    let track = match track_of(clip, lane) {
+        Some(stored) => {
+            let mut track = stored.clone();
+            track.insert(local, range(clip, lane)?).then_some(track)?
+        }
+        None => AnimTrack {
+            target: lane.0,
+            key: lane.1,
+            keys: vec![Keyframe {
+                at: local,
+                value: gain_at(clip, clip.start + local),
+                ease: Ease::Linear,
+            }],
+        },
+    };
+    command(clip, "Key volume", vec![track])
+}
+
+/// The command "Key volume" asks for: a volume key of `clip` at `playhead`.
+/// Says why when there is none to write.
+pub fn volume_key(project: &Project, clip: ClipId, playhead: Time) -> Result<Command, String> {
+    let (track, clip) = project.clip(clip).ok_or("The clip no longer exists.")?;
+    if !fades::has_sound(project, clip) {
+        return Err("That clip has no sound to key the volume of.".to_owned());
+    }
+    if sound::owned(project, clip) {
+        return Err(format!("{}.", fades::OWNED));
+    }
+    if track.locked {
+        return Err("Unlock the clip's track to key its volume.".to_owned());
+    }
+    let local = playhead - clip.start;
+    if local < Time::ZERO || local > clip.duration {
+        return Err("Put the playhead on the clip to key its volume.".to_owned());
+    }
+    let keyed = track_of(clip, (None, ParamKey::Gain))
+        .is_some_and(|track| track.keys.iter().any(|key| key.at == local));
+    if keyed {
+        return Err("The volume is keyed there already.".to_owned());
+    }
+    key_volume(clip, local).ok_or_else(|| "The volume's curve cannot take a key there.".to_owned())
+}
+
 /// The one command that writes `tracks` into the clip: a `SetKeyframes` for
 /// each track that differs from the stored one, in a batch named for the
 /// gesture, so that it is one undo step and says what it was.
@@ -612,11 +689,14 @@ impl KeyframesState {
         &self.selected
     }
 
-    /// Opens the lane of the one selected clip, or closes the open one.
+    /// Opens the lane of the one selected clip, or closes the open one. A
+    /// clip has a lane when it has keyframes, or sound whose volume could
+    /// have: that one opens on an empty Volume row.
     pub fn toggle_lane(&mut self, project: &Project, selection: &Selection) {
-        let animated = (selection.single())
-            .filter(|id| (project.clip(*id)).is_some_and(|(_, clip)| !clip.animation.is_empty()));
-        self.set_lane(animated.filter(|id| self.open != Some(*id)));
+        let laned = (selection.single()).filter(|id| {
+            (project.clip(*id)).is_some_and(|(_, clip)| !lane_tracks(project, clip).is_empty())
+        });
+        self.set_lane(laned.filter(|id| self.open != Some(*id)));
     }
 
     /// Whether [`KeyframesState::toggle_lane`] would do anything.
@@ -624,7 +704,7 @@ impl KeyframesState {
         self.open.is_some()
             || (selection.single())
                 .and_then(|id| project.clip(id))
-                .is_some_and(|(_, clip)| !clip.animation.is_empty())
+                .is_some_and(|(_, clip)| !lane_tracks(project, clip).is_empty())
     }
 
     /// What the canvas draws in the stored animation's place while keys or a
@@ -676,7 +756,8 @@ impl KeyframesState {
             return None;
         }
         let (track, clip) = project.clip(self.open?)?;
-        (!clip.animation.is_empty()).then_some((track.id, clip.animation.len()))
+        let rows = lane_tracks(project, clip).len();
+        (rows > 0).then_some((track.id, rows))
     }
 
     /// The height of a lane of `rows` parameters.
@@ -710,9 +791,11 @@ impl KeyframesState {
         } else {
             self.open
         };
-        let found = id
-            .and_then(|id| project.clip(id))
-            .filter(|(_, clip)| !clip.animation.is_empty());
+        // The graph draws curves and has none for a clip without keyframes;
+        // the lane has the empty row of a volume that could be keyed.
+        let found = id.and_then(|id| project.clip(id)).filter(|(_, clip)| {
+            !clip.animation.is_empty() || (!self.graph && takes_volume(project, clip))
+        });
         if found.map(|(_, clip)| clip.id) != self.clip {
             self.clip = found.map(|(_, clip)| clip.id);
             self.selected.clear();
@@ -770,17 +853,26 @@ impl KeyframesState {
         }
     }
 
-    /// The names of the clip's animated parameters, made once for each
-    /// revision of its track.
-    fn names(&mut self, project: &Project, track: &Track, clip: &Clip) -> Arc<[Named]> {
+    /// The names of the clip's rows, made once for each revision of its
+    /// track.
+    fn names(
+        &mut self,
+        project: &Project,
+        track: &Track,
+        clip: &Clip,
+        rows: &[AnimTrack],
+    ) -> Arc<[Named]> {
+        // Whether a clip has the empty row is not its own track's to say:
+        // the names kept are those of as many rows.
         if let Some((held, id, names)) = &self.names
             && *id == clip.id
             && held.id == track.id
+            && names.len() == rows.len()
             && (project.tracks.iter()).any(|shared| Arc::ptr_eq(shared, held))
         {
             return names.clone();
         }
-        let names: Arc<[Named]> = (clip.animation.iter())
+        let names: Arc<[Named]> = (rows.iter())
             .map(|track| {
                 let name = lane_name(clip, track);
                 Named {
@@ -1454,7 +1546,8 @@ impl KeyframesState {
     // ---- The lane ---------------------------------------------------------
 
     /// The open clip's lane in `band`, a strip of the lanes under its track:
-    /// a row for each animated parameter, a diamond at each key.
+    /// a row for each animated parameter, a diamond at each key. A clip with
+    /// sound and no keyframe has one empty row, its volume's.
     pub(super) fn show_lane(
         &mut self,
         ui: &mut Ui,
@@ -1472,7 +1565,8 @@ impl KeyframesState {
         if !view.is_positive() {
             return;
         }
-        let names = self.names(input.project, track, clip);
+        let rows = lane_tracks(input.project, clip);
+        let names = self.names(input.project, track, clip, rows);
         let sheet = self.sheet(input, geometry, track, clip, None);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(band));
         ui.set_clip_rect(view);
@@ -1496,7 +1590,7 @@ impl KeyframesState {
             geometry.time(view.left() - 10.0) - clip.start,
             geometry.time(view.right() + 10.0) - clip.start,
         );
-        for (row, track) in clip.animation.iter().enumerate() {
+        for (row, track) in rows.iter().enumerate() {
             let y = band.top() + PAD + ROW * (row as f32 + 0.5);
             if y + ROW * 0.5 < view.top() || y - ROW * 0.5 > view.bottom() {
                 continue;
@@ -1562,9 +1656,10 @@ impl KeyframesState {
             return;
         };
         let p = input.p;
-        let names = self.names(input.project, track, clip);
+        let rows = lane_tracks(input.project, clip);
+        let names = self.names(input.project, track, clip, rows);
         let sheet = self.sheet(input, geometry, track, clip, None);
-        for (row, animated) in clip.animation.iter().enumerate() {
+        for (row, animated) in rows.iter().enumerate() {
             let line = Rect::from_min_size(
                 pos2(rect.left(), rect.top() + PAD + ROW * row as f32),
                 vec2(rect.width(), ROW),
@@ -1667,7 +1762,7 @@ impl KeyframesState {
             widgets::empty_state(ui, p, whole, Icon::Curve, title, hint);
             return;
         };
-        let names = self.names(project, track, clip);
+        let names = self.names(project, track, clip, &clip.animation);
         let Some(shared) = shared(project, track) else {
             return;
         };

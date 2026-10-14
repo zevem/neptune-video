@@ -176,8 +176,9 @@ enforced by `Project::validate`; a refused command leaves the document unchanged
   `remove_assets` refuses an asset still used by an effect or tracker.
 - **Text clips** accept transform and gain keyframes, transitions and follow;
   effects, masks, retime and a non-`normal` blend are refused.
-- **Clips on audio tracks** accept gain keyframes and retime only. A sound
-  cannot be a `lut`, a `difference_matte` plate or a tracker's asset.
+- **Clips on audio tracks** accept audio effects, gain keyframes and retime
+  only. A sound cannot be a `lut`, a `difference_matte` plate or a tracker's
+  asset.
 - **Transitions and the frame rate.** `set_settings` with a lower frame rate
   lengthens a transition shorter than the new frame to one frame.
 
@@ -187,6 +188,70 @@ enforced by `Project::validate`; a refused command leaves the document unchanged
   effect with `set_effects`, but cannot start either measurement; a
   `stabilize` effect draws uncorrected until the person analyses the video.
   Stabilization data is not part of the project a client inspects.
+
+### Sound commands
+
+| Command | Fields | Rule |
+| --- | --- | --- |
+| `set_fades` | `clip_id`, `fade_in`, `fade_out` | Replaces both lengths; 0 removes a fade. A clip on a locked track refuses it. Linked clips are not changed: each clip has its own fades. |
+| `set_track_state` | `track_id` and any of `locked`, `hidden`, `muted`, `name`, `gain`, `solo` | An omitted or `null` field is left as it is. Works on a locked track. |
+
+- **Fades** are timeline lengths in integer microseconds, `fade_in` from the
+  clip's start and `fade_out` to its end, each 0 or more and together at most
+  the clip's `duration`. They are as long as they are heard, whatever the
+  clip's speed. Only a media clip whose asset has sound (`has_audio`, or kind
+  `audio`) takes one; a title, a still or a silent video is refused. The
+  curve is fixed.
+- **Fades follow the clip's length.** A trim, a rate change or a retime that
+  shortens a clip cuts its fades to fit, `fade_out` to what `fade_in` leaves.
+  `split_clip` leaves `fade_in` on the left part and `fade_out` on the right.
+- **Track volume** is `gain`, linear and finite within 0–8, where 1 leaves the
+  track as it is. It multiplies the volume of every clip on the track.
+- **Solo.** While any video or audio track has `solo`, only soloed tracks
+  sound; `muted` wins over `solo`, and a text track's `solo` is ignored.
+- **Defaults are not written.** An inspected project omits `gain` at 1, `solo`
+  when false and a fade of 0.
+- **Audio effects** are seven effect kinds carried by `set_effects`, legal
+  only on a clip on an audio track; a clip on a video track refuses them, as
+  a clip on an audio track refuses every other kind. Each has `mix` 1, no
+  `points` and a null `asset_id`, and none of its parameters takes keyframes.
+  A clip holds at most 16.
+
+  | Kind | Parameters (range, default) |
+  | --- | --- |
+  | `high_pass` | `frequency` in Hz (20–2000, 80) |
+  | `eq_band` | `frequency` in Hz (20–20000, 1000), `gain` in dB (-24–24, 0), `width` in octaves (0.1–4, 1) |
+  | `compressor` | `threshold` in dB (-60–0, -18), `amount` as the ratio (1–20, 3), `gain` as make-up dB (0–24, 0) |
+  | `limiter` | `threshold` as the ceiling in dB (-24–0, -1) |
+  | `denoise` | `amount` (0–1, 0.4), `threshold` as the noise floor in dB (-80 to -20, -40) |
+  | `pitch` | `amount` in semitones (-12–12, 0) |
+  | `center_cut` | `amount` (0–1, 1) |
+
+  The ranges and defaults are first guesses. Enabled audio effects are heard,
+  in stack order, through the clip's own decoder chain; a kind the installed
+  FFmpeg lacks is left out and that is said once.
+- **Keep pitch.** A clip on an audio track with an enabled `pitch` effect,
+  `amount` 0 included, keeps its pitch when its speed changes, and that
+  `amount` is its only shift; without one, speed changes pitch. Only the
+  first enabled `pitch` is read; later ones are legal and have no effect.
+  Pitch is held while the clip's speed divided by `2^(amount/12)` is within
+  0.5–2; past that the remainder is heard as a change of pitch. To keep
+  pitch, write a `pitch` at 0 with `set_effects`; to let speed change it
+  again, remove every enabled `pitch`.
+- **Sound work is not a command.** Measuring loudness, ducking under other
+  clips, finding beats, recording a voiceover, saving a sound to a file and
+  separating stems run in the desktop on the person's request and have no
+  protocol operation. Their results are ordinary commands a client can read,
+  undo and write itself: a normalized volume is `set_gain` (or a scaled
+  `set_keyframes`), a duck is `set_keyframes` on `gain`, beats a person marked
+  are `add_marker`s labelled `Beat`, a take is a `batch` of `add_assets`,
+  `add_track` when no audio track has room, and `add_clip`, and stems are a
+  `batch` of `add_assets`, `add_track` and `add_clip` for each stem,
+  `link_clips`, and `set_gain` 0 (with `set_keyframes` emptying its volume
+  keys) on the original. Detach audio is a `batch` of `add_track` when needed,
+  `add_clip` and `link_clips`; background music is `add_track` and `add_clip`s
+  whose last carries its `fade_out`. Peaks and beat grids are not part of the
+  project a client inspects.
 
 ### Title, caption and graphic commands
 

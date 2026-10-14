@@ -98,6 +98,9 @@ megabytes and another runtime.
 **Schema version 3.** The file reads versions 1 to 3 and always writes 3. An
 older build therefore refuses a file with titles it cannot keep through its
 future-schema protection, instead of saving it back without them.
+(2026-10-14: the audio-editing work, merged after this, raised the written
+version to 4 for its own fields; version 3 is still read. See
+[ADR 0008](0008-sound-is-levels-in-the-mixer-and-filters-in-the-decoder.md).)
 
 **Consequences.**
 

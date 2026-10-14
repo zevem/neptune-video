@@ -42,6 +42,9 @@ impl Time {
     pub fn is_valid(self) -> bool {
         self >= Self::ZERO && self <= Self::MAX
     }
+    pub fn is_zero(&self) -> bool {
+        *self == Self::ZERO
+    }
 }
 impl Add for Time {
     type Output = Self;
@@ -216,11 +219,24 @@ pub struct Track {
     pub locked: bool,
     pub hidden: bool,
     pub muted: bool,
+    // Linear volume of everything on the track, within `0.0..=8.0`. Plain
+    // comments here and below: the planner text says it, the schema need not.
+    #[serde(default = "unity", skip_serializing_if = "is_unity")]
+    pub gain: f32,
+    // While any video or audio track is soloed, only soloed tracks sound.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub solo: bool,
     pub clips: Vec<Clip>,
     /// The language of a caption track: a text track whose titles are
     /// cues. A BCP 47 style tag such as `en` or `pt-BR`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+}
+fn unity() -> f32 {
+    1.0
+}
+fn is_unity(gain: &f32) -> bool {
+    *gain == 1.0
 }
 impl Track {
     pub fn new(name: impl Into<String>, kind: TrackKind) -> Self {
@@ -231,6 +247,8 @@ impl Track {
             locked: false,
             hidden: false,
             muted: false,
+            gain: 1.0,
+            solo: false,
             clips: Vec::new(),
             language: None,
         }
@@ -368,6 +386,12 @@ pub struct Clip {
     pub transition_out: Option<Transition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow: Option<Follow>,
+    // Timeline length the sound rises over from the clip's start.
+    #[serde(default, skip_serializing_if = "Time::is_zero")]
+    pub fade_in: Time,
+    // Timeline length the sound falls over to the clip's end.
+    #[serde(default, skip_serializing_if = "Time::is_zero")]
+    pub fade_out: Time,
 }
 impl Clip {
     pub fn from_asset(asset: &Asset, start: Time) -> Self {
@@ -391,6 +415,8 @@ impl Clip {
             transition_in: None,
             transition_out: None,
             follow: None,
+            fade_in: Time::ZERO,
+            fade_out: Time::ZERO,
         }
     }
     pub fn text(text: impl Into<String>, start: Time, duration: Time) -> Self {
@@ -423,6 +449,8 @@ impl Clip {
             transition_in: None,
             transition_out: None,
             follow: None,
+            fade_in: Time::ZERO,
+            fade_out: Time::ZERO,
         }
     }
     /// A graphic clip of `elements` in a box of `size` design pixels.
@@ -639,6 +667,9 @@ impl Project {
             if !ids.insert(track.id) || track.name.trim().is_empty() {
                 return Err(EditError::Invalid("track identity".into()));
             }
+            if !track.gain.is_finite() || !(0.0..=8.0).contains(&track.gain) {
+                return Err(EditError::Invalid("track volume".into()));
+            }
             if let Some(language) = &track.language
                 && (track.kind != TrackKind::Text || !title::language_valid(language))
             {
@@ -662,6 +693,14 @@ impl Project {
                     return Err(EditError::Invalid("clip bounds or transform".into()));
                 }
                 previous = clip.start;
+                // A fade is held to its edge, and the two never meet.
+                if clip.fade_in < Time::ZERO
+                    || clip.fade_out < Time::ZERO
+                    || clip.fade_in + clip.fade_out > clip.duration
+                {
+                    return Err(EditError::Invalid("fades".into()));
+                }
+                let faded = !clip.fade_in.is_zero() || !clip.fade_out.is_zero();
                 match &clip.content {
                     ClipContent::Media { asset_id } => {
                         let asset = self
@@ -682,6 +721,10 @@ impl Project {
                             && clip.source_span().1 > asset.duration + Time(2)
                         {
                             return Err(EditError::Invalid("clip extends beyond source".into()));
+                        }
+                        // Only sound fades.
+                        if faded && !asset.has_audio && asset.kind != MediaKind::Audio {
+                            return Err(EditError::Invalid("fades".into()));
                         }
                     }
                     ClipContent::Text {
@@ -711,6 +754,9 @@ impl Project {
                         {
                             return Err(EditError::Invalid("text animation".into()));
                         }
+                        if faded {
+                            return Err(EditError::Invalid("fades".into()));
+                        }
                         if !title::words_valid(words, text, clip.duration) {
                             return Err(EditError::Invalid("word times".into()));
                         }
@@ -720,6 +766,9 @@ impl Project {
                         if track.kind != TrackKind::Text {
                             return Err(EditError::IncompatibleTrack);
                         }
+                        if faded {
+                            return Err(EditError::Invalid("fades".into()));
+                        }
                         if !title::graphic_valid(*size, elements, frame, clip.duration) {
                             return Err(EditError::Invalid("graphic".into()));
                         }
@@ -728,7 +777,7 @@ impl Project {
                 }
                 // Nothing draws an audio clip, so it carries sound only.
                 if track.kind == TrackKind::Audio
-                    && (!clip.effects.is_empty()
+                    && (clip.effects.iter().any(|effect| !effect.kind.is_audio())
                         || !clip.masks.is_empty()
                         || !clip.blend.is_normal()
                         || clip.transition_in.is_some()
@@ -740,6 +789,12 @@ impl Project {
                             .any(|a| a.target.is_some() || a.key != ParamKey::Gain))
                 {
                     return Err(EditError::Invalid("audio clip look".into()));
+                }
+                // The decoder of a clip on an audio track is the only one filtered.
+                if track.kind != TrackKind::Audio
+                    && clip.effects.iter().any(|effect| effect.kind.is_audio())
+                {
+                    return Err(EditError::Invalid("audio effect on a picture clip".into()));
                 }
                 self.validate_look(clip, frame)?;
             }

@@ -54,6 +54,8 @@ pub enum Command {
         hidden: Option<bool>,
         muted: Option<bool>,
         name: Option<String>,
+        gain: Option<f32>,
+        solo: Option<bool>,
     },
     AddClip {
         track_id: TrackId,
@@ -91,6 +93,13 @@ pub enum Command {
     SetGain {
         clip_id: ClipId,
         gain: f32,
+    },
+    // Both fades of one clip, as timeline lengths from its edges; linked clips
+    // keep their own. A plain comment: the planner text describes fades.
+    SetFades {
+        clip_id: ClipId,
+        fade_in: Time,
+        fade_out: Time,
     },
     /// Set a title's text, size and colour. Its style and animations stay;
     /// word times follow the words the old and new text share.
@@ -239,6 +248,7 @@ impl Command {
             Self::SetTransform { .. } => "Transform clip",
             Self::SetPlaybackRate { .. } => "Change clip speed",
             Self::SetGain { .. } => "Change clip volume",
+            Self::SetFades { .. } => "Change fades",
             Self::SetText { .. } => "Edit text",
             Self::SetTextStyle { .. } => "Style text",
             Self::SetTextAnimation {

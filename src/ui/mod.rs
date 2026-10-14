@@ -4,6 +4,7 @@ pub mod agent;
 pub mod browser;
 pub mod captions_tab;
 pub mod export_sheet;
+pub mod fades;
 pub mod inspector;
 pub mod keyframes;
 pub mod library;
@@ -12,6 +13,7 @@ pub mod sheets;
 pub mod text_tab;
 pub mod timeline;
 pub mod toolbar;
+pub mod tracks;
 pub mod transitions;
 pub mod viewer;
 pub mod widgets;
@@ -97,6 +99,9 @@ pub enum Action {
         ripple: bool,
     },
     SplitAtPlayhead,
+    /// Put this picture clip's sound on an audio track as a linked clip of
+    /// its own, as one step.
+    DetachAudio(ClipId),
     /// Put a transition on each of these edges, as one step: `kind`, or the
     /// default one. The clips and their edges were captured when this was
     /// made; the application adds what the person saved as that kind's
@@ -128,6 +133,48 @@ pub enum Action {
         asset: AssetId,
         place: Option<(TrackId, Time)>,
     },
+    /// Lay this sound under the whole project on a new "Music" track, as one
+    /// step.
+    AddBackgroundMusic(AssetId),
+    /// Measure the loudness of each of these clips and set its volume so
+    /// that it reaches the target, one step each as its figures come. The
+    /// clips were captured when this was made.
+    Normalize(Vec<ClipId>),
+    /// Lower each of these clips by `depth` wherever the other clips are
+    /// heard, as volume keyframes in one step, once the others' peaks are
+    /// read. The clips were captured when this was made.
+    Duck {
+        clips: Vec<ClipId>,
+        depth: f32,
+    },
+    /// Give up the duck under way. Nothing was written yet.
+    CancelDuck,
+    /// Show or hide, for the session, the beats of this media on its clips
+    /// on audio tracks. Nothing is edited: the beats are found in its peaks.
+    ShowBeats {
+        assets: Vec<AssetId>,
+        shown: bool,
+    },
+    /// Put a marker on the beats of this clip, as one step, once its
+    /// media's beats are held. The clip was captured when this was made.
+    MarkersFromBeats(ClipId),
+    /// Ask where to save this media's sound, or the span of it this clip
+    /// plays, as a WAV file, and have the sound lane write it. Nothing is
+    /// edited. The media or the clip was captured when this was made.
+    SaveAudio(crate::extract::Source),
+    /// Give up the file being written as this request of the sound lane.
+    CancelSaveAudio(u64),
+    /// Import the file written as this request, by the ordinary import.
+    AddSavedAudio(u64),
+    /// Stop offering the file written as this request.
+    DismissSavedAudio(u64),
+    /// Have the stem separator split the whole sound of this clip's media
+    /// into stems in the project's media folder, and place them under the
+    /// clip as one step when they come. The clip was captured when this was
+    /// made.
+    SeparateStems(ClipId),
+    /// Give up the separation under way as this request of the sound lane.
+    CancelSeparate(u64),
     RemoveAsset(AssetId),
     /// Show an asset in the source monitor. The timeline is not touched.
     PreviewAsset(AssetId),
@@ -142,6 +189,11 @@ pub enum Action {
     JumpEnd,
     SetSpeed(f64),
     ToggleLoop,
+    /// Record a voiceover take from the default microphone while the
+    /// timeline plays from its playhead. Only the timeline records.
+    Record,
+    /// End the take under way; it is placed where it was said.
+    StopRecord,
 
     ZoomTimeline(f32),
     FitTimeline,
@@ -378,6 +430,18 @@ pub struct TrackProgress {
     pub waits: Option<String>,
 }
 
+/// The duck under way, as the inspector shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DuckProgress {
+    /// The clips it ducks.
+    pub clips: Vec<ClipId>,
+    /// The media whose sound is being read, when it is still there.
+    pub reading: Option<String>,
+    /// The media taken so far, of all there are.
+    pub taken: usize,
+    pub total: usize,
+}
+
 /// A keyframe being written while a value keyframes drive is dragged or
 /// typed: the track's key at `at` takes `value`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -398,6 +462,9 @@ pub struct ClipDraft {
     pub clip: ClipId,
     pub transform: Transform,
     pub gain: f32,
+    /// How long the clip's sound fades in from its start and out to its end.
+    pub fade_in: Time,
+    pub fade_out: Time,
     pub rate: f64,
     /// What a title or graphic says and how it looks; none for media.
     pub content: Option<ClipContent>,
@@ -424,6 +491,8 @@ impl ClipDraft {
             clip: clip.id,
             transform: clip.transform.clone(),
             gain: clip.gain,
+            fade_in: clip.fade_in,
+            fade_out: clip.fade_out,
             rate: clip.playback_rate,
             content: clip.content.is_generated().then(|| clip.content.clone()),
             blend: clip.blend,
@@ -527,6 +596,15 @@ impl ClipDraft {
             commands.push(Command::SetGain {
                 clip_id: clip.id,
                 gain: self.gain,
+            });
+        }
+        // Before a change of speed: the fades are held to the clip as it is,
+        // and a clip made shorter after them has them cut to fit.
+        if (self.fade_in, self.fade_out) != (clip.fade_in, clip.fade_out) {
+            commands.push(Command::SetFades {
+                clip_id: clip.id,
+                fade_in: self.fade_in,
+                fade_out: self.fade_out,
             });
         }
         if self.rate != clip.playback_rate {

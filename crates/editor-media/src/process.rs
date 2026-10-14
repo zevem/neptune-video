@@ -91,13 +91,26 @@ impl Deadline {
 type MonitorState = (Mutex<Deadline>, Condvar);
 type Monitor = Arc<MonitorState>;
 
+/// The most of a process's error pipe that is kept: its last bytes.
+pub(crate) const STDERR_TAIL: usize = 8192;
+/// How long a tail is waited for once its process has ended.
+const TAIL_WAIT: Duration = Duration::from_millis(250);
+
+/// The last [`STDERR_TAIL`] bytes a process wrote to its error pipe, and
+/// whether the pipe has ended: its reader has read the last of them.
+#[derive(Default)]
+struct Tail {
+    bytes: Vec<u8>,
+    ended: bool,
+}
+type TailState = (Mutex<Tail>, Condvar);
+
 pub(crate) struct Process {
     pub child: Arc<Mutex<Child>>,
     pub stdout: ChildStdout,
-    stderr: Arc<Mutex<Vec<u8>>>,
+    stderr: Arc<TailState>,
     /// Set only by `spawn_writer`: the child's input pipe until closed.
     stdin: Option<ChildStdin>,
-    stderr_reader: Option<thread::JoinHandle<()>>,
     monitor: Monitor,
     tool: String,
 }
@@ -164,12 +177,15 @@ impl Process {
         };
         let error_pipe = child.stderr.take();
         let child = Arc::new(Mutex::new(child));
-        let mut instance = Self {
+        let tail = Tail {
+            ended: error_pipe.is_none(),
+            ..Tail::default()
+        };
+        let instance = Self {
             child,
             stdout,
-            stderr: Arc::new(Mutex::new(Vec::new())),
+            stderr: Arc::new((Mutex::new(tail), Condvar::new())),
             stdin: None,
-            stderr_reader: None,
             monitor: Arc::new((Mutex::new(Deadline::default()), Condvar::new())),
             tool: tool.into(),
         };
@@ -183,25 +199,30 @@ impl Process {
         }
         if let Some(mut pipe) = error_pipe {
             let tail = Arc::clone(&instance.stderr);
-            let reader = thread::Builder::new()
+            thread::Builder::new()
                 .name("aster-media-stderr".into())
                 .spawn(move || {
+                    let (lock, read) = &*tail;
                     let mut bytes = [0; 1024];
                     while let Ok(count) = pipe.read(&mut bytes) {
                         if count == 0 {
                             break;
                         }
-                        if let Ok(mut tail) = tail.lock() {
-                            tail.extend_from_slice(&bytes[..count]);
-                            let excess = tail.len().saturating_sub(8192);
+                        if let Ok(mut tail) = lock.lock() {
+                            tail.bytes.extend_from_slice(&bytes[..count]);
+                            let excess = tail.bytes.len().saturating_sub(STDERR_TAIL);
                             if excess != 0 {
-                                tail.drain(..excess);
+                                tail.bytes.drain(..excess);
                             }
                         }
                     }
+                    // Whoever waits for the last bytes is told they are in.
+                    if let Ok(mut tail) = lock.lock() {
+                        tail.ended = true;
+                    }
+                    read.notify_all();
                 })
                 .map_err(|error| io("Cannot start media error reader", error))?;
-            instance.stderr_reader = Some(reader);
         }
         let monitor_child = Arc::clone(&instance.child);
         let monitor = Arc::clone(&instance.monitor);
@@ -335,29 +356,58 @@ impl Process {
     }
 
     /// Everything the child has written to its error output, up to its last
-    /// 8 KiB, once that output has closed or `until` has passed.
-    pub fn stderr_until(&mut self, until: Instant) -> String {
-        if let Some(reader) = self.stderr_reader.take() {
-            while !reader.is_finished() && Instant::now() < until {
-                thread::sleep(Duration::from_millis(2));
+    /// [`STDERR_TAIL`] bytes, once that output has closed or `until` has
+    /// passed.
+    pub fn stderr_until(&self, until: Instant) -> String {
+        let (lock, read) = &*self.stderr;
+        let Ok(mut tail) = lock.lock() else {
+            return String::new();
+        };
+        while !tail.ended {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
             }
-            if !reader.is_finished() {
-                self.stderr_reader = Some(reader);
+            let Ok((next, _)) = read.wait_timeout(tail, left) else {
+                return String::new();
+            };
+            tail = next;
+        }
+        String::from_utf8_lossy(&tail.bytes).into_owned()
+    }
+
+    /// What the process wrote to its error pipe, the last [`STDERR_TAIL`]
+    /// bytes of it. The pipe is read on a thread of its own, which can be
+    /// behind when the process ends, and what a tool writes last is often
+    /// what it is run for: once the process has ended this waits for the
+    /// pipe's end, at most 250 ms. While it runs, this is what is in so far.
+    pub fn stderr_tail(&self) -> String {
+        // The child's lock is let go before the tail's is taken.
+        let ended = (self.child.lock().ok())
+            .and_then(|mut child| child.try_wait().ok().flatten())
+            .is_some();
+        let (lock, read) = &*self.stderr;
+        let Ok(mut tail) = lock.lock() else {
+            return String::new();
+        };
+        if ended {
+            let until = Instant::now() + TAIL_WAIT;
+            while !tail.ended {
+                let left = until.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                let Ok((next, _)) = read.wait_timeout(tail, left) else {
+                    return String::new();
+                };
+                tail = next;
             }
         }
-        self.stderr
-            .lock()
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_default()
+        String::from_utf8_lossy(&tail.bytes).into_owned()
     }
 
     pub fn failure(&self, detail: &str) -> MediaError {
-        let tail = self
-            .stderr
-            .lock()
-            .ok()
-            .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
-            .unwrap_or_default();
+        let tail = self.stderr_tail().trim().to_owned();
         MediaError::Decode(format!(
             "{}: {detail}{}",
             self.tool,
@@ -383,12 +433,19 @@ impl Drop for Process {
 }
 
 pub(crate) fn tool_command(tool: &str) -> Command {
-    let variable = if tool == "ffmpeg" {
-        "ASTER_FFMPEG"
-    } else {
-        "ASTER_FFPROBE"
+    Command::new(tool_program(tool))
+}
+
+/// The executable run for `tool`: the one its variable names, else the
+/// tool's name, looked for on `PATH`. The stem separator, `demucs`, is named
+/// by `ASTER_SEPARATOR`.
+pub(crate) fn tool_program(tool: &str) -> std::ffi::OsString {
+    let variable = match tool {
+        "ffmpeg" => "ASTER_FFMPEG",
+        "demucs" => "ASTER_SEPARATOR",
+        _ => "ASTER_FFPROBE",
     };
-    Command::new(std::env::var_os(variable).unwrap_or_else(|| tool.into()))
+    std::env::var_os(variable).unwrap_or_else(|| tool.into())
 }
 pub(crate) fn capture(
     tool: &str,
@@ -546,15 +603,180 @@ mod tests {
         assert_eq!(processes.started_tools(), 1);
     }
 
-    #[test]
-    fn cancellation_wakes_and_reaps_a_child_blocked_on_an_unread_pipe() {
-        if !tool_command("ffmpeg")
+    fn ffmpeg_available() -> bool {
+        tool_command("ffmpeg")
             .arg("-version")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|status| status.success())
-        {
+    }
+
+    #[test]
+    fn the_tail_of_a_process_that_reports_and_ends_at_once_is_whole() {
+        let _heavy = crate::heavy_test();
+        if !ffmpeg_available() {
+            eprintln!("SKIP: FFmpeg is unavailable; the error tail fixture was not run");
+            return;
+        }
+        // A tenth of a second of tone, measured: FFmpeg writes its report to
+        // the error pipe as it ends, and its stdout ends with it.
+        let processes = Processes::default();
+        for run in 0..30 {
+            let mut command = tool_command("ffmpeg");
+            command.args([
+                "-hide_banner",
+                "-nostdin",
+                "-loglevel",
+                "info",
+                "-nostats",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:duration=0.1",
+                "-af",
+                "ebur128=peak=true:framelog=verbose",
+                "-f",
+                "null",
+                "-",
+            ]);
+            let mut process = Process::spawn("ffmpeg", &mut command, &processes).unwrap();
+            process.begin_read();
+            let mut out = Vec::new();
+            process.stdout.read_to_end(&mut out).unwrap();
+            assert!(process.end_read_checked());
+            let until = Instant::now() + Duration::from_secs(10);
+            // Asked without a pause, so that the tail is read the moment the
+            // process is seen to have ended, ahead of its reader if it can be.
+            while process.child.lock().unwrap().try_wait().unwrap().is_none() {
+                assert!(Instant::now() < until, "the fixture did not end");
+                std::hint::spin_loop();
+            }
+            // The report is there to its last line, after the summary.
+            let tail = process.stderr_tail();
+            let summary = tail.rfind("Summary:").unwrap_or_else(|| {
+                panic!("run {run}: no summary in {tail:?}");
+            });
+            let after = &tail[summary..];
+            assert!(after.contains("Peak:"), "run {run}: {tail:?}");
+            let last = tail.trim_end().lines().last().unwrap_or_default();
+            assert!(last.starts_with("size="), "run {run}: {tail:?}");
+            assert!(tail.ends_with('\n'), "run {run}: {tail:?}");
+        }
+        assert_eq!(processes.started_tools(), 30);
+    }
+
+    /// A shell that writes a line and ends at once, leaving a child of its own
+    /// to write another to the same pipe `delay` seconds on.
+    #[cfg(unix)]
+    fn ends_before_its_pipe(delay: &str, processes: &Processes) -> Process {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            &format!("(sleep {delay}; echo late >&2) & echo early >&2"),
+        ]);
+        let process = Process::spawn("sh", &mut command, processes).unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        while process.child.lock().unwrap().try_wait().unwrap().is_none() {
+            assert!(Instant::now() < until, "the shell did not end");
+            thread::sleep(Duration::from_millis(1));
+        }
+        process
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn once_the_process_has_ended_the_tail_waits_for_its_pipe_and_no_longer_than_its_bound() {
+        let _heavy = crate::heavy_test();
+        let processes = Processes::default();
+        // The pipe ends 50 ms after the process: the tail waits for it.
+        let process = ends_before_its_pipe("0.05", &processes);
+        assert_eq!(process.stderr_tail(), "early\nlate\n");
+        // It ends a second after: the tail is what came within the bound.
+        let process = ends_before_its_pipe("1", &processes);
+        let asked = Instant::now();
+        assert_eq!(process.stderr_tail(), "early\n");
+        let waited = asked.elapsed();
+        assert!(
+            waited >= TAIL_WAIT && waited < TAIL_WAIT + Duration::from_millis(200),
+            "{waited:?}"
+        );
+        // And not again once the pipe has ended: the reader said so.
+        let process = ends_before_its_pipe("0.02", &processes);
+        thread::sleep(Duration::from_millis(150));
+        let asked = Instant::now();
+        assert_eq!(process.stderr_tail(), "early\nlate\n");
+        assert!(asked.elapsed() < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn the_tail_keeps_the_last_bytes_and_waits_for_nothing_while_the_process_runs() {
+        let _heavy = crate::heavy_test();
+        if !ffmpeg_available() {
+            eprintln!("SKIP: FFmpeg is unavailable; the error tail bound was not run");
+            return;
+        }
+        // Every frame of a second of picture is reported, far more than the
+        // tail keeps.
+        let processes = Processes::default();
+        let mut command = tool_command("ffmpeg");
+        command.args([
+            "-hide_banner",
+            "-nostdin",
+            "-loglevel",
+            "info",
+            "-nostats",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=32x32:r=100:d=1",
+            "-vf",
+            "showinfo",
+            "-f",
+            "null",
+            "-",
+        ]);
+        let mut process = Process::spawn("ffmpeg", &mut command, &processes).unwrap();
+        process.begin_read();
+        process.stdout.read_to_end(&mut Vec::new()).unwrap();
+        process.end_read();
+        while process.child.lock().unwrap().try_wait().unwrap().is_none() {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let tail = process.stderr_tail();
+        assert!(
+            tail.len() <= STDERR_TAIL && tail.len() > STDERR_TAIL - 4,
+            "{}",
+            tail.len()
+        );
+        // Of picture, FFmpeg's last line counts frames.
+        let last = tail.trim_end().lines().last().unwrap_or_default();
+        assert!(last.starts_with("frame=  100"), "{last}");
+
+        // A process that runs and writes nothing: its tail is empty at once.
+        let mut command = tool_command("ffmpeg");
+        command.args([
+            "-hide_banner",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-f",
+            "f32le",
+            "pipe:1",
+        ]);
+        let running = Process::spawn("ffmpeg", &mut command, &processes).unwrap();
+        let asked = Instant::now();
+        assert_eq!(running.stderr_tail(), "");
+        assert!(asked.elapsed() < TAIL_WAIT);
+    }
+
+    #[test]
+    fn cancellation_wakes_and_reaps_a_child_blocked_on_an_unread_pipe() {
+        if !ffmpeg_available() {
             eprintln!("FFmpeg is unavailable; subprocess cancellation fixture skipped");
             return;
         }
@@ -587,13 +809,7 @@ mod tests {
 
     #[test]
     fn a_write_deadline_kills_a_child_that_stops_reading_its_input() {
-        if !tool_command("ffmpeg")
-            .arg("-version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-        {
+        if !ffmpeg_available() {
             eprintln!("FFmpeg is unavailable; subprocess write deadline fixture skipped");
             return;
         }

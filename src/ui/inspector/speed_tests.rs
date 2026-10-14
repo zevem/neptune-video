@@ -6,7 +6,7 @@ use editor_core::{Retime, TimeKey};
 
 const REFUSED: &str =
     "Not applied: part of the clip would play slower than 0.05× or faster than 16×.";
-const SILENT: &str = "Sound is silent where the clip is held, reversed or ramped.";
+const SILENT: &str = "Sound is silent where the clip is held, reversed or ramped; elsewhere speed changes its pitch.";
 
 /// A bench on the Speed section of its clip: four seconds from the start of
 /// a ten second video, with the playhead a second in.
@@ -474,6 +474,8 @@ fn a_locked_track_takes_no_speed() {
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     });
     let before = bench.steps();
     for name in ["2×", "Reverse", "Freeze at playhead", "Hero", "Add point"] {
@@ -571,4 +573,161 @@ fn a_button_pressed_while_a_typed_speed_is_held_edits_the_clip_that_speed_leaves
     assert_eq!(bench.clip(clip).playback_rate, 2.0);
     assert_eq!(bench.clip(clip).duration, seconds(2.0));
     assert!(bench.clip(clip).retime.is_none());
+}
+
+// ---- Keep pitch -----------------------------------------------------------
+
+const DETACH: &str = "Detach audio to keep pitch";
+
+fn pitch_of(bench: &Bench, clip: ClipId) -> Option<f32> {
+    editor_core::sound::pitch(bench.clip(clip))
+}
+
+/// Whether the "Keep pitch" switch reads on, and whether it can be turned.
+fn switch(bench: &mut Bench) -> (Option<bool>, bool) {
+    bench.frame(Vec::new());
+    let seen = bench.find("Keep pitch").expect("a Keep pitch switch");
+    (seen.selected, !seen.disabled)
+}
+
+#[test]
+fn keep_pitch_on_a_sound_is_one_set_effects_each_way() {
+    let (mut bench, voice) = with_voice();
+    assert_eq!(switch(&mut bench), (Some(false), true));
+    let before = bench.steps();
+
+    bench.click("Keep pitch");
+    assert!(bench.refused.is_empty(), "{:?}", bench.refused);
+    assert_eq!(bench.steps(), before + 1);
+    assert_eq!(bench.last(), "Keep pitch");
+    let stack = &bench.clip(voice).effects;
+    assert_eq!(stack.len(), 1);
+    assert_eq!(stack[0].kind, EffectKind::Pitch);
+    assert_eq!(pitch_of(&bench, voice), Some(0.0));
+    assert_eq!(switch(&mut bench), (Some(true), true));
+
+    bench.click("Keep pitch");
+    assert_eq!(bench.steps(), before + 2);
+    assert_eq!(bench.last(), "Let speed change pitch");
+    assert!(bench.clip(voice).effects.is_empty());
+    assert_eq!(switch(&mut bench), (Some(false), true));
+
+    assert!(bench.editor.undo());
+    assert_eq!(pitch_of(&bench, voice), Some(0.0));
+    assert!(bench.editor.undo());
+    assert_eq!(pitch_of(&bench, voice), None);
+    assert!(bench.said.is_empty(), "{:?}", bench.said);
+}
+
+#[test]
+fn a_shifted_pitch_holds_the_switch_on_and_its_speeds_are_said() {
+    let (mut bench, voice) = with_voice();
+    bench.edit(Command::SetEffects {
+        clip_id: voice,
+        effects: vec![Effect {
+            params: vec![editor_core::ParamValue {
+                key: ParamKey::Amount,
+                value: 12.0,
+            }],
+            ..Effect::new(EffectKind::Pitch)
+        }],
+    });
+    let before = bench.steps();
+    assert_eq!(switch(&mut bench), (Some(true), false));
+    bench.click("Keep pitch");
+    assert_eq!(bench.steps(), before, "a shift is not taken away here");
+    assert_eq!(pitch_of(&bench, voice), Some(12.0));
+    // An octave up is held from 1x to 4x: at 1x it is.
+    let past = |bench: &Bench, from: &str, to: &str| {
+        bench.has(&format!("Pitch is kept from {from} to {to}."))
+    };
+    assert!(!past(&bench, "1×", "4×"));
+    bench.edit(Command::SetPlaybackRate {
+        clip_id: voice,
+        rate: 0.5,
+    });
+    bench.frame(Vec::new());
+    assert!(past(&bench, "1×", "4×"));
+
+    // At 0 the speeds are 0.5x to 2x, and 2.5x is past them.
+    let (mut bench, voice) = with_voice();
+    bench.click("Keep pitch");
+    bench.edit(Command::SetPlaybackRate {
+        clip_id: voice,
+        rate: 2.0,
+    });
+    bench.frame(Vec::new());
+    assert!(!past(&bench, "0.5×", "2×"));
+    bench.edit(Command::SetPlaybackRate {
+        clip_id: voice,
+        rate: 2.5,
+    });
+    bench.frame(Vec::new());
+    assert!(past(&bench, "0.5×", "2×"));
+    // Without the switch nothing is said: speed changes the pitch.
+    bench.click("Keep pitch");
+    assert!(!past(&bench, "0.5×", "2×"));
+}
+
+#[test]
+fn a_speed_being_typed_and_a_mapped_stretch_are_said_past_what_keeps_pitch() {
+    const PAST: &str = "Pitch is kept from 0.5× to 2×.";
+    let (mut bench, voice) = with_voice();
+    bench.click("Keep pitch");
+    let before = bench.steps();
+    bench.frame(Vec::new());
+    assert!(!bench.has(PAST));
+    // Typed into the Playback card and held, not yet a step: it is said
+    // already, and giving it up takes it back.
+    bench.focus("Speed");
+    bench.frame(vec![Event::Text("3".to_owned())]);
+    assert_eq!(bench.draft.as_ref().map(|draft| draft.rate), Some(3.0));
+    assert_eq!(bench.steps(), before, "typed and held, not yet a step");
+    bench.frame(Vec::new());
+    assert!(bench.has(PAST));
+    bench.key(Key::Escape, Modifiers::NONE);
+    bench.frame(Vec::new());
+    assert_eq!(bench.steps(), before);
+    assert_eq!(bench.clip(voice).playback_rate, 1.0);
+    assert!(!bench.has(PAST));
+
+    // A map is heard at the speed of each straight stretch: 2× and 1× keep
+    // pitch, a stretch at 2.5× does not.
+    map(&mut bench, voice, &[(0.0, 0.0), (1.0, 2.0), (2.0, 3.0)]);
+    bench.frame(Vec::new());
+    assert!(!bench.has(PAST));
+    map(&mut bench, voice, &[(0.0, 0.0), (1.0, 2.5), (2.0, 3.5)]);
+    bench.frame(Vec::new());
+    assert!(bench.has(PAST));
+    assert!(bench.refused.is_empty(), "{:?}", bench.refused);
+}
+
+#[test]
+fn a_picture_clip_is_told_to_detach_its_audio_to_keep_pitch() {
+    let (mut bench, clip) = timed();
+    bench.frame(Vec::new());
+    assert!(bench.has(DETACH));
+    assert!(bench.find("Keep pitch").is_none());
+    // A picture whose sound is on its linked audio clip says nothing of it.
+    let detached = crate::rules::detach_audio(bench.editor.project(), clip).unwrap();
+    bench.edit(detached);
+    bench.frame(Vec::new());
+    assert!(!bench.has(DETACH));
+    // Nor does a still, which has no sound.
+    let (mut bench, clip) = timed();
+    let id = bench.clip(clip).asset_id().unwrap();
+    let mut silent = bench.editor.project().assets[&id].clone();
+    silent.has_audio = false;
+    silent.id = editor_core::AssetId::new_v4();
+    bench.edit(Command::AddAssets {
+        assets: vec![silent.clone()],
+    });
+    let quiet = bench.add(TrackKind::Video, {
+        let mut quiet = Clip::from_asset(&silent, seconds(5.0));
+        quiet.duration = seconds(2.0);
+        quiet
+    });
+    bench.selection.only(quiet);
+    bench.frame(Vec::new());
+    assert!(!bench.has(DETACH));
 }

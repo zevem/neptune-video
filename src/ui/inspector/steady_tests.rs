@@ -228,6 +228,8 @@ fn a_stabilization_is_reached_without_a_pointer_and_a_locked_track_takes_none() 
         hidden: None,
         muted: None,
         name: None,
+        gain: None,
+        solo: None,
     });
     bench.frame(Vec::new());
     assert!(bench.find("Stabilize").unwrap().disabled);

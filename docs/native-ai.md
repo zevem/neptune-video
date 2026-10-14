@@ -50,6 +50,16 @@ effect kind. They state that `apply_preset` gives a look in place of the one a
 clip has. A plan cannot start region tracking or a stabilization analysis:
 both run in the desktop's analysis lane on the person's request, and the
 planner is told to write tracker keys only from positions the person states.
+The seven audio effect kinds are named with their keys and one sentence of
+units (Hz, dB, octaves, ratio, semitones), and the planner is told that they
+go on clips on audio tracks only, at `mix` 1 and without keyframes, and that
+an enabled `pitch`, 0 included, makes the clip's speed keep its pitch. The
+preview applies them through the clip's decoder chain. Fades and track
+volume have one sentence of units; solo is in the schema only. A plan cannot
+start a loudness measurement, a duck, a beat search, a recording, a saved
+sound or a stem separation: the person starts those in the desktop, and a
+plan can write only their kind of result (a volume, volume keyframes,
+markers).
 The planner sees no pixels, so it cannot choose a key colour, a region or a
 grade from the picture. No real provider request has been made with the
 look, motion and speed instructions; their evidence is the schema-size and
@@ -186,12 +196,13 @@ a general sandbox for an arbitrary untrusted replacement executable.
 | Active requests / unread runtime events | 1 / at most 8 |
 | Proposal / summary | 2 MiB / 1–2048 bytes |
 | Edits | 128 top-level, 256 total including nested batches; depth at most 8 |
-| Native-plan schema | Under 24 KiB encoded; it shares the Claude command line with the planner instructions |
+| Native-plan schema / planner instructions | Under 23 KiB encoded / under 6 KiB; the two share the Claude command line, 29 KiB between them, and stay under 31 KiB with Windows' quote escaping |
 | Keys sent per animation track or tracker | 32; longer lists are sent as a count |
 | Effects / masks / animation tracks per clip | 16 / 8 / 64 |
 | Keys per animation track / retime map / tracker | 256 / 2–64 / 1–2048 |
 | Curve points / trackers per project | 2–16 / 64 |
 | Transition length | One canvas frame to the shorter of the clip and 10 s |
+| Fade in plus fade out / track volume | At most the clip's length, on clips with sound / 0–8 linear |
 | Process JSON frame / total stdout / stderr | 2 MiB / 32 MiB / 256 KiB |
 | Inherited Codex MCP names | At most 64, each explicitly disabled |
 

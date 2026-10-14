@@ -1,4 +1,4 @@
-# ADR 0008, glossary, architecture, performance, usage and installation
+# ADR 0009, glossary, architecture, performance, usage and installation
 
 Status: ready-for-agent
 Progress: resolved
@@ -14,7 +14,7 @@ constant, the user guide and FFmpeg encoder availability.
 
 2026-10-14: Written:
 
-- [ADR 0008](../../../docs/adr/0008-export-renders-originals-through-the-preview-compositor.md),
+- [ADR 0009](../../../docs/adr/0009-export-renders-originals-through-the-preview-compositor.md),
   superseding the "no export path" statements of ADR 0006 and 0007 by pointer.
 - [Glossary](../../../GLOSSARY.md): an Export and rendering section; Proxy and
   Subtitle file extended.

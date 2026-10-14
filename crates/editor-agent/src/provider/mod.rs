@@ -30,11 +30,7 @@ pub(crate) fn plan(
         AiProvider::Claude => {
             let schema = serde_json::to_string(&schema)
                 .map_err(|_| AiError::Invalid("Cannot encode proposal schema".into()))?;
-            if schema.len() > 24 * 1024 {
-                return Err(AiError::Invalid(
-                    "Proposal schema exceeds native command-line budget".into(),
-                ));
-            }
+            command_line_schema(schema.len())?;
             command
                 .args([
                     "--print",
@@ -102,6 +98,17 @@ pub(crate) fn plan(
         }
         AiProvider::Codex => codex::plan(&mut process, config, &prompt, &schema),
     }
+}
+
+/// The encoded schema is an argument beside the planner instructions, so it
+/// is held under its part of their shared command line.
+fn command_line_schema(bytes: usize) -> Result<(), AiError> {
+    if bytes >= planner::MAX_SCHEMA_BYTES {
+        return Err(AiError::Invalid(
+            "Proposal schema exceeds native command-line budget".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn configure_codex_instructions(
@@ -337,6 +344,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_schema_at_its_part_of_the_command_line_is_refused_before_launch() {
+        assert_eq!(planner::MAX_SCHEMA_BYTES, 23 * 1024);
+        command_line_schema(planner::MAX_SCHEMA_BYTES - 1).unwrap();
+        for bytes in [planner::MAX_SCHEMA_BYTES, 24 * 1024] {
+            assert!(matches!(
+                command_line_schema(bytes),
+                Err(AiError::Invalid(message)) if message.contains("command-line budget")
+            ));
+        }
+        // The schema the planner sends passes, with the instructions under theirs.
+        let schema = serde_json::to_string(&planner::proposal_schema()).unwrap();
+        command_line_schema(schema.len()).unwrap();
+        assert!(planner::SYSTEM.len() < planner::MAX_SYSTEM_BYTES);
     }
 
     #[test]
