@@ -5,6 +5,7 @@
 //! when something changed, so a frame never waits for the disk.
 use crate::{
     ai::AiSettings,
+    speech::SpeechSettings,
     theme::{Accent, Appearance},
     ui::library::LibrarySort,
 };
@@ -38,6 +39,8 @@ pub struct Settings {
     /// The transitions kept as the defaults of their kinds: what a new one
     /// of that kind starts as.
     pub transitions: Vec<editor_core::Transition>,
+    /// What captions from speech are made with.
+    pub speech: SpeechSettings,
 }
 
 impl Default for Settings {
@@ -59,6 +62,7 @@ impl Default for Settings {
             timeline_share: 0.42,
             recent: Vec::new(),
             transitions: Vec::new(),
+            speech: SpeechSettings::default(),
         }
     }
 }

@@ -652,6 +652,7 @@ impl KeyframesState {
             blend: None,
             animation: Some(animation),
             reading: None,
+            content: None,
         })
     }
 

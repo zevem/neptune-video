@@ -1039,6 +1039,37 @@ impl Mixer {
     }
 }
 
+/// The timeline's sound rendered away from the device, mono, as playback
+/// mixes it: cuts, gain, mute and steady speed changes are what it hears.
+/// Its decoders are children of the given processes.
+pub(crate) struct OfflineMix {
+    mixer: Mixer,
+    start: Time,
+    rate: u32,
+    frames: u64,
+}
+
+impl OfflineMix {
+    pub(crate) fn new(project: Arc<Project>, start: Time, rate: u32, processes: Processes) -> Self {
+        Self {
+            mixer: Mixer::new(project, 1.0, rate, 1, processes),
+            start,
+            rate,
+            frames: 0,
+        }
+    }
+
+    /// The next 64 ms of samples at 16 kHz, or the same number of samples at
+    /// another rate. Each chunk starts at its own sample
+    /// time, so rounding never accumulates.
+    pub(crate) fn next(&mut self) -> Result<Vec<f32>, MediaError> {
+        let at = self.start + Time::from_seconds(self.frames as f64 / f64::from(self.rate));
+        let samples = self.mixer.chunk(at, CHUNK_FRAMES)?;
+        self.frames += CHUNK_FRAMES as u64;
+        Ok(samples)
+    }
+}
+
 #[cfg(test)]
 mod fault_tests;
 

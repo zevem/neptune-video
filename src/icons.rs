@@ -72,6 +72,10 @@ pub enum Icon {
     Curve,
     FitValues,
     Transition,
+    Captions,
+    Export,
+    /// A microphone: what is spoken.
+    Speech,
 }
 
 fn arc(cx: f32, cy: f32, radius: f32, from: f32, to: f32, steps: usize) -> Vec<[f32; 2]> {
@@ -599,6 +603,32 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             // Two frames, one giving way to the other across a diagonal.
             rectangle(3.5, 6.0, 17.0, 12.0, 2.5);
             line(&[[8.5, 18.0], [15.5, 6.0]]);
+        }
+        Icon::Speech => {
+            rectangle(9.0, 3.0, 6.0, 11.0, 3.0);
+            line(&arc(12.0, 11.0, 6.5, 0.0, 180.0, 14));
+            line(&[[12.0, 17.5], [12.0, 21.0]]);
+            line(&[[8.5, 21.0], [15.5, 21.0]]);
+        }
+        Icon::Captions => {
+            // A frame with two lines of words along its foot.
+            rectangle(3.0, 5.0, 18.0, 14.0, 2.5);
+            line(&[[7.0, 12.5], [13.0, 12.5]]);
+            line(&[[15.5, 12.5], [17.0, 12.5]]);
+            line(&[[7.0, 15.5], [9.0, 15.5]]);
+            line(&[[11.5, 15.5], [17.0, 15.5]]);
+        }
+        Icon::Export => {
+            line(&[[12.0, 15.0], [12.0, 4.0]]);
+            line(&[[7.5, 8.5], [12.0, 4.0], [16.5, 8.5]]);
+            line(&[
+                [4.0, 15.0],
+                [4.0, 19.0],
+                [5.0, 20.0],
+                [19.0, 20.0],
+                [20.0, 19.0],
+                [20.0, 15.0],
+            ]);
         }
     }
 }

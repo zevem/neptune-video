@@ -904,6 +904,63 @@ is given up by a flag and by killing its process.
 No real camera footage, optimized build or other host was measured, and the
 native stabilization figures predate the estimator's second fit guard.
 
+## Titles, captions and speech budgets
+
+These are the bounds the [titles and captions](../.scratch/titles-and-captions/spec.md)
+code enforces and the few figures measured for it. Every figure is from one
+Linux container (4 vCPU Intel Xeon at 2.8 GHz, 15 GiB, Ubuntu 24.04.5) on the
+`dev` profile, whose dependencies are built at `opt-level` 2, except the one
+row marked as the release build. None is a macOS, Windows or playback-rate
+measurement.
+
+### Title lane and textures
+
+A title costs the frame one quad. Its picture is drawn on the `aster-titles`
+thread, never on the frame, and an animated title asks for a new picture on
+each frame its layer changes. How long a picture takes to draw, and so whether
+an animated caption keeps up with 30 or 60 fps playback, has not been
+measured: a slow picture shows the previous one for longer, it does not slow
+the frame.
+
+| Bound | Value |
+| --- | --- |
+| Lane threads | 1 (`aster-titles`), started with the window |
+| Titles waiting for a picture | 64 (`TEXT_QUEUE`); past it the oldest is let go. Only the newest request per title is kept |
+| Pictures drawn but not yet taken | 64 MiB (`TITLE_BUDGET`); the lane draws no more until the window takes some |
+| Picture size | 4096 pixels a side at most (`MAX_TITLE_SIDE`); scale 1/64 to 16, quantized to eighth octaves so a zoom does not redraw every frame |
+| Textures the window holds | One per title drawn on screen; a title not drawn for two frames gives its texture up, and a replaced project clears them all |
+| Font files read and held | 192 MiB beyond the bundled faces (`FONT_CACHE_BYTES`), least lately used let go; the faces of the title being drawn are always kept. One file is read only up to 128 MiB |
+| System font search | Once a lane, when first needed: 8192 files and 8 directory levels at most; 48 faces read per picture to find a missing character, and 65,536 characters' fallbacks remembered |
+| Text tab tiles | Drawn by the same lane at tile size; a tile's entrance plays only while the pointer rests on it, and the tab asks for no repaint while nothing is pointed at |
+
+### Speech lane
+
+| Bound | Value |
+| --- | --- |
+| Jobs at a time | 1 on the `aster-speech` thread, started the first time captions are asked for: a model download or a transcription |
+| Stretch heard | 6 hours of timeline at most (`MAX_SPEECH`) |
+| Sound held | The timeline mix at 16 kHz mono, rendered offline and taken in pieces of about 5 minutes cut at a quiet moment; one piece and its speech-only copy are held, not the whole stretch |
+| Recognition threads | All processors but one, from 1 to 8 |
+| Progress wakes | One every 100 ms at most; 16 events kept for the window |
+| Model files | Tiny 32.2 MB, Base 59.7 MB, Small 190.1 MB, Medium 539.2 MB, Large v3 Turbo 574.0 MB; the speech detector 0.9 MB. Kept in `models/` beside the settings file when `--settings` names one, otherwise in the platform's local data directory |
+
+| Measurement | Result | Conditions |
+| --- | --- | --- |
+| Model load | 140 ms | Tiny q5_1 |
+| Offline 16 kHz mix | About 300 ms | 7 s of speech in an 11.55 s timeline |
+| Speech detector | About 180 ms | Same |
+| Recognition, language detected | 3.7 s | Same, Tiny |
+| Recognition, language given | 2.0 s greedy, 2.3 s beam search of 5 | Same, Tiny; beam search is what ships |
+| Click to captions | About 5.5 s for six captions | Native run of the debug build, Tiny, 8.5 s of speech |
+| Click to captions, release build | 4.2 to 4.9 s for six captions | Native run of `cargo build --release`, Tiny, language detected, same speech; the captions were absent from a capture 4.2 s after the click and present in the next, at 4.9 s |
+| Cancel during recognition | 3.34 s | Tiny; whisper.cpp checks for a cancel only between passes and its language detection cannot be stopped |
+| Base model download | 59,707,625 bytes, checksum matched | Through this container's network proxy; time not recorded |
+
+Recognition for under 30 s of speech reports no progress until it ends,
+because whisper.cpp reports per 30 s window. The larger models' speed, the
+memory used while recognizing, GPU acceleration and a real recording longer
+than one five-minute piece were not measured.
+
 ## Acceptance targets
 
 These are investigation targets, not achieved guarantees. Fix a host and

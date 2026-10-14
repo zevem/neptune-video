@@ -72,7 +72,7 @@ pub fn offered(kind: EffectKind) -> bool {
 /// families' order.
 pub fn entries(tab: Tab) -> Vec<(&'static str, Entry)> {
     match tab {
-        Tab::Media => Vec::new(),
+        Tab::Media | Tab::Text | Tab::Captions => Vec::new(),
         Tab::Effects => {
             let mut kinds: Vec<(usize, &str, EffectKind)> = (EffectKind::ALL.into_iter())
                 .filter(|kind| offered(*kind))

@@ -9,6 +9,8 @@ mod import;
 mod lut;
 mod process;
 mod service;
+pub mod speech;
+pub mod text;
 
 pub use analysis::{
     ANALYSIS_QUEUE, ANALYSIS_SIDE, AnalysisEvent, AnalysisService, Fix, LOST_BELOW,

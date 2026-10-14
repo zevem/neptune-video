@@ -82,6 +82,10 @@ project when it fits within 1 MiB. Otherwise it constructs a focused view:
   with `key_count` and `omitted_fields: ["keys"]`, in complete and focused
   documents alike. A focused view lists only the trackers its included clips
   follow, with the assets those trackers and the clips' effects reference.
+- A title with word times is sent with its text, style and animations, but
+  its words as `words: null`, a `word_count`, the `spoken` span and
+  `omitted_fields: ["words"]`. A proposal edits the text, and the editor keeps
+  the times of the words it keeps.
 - If the required selection and its relationship/source context cannot fit,
   planning fails with a request for a smaller independent selection. An omitted
   object still exists; its absence cannot justify deletion or imply an empty
@@ -92,6 +96,36 @@ receives a focused view. Five-thousand-clip regression fixtures cover exact
 source limits, distant relationship closure, explicit omissions, complete
 small-project shape and rejection of an oversized required component in
 [context tests](../crates/editor-agent/src/context.rs).
+
+### Titles and caption translation
+
+The planner can add plain titles, change their text, add or remove their
+animations, set a caption track's language and translate a caption track
+with `copy_captions`. Title styles, graphics and word times are left out of
+its schema: they are designed in the inspector and presets or come from
+speech, and the schema shares the provider's command line with the planner
+text.
+
+**Translate into…** in the Captions tab's track menu, and
+`translate captions to <language>` in the command panel, send an ordinary Ask
+request built by the editor. It selects every caption of the track, so each
+is sent whole, and asks for one `copy_captions` command with a text per
+caption in timeline order. The answer is reviewed and applied like any other
+proposal; the core refuses one with the wrong number of texts. The request
+bubble shows "Translate “English captions” into Spanish" rather than the
+prompt.
+
+With the planner text, the provider's command line is 21,452 bytes of schema
+and 5,411 of text; with Windows' quote escapes that is 30,499 of the
+31,744 characters the tests allow, under `CreateProcess`'s 32,767. About
+1.2 KB is left for later commands and instructions.
+
+This flow was checked natively against a fake Claude executable that logged
+its arguments and stdin and answered with a fixed proposal: the request
+carried the schema, the planner text and all six captions with their texts,
+and the plan applied and undid as one step. No real Claude or Codex model was
+asked to translate, so translation quality, kept line breaks and caption
+counts from a real provider are unverified.
 
 ## Provider boundary and process ownership
 

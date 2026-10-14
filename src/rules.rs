@@ -182,7 +182,7 @@ pub fn source_bound(project: &Project, clip: &Clip) -> Option<Time> {
             .get(asset_id)
             .filter(|asset| asset.kind != MediaKind::Image)
             .map(|asset| asset.duration),
-        ClipContent::Text { .. } => None,
+        ClipContent::Text { .. } | ClipContent::Graphic { .. } => None,
     }
 }
 

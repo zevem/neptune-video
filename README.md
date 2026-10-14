@@ -26,6 +26,14 @@ production release gates remain in [verification](docs/verification.md).
 - Native Claude/Codex requests, reviewable editing proposals, cancellation and
   guarded edits as one undo step; unchanged proposals preserve history. This
   first planner uses project metadata.
+- Titles with fonts, colours, outlines, shadows and backgrounds; fade, pop,
+  bounce, typewriter, slide and wipe animations by line, word or letter; lower
+  thirds, title cards, callouts, stickers and emoji with editable texts and
+  colours; kept looks, templates and brand colours.
+- Captions: made locally from the timeline's speech by a built-in whisper.cpp
+  with word times and karaoke looks, edited and timed in a list, imported and
+  exported as SRT or VTT, one track per language, and translated through the
+  native AI provider for review.
 
 See the [user guide](docs/usage.md) for controls and current limits, and the
 [feature acceptance record](docs/verification.md) for what was actually tested.
@@ -34,9 +42,11 @@ including actual provider requests and protected save/recovery behavior.
 
 ## Build and run
 
-Use the pinned Rust 1.97.1 toolchain. A graphical desktop and graphics driver are
+Use the pinned Rust 1.97.1 toolchain, plus CMake, a C/C++ compiler and libclang
+to build the speech recognizer. A graphical desktop and graphics driver are
 required. FFmpeg/ffprobe must be installed for video/audio processing; still-image
-decoding is native to the Rust media adapter.
+decoding is native to the Rust media adapter. Speech models are downloaded on
+request with the system's `curl`, or chosen as files.
 
 ```sh
 cargo run --release --locked --bin aster
@@ -67,8 +77,8 @@ is a source build; signed installers and codec bundling remain release work.
 
 | Component | Responsibility |
 | --- | --- |
-| `crates/editor-core` | Typed project/timeline model, validated commands, undo/redo and frame timing |
-| `crates/editor-media` | Media probing, decoding and bounded worker services |
+| `crates/editor-core` | Typed project/timeline model, titles and captions, validated commands, undo/redo and frame timing |
+| `crates/editor-media` | Media probing, decoding, the text renderer, speech recognition and bounded worker services |
 | `crates/editor-store` | Versioned save/load, autosave, recovery and checkpoints |
 | `crates/editor-agent` | Native provider planning, exact validated proposals and local authenticated editing transport |
 | `src/` | Native desktop UI and `aster-agent` command interface |

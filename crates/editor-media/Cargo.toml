@@ -13,6 +13,13 @@ thiserror.workspace = true
 uuid.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 cpal = "0.18.1"
+# Titles: shaping, font metadata and a CPU rasteriser with colour glyphs.
+harfrust = "0.12"
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
+vello_cpu = { version = "0.1.0", default-features = false, features = ["std", "text", "png", "u8_pipeline"] }
+# Speech: whisper.cpp built from source for the CPU, and model checksums.
+whisper-rs = { version = "0.16", default-features = false }
+sha2 = "0.10.9"
 
 [dev-dependencies]
 tempfile = "3.27"

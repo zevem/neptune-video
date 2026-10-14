@@ -7,18 +7,20 @@
 //! External agents do not come through here; they use the live session the
 //! application hosts (see `editor_agent::AgentHost`).
 use crate::{
-    rules, speed, timefmt,
+    languages, rules, speed, timefmt,
     ui::{
         Action, Selection,
         browser::{self, Entry},
-        inspector,
+        captions_tab, inspector,
+        library::Tab,
         timeline::marker_at,
         transitions, with_key,
     },
 };
 use editor_core::{
     BlendMode, CanvasSettings, Clip, ClipContent, Command, Effect, EffectKind, ParamKey,
-    ParamValue, Project, Time, TrackKind, Transform, Transition, TransitionEdge,
+    ParamValue, Project, TextAnimation, TextAnimationKind, Time, Track, TrackKind, Transform,
+    Transition, TransitionEdge,
 };
 
 pub struct Context<'a> {
@@ -31,7 +33,7 @@ pub struct Context<'a> {
 }
 
 /// What the panel lists as examples. Each one is accepted by [`interpret`].
-pub const EXAMPLES: [(&str, &str); 21] = [
+pub const EXAMPLES: [(&str, &str); 23] = [
     (
         "split",
         "Split the selected clips, or every clip, at the playhead",
@@ -74,6 +76,14 @@ pub const EXAMPLES: [(&str, &str); 21] = [
         "Go where a tracked region goes, from where the clip is",
     ),
     ("add text Hello for 3s", "Put a title at the playhead"),
+    (
+        "animate in pop · animate out fade for 1s",
+        "How the selected titles come in or go; “none” takes it off",
+    ),
+    (
+        "generate captions · translate captions to Spanish",
+        "Captions from speech, or a copy the AI translates for review",
+    ),
     (
         "preview shot.mp4 · close preview",
         "Play library media without adding it",
@@ -711,6 +721,12 @@ pub fn interpret(line: &str, context: &Context) -> Result<Vec<Action>, String> {
         "add transition" => add_transition("", context)?,
         "remove transition" => remove_transition("", context)?,
         "stop following" | "unfollow" => stop_following(context)?,
+        "generate captions" | "captions from speech" => {
+            vec![
+                Action::ShowLibrary(Tab::Captions),
+                Action::CaptionsFromSpeech,
+            ]
+        }
         "follow" => {
             return Err("Say which tracker, such as “follow Tracker 1”.".to_owned());
         }
@@ -853,6 +869,14 @@ pub fn interpret(line: &str, context: &Context) -> Result<Vec<Action>, String> {
                 vec![Action::AddTrack(kind)]
             } else if let Some(rest) = after("add text ") {
                 add_text(rest, context)?
+            } else if let Some(rest) = after("animate in ") {
+                animate(TransitionEdge::In, rest, context)?
+            } else if let Some(rest) = after("animate out ") {
+                animate(TransitionEdge::Out, rest, context)?
+            } else if let Some(rest) =
+                after("translate captions to ").or_else(|| after("translate captions into "))
+            {
+                translate(rest, context)?
             } else if let Some(rest) = after("checkpoint ").filter(|rest| !rest.is_empty()) {
                 vec![Action::SaveCheckpoint(rest.to_owned())]
             } else if let Some(rest) = after("restore ").filter(|rest| !rest.is_empty()) {
@@ -919,6 +943,115 @@ fn add_text(rest: &str, context: &Context) -> Result<Vec<Action>, String> {
     })])
 }
 
+/// `animate in pop`, `animate out fade for 1s`, `animate in none`: the
+/// entrance or exit of every selected title, as one step. A new one takes
+/// half a second unless a length is given, held inside its clip.
+fn animate(edge: TransitionEdge, rest: &str, context: &Context) -> Result<Vec<Action>, String> {
+    let project = context.project;
+    let (name, length) = match rest.rsplit_once(" for ") {
+        Some((name, span)) => (
+            name,
+            Some(
+                timefmt::parse(span, project.settings.frame_rate)
+                    .ok_or("Give a length such as 0.5s after “for”.")?,
+            ),
+        ),
+        None => (rest, None),
+    };
+    let name = name.trim().to_lowercase();
+    let kind = match name.as_str() {
+        "none" | "nothing" | "off" => None,
+        _ => Some(
+            serde_json::from_value::<TextAnimationKind>(serde_json::Value::String(
+                name.replace([' ', '-'], "_"),
+            ))
+            .map_err(|_| {
+                "An animation is fade, pop, bounce, typewriter, wipe or slide up, down, left or right."
+                    .to_owned()
+            })?,
+        ),
+    };
+    let frame = project.settings.frame_rate.frame_time(1);
+    let mut commands = Vec::new();
+    for (_, clip) in (context.selection.clips.iter()).filter_map(|id| project.clip(*id)) {
+        let ClipContent::Text { enter, exit, .. } = &clip.content else {
+            continue;
+        };
+        let (other, current) = match edge {
+            TransitionEdge::In => (exit, enter),
+            TransitionEdge::Out => (enter, exit),
+        };
+        let animation = match kind {
+            None if current.is_none() => continue,
+            None => None,
+            Some(kind) => {
+                let given = TextAnimation {
+                    kind,
+                    unit: kind.usual_unit(),
+                    duration: length.unwrap_or(Time::from_seconds(0.5)),
+                    delay: Time::ZERO,
+                };
+                // Room the other edge leaves, and no more.
+                let room = clip.duration - other.map_or(Time::ZERO, |other| other.span());
+                Some(given.held(frame, room).ok_or(format!(
+                    "“{}” has no room for that beside its other animation.",
+                    clip.name
+                ))?)
+            }
+        };
+        commands.push(Command::SetTextAnimation {
+            clip_id: clip.id,
+            edge,
+            animation,
+        });
+    }
+    if commands.is_empty() {
+        return Err(match kind {
+            Some(_) => "Select the titles to animate first.",
+            None => "The selected titles have no such animation.",
+        }
+        .to_owned());
+    }
+    let label = match (edge, kind) {
+        (TransitionEdge::In, Some(_)) => "Animate in",
+        (TransitionEdge::Out, Some(_)) => "Animate out",
+        (TransitionEdge::In, None) => "Remove animation in",
+        (TransitionEdge::Out, None) => "Remove animation out",
+    };
+    Ok(vec![Action::Edit(batch(label, commands))])
+}
+
+/// `translate captions to Spanish`: the caption track of the selected
+/// caption, or else the one caption track that is shown.
+fn translate(rest: &str, context: &Context) -> Result<Vec<Action>, String> {
+    let language = languages::tag(rest.trim().trim_end_matches('.'))
+        .ok_or("Name a language or give its tag, such as Spanish or pt-BR.")?;
+    let project = context.project;
+    let captions = |track: &Track| track.kind == TrackKind::Text && track.language.is_some();
+    let selected = (context.selection.clips.iter())
+        .filter_map(|id| project.clip(*id))
+        .map(|(track, _)| track)
+        .find(|track| captions(track));
+    let track = match selected {
+        Some(track) => track,
+        None => {
+            let mut shown = (project.tracks.iter())
+                .map(AsRef::as_ref)
+                .filter(|track| captions(track) && !track.hidden);
+            match (shown.next(), shown.next()) {
+                (Some(track), None) => track,
+                (None, _) => return Err("There is no caption track to translate.".to_owned()),
+                _ => return Err("Select a caption of the track to translate.".to_owned()),
+            }
+        }
+    };
+    captions_tab::translation(project, track, &language)?;
+    Ok(vec![Action::TranslateCaptions {
+        track_id: track.id,
+        language,
+    }])
+}
+
 /// `mute track Audio 1`, `unlock track Video 1`, `hide track Text 1`…
 fn track_switch(lower: &str, line: &str, project: &Project) -> Result<Option<Command>, String> {
     for (verb, locked, hidden, muted) in [
@@ -975,6 +1108,13 @@ mod tests {
             .dispatch(Command::AddClip {
                 track_id: track,
                 clip,
+            })
+            .unwrap();
+        // The title is an English caption, so it can be translated.
+        editor
+            .dispatch(Command::SetTrackLanguage {
+                track_id: track,
+                language: Some("en".into()),
             })
             .unwrap();
         let mut shot = editor_core::Asset::new(
@@ -1462,6 +1602,126 @@ mod tests {
     fn an_unknown_sentence_is_refused_rather_than_guessed() {
         let project = Project::default();
         assert!(run("make it pop", &project, &Selection::default()).is_err());
+    }
+
+    fn animation(project: &Project, clip: editor_core::ClipId) -> [Option<TextAnimation>; 2] {
+        match &project.clip(clip).unwrap().1.content {
+            ClipContent::Text { enter, exit, .. } => [*enter, *exit],
+            _ => unreachable!("FIXTURE: a title"),
+        }
+    }
+
+    #[test]
+    fn titles_are_animated_in_and_out_by_name_as_one_step_each() {
+        let (project, mut selection) = project_with_title();
+        let first = selection.clips[0];
+        let project = applied("animate in typewriter", &project, &selection).unwrap();
+        let [enter, exit] = animation(&project, first);
+        let enter = enter.unwrap();
+        assert_eq!(enter.kind, TextAnimationKind::Typewriter);
+        assert_eq!(enter.unit, editor_core::TextUnit::Letter);
+        assert_eq!(enter.duration, Time::from_seconds(0.5));
+        assert!(exit.is_none());
+
+        let project = applied("Animate out slide up for 1s", &project, &selection).unwrap();
+        let [_, exit] = animation(&project, first);
+        assert_eq!(exit.unwrap().kind, TextAnimationKind::SlideUp);
+        assert_eq!(exit.unwrap().duration, Time::from_seconds(1.0));
+
+        // A length longer than the room the other edge leaves is held to it.
+        let project = applied("animate in pop for 9s", &project, &selection).unwrap();
+        let [enter, exit] = animation(&project, first);
+        assert_eq!(
+            enter.unwrap().span() + exit.unwrap().span(),
+            Time::from_seconds(4.0)
+        );
+
+        let project = applied("animate in none", &project, &selection).unwrap();
+        assert!(animation(&project, first)[0].is_none());
+        assert!(
+            run("animate in none", &project, &selection).is_err(),
+            "nothing to take off"
+        );
+        assert!(run("animate in wobble", &project, &selection).is_err());
+
+        // Two titles are one step.
+        let track = project.clip(first).unwrap().0.id;
+        let second =
+            editor_core::Clip::text("There", Time::from_seconds(5.0), Time::from_seconds(2.0));
+        let id = second.id;
+        let mut editor = editor_core::Editor::new(project).unwrap();
+        editor
+            .dispatch(Command::AddClip {
+                track_id: track,
+                clip: second,
+            })
+            .unwrap();
+        selection.clips.push(id);
+        let asked = run("animate in bounce", editor.project(), &selection).unwrap();
+        let [Action::Edit(command)] = asked.as_slice() else {
+            panic!("{asked:?}");
+        };
+        let steps = editor.history().count();
+        editor.dispatch(command.clone()).unwrap();
+        assert_eq!(editor.history().count(), steps + 1);
+        for clip in [first, id] {
+            assert_eq!(
+                animation(editor.project(), clip)[0].unwrap().kind,
+                TextAnimationKind::Bounce
+            );
+        }
+
+        // Media is not a title.
+        let (shot, shot_selected, _) = project_with_shot();
+        assert!(run("animate in pop", &shot, &shot_selected).is_err());
+    }
+
+    #[test]
+    fn captions_are_translated_from_the_selected_track_or_the_one_shown() {
+        let (project, selection) = project_with_title();
+        let track = project.clip(selection.clips[0]).unwrap().0.id;
+        let asked = run("translate captions into pt_br", &project, &selection).unwrap();
+        assert!(
+            matches!(asked.as_slice(), [Action::TranslateCaptions { track_id, language }]
+                if *track_id == track && language == "pt-BR"),
+            "{asked:?}"
+        );
+        // With nothing selected, the one caption track shown is meant.
+        let nothing = Selection::default();
+        let asked = run("translate captions to Spanish", &project, &nothing).unwrap();
+        assert!(matches!(asked.as_slice(),
+            [Action::TranslateCaptions { track_id, language }] if *track_id == track && language == "es"));
+        let refused = run("translate captions to English", &project, &selection).unwrap_err();
+        assert!(refused.contains("already in English"), "{refused}");
+        assert!(run("translate captions to Klingonese", &project, &selection).is_err());
+
+        // A second caption track shown needs a selection to choose.
+        let mut editor = editor_core::Editor::new(project).unwrap();
+        let (command, _) = captions_tab::new_track(editor.project(), "de");
+        editor.dispatch(command).unwrap();
+        let refused = run("translate captions to Spanish", editor.project(), &nothing).unwrap_err();
+        assert!(refused.contains("Select a caption"), "{refused}");
+        assert!(
+            run(
+                "translate captions to Spanish",
+                editor.project(),
+                &selection
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn captions_from_speech_are_asked_for_in_the_captions_tab() {
+        let (project, selection) = project_with_title();
+        let asked = run("Generate captions", &project, &selection).unwrap();
+        assert!(matches!(
+            asked.as_slice(),
+            [
+                Action::ShowLibrary(Tab::Captions),
+                Action::CaptionsFromSpeech
+            ]
+        ));
     }
 
     #[test]

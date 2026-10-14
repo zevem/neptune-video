@@ -8,14 +8,18 @@ mod clipboard;
 mod compose;
 mod file_drop;
 mod icons;
+mod languages;
 mod pacing;
+mod presets;
 mod rules;
 mod settings;
+mod speech;
 mod speed;
 mod steady;
 mod textures;
 mod theme;
 mod timefmt;
+mod titles;
 mod ui;
 
 use app::{App, Launch};

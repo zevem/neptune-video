@@ -17,8 +17,11 @@ use std::{
 };
 
 /// Written by every save; older builds refuse it instead of stripping data.
-pub const SCHEMA_VERSION: u32 = 2;
-/// Oldest version read; version 1 is a strict subset through serde defaults.
+/// Version 3 added styled, animated and timed titles, graphics, caption
+/// languages and font assets.
+pub const SCHEMA_VERSION: u32 = 3;
+/// Oldest version read; versions 1 and 2 are strict subsets through serde
+/// defaults.
 const MIN_SCHEMA_VERSION: u32 = 1;
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 

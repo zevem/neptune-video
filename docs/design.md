@@ -46,12 +46,25 @@ selection's mixed values remain distinguishable from ordinary defaults.
 ## Looks, animation and motion surfaces
 
 The clip inspector is sectioned: Video, Look, Color, Speed and Motion for a
-picture, Video and Motion for a title, none for sound. The clip's name and the
-section control stay above the scrolled rows. Rows for an effect, a mask or a
+picture, Video, Text, Animate and Motion for a title, Video, Graphic, Animate
+and Motion for a graphic, none for sound. The clip's name and the section
+control stay above the scrolled rows. Rows for an effect, a mask or a
 transition are generated from the core's parameter tables, so a new parameter
-needs no panel of its own. The library has Media, Effects, Transitions and
-Looks tabs; a tile is given by double-click or Return to the selected clips
-and by drag to the clip under it.
+needs no panel of its own. The library has Media, Text, Captions, Effects,
+Transitions and Looks tabs; a tile is given by double-click or Return to the
+selected clips and by drag to the clip under it. When the tab names would
+touch they shrink, then become icons named on hover.
+
+Text tiles are drawn by the title lane at their own size, so a tile shows the
+real font, outline and colour emoji, and it plays its entrance only while the
+pointer rests on it; an untouched tab asks for no repaints. Outline, shadow
+and background are switch cards whose rows appear when switched on, and
+lengths kept in ems are shown in pixels at the title's size. The Captions tab
+is a list first: a caption's words and times are edited where they are shown,
+and the row follows the playhead except while it is being typed into. Speech
+and translation say where the work happens: the speech panel says nothing is
+uploaded, and an AI action is marked "AI" and opens a plan for review rather
+than editing.
 
 An animatable row carries a diamond: hollow with no keyframe at the playhead,
 filled on one, and filled for a paired row when either value is keyed there.

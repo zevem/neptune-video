@@ -282,7 +282,7 @@ fn advanced(root: &Path) -> (Editor, ClipId) {
 }
 
 #[test]
-fn version_one_project_loads_and_the_next_save_writes_version_two() {
+fn version_one_project_loads_and_the_next_save_writes_the_current_version() {
     let directory = TempDir::new().unwrap();
     let path = directory.path().join("project.aster");
     write_json(
@@ -306,8 +306,8 @@ fn version_one_project_loads_and_the_next_save_writes_version_two() {
 
     save_project_with_session(&document, &project).unwrap();
 
-    assert_eq!(SCHEMA_VERSION, 2);
-    assert_eq!(read_json(&path)["schema_version"], json!(2));
+    assert_eq!(SCHEMA_VERSION, 3);
+    assert_eq!(read_json(&path)["schema_version"], json!(SCHEMA_VERSION));
     assert_eq!(load_project(&path).unwrap(), project);
 }
 
@@ -323,7 +323,7 @@ fn version_one_project_can_be_replaced_by_a_one_shot_save() {
 
     save_project(&path, &project).unwrap();
 
-    assert_eq!(read_json(&path)["schema_version"], json!(2));
+    assert_eq!(read_json(&path)["schema_version"], json!(SCHEMA_VERSION));
     assert_eq!(load_project(&path).unwrap(), project);
 }
 
@@ -356,12 +356,12 @@ fn version_one_checkpoint_is_listed_and_loads_beside_a_new_one() {
             .any(|entry| entry.path == old && entry.label == "First assembly")
     );
     assert_eq!(read_json(&old)["schema_version"], json!(1));
-    assert_eq!(read_json(&new)["schema_version"], json!(2));
+    assert_eq!(read_json(&new)["schema_version"], json!(SCHEMA_VERSION));
     assert_eq!(load_project(&new).unwrap(), project);
 }
 
 #[test]
-fn version_one_recovery_restores_history_and_the_next_save_writes_version_two() {
+fn version_one_recovery_restores_history_and_the_next_save_writes_the_current_version() {
     let directory = TempDir::new().unwrap();
     let path = directory.path().join("project.aster");
     let archive_path = recovery_path(&path);
@@ -386,7 +386,7 @@ fn version_one_recovery_restores_history_and_the_next_save_writes_version_two() 
     save_recovery(&path, &restored).unwrap();
 
     let archive = read_json(&archive_path);
-    assert_eq!(archive["schema_version"], json!(2));
+    assert_eq!(archive["schema_version"], json!(SCHEMA_VERSION));
     assert_eq!(archive["trackers"], json!([{}]));
     let mut reloaded = load_recovery(&path).unwrap();
     assert_eq!(reloaded.project(), restored.project());
@@ -396,39 +396,39 @@ fn version_one_recovery_restores_history_and_the_next_save_writes_version_two() 
 }
 
 #[test]
-fn version_three_is_refused_and_protected_everywhere() {
+fn version_four_is_refused_and_protected_everywhere() {
     let directory = TempDir::new().unwrap();
     let path = directory.path().join("project.aster");
-    let future = json!({"schema_version": 3, "project": v1_project("From the future")});
+    let future = json!({"schema_version": 4, "project": v1_project("From the future")});
     write_json(&path, &future);
     let original = fs::read(&path).unwrap();
 
     assert!(matches!(
         load_project(&path),
-        Err(StoreError::FutureSchema(3))
+        Err(StoreError::FutureSchema(4))
     ));
     assert!(matches!(
         load_project_with_session(&path),
-        Err(StoreError::FutureSchema(3))
+        Err(StoreError::FutureSchema(4))
     ));
     assert!(matches!(
         save_project(&path, &Project::default()),
-        Err(StoreError::FutureSchema(3))
+        Err(StoreError::FutureSchema(4))
     ));
     assert_eq!(fs::read(&path).unwrap(), original);
 
     let mut archive = v1_archive();
-    archive["schema_version"] = json!(3);
+    archive["schema_version"] = json!(4);
     let archive_path = recovery_path(&path);
     write_json(&archive_path, &archive);
     let original = fs::read(&archive_path).unwrap();
     assert!(matches!(
         load_recovery(&path),
-        Err(StoreError::FutureSchema(3))
+        Err(StoreError::FutureSchema(4))
     ));
     assert!(matches!(
         save_recovery(&path, &Editor::default()),
-        Err(StoreError::FutureSchema(3))
+        Err(StoreError::FutureSchema(4))
     ));
     assert_eq!(fs::read(&archive_path).unwrap(), original);
 
@@ -439,7 +439,7 @@ fn version_three_is_refused_and_protected_everywhere() {
     write_json(&checkpoint, &future);
     assert!(matches!(
         list_checkpoints(&path),
-        Err(StoreError::FutureSchema(3))
+        Err(StoreError::FutureSchema(4))
     ));
 }
 
@@ -482,7 +482,7 @@ fn every_advanced_feature_round_trips_through_a_project_file() {
     save_project(&path, project).unwrap();
     let restored = load_project(&path).unwrap();
 
-    assert_eq!(read_json(&path)["schema_version"], json!(2));
+    assert_eq!(read_json(&path)["schema_version"], json!(SCHEMA_VERSION));
     assert_eq!(&restored, project);
     save_project(&path, &restored).unwrap();
     assert_eq!(&load_project(&path).unwrap(), project);
@@ -524,7 +524,7 @@ fn a_lut_asset_and_the_effects_that_read_assets_round_trip_through_a_project_fil
     let restored = load_project(&path).unwrap();
 
     let written = read_json(&path);
-    assert_eq!(written["schema_version"], json!(2));
+    assert_eq!(written["schema_version"], json!(SCHEMA_VERSION));
     let asset = &written["project"]["assets"][lut_id.to_string()];
     assert_eq!(asset["kind"], json!("lut"));
     assert_eq!(asset["duration"], json!(1));
@@ -664,4 +664,167 @@ fn recovery_stores_each_tracker_once_however_many_maps_share_it() {
         .filter(|(id, tracker)| Arc::ptr_eq(tracker, &last[*id]))
         .count();
     assert_eq!(shared, 2, "untouched trackers stay one allocation");
+}
+
+#[test]
+fn version_two_title_loads_plain_and_the_next_save_writes_the_current_version() {
+    let directory = TempDir::new().unwrap();
+    let path = directory.path().join("project.aster");
+    let mut project = v1_project("Version two");
+    let mut text = v1_track();
+    text["id"] = json!("00000000-0000-4000-8000-000000000005");
+    text["name"] = json!("Text 1");
+    text["kind"] = json!("text");
+    text["clips"][0]["id"] = json!("00000000-0000-4000-8000-000000000006");
+    text["clips"][0]["name"] = json!("Hello");
+    text["clips"][0]["content"] = json!({
+        "type": "text",
+        "text": "Hello",
+        "font_size": 64.0,
+        "color": [255, 255, 255, 255]
+    });
+    text["clips"][0]["source_in"] = json!(0);
+    text["clips"][0]["playback_rate"] = json!(1.0);
+    project["tracks"].as_array_mut().unwrap().push(text);
+    write_json(&path, &json!({"schema_version": 2, "project": project}));
+
+    let project = load_project(&path).unwrap();
+    project.validate().unwrap();
+    let track = &project.tracks[1];
+    assert!(track.language.is_none());
+    let editor_core::ClipContent::Text {
+        style,
+        enter,
+        exit,
+        words,
+        ..
+    } = &track.clips[0].content
+    else {
+        panic!("not a title");
+    };
+    assert!(style.is_plain() && enter.is_none() && exit.is_none() && words.is_empty());
+
+    save_project(&path, &project).unwrap();
+    let written = read_json(&path);
+    assert_eq!(written["schema_version"], json!(3));
+    // A plain title is written as version 2 wrote it.
+    assert_eq!(
+        written["project"]["tracks"][1]["clips"][0]["content"],
+        json!({"type": "text", "text": "Hello", "font_size": 64.0, "color": [255, 255, 255, 255]})
+    );
+    assert!(written["project"]["tracks"][1].get("language").is_none());
+    assert_eq!(load_project(&path).unwrap(), project);
+}
+
+#[test]
+fn titles_graphics_captions_and_fonts_round_trip_through_a_project_file() {
+    use editor_core::{
+        Element, ElementKind, Highlight, HighlightMode, TextAnimation, TextAnimationKind,
+        TextOutline, TextStyle, TextUnit, TrackKind, WordTime,
+    };
+    let directory = TempDir::new().unwrap();
+    let path = directory.path().join("project.aster");
+    let mut editor = Editor::default();
+    let track = editor
+        .project()
+        .tracks
+        .iter()
+        .find(|track| track.kind == TrackKind::Text)
+        .unwrap()
+        .id;
+    let font = Asset::new(directory.path().join("Brand.ttf"), MediaKind::Font, Time(1));
+    let cue = Clip::text("hello there", Time::ZERO, seconds(2.0));
+    let cue_id = cue.id;
+    let graphic = Clip::graphic(
+        "Lower third",
+        [800.0, 200.0],
+        vec![
+            Element::new(
+                "Bar",
+                ElementKind::Rect {
+                    color: [230, 60, 40, 255],
+                    radius: 6.0,
+                    stroke: None,
+                },
+                [0.0, 0.0, 800.0, 200.0],
+            ),
+            Element::new(
+                "Name",
+                ElementKind::Text {
+                    text: "Ada Lovelace".into(),
+                    font_size: 72.0,
+                    color: [255; 4],
+                    style: TextStyle::default(),
+                },
+                [24.0, 24.0, 752.0, 152.0],
+            ),
+        ],
+        seconds(3.0),
+        seconds(4.0),
+    );
+    let style = TextStyle {
+        outline: Some(TextOutline {
+            color: [0, 0, 0, 255],
+            width: 0.1,
+        }),
+        highlight: Some(Highlight {
+            mode: HighlightMode::Fill,
+            color: [255, 214, 0, 255],
+            scale: 1.15,
+            upcoming: 0.6,
+        }),
+        ..TextStyle::default()
+    };
+    apply(
+        &mut editor,
+        Command::Batch {
+            label: "Captions".into(),
+            commands: vec![
+                Command::AddAssets { assets: vec![font] },
+                Command::AddClip {
+                    track_id: track,
+                    clip: cue,
+                },
+                Command::AddClip {
+                    track_id: track,
+                    clip: graphic,
+                },
+                Command::SetTrackLanguage {
+                    track_id: track,
+                    language: Some("en-GB".into()),
+                },
+                Command::SetTextStyle {
+                    clip_id: cue_id,
+                    style,
+                },
+                Command::SetTextAnimation {
+                    clip_id: cue_id,
+                    edge: TransitionEdge::In,
+                    animation: Some(TextAnimation {
+                        kind: TextAnimationKind::Typewriter,
+                        unit: TextUnit::Letter,
+                        duration: seconds(0.5),
+                        delay: seconds(0.1),
+                    }),
+                },
+                Command::SetWords {
+                    clip_id: cue_id,
+                    words: vec![
+                        WordTime {
+                            at: seconds(0.1),
+                            end: seconds(0.6),
+                        },
+                        WordTime {
+                            at: seconds(0.7),
+                            end: seconds(1.4),
+                        },
+                    ],
+                },
+            ],
+        },
+    );
+    let project = editor.project();
+    save_project(&path, project).unwrap();
+    assert_eq!(read_json(&path)["schema_version"], json!(3));
+    assert_eq!(&load_project(&path).unwrap(), project);
 }

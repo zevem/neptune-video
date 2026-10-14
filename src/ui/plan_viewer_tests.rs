@@ -10,16 +10,24 @@ use crate::{
     compose::gpu_tests::render_state,
     textures::{Textures, Viewing},
     theme::{self, Accent, Appearance, Palette},
+    titles::Titles,
     ui::{Action, ClipDraft, Selection},
 };
 use editor_core::{
-    Asset, BlendMode, Clip, ClipId, Command, Ease, Editor, FrameRate, Keyframe, MediaKind,
-    ParamKey, Project, Time, TrackId, TrackKind, Transform, Transition, TransitionEdge,
-    TransitionKind, resolve,
+    Asset, BlendMode, Clip, ClipId, Command, Ease, Editor, Element, ElementKind, FrameRate,
+    Keyframe, MediaKind, ParamKey, Project, Time, TrackId, TrackKind, Transform, Transition,
+    TransitionEdge, TransitionKind, resolve,
 };
-use editor_media::Frame;
+use editor_media::{
+    Frame,
+    text::{FontBook, TextService},
+};
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, TextureId, Vec2, vec2};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 const NAME: &str = "Effects not shown";
 
@@ -53,9 +61,11 @@ impl Scene {
             .map(|track| track.id)
             .expect("a new project has a video track");
         let mut scene = Self { editor, track };
-        scene.edit(Command::AddAssets {
-            assets: assets.iter().map(|asset| (*asset).clone()).collect(),
-        });
+        if !assets.is_empty() {
+            scene.edit(Command::AddAssets {
+                assets: assets.iter().map(|asset| (*asset).clone()).collect(),
+            });
+        }
         scene
     }
 
@@ -1021,4 +1031,241 @@ fn what_is_held_for_the_compositor_is_given_up_on_the_clock_once_nothing_asks_fo
     // Looked at again, it is composited again.
     stage.shown(&project, Time::ZERO, &asset, clip);
     assert!(stage.viewer.composer.read(0).is_some());
+}
+
+// ---- Titles and graphics --------------------------------------------------
+
+/// A stage whose titles are drawn with the bundled faces alone, so what is
+/// measured is the same on every host.
+fn titled() -> Stage {
+    let book = || FontBook::new(&crate::titles::bundled_fonts()).with_system_roots(Vec::new());
+    let service = TextService::with_book(book, Arc::new(|| {})).expect("a title lane starts");
+    Stage::with(ViewerState::default().with_titles(Titles::new(Some(service))))
+}
+
+/// Paints until the lane has drawn what `clip` last asked for.
+fn titled_paint(stage: &mut Stage, project: &Project, playhead: Time, clip: ClipId) -> Painted {
+    stage.paint(project, playhead);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while stage.viewer.titles.behind(clip) {
+        assert!(Instant::now() < deadline, "the title lane drew nothing");
+        std::thread::sleep(Duration::from_millis(2));
+        stage.viewer.titles.poll(&stage.ctx);
+    }
+    stage.paint(project, playhead)
+}
+
+/// The text track a new project has.
+fn text_track(project: &Project) -> TrackId {
+    (project.tracks.iter())
+        .find(|track| track.kind == TrackKind::Text)
+        .map(|track| track.id)
+        .expect("a new project has a text track")
+}
+
+/// The canvas centre and its scale on screen in [`window`].
+fn canvas_view(project: &Project) -> (Pos2, f32) {
+    let stage = Rect::from_min_max(Pos2::ZERO, egui::pos2(1000.0, 700.0 - super::TRANSPORT));
+    let room = stage.shrink(18.0);
+    let size = vec2(
+        project.settings.width as f32,
+        project.settings.height as f32,
+    );
+    (
+        room.center(),
+        (room.width() / size.x).min(room.height() / size.y),
+    )
+}
+
+#[test]
+fn a_title_is_drawn_from_its_picture_with_handles_on_its_text_box() {
+    let mut scene = Scene::new(&[]);
+    let mut clip = Clip::text("Hello", Time::ZERO, Time::from_seconds(4.0));
+    clip.transform.position = [200.0, -100.0];
+    let id = clip.id;
+    let track = text_track(scene.editor.project());
+    scene.edit(Command::AddClip {
+        track_id: track,
+        clip,
+    });
+    let project = scene.project();
+    let (centre, view) = canvas_view(&project);
+    let anchor = centre + vec2(200.0, -100.0) * view;
+
+    let mut stage = titled();
+    stage.selection.only(id);
+    let first = stage.paint(&project, Time::from_seconds(1.0));
+    assert!(
+        first.quads.is_empty() && first.frames.is_empty(),
+        "nothing is drawn or held before the picture comes"
+    );
+    assert!(
+        first.text.iter().all(|text| text != "Hello"),
+        "and the interface's own text does not stand in for it"
+    );
+
+    let painted = titled_paint(&mut stage, &project, Time::from_seconds(1.0), id);
+    let (picture, texture) = stage.viewer.titles.picture(id).expect("the picture");
+    assert_eq!(
+        picture.scale,
+        editor_media::text::quantize_scale(view),
+        "drawn as many pixels as it covers on screen"
+    );
+    assert_eq!(painted.quads.len(), 1);
+    let (quad, middle, tint) = painted.quads[0];
+    assert_eq!(quad, texture);
+    assert_eq!(tint, Color32::WHITE, "opaque");
+    let [left, top] = picture.origin;
+    let [width, height] = picture.size();
+    let expected = anchor + vec2(left + width / 2.0, top + height / 2.0) * view;
+    assert!(
+        (middle - expected).length() < 0.5,
+        "{middle:?} {expected:?}"
+    );
+    assert_eq!(painted.frames.len(), 1, "the selected title's frame");
+    assert!(
+        (painted.frames[0] - anchor).length() < 0.5,
+        "about its text box, which is centred on its place: {:?} {anchor:?}",
+        painted.frames[0]
+    );
+    let [box_left, box_top, box_right, box_bottom] = picture.bounds;
+    assert!(box_right - box_left > 64.0 && box_bottom - box_top > 32.0);
+    assert!((box_left + box_right).abs() < 0.01 && (box_top + box_bottom).abs() < 0.01);
+
+    // A paint that changes nothing asks for nothing.
+    stage.paint(&project, Time::from_seconds(1.0));
+    assert!(!stage.viewer.titles.behind(id));
+}
+
+#[test]
+fn a_title_being_typed_asks_for_its_own_picture() {
+    let mut scene = Scene::new(&[]);
+    let clip = Clip::text("Hi", Time::ZERO, Time::from_seconds(4.0));
+    let id = clip.id;
+    let track = text_track(scene.editor.project());
+    scene.edit(Command::AddClip {
+        track_id: track,
+        clip: clip.clone(),
+    });
+    let project = scene.project();
+    let mut stage = titled();
+    titled_paint(&mut stage, &project, Time::ZERO, id);
+    let stored = stage
+        .viewer
+        .titles
+        .picture(id)
+        .expect("the picture")
+        .0
+        .bounds;
+
+    let mut draft = ClipDraft::of(&clip);
+    if let Some(editor_core::ClipContent::Text { text, .. }) = &mut draft.content {
+        *text = "Hi there, everyone".to_owned();
+    }
+    stage.draft = Some(draft);
+    titled_paint(&mut stage, &project, Time::ZERO, id);
+    let typed = stage
+        .viewer
+        .titles
+        .picture(id)
+        .expect("the picture")
+        .0
+        .bounds;
+    assert!(
+        typed[2] - typed[0] > 2.0 * (stored[2] - stored[0]),
+        "{stored:?} {typed:?}"
+    );
+
+    // Let go without a commit, the stored title is drawn again.
+    stage.draft = None;
+    titled_paint(&mut stage, &project, Time::ZERO, id);
+    assert_eq!(
+        stage
+            .viewer
+            .titles
+            .picture(id)
+            .expect("the picture")
+            .0
+            .bounds,
+        stored
+    );
+}
+
+#[test]
+fn a_graphic_is_drawn_from_its_picture_and_held_by_its_design_box() {
+    let mut scene = Scene::new(&[]);
+    let bar = Element::new(
+        "Bar",
+        ElementKind::Rect {
+            color: [20, 120, 220, 255],
+            radius: 0.0,
+            stroke: None,
+        },
+        [0.0, 0.0, 400.0, 120.0],
+    );
+    let mut clip = Clip::graphic(
+        "Lower third",
+        [400.0, 120.0],
+        vec![bar],
+        Time::ZERO,
+        Time::from_seconds(4.0),
+    );
+    clip.transform.position = [-300.0, 250.0];
+    clip.transform.scale = [2.0, 2.0];
+    let id = clip.id;
+    let track = text_track(scene.editor.project());
+    scene.edit(Command::AddClip {
+        track_id: track,
+        clip,
+    });
+    let project = scene.project();
+    let (centre, view) = canvas_view(&project);
+    let anchor = centre + vec2(-300.0, 250.0) * view;
+
+    let mut stage = titled();
+    stage.selection.only(id);
+    let painted = titled_paint(&mut stage, &project, Time::from_seconds(1.0), id);
+    let (picture, _) = stage.viewer.titles.picture(id).expect("the picture");
+    assert_eq!(picture.bounds, [-200.0, -60.0, 200.0, 60.0]);
+    assert_eq!(
+        picture.scale,
+        editor_media::text::quantize_scale(2.0 * view),
+        "at its scale on screen"
+    );
+    assert_eq!(painted.quads.len(), 1);
+    assert!((painted.quads[0].1 - anchor).length() < 1.0);
+    assert_eq!(painted.frames.len(), 1);
+    assert!((painted.frames[0] - anchor).length() < 0.5);
+}
+
+#[test]
+fn a_title_turns_and_mirrors_about_its_place() {
+    let anchor = egui::pos2(100.0, 100.0);
+    let mut transform = Transform {
+        scale: [2.0, 1.0],
+        ..Transform::default()
+    };
+    let at = |transform: &Transform| super::title_point(anchor, 0.5, transform, 10.0, 4.0);
+    assert_eq!(at(&transform), egui::pos2(110.0, 102.0));
+    transform.flip_x = true;
+    assert_eq!(at(&transform), egui::pos2(90.0, 102.0));
+    transform.flip_x = false;
+    transform.rotation = 90.0;
+    let turned = at(&transform);
+    assert!(
+        (turned - egui::pos2(98.0, 110.0)).length() < 1e-3,
+        "{turned:?}"
+    );
+    let place = super::title_place(
+        ClipId::new_v4(),
+        anchor,
+        0.5,
+        &transform,
+        [-10.0, -4.0, 10.0, 4.0],
+        false,
+    );
+    assert_eq!(place.center, anchor);
+    // Twenty wide at twice and half a view; eight high at once is four,
+    // and a frame is never thinner than that.
+    assert_eq!(place.half, vec2(10.0, 4.0));
 }

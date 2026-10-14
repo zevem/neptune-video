@@ -1,3 +1,14 @@
 [build]
 # One compilation owner; keep native dependency compilation within host memory.
 jobs = 8
+
+[env]
+# whisper.cpp is built for a CPU family rather than for the build machine, so
+# a binary runs on the computers it is copied to. x86-64 takes AVX2 and FMA
+# (processors since 2013); ARM takes NEON, which every 64-bit ARM has.
+GGML_NATIVE = "OFF"
+GGML_AVX = "ON"
+GGML_AVX2 = "ON"
+GGML_FMA = "ON"
+GGML_F16C = "ON"
+GGML_BMI2 = "ON"

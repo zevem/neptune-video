@@ -85,6 +85,10 @@ keep headless correctness checks on the reusable CI profile.
 
 ## Continuous integration
 
+CI is paused: branches, pull requests and pushes to `main` start no runs. Start
+the workflow by hand from the Actions tab (`workflow_dispatch`) when a hosted
+run is wanted; until then, run the workspace checks above locally.
+
 [CI](../.github/workflows/ci.yml) declares explicit Linux x86-64, macOS ARM64,
 macOS Intel and Windows x86-64 MSVC Rust build/test/lint jobs plus formatting
 and dependency-boundary validation. The versioned runner labels follow

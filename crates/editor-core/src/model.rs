@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::{
     AnimTarget, AnimTrack, BlendMode, Effect, Follow, Mask, ParamKey, Retime, Tracker, Transition,
     animate, look,
+    title::{self, Element, TextAnimation, TextStyle, WordTime},
 };
 
 pub type AssetId = Uuid;
@@ -145,6 +146,16 @@ pub enum MediaKind {
     /// microsecond, `width` is the points along each edge of its cube and
     /// `height` is zero.
     Lut,
+    /// A font file whose family titles may name. Like a lookup table it has
+    /// no picture, sound or time and is never a clip; its name is its
+    /// family.
+    Font,
+}
+impl MediaKind {
+    /// A kind that is only ever read by something else, never placed.
+    pub fn is_resource(self) -> bool {
+        matches!(self, Self::Lut | Self::Font)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -206,6 +217,10 @@ pub struct Track {
     pub hidden: bool,
     pub muted: bool,
     pub clips: Vec<Clip>,
+    /// The language of a caption track: a text track whose titles are
+    /// cues. A BCP 47 style tag such as `en` or `pt-BR`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 impl Track {
     pub fn new(name: impl Into<String>, kind: TrackKind) -> Self {
@@ -217,6 +232,7 @@ impl Track {
             hidden: false,
             muted: false,
             clips: Vec::new(),
+            language: None,
         }
     }
     pub fn active_clips(&self, time: Time) -> impl Iterator<Item = &Clip> {
@@ -247,11 +263,34 @@ pub enum ClipContent {
     Media {
         asset_id: AssetId,
     },
+    /// A title: text drawn on the canvas. With word times it is a caption
+    /// cue whose words can be highlighted as they are said.
     Text {
         text: String,
         font_size: f32,
         color: [u8; 4],
+        #[serde(default, skip_serializing_if = "TextStyle::is_plain")]
+        style: TextStyle,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enter: Option<TextAnimation>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit: Option<TextAnimation>,
+        /// Clip-relative times of the words of `text`, or none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        words: Vec<WordTime>,
     },
+    /// Named shapes and texts in a design box: a lower third, a title card,
+    /// a callout or a sticker. The clip's transform places the box's centre.
+    Graphic {
+        size: [f32; 2],
+        elements: Vec<Element>,
+    },
+}
+impl ClipContent {
+    /// Generated picture, drawn by the text renderer: a title or a graphic.
+    pub fn is_generated(&self) -> bool {
+        !matches!(self, Self::Media { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -363,6 +402,10 @@ impl Clip {
                 text,
                 font_size: 64.0,
                 color: [255; 4],
+                style: TextStyle::default(),
+                enter: None,
+                exit: None,
+                words: Vec::new(),
             },
             start,
             source_in: Time::ZERO,
@@ -381,6 +424,19 @@ impl Clip {
             transition_out: None,
             follow: None,
         }
+    }
+    /// A graphic clip of `elements` in a box of `size` design pixels.
+    pub fn graphic(
+        name: impl Into<String>,
+        size: [f32; 2],
+        elements: Vec<Element>,
+        start: Time,
+        duration: Time,
+    ) -> Self {
+        let mut clip = Self::text("", start, duration);
+        clip.name = name.into();
+        clip.content = ClipContent::Graphic { size, elements };
+        clip
     }
     pub fn end(&self) -> Time {
         self.start + self.duration
@@ -452,8 +508,8 @@ impl Project {
     /// A transient source monitor document. It shares no editing history and
     /// never inserts clips into the person's timeline.
     pub fn asset_preview(asset: &Asset) -> Result<Self, crate::EditError> {
-        // A lookup table has nothing to monitor.
-        if asset.kind == MediaKind::Lut {
+        // A lookup table or a font has nothing to monitor.
+        if asset.kind.is_resource() {
             return Err(crate::EditError::IncompatibleTrack);
         }
         let mut project = Self::new(asset.name.clone());
@@ -568,7 +624,7 @@ impl Project {
                 || asset.duration <= Time::ZERO
                 || !asset.duration.is_valid()
                 || asset.frame_rate.is_some_and(|f| !f.validate())
-                || (asset.kind == MediaKind::Lut && (asset.has_audio || asset.frame_rate.is_some()))
+                || (asset.kind.is_resource() && (asset.has_audio || asset.frame_rate.is_some()))
             {
                 return Err(EditError::Invalid("asset metadata".into()));
             }
@@ -582,6 +638,11 @@ impl Project {
         for track in &self.tracks {
             if !ids.insert(track.id) || track.name.trim().is_empty() {
                 return Err(EditError::Invalid("track identity".into()));
+            }
+            if let Some(language) = &track.language
+                && (track.kind != TrackKind::Text || !title::language_valid(language))
+            {
+                return Err(EditError::Invalid("track language".into()));
             }
             let mut previous = Time::ZERO;
             for clip in &track.clips {
@@ -607,8 +668,8 @@ impl Project {
                             .assets
                             .get(asset_id)
                             .ok_or(EditError::Missing(*asset_id))?;
-                        // A lookup table is on no track.
-                        let allowed = asset.kind != MediaKind::Lut
+                        // A lookup table or a font is on no track.
+                        let allowed = !asset.kind.is_resource()
                             && match track.kind {
                                 TrackKind::Video => asset.kind != MediaKind::Audio,
                                 TrackKind::Audio => asset.has_audio,
@@ -624,7 +685,13 @@ impl Project {
                         }
                     }
                     ClipContent::Text {
-                        text, font_size, ..
+                        text,
+                        font_size,
+                        style,
+                        enter,
+                        exit,
+                        words,
+                        ..
                     } => {
                         if track.kind != TrackKind::Text {
                             return Err(EditError::IncompatibleTrack);
@@ -632,16 +699,31 @@ impl Project {
                         if text.len() > 1_048_576
                             || !font_size.is_finite()
                             || !(1.0..=4096.0).contains(font_size)
+                            || !style.validate()
                         {
                             return Err(EditError::Invalid("text style".into()));
                         }
-                        if !clip.effects.is_empty()
-                            || !clip.masks.is_empty()
-                            || !clip.blend.is_normal()
-                            || clip.retime.is_some()
+                        if [enter, exit]
+                            .into_iter()
+                            .flatten()
+                            .any(|animation| !animation.validate(frame, clip.duration))
+                            || !title::animations_fit(enter.as_ref(), exit.as_ref(), clip.duration)
                         {
-                            return Err(EditError::Invalid("text clip look".into()));
+                            return Err(EditError::Invalid("text animation".into()));
                         }
+                        if !title::words_valid(words, text, clip.duration) {
+                            return Err(EditError::Invalid("word times".into()));
+                        }
+                        Self::validate_generated(clip)?;
+                    }
+                    ClipContent::Graphic { size, elements } => {
+                        if track.kind != TrackKind::Text {
+                            return Err(EditError::IncompatibleTrack);
+                        }
+                        if !title::graphic_valid(*size, elements, frame, clip.duration) {
+                            return Err(EditError::Invalid("graphic".into()));
+                        }
+                        Self::validate_generated(clip)?;
                     }
                 }
                 // Nothing draws an audio clip, so it carries sound only.
@@ -673,7 +755,8 @@ impl Project {
             if *id != tracker.id
                 || !ids.insert(*id)
                 || !tracker.validate()
-                || matches!(asset.kind, MediaKind::Audio | MediaKind::Lut)
+                || asset.kind == MediaKind::Audio
+                || asset.kind.is_resource()
                 || (asset.kind != MediaKind::Image
                     && tracker
                         .keys
@@ -687,6 +770,19 @@ impl Project {
             if !ids.insert(marker.id) || !marker.time.is_valid() {
                 return Err(EditError::Invalid("marker".into()));
             }
+        }
+        Ok(())
+    }
+
+    // What a title or a graphic cannot have: the renderer draws neither
+    // through the compositor and neither has a source to retime.
+    fn validate_generated(clip: &Clip) -> Result<(), crate::EditError> {
+        if !clip.effects.is_empty()
+            || !clip.masks.is_empty()
+            || !clip.blend.is_normal()
+            || clip.retime.is_some()
+        {
+            return Err(crate::EditError::Invalid("text clip look".into()));
         }
         Ok(())
     }

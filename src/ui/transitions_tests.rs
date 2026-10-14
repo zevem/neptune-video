@@ -59,6 +59,8 @@ struct Bench {
     refused: Vec<String>,
     said: Vec<String>,
     wait: Duration,
+    titles: crate::titles::Titles,
+    presets: std::sync::Arc<crate::presets::Presets>,
 }
 
 const SHOT_START: &str = "Dissolve at the start of shot.mp4";
@@ -95,6 +97,8 @@ impl Bench {
             refused: Vec::new(),
             said: Vec::new(),
             wait: Duration::ZERO,
+            titles: Default::default(),
+            presets: Default::default(),
         };
         let track_id = bench.track(TrackKind::Video);
         let mut ids = Vec::new();
@@ -239,6 +243,7 @@ impl Bench {
                 &mut self.library,
                 &mut self.selection,
                 &mut self.textures,
+                &mut self.titles,
                 &LibraryInput {
                     p: &self.palette,
                     project: &project,
@@ -249,6 +254,12 @@ impl Bench {
                     problem: None,
                     previewing: None,
                     playhead: self.playhead,
+                    presets: &self.presets,
+                    speech: crate::ui::captions_tab::SpeechInput {
+                        view: &crate::speech::SpeechView::Idle,
+                        settings: &crate::speech::SpeechSettings::default(),
+                        inventory: None,
+                    },
                 },
                 &mut actions,
             );
@@ -283,6 +294,8 @@ impl Bench {
                     textures: &self.textures,
                     playhead: self.playhead,
                     transition,
+                    families: None,
+                    brand: &[],
                 },
                 &mut actions,
             );

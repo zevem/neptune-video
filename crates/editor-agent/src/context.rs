@@ -6,7 +6,7 @@ use crate::{AiContext, AiError};
 use editor_core::{
     AnimTrack, Asset, AssetId, BlendMode, CanvasSettings, Clip, ClipContent, ClipId, Effect,
     FolderId, Follow, FrameRate, Marker, Mask, MediaFolder, MediaKind, ParamKey, Project, Retime,
-    Time, Track, TrackId, TrackKind, Tracker, Transform, Transition,
+    TextAnimation, TextStyle, Time, Track, TrackId, TrackKind, Tracker, Transform, Transition,
 };
 use serde::{Serialize, Serializer};
 use std::{
@@ -418,6 +418,8 @@ struct LeanTrack<'a> {
     id: TrackId,
     name: &'a str,
     kind: TrackKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<&'a str>,
     locked: bool,
     hidden: bool,
     muted: bool,
@@ -430,6 +432,7 @@ impl<'a> From<&'a Track> for LeanTrack<'a> {
             id,
             name,
             kind,
+            language,
             locked,
             hidden,
             muted,
@@ -439,6 +442,7 @@ impl<'a> From<&'a Track> for LeanTrack<'a> {
             id: *id,
             name,
             kind: *kind,
+            language: language.as_deref(),
             locked: *locked,
             hidden: *hidden,
             muted: *muted,
@@ -452,7 +456,8 @@ struct LeanClip<'a>(&'a Clip);
 
 impl Serialize for LeanClip<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.0.animation.iter().all(|track| !long(&track.keys)) {
+        let timed = matches!(&self.0.content, ClipContent::Text { words, .. } if !words.is_empty());
+        if !timed && self.0.animation.iter().all(|track| !long(&track.keys)) {
             return self.0.serialize(serializer);
         }
         let Clip {
@@ -479,7 +484,7 @@ impl Serialize for LeanClip<'_> {
         SummarizedClip {
             id: *id,
             name,
-            content,
+            content: LeanContent(content),
             start: *start,
             source_in: *source_in,
             duration: *duration,
@@ -518,7 +523,7 @@ fn none<T>(value: &&Option<T>) -> bool {
 struct SummarizedClip<'a> {
     id: ClipId,
     name: &'a str,
-    content: &'a ClipContent,
+    content: LeanContent<'a>,
     start: Time,
     source_in: Time,
     duration: Time,
@@ -542,6 +547,60 @@ struct SummarizedClip<'a> {
     transition_out: &'a Option<Transition>,
     #[serde(skip_serializing_if = "none")]
     follow: &'a Option<Follow>,
+}
+
+/// A timed title's words are a count and a span: a proposal edits text,
+/// and the editor keeps the times of the words it keeps.
+struct LeanContent<'a>(&'a ClipContent);
+
+impl Serialize for LeanContent<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(tag = "type", rename = "text")]
+        struct Summary<'a> {
+            text: &'a str,
+            font_size: f32,
+            color: [u8; 4],
+            #[serde(skip_serializing_if = "TextStyle::is_plain")]
+            style: &'a TextStyle,
+            #[serde(skip_serializing_if = "none")]
+            enter: &'a Option<TextAnimation>,
+            #[serde(skip_serializing_if = "none")]
+            exit: &'a Option<TextAnimation>,
+            words: Option<()>,
+            word_count: usize,
+            spoken: [Time; 2],
+            omitted_fields: [&'static str; 1],
+        }
+        let ClipContent::Text {
+            text,
+            font_size,
+            color,
+            style,
+            enter,
+            exit,
+            words,
+        } = self.0
+        else {
+            return self.0.serialize(serializer);
+        };
+        let (Some(first), Some(last)) = (words.first(), words.last()) else {
+            return self.0.serialize(serializer);
+        };
+        Summary {
+            text,
+            font_size: *font_size,
+            color: *color,
+            style,
+            enter,
+            exit,
+            words: None,
+            word_count: words.len(),
+            spoken: [first.at, last.end],
+            omitted_fields: ["words"],
+        }
+        .serialize(serializer)
+    }
 }
 
 struct LeanAnimation<'a>(&'a AnimTrack);

@@ -556,6 +556,7 @@ impl DecoderPool {
             MediaKind::Video => self.video(job, frame_number, dimensions, &key.source, &current)?,
             MediaKind::Audio => return Err(MediaError::Invalid("Audio has no video frame".into())),
             MediaKind::Lut => return Err(MediaError::Invalid("A LUT has no video frame".into())),
+            MediaKind::Font => return Err(MediaError::Invalid("A font has no video frame".into())),
         };
         if !current() {
             self.read_ahead = None;

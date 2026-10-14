@@ -109,7 +109,18 @@ const BLENDS: [(BlendMode, &str); 9] = [
 pub(super) fn sections(track: &Track, clip: &Clip) -> &'static [Section] {
     match (track.kind, &clip.content) {
         (TrackKind::Audio, _) => &[],
-        (_, ClipContent::Text { .. }) => &[Section::Video, Section::Motion],
+        (_, ClipContent::Text { .. }) => &[
+            Section::Video,
+            Section::Text,
+            Section::Animate,
+            Section::Motion,
+        ],
+        (_, ClipContent::Graphic { .. }) => &[
+            Section::Video,
+            Section::Graphic,
+            Section::Animate,
+            Section::Motion,
+        ],
         _ => &[
             Section::Video,
             Section::Look,
@@ -315,7 +326,12 @@ fn layout_button(ui: &mut Ui, p: &Palette, layout: Layout, on: bool) -> Response
 pub(super) struct Pane<'a> {
     pub p: &'a Palette,
     pub project: &'a Project,
+    pub track: &'a Track,
     pub clip: &'a Clip,
+    /// The font families a title may name, once they are known.
+    pub families: Option<&'a [String]>,
+    /// The person's brand colours, offered in every colour.
+    pub brand: &'a [[u8; 4]],
     pub asset: Option<&'a Asset>,
     /// The playhead, which may be off the clip.
     pub playhead: Time,
@@ -409,7 +425,10 @@ pub(super) fn rows(
     let mut pane = Pane {
         p,
         project,
+        track,
         clip,
+        families: input.families,
+        brand: input.brand,
         asset: clip.asset_id().and_then(|id| project.assets.get(&id)),
         playhead: input.playhead,
         local: (input.playhead - clip.start).clamp(Time::ZERO, clip.duration),
@@ -426,6 +445,9 @@ pub(super) fn rows(
         Some(Section::Speed) => pane.speed(ui),
         Some(Section::Color) => pane.color(ui),
         Some(Section::Motion) => pane.motion(ui),
+        Some(Section::Text) => pane.text(ui),
+        Some(Section::Graphic) => pane.graphic(ui),
+        Some(Section::Animate) => pane.animate(ui),
     });
 
     if matches!(section, None | Some(Section::Video)) {
@@ -818,26 +840,6 @@ impl<'a> Pane<'a> {
 
     fn video(&mut self, ui: &mut Ui) {
         let p = self.p;
-        if let Some((text, size, color)) = &mut self.next.text {
-            section(ui, p, "Text");
-            card(ui, p, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(text)
-                        .desired_rows(2)
-                        .desired_width(f32::INFINITY)
-                        .frame(egui::Frame::NONE)
-                        .font(theme::regular(13.0))
-                        .hint_text("Text"),
-                );
-                widgets::hairline(ui, p);
-                row(ui, p, "Size", |ui| {
-                    widgets::number(ui, size, 1.0..=4096.0, 1.0, " px", 0)
-                });
-                row(ui, p, "Colour", |ui| {
-                    ui.color_edit_button_srgba_unmultiplied(color);
-                });
-            });
-        }
         if self.asset.is_some() {
             self.layouts(ui);
         }

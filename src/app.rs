@@ -11,20 +11,27 @@ use crate::{
     ai::{self, Planner},
     clipboard,
     file_drop::FileDrop,
-    pacing, rules,
+    pacing,
+    presets::{self, Presets},
+    rules,
     settings::Settings,
+    speech::{self, Inventory, ModelChoice, SpeechRequest, SpeechView},
     speed,
     textures::{self, Textures, Viewing},
     theme::{self, Palette, metrics},
+    titles::Titles,
     ui::{
-        self, Action, ClipDraft, DraftHold, Selection, TrackProgress, TrackRequest, Transport,
+        self, Action, ClipDraft, DraftHold, PresetChange, Selection, TrackProgress, TrackRequest,
+        Transport,
         agent::{AgentInput, AgentState, Entry, PlanCard, PlanState, WaitingInput},
+        captions_tab,
         inspector::{InspectorInput, InspectorState, ProjectDraft},
         library::{LibraryInput, LibraryState},
         sheets::{
             self, Answer, Checkpoint, CheckpointAnswer, CheckpointsState, Conflict, ConflictAnswer,
             Notice, Overlay, Pending,
         },
+        text_tab,
         timeline::{self, Reach, TimelineInput, TimelineState},
         toolbar::ToolbarInput,
         transitions,
@@ -35,11 +42,15 @@ use crate::{
 use editor_agent::{AgentHost, AgentOperation};
 use editor_core::{
     Asset, AssetId, Clip, ClipId, Clipboard, Command, Editor, EffectKind, MediaKind, ParamKey,
-    Playback, Project, ProjectQuery, Time, Track, TrackKind, Tracker, look,
+    Playback, Project, ProjectQuery, Time, Track, TrackKind, Tracker,
+    captions::{Cue, SubtitleFormat},
+    look,
 };
 use editor_media::{
     AnalysisEvent, AnalysisService, AudioService, MediaEvent, MediaService, Region, SourceIdentity,
     SteadyCache, SteadyEvent, SteadyJob, TrackJob,
+    speech::{DETECTOR, ModelShape, SpeechEvent, SpeechJob, SpeechService, Transcription},
+    text::TextService,
 };
 use editor_store::{DocumentSession, RecoveredSession, RecoveryLease, SaveWorker, StoreError};
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Rect, pos2, vec2};
@@ -257,11 +268,26 @@ enum Pick {
     Duplicate,
     ImportFiles,
     ImportFolder,
+    ImportFonts,
+    ImportCaptions,
+    ExportCaptions(editor_core::TrackId, SubtitleFormat),
+    SpeechModel,
 }
+
+/// A subtitle file's cues and the language it names, or why it was not
+/// read.
+type SubtitleRead = Result<(Vec<Cue>, Option<String>), String>;
 
 /// Results that workers started by the application hand back.
 enum Job {
     Picked(Pick, Vec<PathBuf>),
+    /// What is in the models folder.
+    Models(Inventory),
+    /// A model file chosen by hand was read, or why it was not.
+    ModelChecked {
+        path: PathBuf,
+        result: Result<ModelShape, String>,
+    },
     Loaded {
         epoch: u64,
         /// The document's revision when the load began.
@@ -319,6 +345,11 @@ enum Job {
         project: Box<Project>,
         /// The session of the file that was made for the copy.
         result: Result<Arc<DocumentSession>, String>,
+    },
+    /// Subtitle files were read, each whole or with why it was not.
+    CaptionsRead {
+        epoch: u64,
+        files: Vec<(PathBuf, SubtitleRead)>,
     },
     Background(Result<String, String>),
 }
@@ -385,6 +416,13 @@ pub struct App {
     settings: Settings,
     settings_saved: Settings,
     settings_path: Option<PathBuf>,
+    /// The person's kept looks and brand colours, and as last written.
+    presets: Arc<Presets>,
+    presets_saved: Arc<Presets>,
+    presets_path: Option<PathBuf>,
+    /// The file there could not be read: it is moved aside before the
+    /// first write, never written over.
+    presets_unread: bool,
     palette: Palette,
     textures: Textures,
     query: Option<ProjectQuery>,
@@ -422,6 +460,15 @@ pub struct App {
     steady_cache: SteadyCache,
     /// The region being tracked there: one at a time.
     tracking: Option<Tracking>,
+    /// The speech worker, started when captions are first made from speech.
+    speech: Option<SpeechService>,
+    /// The captions being made: one request at a time.
+    speaking: Option<Speaking>,
+    /// Captions that came and wait for the person.
+    heard: Option<Heard>,
+    /// Where downloaded models are kept, and what a worker last saw there.
+    models_dir: Option<PathBuf>,
+    models: Option<Inventory>,
     /// What the media worker published besides frames while the frames of a
     /// frame's end were taken, oldest first: the start of the next frame
     /// takes these before anything it publishes after them.
@@ -454,6 +501,44 @@ struct Tracking {
     done: f32,
     /// The path, once it has come and was not added by itself.
     ready: Option<Ready>,
+}
+
+/// Captions being made from the timeline's sound.
+struct Speaking {
+    request: u64,
+    ask: SpeechRequest,
+    /// The editor and its revision when the timeline was taken to be
+    /// heard; `None` while the model downloads.
+    heard_at: Option<(uuid::Uuid, u64)>,
+    /// A cancel was asked for.
+    stopping: bool,
+}
+
+/// Captions that came while adding them would have cost something, and
+/// wait for the person to add or give them up.
+struct Heard {
+    command: Command,
+    track: editor_core::TrackId,
+    count: usize,
+    language: String,
+    why: &'static str,
+}
+
+/// Why captions that came are not added by themselves, if they are not:
+/// the timeline they were heard from has changed, or adding them gives up
+/// what was undone or makes a plan under review out of date.
+fn heard_waits(changed: bool, can_redo: bool, plan_open: bool) -> Option<&'static str> {
+    if changed {
+        Some("The timeline changed while they were made, so some may be off.")
+    } else if can_redo {
+        Some("Adding them gives up what was undone. Redo first to keep both.")
+    } else if plan_open {
+        Some(
+            "Adding them puts the plan under review out of date. Settle the plan first to keep it.",
+        )
+    } else {
+        None
+    }
 }
 
 /// A tracked path that waits to be added: adding it is an edit nobody
@@ -533,6 +618,16 @@ fn tracker_command(
         },
         said,
     ))
+}
+
+/// Why the speech worker did not take a request, in the person's words.
+fn speech_refused(error: editor_media::MediaError) -> String {
+    match error {
+        editor_media::MediaError::Busy => {
+            "The last captions are still stopping; try again in a moment.".to_owned()
+        }
+        error => format!("Captions cannot be made: {error}"),
+    }
 }
 
 /// An empty project with nothing to save yet. The core's own default counts
@@ -731,6 +826,7 @@ impl App {
                     beside.join("stabilization")
                 }),
         );
+        let told_settings = launch.settings.clone();
         let settings_path = launch.settings.or_else(Settings::default_path);
         let settings = settings_path
             .as_deref()
@@ -756,6 +852,26 @@ impl App {
             Ok(media) => (Some(media), None),
             Err(error) => (None, Some(error.to_string())),
         };
+        let titles = match TextService::new(crate::titles::bundled_fonts(), wake(ctx)) {
+            Ok(titles) => Some(titles),
+            Err(error) => {
+                problem(format!("Titles cannot be drawn: {error}"));
+                None
+            }
+        };
+        // The person's presets live beside their settings.
+        let presets_path = settings_path.as_deref().and_then(Presets::path_beside);
+        let (presets, presets_unread) = match presets_path.as_deref().map(Presets::read) {
+            Some(presets::Read::Presets(presets)) => (presets, false),
+            Some(presets::Read::Unreadable(why)) => {
+                problem(format!(
+                    "Your presets were not read: {why}. The file is kept as it is."
+                ));
+                (Presets::default(), true)
+            }
+            _ => (Presets::default(), false),
+        };
+        let presets = Arc::new(presets);
         let audio = match AudioService::new(wake(ctx)) {
             Ok(audio) => Some(audio),
             Err(error) => {
@@ -828,6 +944,10 @@ impl App {
             settings_saved: settings.clone(),
             settings,
             settings_path,
+            presets_saved: Arc::clone(&presets),
+            presets,
+            presets_path,
+            presets_unread,
             palette,
             textures: Textures::default(),
             query: None,
@@ -840,7 +960,8 @@ impl App {
             draft_hold: DraftHold::default(),
             clipboard: None,
             timeline: TimelineState::default(),
-            viewer: ViewerState::with_device(cc.wgpu_render_state.clone()),
+            viewer: ViewerState::with_device(cc.wgpu_render_state.clone())
+                .with_titles(Titles::new(titles)),
             inspector: InspectorState::default(),
             library: LibraryState::default(),
             agent: AgentState::default(),
@@ -854,6 +975,11 @@ impl App {
             analysis: None,
             steady_cache,
             tracking: None,
+            speech: None,
+            speaking: None,
+            heard: None,
+            models_dir: speech::models_dir(told_settings.as_deref()),
+            models: None,
             media_held: VecDeque::new(),
             file_drop: FileDrop::default(),
             files_held: false,
@@ -1076,6 +1202,38 @@ impl App {
         }
     }
 
+    /// Puts the cues read from `path` on a caption track of their own, in
+    /// the language the file names, else in that of the track in view.
+    fn import_captions(&mut self, path: &Path, read: SubtitleRead) -> Result<String, String> {
+        let (cues, named) = read?;
+        let project = self.editor.project();
+        let viewed = captions_tab::in_view(project, self.library.captions.track, &self.selection)
+            .and_then(|id| project.tracks.iter().find(|track| track.id == id))
+            .and_then(|track| track.language.clone());
+        let guessed = named.is_none();
+        let language = named.or(viewed).unwrap_or_else(|| "en".to_owned());
+        let (command, track, count) = captions_tab::imported(project, &cues, &language)?;
+        self.edit(command)?;
+        self.library.captions.track = Some(track);
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let captions = if count == 1 {
+            "1 caption"
+        } else {
+            &format!("{count} captions")
+        };
+        let language = crate::languages::label(&language);
+        Ok(if guessed {
+            format!(
+                "Imported {captions} from {name} as {language}: change the language in the Captions tab if it is another."
+            )
+        } else {
+            format!("Imported {captions} from {name} ({language})")
+        })
+    }
+
     /// Applies one command. `Ok` carries what was done, in the words the
     /// history uses.
     fn edit(&mut self, command: Command) -> Result<String, String> {
@@ -1140,11 +1298,17 @@ impl App {
         self.tracking = None;
         self.inspector.end_region();
         self.inspector.set_tracking(None);
+        // And so were captions being made or waiting.
+        if let (Some(service), Some(speaking)) = (&self.speech, self.speaking.take()) {
+            service.cancel(speaking.request);
+        }
+        self.heard = None;
         // And so was a camera being measured, and every path held.
         self.viewer.steady.clear();
         self.inspector.set_steady(None);
         self.textures.clear();
         self.viewer.release_canvases();
+        self.viewer.titles.clear();
         self.assets_seen = self.editor.project().assets.clone();
         self.source = None;
         self.selection.clear();
@@ -1508,7 +1672,7 @@ impl App {
                         &[
                             "mp4", "mov", "mkv", "webm", "avi", "m4v", "mp3", "wav", "aac", "m4a",
                             "flac", "ogg", "opus", "png", "jpg", "jpeg", "webp", "bmp", "gif",
-                            "cube",
+                            "cube", "ttf", "otf", "ttc", "otc",
                         ],
                     )
                     .add_filter("All files", &["*"])
@@ -1518,6 +1682,64 @@ impl App {
                     Job::Picked(
                         Pick::ImportFiles,
                         files.iter().map(|file| file.path().to_path_buf()).collect(),
+                    )
+                });
+            }
+            Pick::ImportFonts => {
+                let choice = dialog
+                    .set_title("Import fonts")
+                    .add_filter("Fonts", &["ttf", "otf", "ttc", "otc"])
+                    .pick_files();
+                self.spawn(ctx, "aster-dialog", move || {
+                    let files = pollster::block_on(choice).unwrap_or_default();
+                    Job::Picked(
+                        Pick::ImportFonts,
+                        files.iter().map(|file| file.path().to_path_buf()).collect(),
+                    )
+                });
+            }
+            Pick::SpeechModel => {
+                let choice = dialog
+                    .set_title("Choose a Whisper model")
+                    .add_filter("Whisper models", &["bin"])
+                    .pick_file();
+                self.spawn(ctx, "aster-dialog", move || {
+                    let file = pollster::block_on(choice);
+                    Job::Picked(
+                        Pick::SpeechModel,
+                        file.iter().map(|file| file.path().to_path_buf()).collect(),
+                    )
+                });
+            }
+            Pick::ImportCaptions => {
+                let choice = dialog
+                    .set_title("Import captions")
+                    .add_filter("Subtitles", &["srt", "vtt"])
+                    .pick_files();
+                self.spawn(ctx, "aster-dialog", move || {
+                    let files = pollster::block_on(choice).unwrap_or_default();
+                    Job::Picked(
+                        Pick::ImportCaptions,
+                        files.iter().map(|file| file.path().to_path_buf()).collect(),
+                    )
+                });
+            }
+            Pick::ExportCaptions(track, format) => {
+                let name = captions_tab::export_name(self.editor.project(), track, format);
+                let (filter, extension) = match format {
+                    SubtitleFormat::Srt => ("SubRip subtitles", "srt"),
+                    SubtitleFormat::Vtt => ("WebVTT subtitles", "vtt"),
+                };
+                let choice = dialog
+                    .set_title("Export captions")
+                    .add_filter(filter, &[extension])
+                    .set_file_name(name)
+                    .save_file();
+                self.spawn(ctx, "aster-dialog", move || {
+                    let path = pollster::block_on(choice).map(|file| file.path().to_path_buf());
+                    Job::Picked(
+                        Pick::ExportCaptions(track, format),
+                        path.into_iter().collect(),
                     )
                 });
             }
@@ -1690,9 +1912,87 @@ impl App {
                         }
                     }
                 }
-                Job::Picked(Pick::ImportFiles | Pick::ImportFolder, paths) => {
+                Job::Picked(Pick::ImportFiles | Pick::ImportFolder | Pick::ImportFonts, paths) => {
                     if let Some(problem) = self.import(paths) {
                         self.notify(ctx, problem, true);
+                    }
+                }
+                Job::Picked(Pick::ImportCaptions, paths) => {
+                    if paths.is_empty() {
+                        continue;
+                    }
+                    let epoch = self.epoch;
+                    self.spawn(ctx, "aster-captions", move || Job::CaptionsRead {
+                        epoch,
+                        files: (paths.into_iter())
+                            .map(|path| {
+                                let read = captions_tab::read_file(&path);
+                                (path, read)
+                            })
+                            .collect(),
+                    });
+                }
+                Job::Picked(Pick::ExportCaptions(track, format), paths) => {
+                    let Some(path) = paths.into_iter().next() else {
+                        continue;
+                    };
+                    match captions_tab::exported(self.editor.project(), track, format) {
+                        Ok((text, count)) => {
+                            self.spawn(ctx, "aster-captions", move || {
+                                Job::Background(captions_tab::write_file(&path, &text).map(|()| {
+                                    let name = path.file_name().map_or_else(
+                                        || path.display().to_string(),
+                                        |name| name.to_string_lossy().into_owned(),
+                                    );
+                                    match count {
+                                        1 => format!("Saved 1 caption to {name}"),
+                                        _ => format!("Saved {count} captions to {name}"),
+                                    }
+                                }))
+                            });
+                        }
+                        Err(why) => self.notify(ctx, why, true),
+                    }
+                }
+                Job::Picked(Pick::SpeechModel, paths) => {
+                    let Some(path) = paths.into_iter().next() else {
+                        continue;
+                    };
+                    self.spawn(ctx, "aster-models", move || {
+                        let result = ModelShape::read(&path).map_err(|error| error.to_string());
+                        Job::ModelChecked { path, result }
+                    });
+                }
+                Job::ModelChecked { path, result } => match result {
+                    Ok(shape) => {
+                        let name = path.file_name().map_or_else(
+                            || path.display().to_string(),
+                            |name| name.to_string_lossy().into_owned(),
+                        );
+                        self.settings.speech.file = Some(path);
+                        let english = if shape.multilingual() {
+                            ""
+                        } else {
+                            " It hears English only."
+                        };
+                        self.notify(
+                            ctx,
+                            format!("Captions will be made with {name}.{english}"),
+                            false,
+                        );
+                    }
+                    Err(why) => self.notify(ctx, format!("That model was not chosen: {why}"), true),
+                },
+                Job::Models(inventory) => self.models = Some(inventory),
+                Job::CaptionsRead { epoch, files } => {
+                    if epoch != self.epoch {
+                        continue;
+                    }
+                    for (path, read) in files {
+                        match self.import_captions(&path, read) {
+                            Ok(text) => self.notify(ctx, text, false),
+                            Err(why) => self.notify(ctx, why, true),
+                        }
                     }
                 }
                 Job::Loaded {
@@ -2339,6 +2639,224 @@ impl App {
         }
     }
 
+    // ---- Captions from speech ---------------------------------------------
+
+    /// Hands a request to the speech worker: the model's download first, a
+    /// step that is over at once when the model is there, then the
+    /// timeline as it is now.
+    fn generate_captions(
+        &mut self,
+        ctx: &egui::Context,
+        request: SpeechRequest,
+    ) -> Result<(), String> {
+        if self.speaking.is_some() {
+            return Err("Captions are already being made.".to_owned());
+        }
+        if self.heard.is_some() {
+            return Err("Add or discard the captions that are ready first.".to_owned());
+        }
+        if self.speech.is_none() {
+            let ctx = ctx.clone();
+            let service = SpeechService::new(move || ctx.request_repaint())
+                .map_err(|error| format!("Captions cannot be made: {error}"))?;
+            self.speech = Some(service);
+        }
+        let speaking = Speaking {
+            request: 0,
+            ask: request,
+            heard_at: None,
+            stopping: false,
+        };
+        let ModelChoice::Catalog(model) = speaking.ask.model else {
+            return self.transcribe(speaking);
+        };
+        let dir = (self.models_dir.clone())
+            .ok_or("There is no folder to keep models in. Choose a model file instead.")?;
+        let Some(service) = &self.speech else {
+            return Err("Captions cannot be made.".to_owned());
+        };
+        let request = service
+            .start(SpeechJob::Download { model, dir })
+            .map_err(speech_refused)?;
+        self.speaking = Some(Speaking {
+            request,
+            ..speaking
+        });
+        Ok(())
+    }
+
+    /// Hands the timeline as it is now to be heard.
+    fn transcribe(&mut self, speaking: Speaking) -> Result<(), String> {
+        let model = match &speaking.ask.model {
+            ModelChoice::Catalog(model) => (self.models_dir.as_deref())
+                .map(|dir| model.path(dir))
+                .ok_or("There is no folder to keep models in.")?,
+            ModelChoice::File(path) => path.clone(),
+        };
+        let Some(service) = &self.speech else {
+            return Err("Captions cannot be made.".to_owned());
+        };
+        let request = service
+            .start(SpeechJob::Transcribe(Transcription {
+                project: self.editor.snapshot(),
+                start: speaking.ask.start,
+                end: speaking.ask.end,
+                model,
+                detector: self.models_dir.as_deref().map(|dir| DETECTOR.path(dir)),
+                language: speaking.ask.whisper_language(),
+                translate: speaking.ask.translate,
+            }))
+            .map_err(speech_refused)?;
+        self.speaking = Some(Speaking {
+            request,
+            heard_at: Some((self.editor.instance_id(), self.editor.revision())),
+            ..speaking
+        });
+        Ok(())
+    }
+
+    fn cancel_speech(&mut self) {
+        if let (Some(service), Some(speaking)) = (&self.speech, &mut self.speaking) {
+            service.cancel(speaking.request);
+            speaking.stopping = true;
+        }
+    }
+
+    /// Looks at which models are downloaded, on a worker.
+    fn look_at_models(&mut self, ctx: &egui::Context) {
+        if let Some(dir) = self.models_dir.clone() {
+            self.spawn(ctx, "aster-models", move || {
+                Job::Models(Inventory::look(&dir))
+            });
+        }
+    }
+
+    /// What the speech worker is doing, for the Captions tab.
+    fn speech_view(&self) -> SpeechView {
+        if let Some(heard) = &self.heard {
+            return SpeechView::Ready {
+                count: heard.count,
+                language: heard.language.clone(),
+                why: heard.why.to_owned(),
+            };
+        }
+        let Some(speaking) = &self.speaking else {
+            return SpeechView::Idle;
+        };
+        let progress = (self.speech.as_ref())
+            .and_then(SpeechService::progress)
+            .filter(|progress| progress.request == speaking.request);
+        SpeechView::Working {
+            stage: progress.map(|progress| progress.stage),
+            done: progress.map_or(0.0, |progress| progress.done),
+            stopping: speaking.stopping,
+        }
+    }
+
+    /// Takes what the speech worker published. A model that came is heard
+    /// with; words that came become one step, or wait.
+    fn take_speech(&mut self, ctx: &egui::Context) {
+        while let Some(event) = self.speech.as_ref().and_then(SpeechService::poll) {
+            // An answer to a request this window no longer waits for is
+            // nobody's.
+            let Some(speaking) =
+                (self.speaking).take_if(|speaking| speaking.request == event.request())
+            else {
+                continue;
+            };
+            match event {
+                SpeechEvent::Downloaded { .. } => {
+                    self.look_at_models(ctx);
+                    if speaking.stopping {
+                        self.notify(ctx, "Captions were not made.", false);
+                    } else if let Err(why) = self.transcribe(speaking) {
+                        self.notify(ctx, format!("Captions were not made: {why}"), true);
+                    }
+                }
+                SpeechEvent::Transcribed {
+                    words, language, ..
+                } => self.take_words(ctx, &speaking, &words, language.as_deref()),
+                SpeechEvent::Failed { message, .. } => {
+                    self.notify(ctx, format!("Captions were not made: {message}"), true);
+                }
+                SpeechEvent::Cancelled { .. } => {
+                    self.notify(ctx, "Captions were not made.", false);
+                }
+            }
+        }
+    }
+
+    /// The words heard as one step: added now, or held while adding them
+    /// would cost something.
+    fn take_words(
+        &mut self,
+        ctx: &egui::Context,
+        speaking: &Speaking,
+        words: &[editor_core::captions::SpokenWord],
+        heard: Option<&str>,
+    ) {
+        let Some((instance, revision)) = speaking.heard_at else {
+            return;
+        };
+        if instance != self.editor.instance_id() {
+            return;
+        }
+        let language = speech::caption_language(
+            speaking.ask.language.as_deref(),
+            speaking.ask.translate,
+            heard,
+        );
+        let (command, track, count) =
+            match speech::generated(self.editor.project(), words, &language, speaking.ask.length) {
+                Ok(made) => made,
+                Err(why) => {
+                    self.notify(ctx, why, true);
+                    return;
+                }
+            };
+        let heard = Heard {
+            command,
+            track,
+            count,
+            language,
+            why: "",
+        };
+        match heard_waits(
+            self.editor.revision() != revision,
+            self.editor.can_redo(),
+            self.ai.open().is_some(),
+        ) {
+            Some(why) => {
+                self.heard = Some(Heard { why, ..heard });
+                self.notify(
+                    ctx,
+                    "Captions are ready. Add them in the Captions tab.",
+                    false,
+                );
+            }
+            None => self.add_heard(ctx, heard),
+        }
+    }
+
+    /// The one edit captions from speech are.
+    fn add_heard(&mut self, ctx: &egui::Context, heard: Heard) {
+        self.commit_drafts(ctx, true);
+        match self.edit(heard.command) {
+            Ok(_) => {
+                self.library.captions.track = Some(heard.track);
+                let captions = match heard.count {
+                    1 => "1 caption".to_owned(),
+                    count => format!("{count} captions"),
+                };
+                let language = crate::languages::label(&heard.language);
+                self.notify(ctx, format!("Added {captions} in {language}."), false);
+            }
+            Err(error) => {
+                self.notify(ctx, format!("The captions were not added: {error}"), true);
+            }
+        }
+    }
+
     fn take_media(&mut self, ctx: &egui::Context) {
         loop {
             let Some(media) = &self.media else {
@@ -2711,6 +3229,13 @@ impl App {
             }
             Action::ImportFiles => self.pick(ctx, Pick::ImportFiles),
             Action::ImportFolder => self.pick(ctx, Pick::ImportFolder),
+            Action::ImportFonts => self.pick(ctx, Pick::ImportFonts),
+            Action::ImportCaptions => self.pick(ctx, Pick::ImportCaptions),
+            Action::ExportCaptions { track, format } => {
+                self.commit_drafts(ctx, true);
+                captions_tab::exported(self.editor.project(), track, format)?;
+                self.pick(ctx, Pick::ExportCaptions(track, format));
+            }
             Action::OpenSettings => self.overlay = Overlay::Settings,
 
             Action::Edit(command) => {
@@ -2845,7 +3370,16 @@ impl App {
                 let track = Track::new(format!("{} {}", kind_name(kind), count + 1), kind);
                 return self.edit(Command::AddTrack { track }).map(Some);
             }
-            Action::AddText => return self.add_text().map(Some),
+            Action::AddText => return self.add_look(text_tab::Look::typed(), None, None).map(Some),
+            Action::AddLook { look, track, at } => {
+                self.commit_drafts(ctx, true);
+                return self.add_look(&look, track, at).map(Some);
+            }
+            Action::Presets(change) => {
+                if let Some(said) = self.change_presets(change)? {
+                    self.notify(ctx, said, false);
+                }
+            }
             Action::InsertAsset { asset, place } => {
                 return self.insert_asset(asset, place).map(Some);
             }
@@ -3010,6 +3544,35 @@ impl App {
             Action::SetAiModel(model) => self.settings.ai.set_model(&model),
             Action::Notify(text) => self.notify(ctx, text, false),
             Action::Track(request) => self.start_tracking(ctx, request)?,
+            Action::GenerateCaptions(request) => self.generate_captions(ctx, request)?,
+            Action::CancelSpeech => self.cancel_speech(),
+            Action::AddHeardCaptions => {
+                if let Some(heard) = self.heard.take() {
+                    self.add_heard(ctx, heard);
+                }
+            }
+            Action::DiscardHeardCaptions => self.heard = None,
+            Action::SetSpeech(settings) => self.settings.speech = settings,
+            Action::PickSpeechModel => self.pick(ctx, Pick::SpeechModel),
+            Action::LookAtModels => self.look_at_models(ctx),
+            Action::CaptionsFromSpeech => {
+                let (start, end) = captions_tab::Stretch::Timeline
+                    .times(self.editor.project(), &self.selection)
+                    .ok_or("The timeline is empty.")?;
+                let settings = &self.settings.speech;
+                let request = SpeechRequest {
+                    start,
+                    end,
+                    model: settings.choice(),
+                    language: settings.language.clone(),
+                    translate: settings.translate,
+                    length: settings.length,
+                };
+                self.generate_captions(ctx, request)?;
+            }
+            Action::TranslateCaptions { track_id, language } => {
+                self.translate_captions(ctx, track_id, &language)?;
+            }
             Action::CancelTracking => self.cancel_tracking(),
             Action::AddTracked => self.add_ready_tracker(ctx),
             Action::Stabilize(asset) => self.start_steady(ctx, asset)?,
@@ -3142,53 +3705,66 @@ impl App {
         }
     }
 
-    fn add_text(&mut self) -> Result<String, String> {
-        let project = self.editor.project();
-        let duration = Time::from_seconds(3.0);
-        let at = rules::quantize(self.playback.position, project.settings.frame_rate);
-        let existing = project
-            .tracks
-            .iter()
-            .find(|track| track.kind == TrackKind::Text && !track.locked);
-        let (clip, command) = match existing {
-            Some(track) => {
-                let clip = Clip::text(
-                    "Text",
-                    rules::free_start(track, at, duration, &[]),
-                    duration,
-                );
-                (
-                    clip.id,
-                    Command::AddClip {
-                        track_id: track.id,
-                        clip,
-                    },
-                )
-            }
-            None => {
-                let track = Track::new("Text 1", TrackKind::Text);
-                let clip = Clip::text("Text", at, duration);
-                (
-                    clip.id,
-                    Command::Batch {
-                        label: "Add text".into(),
-                        commands: vec![
-                            Command::AddClip {
-                                track_id: track.id,
-                                clip,
-                            },
-                            Command::AddTrack { track },
-                        ]
-                        .into_iter()
-                        .rev()
-                        .collect(),
-                    },
-                )
-            }
-        };
+    /// Adds a clip of `look` and selects it: on `track` from `at`, or at
+    /// `at` (the playhead when not given) on a text track with room there.
+    fn add_look(
+        &mut self,
+        look: &text_tab::Look,
+        track: Option<editor_core::TrackId>,
+        at: Option<Time>,
+    ) -> Result<String, String> {
+        let at = at.unwrap_or(self.playback.position);
+        let (command, clip) = text_tab::adding(self.editor.project(), look, track, at);
         let done = self.edit(command)?;
         self.selection.only(clip);
         Ok(done)
+    }
+
+    /// Changes the person's presets; they are written at the end of the
+    /// frame. Says what was done when there is something to say.
+    fn change_presets(&mut self, change: PresetChange) -> Result<Option<String>, String> {
+        let presets = Arc::make_mut(&mut self.presets);
+        match change {
+            PresetChange::Keep {
+                name,
+                content,
+                position,
+            } => {
+                let id = presets.keep(&name, *content, position)?;
+                let name = (presets.looks.iter())
+                    .find(|look| look.id == id)
+                    .map_or(name, |look| look.name.clone());
+                Ok(Some(format!(
+                    "Kept “{name}”: it is under Yours in the library's Text tab."
+                )))
+            }
+            PresetChange::Rename(id, name) => {
+                if presets.rename(id, &name) {
+                    Ok(None)
+                } else {
+                    Err("A preset needs a name.".into())
+                }
+            }
+            PresetChange::Remove(id) => Ok(presets
+                .remove(id)
+                .map(|look| format!("Removed the preset “{}”.", look.name))),
+            PresetChange::AddColor(color) => {
+                if presets.add_color(color) {
+                    Ok(None)
+                } else if presets.colors.contains(&color) {
+                    Err("That colour is already one of your brand colours.".into())
+                } else {
+                    Err(format!(
+                        "There are already {} brand colours: remove one to add another.",
+                        presets::MOST_COLORS
+                    ))
+                }
+            }
+            PresetChange::RemoveColor(color) => {
+                presets.colors.retain(|kept| *kept != color);
+                Ok(None)
+            }
+        }
     }
 
     fn insert_asset(
@@ -3333,13 +3909,20 @@ impl App {
     /// Sends `prompt` to the model with the document as it stands. The
     /// answer arrives as an event; nothing is edited by asking.
     fn ai_submit(&mut self, ctx: &egui::Context, prompt: String) {
+        let selected = self.selection.clips.clone();
+        self.ai_ask(ctx, prompt.clone(), prompt, &selected);
+    }
+
+    /// Asks the model `prompt` about `selected`, whose clips are in its
+    /// context whole, whatever else is left out. The panel shows `shown`.
+    fn ai_ask(&mut self, ctx: &egui::Context, shown: String, prompt: String, selected: &[ClipId]) {
         let prompt = prompt.trim().to_owned();
         if prompt.is_empty() {
             return;
         }
         // A value still held in a field is part of what is being asked about.
         self.commit_drafts(ctx, true);
-        self.agent.push(Entry::Prompt(prompt.clone()));
+        self.agent.push(Entry::Prompt(shown.trim().to_owned()));
         // One proposal is open at a time; asking again sets the last aside.
         if let Some(open) = self.ai.open()
             && self.ai.discard(open)
@@ -3349,7 +3932,7 @@ impl App {
         let asked = self.ai.ask(
             &self.settings.ai,
             &self.editor,
-            &self.selection.clips,
+            selected,
             self.playback.position,
             prompt,
         );
@@ -3359,6 +3942,33 @@ impl App {
                 lines: vec![problem],
             });
         }
+    }
+
+    /// Asks the model for the captions of `track_id` in `language`. The
+    /// request and its proposal show in the Agent tab, where the copy is
+    /// reviewed and applied as one step.
+    fn translate_captions(
+        &mut self,
+        ctx: &egui::Context,
+        track_id: editor_core::TrackId,
+        language: &str,
+    ) -> Result<(), String> {
+        let project = self.editor.project();
+        let track = (project.tracks.iter())
+            .find(|track| track.id == track_id)
+            .ok_or("That caption track is gone.")?;
+        let (prompt, captions) = captions_tab::translation(self.editor.project(), track, language)?;
+        let shown = format!(
+            "Translate “{}” into {}",
+            track.name,
+            crate::languages::label(language)
+        );
+        self.settings.show_inspector = true;
+        self.library_first = false;
+        self.settings.agent_ask = true;
+        self.right_tab = RightTab::Agent;
+        self.ai_ask(ctx, shown, prompt, &captions);
+        Ok(())
     }
 
     /// What the model's runtime reported, shown as it was reported.
@@ -3813,6 +4423,7 @@ impl App {
             .update(Arc::clone(&project));
         self.textures.begin_frame();
         self.viewer.begin_frame();
+        self.viewer.titles.poll(&ctx);
         self.show_steady(&project);
         // Layers given up since the last frame are no longer decoded for.
         self.textures.retire(self.media.as_ref());
@@ -3893,12 +4504,15 @@ impl App {
             } else if delta != 0.0 {
                 self.settings.library_width = (width + delta).clamp(220.0, 520.0);
             }
+            let speech_view = self.speech_view();
+            let speech_settings = self.settings.speech.clone();
             (self.settings.library_grid, self.settings.library_sort) = ui::library::show(
                 ui,
                 rect,
                 &mut self.library,
                 &mut self.selection,
                 &mut self.textures,
+                &mut self.viewer.titles,
                 &LibraryInput {
                     p: &p,
                     project: &project,
@@ -3909,6 +4523,12 @@ impl App {
                     problem: self.media_problem.as_deref(),
                     previewing: self.source.as_ref().map(|source| source.asset.id),
                     playhead: self.playback.position,
+                    presets: &self.presets,
+                    speech: captions_tab::SpeechInput {
+                        view: &speech_view,
+                        settings: &speech_settings,
+                        inventory: self.models.as_ref(),
+                    },
                 },
                 actions,
             );
@@ -4286,6 +4906,8 @@ impl App {
                     playhead: self.playback.position,
                     transition: (self.timeline.marked(project, &self.selection))
                         .map(|(_, edge)| edge),
+                    families: self.viewer.titles.families(),
+                    brand: &self.presets.colors,
                 },
                 actions,
             ),
@@ -4309,6 +4931,9 @@ impl App {
                 },
                 actions,
             ),
+        }
+        if self.inspector.take_families_wanted() {
+            self.viewer.titles.want_families();
         }
     }
 }
@@ -4346,6 +4971,7 @@ impl eframe::App for App {
         self.take_jobs(ctx);
         self.take_media(ctx);
         self.take_analysis(ctx);
+        self.take_speech(ctx);
         self.take_steadies(ctx);
         self.take_saves(ctx);
         self.take_agent_calls();
@@ -4443,6 +5069,23 @@ impl eframe::App for App {
         let naming = ctx.text_edit_focused()
             && (self.settings.ai.claude_model != self.settings_saved.ai.claude_model
                 || self.settings.ai.codex_model != self.settings_saved.ai.codex_model);
+        if self.presets != self.presets_saved && !ctx.egui_is_using_pointer() {
+            self.presets_saved = Arc::clone(&self.presets);
+            if let Some(path) = self.presets_path.clone() {
+                let presets = Arc::clone(&self.presets);
+                let aside = std::mem::take(&mut self.presets_unread);
+                self.spawn(ctx, "aster-presets", move || {
+                    Job::Background(match presets.save(&path, aside) {
+                        Ok(Some(kept)) => Ok(format!(
+                            "The presets file that could not be read was kept as {}.",
+                            kept.display()
+                        )),
+                        Ok(None) => Ok(String::new()),
+                        Err(error) => Err(format!("Presets were not saved: {error}")),
+                    })
+                });
+            }
+        }
         if self.settings != self.settings_saved && !ctx.egui_is_using_pointer() && !naming {
             self.settings_saved = self.settings.clone();
             if let Some(path) = self.settings_path.clone() {
@@ -4548,6 +5191,11 @@ impl eframe::App for App {
             && let Some(path) = &self.settings_path
         {
             let _ = self.settings.save(path);
+        }
+        if self.presets != self.presets_saved
+            && let Some(path) = &self.presets_path
+        {
+            let _ = self.presets.save(path, self.presets_unread);
         }
     }
 }
@@ -5937,6 +6585,19 @@ mod tests {
         assert!(tracker_waits(true, false).unwrap().contains("undone"));
         assert!(tracker_waits(false, true).unwrap().contains("plan"));
         assert!(tracker_waits(true, true).unwrap().contains("undone"));
+    }
+
+    #[test]
+    fn captions_wait_when_the_timeline_changed_or_adding_them_would_cost_something() {
+        assert_eq!(heard_waits(false, false, false), None);
+        assert!(heard_waits(true, false, false).unwrap().contains("changed"));
+        assert!(heard_waits(false, true, false).unwrap().contains("undone"));
+        assert!(heard_waits(false, false, true).unwrap().contains("plan"));
+        assert!(heard_waits(true, true, true).unwrap().contains("changed"));
+        assert!(speech_refused(editor_media::MediaError::Busy).contains("still stopping"));
+        assert!(
+            speech_refused(editor_media::MediaError::Closed).starts_with("Captions cannot be made")
+        );
     }
 
     #[test]

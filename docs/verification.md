@@ -281,6 +281,7 @@ establish native platform acceptance.
 | History | Undo/redo, named checkpoints, reversible checkpoint restore, crash recovery and recovery leases | XTest checkpoint restore/undo/redo, crash recovery offer and optimized exit/relaunch retaining the full undo/redo chain; store shared-root/corruption/lease tests. Ordinary `.aster` open starts fresh history; recovery sidecar retains it |
 | Looks, animation and motion | Keyframes, transitions, effects, looks, speed, masks, blend, colour, keying, tracking, stabilization as preview | See [advanced editing](#advanced-editing): Linux headless tests, device readback on two adapters and native captures on virtual displays; no playback rate, export or other platform |
 | Native AI | Claude/Codex CLI planning, captured/focused metadata, review/apply/discard/cancel and exact prepared-state commits | Exact reviewed split IDs verified through the public runtime; `2c596cb0` both real-provider split/undo/redo and owned no-op/stale fixtures passed. Prior db30 cancel/reopen evidence stays scoped. Metadata only; no audiovisual semantic analysis |
+| Titles, captions and graphics | Styled titles, text animation, captions from speech with word times, karaoke, caption editing, SRT/VTT, caption languages and AI translation, lower thirds, title cards, callouts, stickers, emoji, editable templates, kept looks and brand colours, as preview | See [titles, captions and motion graphics](#titles-captions-and-motion-graphics): Linux headless tests, a real Whisper model on synthetic English speech and native captures on a virtual display; no export, playback rate, real provider translation or other platform |
 
 The [user guide](usage.md) explains controls and current limits. Local agent
 commands and the authenticated live/headless protocol use the same reducer;
@@ -373,6 +374,65 @@ During wave 3 one editor session inherited the person's D-Bus address and may
 have raised a Save dialog on their desktop; later sessions isolate D-Bus and
 `XDG_RUNTIME_DIR`. Automatic subject segmentation is not implemented; see
 [its research ticket](../.scratch/advanced-editing/issues/16-automatic-subject-segmentation.md).
+
+## Titles, captions and motion graphics
+
+The features of [the titles and captions design](../.scratch/titles-and-captions/spec.md)
+are implemented as preview features: titles and graphics are drawn in the
+viewer, and captions leave the editor only as SubRip or WebVTT files. There is
+no export, so nothing is burned into a video. This section states what
+evidence exists for each feature and what was not tried. The tickets'
+comments in [`.scratch/titles-and-captions/issues/`](../.scratch/titles-and-captions/issues)
+list every capture and test by name.
+
+### Where the evidence comes from
+
+| Kind | What it is | Host and build |
+| --- | --- | --- |
+| Headless tests | Core, store, media, agent and desktop tests at the owning seam. Desktop benches run real egui passes over the inspector, library tabs and speech panel and find controls through AccessKit | One Linux container: 4 vCPU Intel Xeon at 2.8 GHz, 15 GiB, Ubuntu 24.04.5, Rust 1.97.1, `dev` profile with dependencies at `opt-level` 2. Final runs: editor-core 165, editor-store 78, editor-agent 86 with the provider fixture, desktop 672 and `aster-agent` 12 passed; editor-media 247 of 248, the one failure being `decode::tests::a_paced_walk_backwards_at_preview_size_is_measured`, which fails the same way on the base commit and is outside this work |
+| Real speech model | A test that runs only when `ASTER_WHISPER_MODEL` and `ASTER_SPEECH_SAMPLE` are set: words, their timeline times and a cancel during recognition | Same host, Tiny q5_1, `talk.wav` (8.5 s of English synthesized by Flite) |
+| Native captures | The running debug build driven by XTest pointer and keyboard and looked at, with task-owned settings, presets, models and projects | Xvfb with lavapipe (software Vulkan), no window manager, at 1440x900 and at 760x560 or 760x700. Kept in the session's scratch directory, not in the repository |
+| Optimized build | `cargo build --release --locked --bin aster` of the final source | Built on the same host in 7 min 44 s from clean. The `aster` binary is 34,147,232 bytes, about 1.7 MB of it whisper.cpp and ggml. Run under the same Xvfb: the Karaoke box look drawn, and captions from speech with Tiny and the language detected appeared between 4.2 and 4.9 s after the click. That run found two caption tracks with one name. After the fix, the rebuilt binary (34,148,904 bytes, 3 min 9 s incremental) named the second "English captions 2" in the track chooser at 1440x900 and at 760x700 |
+
+### Feature matrix
+
+"Native" is a capture of the running build that was looked at. "Measured" is
+a number with its conditions in
+[performance](performance.md#titles-captions-and-speech-budgets); everything
+else in that column is unmeasured.
+
+| Feature | Headless tests | Native capture | Measured | Known limits and unverified |
+| --- | --- | --- | --- | --- |
+| Model, commands, schema v3 | Bounds, NaN, defaults, realignment, split/trim/rate rebasing, reversal and atomic failure ([titles](../crates/editor-core/tests/titles.rs)); a version 2 title loads plain, titles, graphics, captions and fonts round-trip, the next save writes 3 and version 4 is refused ([schema](../crates/editor-store/tests/schema.rs)) | n/a | No | No build that knows only version 2 was run against a version 3 file; the refusal is shown for version 4 through the same path |
+| Text overlays: fonts, colours, outlines, shadows, backgrounds | Picture tests with the bundled font: ink bounds, outline grows ink, shadow offset, background box, wrap, per-character fallback ([text tests](../crates/editor-media/src/text/tests.rs)); eight inspector tests ([text_tests](../src/ui/inspector/text_tests.rs)) | Text section at both sizes; lower third, titles and outlines drawn in the viewer from lane pictures | No | Time to draw a picture; right-to-left, vertical and complex-script layout not reviewed; synthetic bold is a stroke; the emoji test prints `SKIP` on a host without a colour emoji face |
+| Text animation presets | Progress per kind and edge, unit spread and frame snapping in the plan; per-unit motion in the picture | In style list and Typewriter chosen; a Pop entrance correctly invisible at its first frame; `animate in pop` from the command panel | No | No animation was watched at a measured frame rate; whether the lane keeps up with 30 or 60 fps is unknown |
+| Captions from speech with word times | 23 speech tests: catalog, model header shapes, languages, quiet cuts, word times, the one-job lane with cancel, downloads through a fake `curl` (checked, resumed, damaged, missing, cancelled); the real-model test above; 5 speech-panel benches | Tiny already present: six captions in about 5.5 s and one undo; Stop; Base downloaded through the proxy and its SHA-256 matched; captions waiting behind a redo; `generate captions` by command | Model load, mix, detector, recognition and cancel with Tiny | English synthetic speech only; Small, Medium and Large v3 Turbo never run; no music, noise, accents or long recordings; whisper.cpp's word times were not compared with hand-timed words; no GPU |
+| Animated karaoke captions | Word state in the plan; word, box and fill highlights in the picture | A Box-highlighted caption with colour emoji; a karaoke look dropped on a caption; the current-cue bar with a karaoke caption | No | Never watched during playback at a measured rate |
+| Manual caption editing, timing and styling | 18 Captions tab tests, including a bench of 2000 captions that draws 5 to 40 rows | Typing a caption, typed times, row, track, language, style and export menus, the empty state, at both sizes | No | Screen reader; caption editing on a locked track natively. The timeline's track heads cut long names, so "English captions" and "English captions 2" both read "English ca…" there; the chooser shows them whole |
+| SRT and VTT import and export | Round trips through files written and read back, malformed files refused whole, VTT word tags, encodings, the 8 MiB cap, language tags in file names | Export menu only | No | The system file pickers were not driven: there is no portal service on Xvfb, so a real import or export through the window was not done |
+| Caption languages and translation | Language names and BCP 47 shapes; `copy_captions` in the core; the translation request and its refusals; the track menu choosing and typing a language; command phrases | `pt-br` typed into a new track; Translate into Spanish against a fake provider, the plan, Apply (Spanish track above the hidden English one, "[es] …" in the viewer) and one Undo at 1440; Translate into German at 760 | Provider command line: 30,499 of 31,744 characters | No real Claude or Codex model translated anything; Whisper's translate-to-English was not run on speech in another language |
+| Lower thirds, title cards, callouts, stickers, emoji | 13 Text tab tests: adding, placement, canvas scaling, restyling, refusals, search, drops, idle repaint ([text_tab_tests](../src/ui/text_tab_tests.rs)) | Tiles drawn by the lane, scrolled to lower thirds, title cards and emoji; a tile dragged to a track with its ghost; a rotated colour-emoji sticker in the viewer | No | Emoji need a colour emoji face on the system; graphics have no image elements |
+| Motion graphics templates with editable parameters | Graphic section tests: texts, shared colours, one font, staggered animation | Graphic section at 1440 | No | Parts cannot be moved or resized in the inspector; only their texts, shared colours, font and animation |
+| Kept looks, templates and brand colours | 3 preset-file tests (a round trip without word times, a newer or damaged file moved aside before a save, what a preset cannot hold refused) and 2 inspector tests | Keep popup, Yours after keeping, brand colours in the picker, presets read back after a restart | No | Typing a preset name and Return were not delivered to the window in that session; covered by benches |
+| Command panel and native planner | Phrases parse and plan; the schema stays under 24 KiB and the command line under 31 KiB; planner text names the new commands | `generate captions` and `animate in pop` at 1440 | No | Real provider requests with the new planner text; `translate captions to …` was driven through the track menu, not typed |
+
+### Unverified for every row
+
+- **macOS and Windows.** Nothing here was built or run there. CI runs on pull
+  requests and `main`, and this work has not been through it, so the
+  whisper.cpp build with Xcode or MSVC, `curl` on those systems, their system
+  font folders and colour emoji fonts are untried.
+- **Playback.** No animated title, karaoke caption or graphic has a measured
+  presentation rate, and the time to draw one picture was not measured.
+- **A hardware GPU, a window manager, a physical display and HiDPI.** Every
+  capture is a private virtual display at scale 1 on software Vulkan.
+- **Real speech.** The only speech heard was synthesized English. Accuracy in
+  other languages, with music or noise, and on recordings longer than one
+  five-minute piece is unknown.
+- **File dialogs.** Font import, subtitle import and export, and model file
+  choice open system pickers that were not driven.
+- **Accessibility.** Controls are reachable by AccessKit names in the benches;
+  no screen reader was used.
 
 ## Native Linux evidence
 

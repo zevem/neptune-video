@@ -124,8 +124,8 @@ impl<'a> Job<'a> {
 /// How a stretch of a plan's layers is drawn.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Run {
-    /// A text layer: interface geometry, as ever.
-    Text(usize),
+    /// A title or graphic: its picture from the title lane, as one quad.
+    Title(usize),
     /// Media layers drawn as quads.
     Plain(Range<usize>),
     /// Media layers composited into one canvas.
@@ -134,14 +134,14 @@ pub enum Run {
 
 /// The plan's layers as the stretches they are drawn in, bottom first.
 ///
-/// Text is never composited, so it parts the media layers into runs, and a
-/// run is composited from its lowest layer through its highest one that is
-/// not plain: what is under a blended layer is what it blends with. Plain
-/// layers above that are quads over the canvas.
+/// A title or graphic is never composited, so it parts the media layers into
+/// runs, and a run is composited from its lowest layer through its highest
+/// one that is not plain: what is under a blended layer is what it blends
+/// with. Plain layers above that are quads over the canvas.
 ///
-/// A run's canvas holds that run alone. A layer above a text layer therefore
+/// A run's canvas holds that run alone. A layer above a title therefore
 /// blends with the media layers between the two and with nothing lower: not
-/// the text, not what is under the text, and not the canvas's colour.
+/// the title, not what is under it, and not the canvas's colour.
 pub fn runs(plan: &RenderPlan) -> Vec<Run> {
     let mut runs = Vec::new();
     let mut from = 0;
@@ -159,9 +159,12 @@ pub fn runs(plan: &RenderPlan) -> Vec<Run> {
         }
     };
     for (index, layer) in layers.iter().enumerate() {
-        if matches!(layer.source, LayerSource::Text { .. }) {
+        if matches!(
+            layer.source,
+            LayerSource::Text { .. } | LayerSource::Graphic { .. }
+        ) {
             media(from..index, &mut runs);
-            runs.push(Run::Text(index));
+            runs.push(Run::Title(index));
             from = index + 1;
         }
     }

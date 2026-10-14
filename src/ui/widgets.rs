@@ -821,13 +821,15 @@ pub fn switch(ui: &mut Ui, p: &Palette, on: bool, label: &str) -> Response {
     if ui.is_rect_visible(rect) {
         let body = Rect::from_center_size(rect.center(), vec2(30.0, 18.0));
         let slid = ui.ctx().animate_bool_with_time(response.id, on, 0.12);
-        let fill = if ui.is_enabled() {
-            theme::mix(p.pressed, p.accent, slid)
-        } else {
-            p.control
-        };
         let painter = ui.painter();
-        painter.rect_filled(body, CornerRadius::same(9), fill);
+        // The track is translucent, so it reads on any surface; the accent
+        // comes over it as the switch slides on.
+        if ui.is_enabled() {
+            painter.rect_filled(body, CornerRadius::same(9), p.pressed);
+            painter.rect_filled(body, CornerRadius::same(9), p.accent.gamma_multiply(slid));
+        } else {
+            painter.rect_filled(body, CornerRadius::same(9), p.control);
+        }
         painter.circle_filled(
             pos2(body.left() + 9.0 + 12.0 * slid, body.center().y),
             7.0,

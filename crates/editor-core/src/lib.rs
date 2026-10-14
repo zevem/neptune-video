@@ -4,6 +4,7 @@
 //! [`PreparedEdit`] retains the exact validated result of a command for guarded
 //! off-thread review and a later commit through the same history boundary.
 pub mod animate;
+pub mod captions;
 mod command;
 mod editor;
 pub mod look;
@@ -12,6 +13,7 @@ mod playback;
 mod query;
 pub mod render;
 pub mod retime;
+pub mod title;
 
 pub use animate::{AnimTrack, Ease, Keyframe, ParamKey};
 pub use command::*;
@@ -28,3 +30,8 @@ pub use render::{
     gain_at, resolve,
 };
 pub use retime::{Retime, TimeKey};
+pub use title::{
+    BackgroundShape, Element, ElementKind, FontFace, Highlight, HighlightMode, ShapeStroke,
+    TextAlign, TextAnimation, TextAnimationKind, TextBackground, TextCase, TextOutline, TextShadow,
+    TextStyle, TextUnit, WordTime,
+};

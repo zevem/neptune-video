@@ -78,7 +78,7 @@ Clipboard copies work between native Aster windows and carry source references;
 unrelated text on the OS clipboard does not silently create clips.
 
 The inspector edits crop, position, scale, rotation, opacity, horizontal/vertical
-reflection, gain, clip rate and text style. Project settings select 16:9, 9:16,
+reflection, gain, clip rate and a title's text, style and animation. Project settings select 16:9, 9:16,
 1:1 or custom dimensions, frame rate and background. Numeric/drag interactions
 commit reversible edits rather than adding a history entry for every pointer
 sample.
@@ -99,8 +99,10 @@ says which of these were driven natively and on what host; none has a measured
 playback rate.
 
 The inspector of a selected video, image or GIF clip has five sections:
-**Video**, **Look**, **Color**, **Speed** and **Motion**. A title has Video and
-Motion; a sound clip has none of them and keeps its volume, speed and timing. A
+**Video**, **Look**, **Color**, **Speed** and **Motion**. A title has Video,
+Text, Animate and Motion, and a graphic has Video, Graphic, Animate and Motion
+(see [titles, captions and graphics](#titles-captions-and-graphics)); a sound
+clip has none of them and keeps its volume, speed and timing. A
 locked track disables the rows and the project refuses the edit. Every change
 is one undo step: a drag, a scrub or a typed value commits once, and Escape
 gives up a drag or a value being typed and leaves the selection.
@@ -336,6 +338,165 @@ The command panel (Command/Ctrl+K) understands, for the selected clips:
 `remove tracker Tracker 1`. Starting a tracking or a stabilization analysis
 has no phrase.
 
+## Titles, captions and graphics
+
+Titles, captions and graphics are drawn on this computer by a background
+worker and shown in the viewer as each picture is ready, so a title can appear
+a moment after it is added or changed. Like everything else in the viewer they
+are a preview: there is no export, and captions leave the editor only as SRT
+or VTT files. The [verification record](verification.md#titles-captions-and-motion-graphics)
+says what was driven natively and on what host.
+
+### Titles and text styles
+
+Press T, use the timeline's text button, type `add text Hello for 3s` in the
+command panel, or add a tile from the library's **Text** tab. A title is a clip
+on a text track and edits like any other clip.
+
+The inspector's **Text** section holds the words, in a field that keeps several
+lines; leaving the field makes the change one undo step. Under it:
+
+- **Font**: family, weight, italic, size and colour. The list joins the faces
+  installed on this computer, the project's font assets and the bundled Geist.
+  A family that is not on this computer is named, and Geist stands in for it.
+- **Layout**: alignment, line height, spacing between letters, a width to wrap
+  at, and case (as typed, UPPERCASE or lowercase).
+- **Outline**, **Shadow** and **Background** are switched on and off as cards.
+  A background is one box behind the text or a box behind each line, with its
+  own padding and corners.
+
+Lengths such as an outline's width are shown in pixels at the title's size and
+grow with it. Emoji are drawn in colour when the system has a colour emoji
+font. Import font files (`.ttf`, `.otf`, `.ttc`, `.otc`) with **Import fonts**
+in the Text tab's header; each becomes a font asset named for its family and
+travels with the project as a file reference, like media.
+
+Effects, masks and blend modes cannot be put on titles.
+
+### Text animation
+
+The **Animate** section has **In** and **Out** cards. Each takes a style
+(Fade, Pop, Bounce, Typewriter, Slide up, Slide down, Slide left, Slide right or
+Wipe), an order (All at once, By line, By word or By letter, each part starting
+a little after the one before), a duration and a delay; for Out the delay is
+"Ends before" the clip's end. Times are whole frames and fit the room the clip
+leaves; a clip too short for one says so. The command panel takes
+`animate in pop`, `animate out fade for 1s` and `animate in none` for the
+selected titles, as one step.
+
+**Karaoke** marks the word being said: in a colour (Word), with a box behind it
+(Box), or with a colour sweeping through the words (Fill). **Word size** grows
+the word being said and **Words to come** sets how visible the words not yet
+said are, down to revealing them one by one. It needs word times, which
+captions from speech have.
+
+### Lower thirds, title cards, callouts, stickers and emoji
+
+The **Text** tab's groups are Titles, Captions, Lower thirds, Title cards,
+Callouts, Stickers and Emoji, then **Yours**. A tile plays its entrance while
+the pointer rests on it. Double-click a tile or press Return to add it at the
+playhead, or drag it to a text track. It goes on the track you choose, or the
+first plain text track with room, or a new one, and lasts three seconds or as
+long as its animations need. Sizes are made for the canvas.
+
+Lower thirds, title cards, callouts and drawn stickers are **graphics**: one
+clip of named parts. The inspector's **Graphic** section has a field for each
+text part, the colours the parts share (changing one changes every part using
+it) and one font for all of its text. Its Animate section gives every part the
+same entrance and exit with a **Between parts** stagger.
+
+Drop a title or caption tile on a title to give it that look as one step; its
+words and word times stay. On a caption track every caption takes the look.
+**Style selected titles** in a tile's context menu does the same for the
+selection.
+
+### Your presets and brand colours
+
+**Keep this look** in the Text section and **Keep as template** in the Graphic
+section save the selected title or graphic under a name. Kept looks and
+templates appear under **Yours**, where they can be renamed and removed,
+together with **Brand colours**, which every colour picker in the inspector
+offers above the picker. They are saved in `presets.json` beside the settings,
+not in the project: adding one copies it into the project, so a project opens
+the same on a computer without your presets. A preset file this build cannot
+read is kept aside as `presets-unread-<time>.json` rather than written over.
+
+### Captions
+
+A caption track is a text track with a language, and each title on it is one
+caption. The library's **Captions** tab shows one caption track at a time:
+
+- The header row chooses the track (with **New caption track…** at its foot)
+  and hides or shows it. Under it are the track's language and **Style**,
+  which gives every caption of the track a caption look.
+- Click a caption's words to type; Shift+Return adds a line, Return or leaving
+  keeps it and Escape gives it up. Click its start or end time to type one as
+  `0:01.20`, `2.5`, `12f` or `500ms`; a time snaps to the frame and stops at the
+  captions next to it.
+- A caption's menu has Start at playhead, End at playhead, Split at playhead,
+  Merge with next and Delete caption. **Add caption** adds two seconds at the
+  playhead in the look of the caption before it.
+
+Every change is one undo step. Captions are clips, so they can also be moved,
+trimmed, split and rippled on the timeline; word times follow.
+
+The language menu lists 40 languages and takes a typed name or BCP 47 tag
+(`Spanish`, `pt-BR`, `pt_br`). A new caption track is named for its language
+("English captions"), numbered when that name is taken ("English captions 2").
+Changing the language renames a track that is still named for its last one.
+
+**Import SRT or VTT** reads one or more files of up to 8 MiB each, as UTF-8,
+UTF-16 or Windows-1252, and makes one caption track for each file in one
+step. The
+language comes from a VTT `Language:` header or a tag in the file name
+(`talk.pt-BR.srt`), and the notice says when it was guessed. A file that does
+not parse adds nothing. **Export** writes the track in view as SubRip or
+WebVTT; VTT keeps the language and word times.
+
+### Captions from speech
+
+The microphone in the Captions tab's header (or **Generate from speech** when
+there are no captions, or `generate captions` in the command panel) opens the
+speech panel. Captions are made on this computer from the timeline's own
+sound, so cuts, volume and mutes are what is heard; nothing is uploaded.
+
+- **Model**: Tiny (33 MB), Base (60 MB, the default), Small (191 MB), Medium
+  (540 MB) or Large v3 Turbo (575 MB), each with the speech detector. Larger
+  models are more accurate and slower. **Model file…** takes a Whisper model
+  you already have, for a computer without a network.
+- **Language spoken**: detected from the speech, or chosen.
+- **Captions from**: the whole timeline or the selected clips.
+- **Caption length**: A few words (for Shorts and Reels), Full lines (for
+  subtitles) or One word (for fast cuts).
+- **Translate to English**: Whisper writes English captions from speech in
+  another language.
+
+The first use of a model downloads it once (**Download and generate**), with
+`curl` from the whisper.cpp model repository, and keeps it only if its
+SHA-256 sum matches. Models are kept in `models/` beside the settings file when
+Aster is started with `--settings`, otherwise in the platform's local data
+directory (on Linux, `~/.local/share/aster/models`). **Stop making captions**
+stops a download at once and recognition at the end of the model's current
+pass, which took about 3 seconds with Tiny and takes longer with larger
+models.
+
+The captions arrive as a new caption track in one undo step, with word times,
+in the Clean caption look; pick a karaoke look from **Style** to light words
+as they are said. If the project was edited while they were being made, or
+adding them would drop a redo or an open AI plan, they wait in the panel
+("Captions are ready") until you add or discard them.
+
+### Translating captions
+
+**Translate into…** in the caption track menu, or `translate captions to
+Spanish` in the command panel, asks the AI provider chosen in the Agent panel
+(Claude or Codex, signed in through its own CLI) for a copy of the track in
+another language. The captions' text, times and the rest of the project's
+editing data are sent; no sound is. The answer is shown as a plan to review:
+**Apply** adds the translated track above the original, with the same times,
+and hides the original, as one undo step. Translation quality depends on the
+provider and was not checked by this project.
+
 ## Playback and source preview
 
 Timeline preview decodes source media and composes visual layers. Scrub the
@@ -421,7 +582,9 @@ shows "No changes" and preserves existing undo/redo. A later edit or reopening
 makes the proposal
 stale, and Cancel stops its owned request. Provider errors leave the project
 unchanged. Scene understanding, transcription and beat detection are outside
-this metadata planner. See [native AI editing](native-ai.md) for the runtime
+this metadata planner; captions from speech are made locally (see
+[captions from speech](#captions-from-speech)), and the planner sees caption
+text, not sound. See [native AI editing](native-ai.md) for the runtime
 contract and evidence.
 
 External agents connect through the [authenticated agent protocol](agent-protocol.md),
