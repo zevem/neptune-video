@@ -551,7 +551,13 @@ fn worker(shared: Arc<Shared>, run: Runner) {
             shared: Arc::clone(&shared),
             request,
         };
-        let result = run(job, &control);
+        // A job that panics still answers, and the lane goes on.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(job, &control)))
+            .unwrap_or_else(|_| {
+                Err(MediaError::Invalid(
+                    "Speech recognition failed unexpectedly".into(),
+                ))
+            });
         // A cancelled job never answers with what it made.
         let event = match result {
             _ if control.cancelled() => SpeechEvent::Cancelled { request },

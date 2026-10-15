@@ -63,10 +63,10 @@ def collect_results(output: Path) -> tuple[dict, dict]:
             if not isinstance(target, dict) or "bin" not in target.get("kind", []):
                 continue
             name, executable = target.get("name"), event.get("executable")
-            if name in ("aster", "aster-agent") and executable:
+            if name in ("aster", "aster-agent", "aster-mcp") and executable:
                 binary = Path(executable).resolve(strict=True)
                 binaries[name] = {"path": str(binary), "bytes": binary.stat().st_size, "sha256": digest(binary)}
-    if set(binaries) != {"aster", "aster-agent"} or not results or counts["passed"] == 0 or counts["failed"]:
+    if set(binaries) != {"aster", "aster-agent", "aster-mcp"} or not results or counts["passed"] == 0 or counts["failed"]:
         raise ValueError("Native build/test records are incomplete")
     return counts, binaries
 

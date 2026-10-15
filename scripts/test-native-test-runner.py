@@ -50,7 +50,7 @@ class EvidenceTests(unittest.TestCase):
             if "scripts/test-workspace.py" in command:
                 stream.write("test result: ok. 2 passed; 0 failed; 0 ignored;\n")
             if "build" in command:
-                for name in ("aster", "aster-agent"):
+                for name in ("aster", "aster-agent", "aster-mcp"):
                     binary = self.root / "build output" / f"{name}.exe"
                     binary.write_bytes(b"fake executable; never launched")
                     stream.write(json.dumps({"reason": "compiler-artifact", "target": {"name": name, "kind": ["bin"]}, "executable": str(binary)}) + "\n")
@@ -137,7 +137,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(self.invoke(), 0)
         report = self.report()
         self.assertEqual(report["test_counts"], {"passed": 2, "failed": 0, "ignored": 0})
-        self.assertEqual(set(report["binaries"]), {"aster", "aster-agent"})
+        self.assertEqual(set(report["binaries"]), {"aster", "aster-agent", "aster-mcp"})
         for name, record in report["binaries"].items():
             self.assertEqual(record["path"], str(self.root / "build output" / f"{name}.exe"))
         self.assertTrue(report["native_ui_gpu_audio_acceptance"].startswith("not_run"))

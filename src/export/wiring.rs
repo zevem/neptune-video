@@ -298,13 +298,11 @@ pub fn render_result(
     project_path: Option<PathBuf>,
 ) -> AgentResult {
     use super::queue::CapabilityState;
+    if let Some(result) = render_job_result(queue, &request.operation) {
+        return result;
+    }
     let job = |id: Uuid| match queue.job(id) {
         Some(job) => AgentResult::RenderJob { job: Box::new(job) },
-        None => unknown(id, None),
-    };
-    // A job that is there but whose state refuses the operation.
-    let refused = |id: Uuid, what: &str| match queue.job(id) {
-        Some(found) => unknown(id, Some((what, found.state))),
         None => unknown(id, None),
     };
     match &request.operation {
@@ -353,6 +351,40 @@ pub fn render_result(
                 Err(error) => enqueue_error(&error),
             }
         }
+        AgentOperation::RenderJobs
+        | AgentOperation::PauseRender { .. }
+        | AgentOperation::ResumeRender { .. }
+        | AgentOperation::CancelRender { .. }
+        | AgentOperation::RetryRender { .. }
+        | AgentOperation::RemoveRender { .. }
+        | AgentOperation::Inspect
+        | AgentOperation::Apply { .. }
+        | AgentOperation::Undo
+        | AgentOperation::Redo
+        | AgentOperation::Capabilities
+        | AgentOperation::History
+        | AgentOperation::Document
+        | AgentOperation::Save { .. } => AgentResult::error(
+            codes::UNSUPPORTED,
+            "Only render operations are answered from the render queue",
+        ),
+    }
+}
+
+/// The operations on jobs already in `queue`, which need no project:
+/// listing them, and pausing, resuming, cancelling, retrying or removing one.
+/// `None` for every other operation.
+pub fn render_job_result(queue: &RenderQueue, operation: &AgentOperation) -> Option<AgentResult> {
+    let job = |id: Uuid| match queue.job(id) {
+        Some(job) => AgentResult::RenderJob { job: Box::new(job) },
+        None => unknown(id, None),
+    };
+    // A job that is there but whose state refuses the operation.
+    let refused = |id: Uuid, what: &str| match queue.job(id) {
+        Some(found) => unknown(id, Some((what, found.state))),
+        None => unknown(id, None),
+    };
+    Some(match operation {
         AgentOperation::RenderJobs => AgentResult::RenderJobs { jobs: queue.jobs() },
         AgentOperation::PauseRender { job: id } => match queue.pause(*id) {
             true => job(*id),
@@ -380,15 +412,8 @@ pub fn render_result(
                 _ => refused(*id, "removed while it renders"),
             }
         }
-        AgentOperation::Inspect
-        | AgentOperation::Apply { .. }
-        | AgentOperation::Undo
-        | AgentOperation::Redo
-        | AgentOperation::Capabilities => AgentResult::error(
-            codes::UNSUPPORTED,
-            "Only render operations are answered from the render queue",
-        ),
-    }
+        _ => return None,
+    })
 }
 
 fn pending() -> AgentResult {

@@ -336,8 +336,41 @@ pub fn adding(
     track: Option<TrackId>,
     at: Time,
 ) -> (Command, ClipId) {
+    adding_for(project, look, track, at, None)
+}
+
+/// `adding`, with the clip `duration` long rather than its look's own
+/// length: its animations are fitted to it and its place is found for it.
+pub fn adding_for(
+    project: &Project,
+    look: &Look,
+    track: Option<TrackId>,
+    at: Time,
+    duration: Option<Time>,
+) -> (Command, ClipId) {
     let at = rules::quantize(at, project.settings.frame_rate);
     let mut clip = look.clip(at, project);
+    if let Some(duration) = duration {
+        let frame = project.settings.frame_rate.frame_time(1);
+        clip.duration = duration;
+        match &mut clip.content {
+            ClipContent::Text { enter, exit, .. } => {
+                (*enter, *exit) =
+                    editor_core::title::fit_animations(enter.take(), exit.take(), frame, duration);
+            }
+            ClipContent::Graphic { elements, .. } => {
+                for element in elements {
+                    (element.enter, element.exit) = editor_core::title::fit_animations(
+                        element.enter.take(),
+                        element.exit.take(),
+                        frame,
+                        duration,
+                    );
+                }
+            }
+            ClipContent::Media { .. } => {}
+        }
+    }
     let id = clip.id;
     let label = look.group.adding(look.is_title()).to_owned();
     let usable = |track: &Track| track.kind == TrackKind::Text && !track.locked;

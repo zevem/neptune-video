@@ -171,6 +171,24 @@ impl DocumentSession {
         &self.path
     }
 
+    /// The version of the file this session last read or wrote, as
+    /// `bytes:sha256` in hex; `None` while the file does not exist yet.
+    /// Two sessions with the same version hold the same file contents.
+    pub fn version(&self) -> Option<String> {
+        match *self.baseline.lock().unwrap_or_else(|e| e.into_inner()) {
+            Baseline::Missing => None,
+            Baseline::Present(version) => Some(format!(
+                "{}:{}",
+                version.bytes,
+                version
+                    .sha256
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            )),
+        }
+    }
+
     fn with_baseline(path: PathBuf, baseline: Baseline) -> Arc<Self> {
         Arc::new(Self {
             path,

@@ -15,7 +15,9 @@ use std::{path::PathBuf, sync::Arc};
 use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: u32 = 1;
-pub const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
+/// The largest request a session reads: room for a whole project restored
+/// from a checkpoint or a long transcript's captions in one edit.
+pub const MAX_REQUEST_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Error codes a client can match on.
 pub mod codes {
@@ -41,10 +43,20 @@ pub mod codes {
     pub const UNKNOWN_JOB: &str = "unknown_job";
     /// The session cannot run this operation; render jobs need the desktop.
     pub const UNSUPPORTED: &str = "unsupported";
+    /// `save` without a destination, for a project that has no file.
+    pub const NO_DESTINATION: &str = "no_destination";
+    /// A save is already being written or prepared.
+    pub const SAVE_BUSY: &str = "save_busy";
+    /// The person is in the middle of a change (a drag, a focused field);
+    /// nothing was applied. Retry once the gesture ends.
+    pub const PERSON_EDITING: &str = "person_editing";
+    /// The window is asking the person something, or writing a save;
+    /// nothing was applied. Retry later.
+    pub const DESKTOP_BUSY: &str = "desktop_busy";
 }
 
 /// Every operation name, as `operation` spells it.
-pub const OPERATIONS: [&str; 13] = [
+pub const OPERATIONS: [&str; 16] = [
     "inspect",
     "apply",
     "undo",
@@ -58,6 +70,9 @@ pub const OPERATIONS: [&str; 13] = [
     "resume_render",
     "retry_render",
     "remove_render",
+    "history",
+    "document",
+    "save",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +123,18 @@ pub enum AgentOperation {
     RemoveRender {
         job: Uuid,
     },
+    /// The labels of the undo and redo entries.
+    History,
+    /// The document as the session that owns it sees it: its file, whether
+    /// it is saved, and the playhead and selection of a window.
+    Document,
+    /// Saves the document to its file, or to `destination`, a new file.
+    /// Needs the project and context guards; the revision saved is the
+    /// current one.
+    Save {
+        #[serde(default)]
+        destination: Option<PathBuf>,
+    },
 }
 impl AgentOperation {
     /// Operations answered from the desktop's render queue, never by `handle`.
@@ -128,6 +155,121 @@ impl AgentOperation {
     /// Operations that change the project and so need every guard.
     pub fn is_mutation(&self) -> bool {
         matches!(self, Self::Apply { .. } | Self::Undo | Self::Redo)
+    }
+
+    /// Operations answered by the session that owns the document (the
+    /// desktop window or a headless host), never by `handle`.
+    pub fn is_host(&self) -> bool {
+        matches!(self, Self::Document | Self::Save { .. })
+    }
+}
+
+/// What the session that owns a document knows about it beyond the project.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentInfo {
+    pub project_id: Uuid,
+    pub context_id: Uuid,
+    pub name: String,
+    /// The project file; `None` until the project is first saved.
+    pub path: Option<PathBuf>,
+    pub dirty: bool,
+    /// A save or a Save As is being written or prepared.
+    #[serde(default)]
+    pub saving: bool,
+    /// The file changed on disk since this session read or saved it, so
+    /// saving to it is refused until someone decides.
+    #[serde(default)]
+    pub conflicted: bool,
+    /// The window's playhead; `None` for a headless session.
+    #[serde(default)]
+    pub playhead: Option<editor_core::Time>,
+    /// The clips selected in the window.
+    #[serde(default)]
+    pub selection: Vec<Uuid>,
+    #[serde(default)]
+    pub can_undo: bool,
+    #[serde(default)]
+    pub can_redo: bool,
+    /// The version of the file this session last read or saved, as
+    /// `bytes:sha256`; `None` without a file. Two sessions with the same
+    /// version hold the same file contents.
+    #[serde(default)]
+    pub file_version: Option<String>,
+    /// The person holds a change that is not yet an edit: a drag, a
+    /// focused field. Mutations are refused `person_editing` meanwhile.
+    #[serde(default)]
+    pub editing: bool,
+    /// The window is asking the person something (unsaved work, a
+    /// conflict). Mutations are refused `desktop_busy` meanwhile.
+    #[serde(default)]
+    pub asking: bool,
+    /// Counts finished saves; with `last_save`, tells a save asked for
+    /// from one finished since.
+    #[serde(default)]
+    pub save_count: u64,
+    /// How the last finished save ended.
+    #[serde(default)]
+    pub last_save: Option<SaveOutcome>,
+}
+
+/// How a save ended.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SaveOutcome {
+    pub ok: bool,
+    pub path: PathBuf,
+    /// Why it failed; empty when it did not.
+    #[serde(default)]
+    pub message: String,
+}
+
+/// The IDs `after` has that `before` does not: tracks, clips, assets,
+/// folders, markers and trackers, in that order.
+pub fn created(before: &Project, after: &Project) -> Vec<Uuid> {
+    use std::collections::HashSet;
+    let ids = |project: &Project| -> Vec<Uuid> {
+        let mut ids = Vec::new();
+        for track in &project.tracks {
+            ids.push(track.id);
+        }
+        for track in &project.tracks {
+            ids.extend(track.clips.iter().map(|clip| clip.id));
+        }
+        ids.extend(project.assets.keys());
+        ids.extend(project.folders.keys());
+        ids.extend(project.markers.iter().map(|marker| marker.id));
+        ids.extend(project.trackers.keys());
+        ids
+    };
+    if std::ptr::eq(before, after) {
+        return Vec::new();
+    }
+    let known: HashSet<Uuid> = ids(before).into_iter().collect();
+    ids(after)
+        .into_iter()
+        .filter(|id| !known.contains(id))
+        .collect()
+}
+impl DocumentInfo {
+    /// The parts every host knows from its editor alone.
+    pub fn of(editor: &Editor, path: Option<PathBuf>) -> Self {
+        Self {
+            project_id: editor.project().id,
+            context_id: editor.instance_id(),
+            name: editor.project().name.clone(),
+            path,
+            dirty: editor.is_dirty(),
+            saving: false,
+            conflicted: false,
+            playhead: None,
+            selection: Vec::new(),
+            can_undo: editor.can_undo(),
+            can_redo: editor.can_redo(),
+            file_version: None,
+            editing: false,
+            asking: false,
+            save_count: 0,
+            last_save: None,
+        }
     }
 }
 
@@ -150,6 +292,10 @@ pub enum AgentResult {
     Applied {
         label: String,
         changed: bool,
+        /// The IDs the edit added: tracks, clips, assets, folders, markers
+        /// and trackers. Absent from older sessions.
+        #[serde(default)]
+        created: Vec<Uuid>,
     },
     History {
         changed: bool,
@@ -173,6 +319,14 @@ pub enum AgentResult {
     },
     RenderJob {
         job: Box<RenderJobInfo>,
+    },
+    /// Undo labels oldest first, redo labels next redo first.
+    Entries {
+        past: Vec<String>,
+        future: Vec<String>,
+    },
+    Document {
+        document: Box<DocumentInfo>,
     },
     Error {
         code: String,
@@ -259,6 +413,14 @@ pub fn check_target(editor: &Editor, request: &AgentRequest) -> Result<(), Agent
     }
 }
 
+/// The guards of `save`: the request names the project and editing context
+/// it means. The revision is not checked; the current one is saved.
+pub fn check_identity(editor: &Editor, request: &AgentRequest) -> Result<(), AgentResult> {
+    let mut request = request.clone();
+    request.expected_revision = Some(editor.revision());
+    check_target(editor, &request)
+}
+
 /// The checks a `queue_export` passes before the desktop plans it: the
 /// mutation guards, so the export is of the project the agent inspected, and
 /// a destination that is absolute, names a file in an existing folder and is
@@ -328,19 +490,31 @@ pub fn handle(editor: &mut Editor, request: AgentRequest) -> AgentResponse {
             can_undo: editor.can_undo(),
             can_redo: editor.can_redo(),
         },
-        AgentOperation::Apply { command } => match editor.dispatch(*command) {
-            Ok(outcome) => AgentResult::Applied {
-                label: outcome.label,
-                changed: outcome.changed,
-            },
-            Err(error) => AgentResult::error(codes::INVALID_EDIT, error.to_string()),
-        },
+        AgentOperation::Apply { command } => {
+            let before = editor.snapshot();
+            match editor.dispatch(*command) {
+                Ok(outcome) => AgentResult::Applied {
+                    label: outcome.label,
+                    changed: outcome.changed,
+                    created: created(&before, editor.project()),
+                },
+                Err(error) => AgentResult::error(codes::INVALID_EDIT, error.to_string()),
+            }
+        }
         AgentOperation::Undo => AgentResult::History {
             changed: editor.undo(),
         },
         AgentOperation::Redo => AgentResult::History {
             changed: editor.redo(),
         },
+        AgentOperation::History => AgentResult::Entries {
+            past: editor.history().map(|entry| entry.label.clone()).collect(),
+            future: editor.future().map(|entry| entry.label.clone()).collect(),
+        },
+        AgentOperation::Document | AgentOperation::Save { .. } => AgentResult::error(
+            codes::UNSUPPORTED,
+            "The session that owns the document answers this; this one has no document",
+        ),
         AgentOperation::Capabilities => AgentResult::Capabilities {
             protocol_version: PROTOCOL_VERSION,
             operations: OPERATIONS.into_iter().map(str::to_owned).collect(),

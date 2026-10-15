@@ -57,7 +57,7 @@ class PackageTests(unittest.TestCase):
             self.record["source_files"][name] = hashlib.sha256(data).hexdigest()
             aggregate.update(name.encode() + b"\0" + data + b"\0")
         self.record.update(source_sha256=aggregate.hexdigest(), source_files_count=5)
-        for name in ("aster", "aster-agent"):
+        for name in ("aster", "aster-agent", "aster-mcp"):
             binary = self.root / "target/release" / name
             binary.write_bytes(elf())
             self.record["binaries"][name] = {"path": str(binary), "bytes": binary.stat().st_size, "sha256": PACKAGER.digest(binary)}
@@ -109,7 +109,7 @@ class PackageTests(unittest.TestCase):
             self.assertTrue(all(m.isfile() or m.isdir() for m in members))
             self.assertTrue(all(m.uid == m.gid == m.mtime == 0 for m in members))
             binaries = [m for m in members if "/bin/" in m.name and m.isfile()]
-            self.assertEqual({Path(m.name).name for m in binaries}, {"aster", "aster-agent"})
+            self.assertEqual({Path(m.name).name for m in binaries}, {"aster", "aster-agent", "aster-mcp"})
             self.assertTrue(all(m.mode == 0o755 for m in binaries))
             self.assertFalse(any("personal" in m.name or "ffmpeg" in m.name for m in members))
             notice = next(m for m in members if m.name.endswith("/notices/icons/Tabler-LICENSE.txt"))

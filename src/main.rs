@@ -1,37 +1,8 @@
 //! Aster: a desktop video editor.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod agent;
-mod ai;
-mod app;
-mod audio;
-mod clipboard;
-mod compose;
-mod duck;
-mod export;
-mod extract;
-mod file_drop;
-mod icons;
-mod languages;
-mod normalize;
-mod pacing;
-mod peaks;
-mod presets;
-mod proxies;
-mod record;
-mod rules;
-mod settings;
-mod speech;
-mod speed;
-mod steady;
-mod stems;
-mod textures;
-mod theme;
-mod timefmt;
-mod titles;
-mod ui;
-
-use app::{App, Launch};
+use aster_editor::app::{App, Launch};
+use aster_editor::settings;
 use eframe::egui;
 use std::path::PathBuf;
 

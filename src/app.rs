@@ -47,7 +47,7 @@ use crate::{
 use editor_agent::{AgentHost, AgentOperation};
 use editor_core::{
     Asset, AssetId, Clip, ClipId, Clipboard, Command, Editor, EffectKind, MediaKind, ParamKey,
-    Playback, Project, ProjectQuery, Time, Track, TrackKind, Tracker,
+    Playback, Project, ProjectQuery, Time, Track, Tracker,
     captions::{Cue, SubtitleFormat},
     look,
 };
@@ -409,6 +409,12 @@ pub struct App {
     preparing: bool,
     /// The last save was refused because the open file changed on disk.
     conflicted: bool,
+    /// The save in flight was asked for by a connected agent: a conflict
+    /// is told in a notice, not a sheet over the person's work.
+    agent_saving: bool,
+    /// Counts finished saves, and how the last one ended, for `document`.
+    save_count: u64,
+    last_save: Option<editor_agent::SaveOutcome>,
     /// The model the agent panel asks.
     ai: Planner,
     /// The document's revision when the open dialog was shown.
@@ -714,13 +720,7 @@ fn blank() -> Editor {
     Editor::new(Project::default()).unwrap_or_default()
 }
 
-fn kind_name(kind: TrackKind) -> &'static str {
-    match kind {
-        TrackKind::Video => "Video",
-        TrackKind::Audio => "Audio",
-        TrackKind::Text => "Text",
-    }
-}
+use rules::kind_name;
 
 fn with_extension(mut path: PathBuf) -> PathBuf {
     if path.extension().is_none() {
@@ -1087,6 +1087,9 @@ impl App {
             selection: Selection::default(),
             draft: None,
             project_draft: ProjectDraft::default(),
+            agent_saving: false,
+            save_count: 0,
+            last_save: None,
             draft_hold: DraftHold::default(),
             clipboard: None,
             timeline: TimelineState::default(),
@@ -2026,6 +2029,9 @@ impl App {
             }
             Err(error) => {
                 self.after_save = None;
+                if std::mem::take(&mut self.agent_saving) {
+                    self.finished_save(session.path(), Err(error.to_string()));
+                }
                 self.notify(ctx, format!("The project was not saved: {error}"), true);
             }
         }
@@ -2034,7 +2040,7 @@ impl App {
     /// Looks at the destination of a Save As on a worker, then saves there.
     /// What is at the destination now is what the save may replace, unless
     /// the document is restored work without a file: that takes a new file.
-    fn prepare_save(&mut self, ctx: &egui::Context, path: PathBuf) {
+    fn prepare_save(&mut self, ctx: &egui::Context, path: PathBuf, create_only: bool) {
         if self.preparing {
             self.notify(ctx, "A save is still being prepared", true);
             return;
@@ -2046,7 +2052,12 @@ impl App {
             epoch,
             context,
             origin,
-            result: origin.prepare(&path),
+            // An agent's Save As makes a new file only, as restored work does.
+            result: if create_only {
+                Origin::Restored.prepare(&path)
+            } else {
+                origin.prepare(&path)
+            },
             path,
         });
         if !self.preparing {
@@ -2117,7 +2128,7 @@ impl App {
                     }
                 }
                 Job::Picked(Pick::SaveAs, paths) => match paths.into_iter().next() {
-                    Some(path) => self.prepare_save(ctx, with_extension(path)),
+                    Some(path) => self.prepare_save(ctx, with_extension(path), false),
                     // Leaving the dialog also abandons what waited on it.
                     None => self.after_save = None,
                 },
@@ -2307,6 +2318,9 @@ impl App {
                         }
                         Err(error) => {
                             self.after_save = None;
+                            if std::mem::take(&mut self.agent_saving) {
+                                self.finished_save(&path, Err(error.clone()));
+                            }
                             self.notify(
                                 ctx,
                                 format!("{} cannot be saved to: {error}", path.display()),
@@ -3737,13 +3751,32 @@ impl App {
             };
             // An earlier save of the same file may answer while a later one
             // is still queued behind it.
-            if result.revision >= asked {
+            let agent = if result.revision >= asked {
                 self.saving = false;
                 self.save_session = None;
-            }
+                let outcome = result
+                    .result
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(ToString::to_string);
+                self.finished_save(&result.path, outcome);
+                std::mem::take(&mut self.agent_saving)
+            } else {
+                false
+            };
             if let Err(error) = result.result {
                 self.after_save = None;
                 match other_writer(&error) {
+                    // An agent's save is told in a notice; the agent reads
+                    // `conflicted` from `document`.
+                    Some(busy) if agent => {
+                        let open = (self.document.as_ref())
+                            .is_some_and(|document| document.path() == result.path);
+                        if open && !busy {
+                            self.conflicted = true;
+                        }
+                        self.notify(ctx, format!("The agent's save was refused: {error}"), true);
+                    }
                     // Reviewed in a sheet: the edits stay, unsaved.
                     Some(busy) => self.save_refused(result.path, busy),
                     None => self.notify(ctx, format!("The project was not saved: {error}"), true),
@@ -3797,14 +3830,20 @@ impl App {
 
     /// Requests from connected agents, applied on this thread through the
     /// same reducer as every other edit.
-    fn take_agent_calls(&mut self) {
+    fn take_agent_calls(&mut self, ctx: &egui::Context) {
         loop {
             let Some(call) = self.host.as_ref().and_then(AgentHost::poll) else {
+                self.publish_document();
                 return;
             };
             let what = match &call.request.operation {
                 AgentOperation::Inspect => None,
                 AgentOperation::Capabilities => None,
+                AgentOperation::History => None,
+                AgentOperation::Document | AgentOperation::Save { .. } => {
+                    self.document_operation(ctx, call);
+                    continue;
+                }
                 AgentOperation::Apply { command } => Some(command.label().to_owned()),
                 AgentOperation::Undo => Some("Undo".to_owned()),
                 AgentOperation::Redo => Some("Redo".to_owned()),
@@ -3820,6 +3859,21 @@ impl App {
                     continue;
                 }
             };
+            // Only changes wait for the person; reading the project never does.
+            if let Some(what) = &what
+                && let Some((code, message)) = self.agent_refusal()
+            {
+                let request_id = call.request.request_id.clone();
+                let revision = self.editor.revision();
+                call.reply(editor_agent::AgentResponse::error(
+                    request_id, revision, code, message,
+                ));
+                self.agent.push(Entry::External {
+                    ok: false,
+                    text: format!("Agent asked for “{what}”; held back while you edit"),
+                });
+                continue;
+            }
             let before = self.editor.revision();
             call.execute(&mut self.editor);
             let changed = self.editor.revision() != before;
@@ -3837,6 +3891,178 @@ impl App {
                 });
             }
         }
+    }
+
+    /// The document as a connected agent sees it. The host answers `document`
+    /// from what is published here, so an agent watching for changes never
+    /// wakes the window.
+    fn document_info(&self) -> editor_agent::DocumentInfo {
+        let path = (self.document.as_ref())
+            .map(|document| document.path().to_path_buf())
+            .or_else(|| self.path.clone());
+        let mut info = editor_agent::DocumentInfo::of(&self.editor, path);
+        info.saving = self.saving || self.preparing;
+        info.conflicted = self.conflicted;
+        info.playhead = Some(self.playback.position);
+        info.selection = self.selection.clips.clone();
+        info.file_version = self
+            .document
+            .as_ref()
+            .and_then(|document| document.version());
+        info.editing = self.editing();
+        info.asking = self.asking();
+        info.save_count = self.save_count;
+        info.last_save = self.last_save.clone();
+        info
+    }
+
+    /// The person holds a change that is not an edit yet.
+    fn editing(&self) -> bool {
+        self.draft.is_some() || self.project_draft != ProjectDraft::default()
+    }
+
+    /// The window waits on the person's answer about this document.
+    fn asking(&self) -> bool {
+        matches!(
+            self.overlay,
+            Overlay::Unsaved(_) | Overlay::Conflict(_) | Overlay::StopRendering
+        )
+    }
+
+    /// Why an agent's edit or save must wait, if it must: the person's
+    /// gesture would overwrite it, their answer could discard it, or a save
+    /// is writing the document.
+    fn agent_refusal(&self) -> Option<(&'static str, &'static str)> {
+        use editor_agent::codes;
+        if self.editing() {
+            Some((
+                codes::PERSON_EDITING,
+                "The person is changing something in the window; retry when they finish",
+            ))
+        } else if self.asking() {
+            Some((
+                codes::DESKTOP_BUSY,
+                "The window is asking the person about this document; retry later",
+            ))
+        } else if self.saving || self.preparing {
+            Some((
+                codes::DESKTOP_BUSY,
+                "The window is saving the document; retry once it is saved",
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn finished_save(&mut self, path: &Path, outcome: Result<(), String>) {
+        self.save_count += 1;
+        self.last_save = Some(editor_agent::SaveOutcome {
+            ok: outcome.is_ok(),
+            path: path.to_path_buf(),
+            message: outcome.err().unwrap_or_default(),
+        });
+    }
+
+    fn publish_document(&self) {
+        if let Some(host) = &self.host {
+            host.publish_document(self.editor.revision(), self.document_info());
+        }
+    }
+
+    /// `document` and `save` from a connected agent, answered at once while
+    /// the requester waits. A save starts as the person's does, drafts
+    /// committed and the file written by the save worker; the answer says
+    /// `saving`, and a later `document` says whether it is still dirty or in
+    /// conflict. A destination is a new file only: an agent never replaces
+    /// a file with Save As.
+    fn document_operation(&mut self, ctx: &egui::Context, call: editor_agent::AgentCall) {
+        let Some(call) = call.claim() else {
+            return;
+        };
+        let started = match &call.request.operation {
+            AgentOperation::Save { destination } => {
+                let started = self.agent_save(ctx, &call.request, destination.clone());
+                self.agent.push(Entry::External {
+                    ok: started.is_ok(),
+                    text: match &started {
+                        Ok(()) => "Agent: Save".to_owned(),
+                        Err(_) => "Agent asked to save; nothing was saved".to_owned(),
+                    },
+                });
+                started
+            }
+            _ => Ok(()),
+        };
+        let result = match started {
+            Ok(()) => editor_agent::AgentResult::Document {
+                document: Box::new(self.document_info()),
+            },
+            Err(refused) => refused,
+        };
+        let request_id = call.request.request_id.clone();
+        call.reply(editor_agent::AgentResponse {
+            request_id,
+            revision: self.editor.revision(),
+            result,
+        });
+        self.publish_document();
+    }
+
+    fn agent_save(
+        &mut self,
+        ctx: &egui::Context,
+        request: &editor_agent::AgentRequest,
+        destination: Option<PathBuf>,
+    ) -> Result<(), editor_agent::AgentResult> {
+        use editor_agent::{AgentResult, codes};
+        editor_agent::check_identity(&self.editor, request)?;
+        if self.saving || self.preparing {
+            return Err(AgentResult::error(
+                codes::SAVE_BUSY,
+                "A save is already under way; ask for the document again",
+            ));
+        }
+        if let Some((code, message)) = self.agent_refusal() {
+            return Err(AgentResult::error(code, message));
+        }
+        let Some(path) = destination else {
+            return match self.document.clone() {
+                Some(session) => {
+                    self.agent_saving = true;
+                    self.save_through(ctx, session);
+                    Ok(())
+                }
+                None => Err(AgentResult::error(
+                    codes::NO_DESTINATION,
+                    "This project has no file yet; send a destination for a new one",
+                )),
+            };
+        };
+        if !path.is_absolute()
+            || path
+                .extension()
+                .is_none_or(|extension| extension != "aster")
+        {
+            return Err(AgentResult::error(
+                codes::INVALID_EDIT,
+                format!(
+                    "{} must be an absolute path ending in .aster",
+                    path.display()
+                ),
+            ));
+        }
+        if std::fs::symlink_metadata(&path).is_ok() {
+            return Err(AgentResult::error(
+                codes::DESTINATION_EXISTS,
+                format!(
+                    "{} exists; an agent saves only to a new file",
+                    path.display()
+                ),
+            ));
+        }
+        self.agent_saving = true;
+        self.prepare_save(ctx, path, true);
+        Ok(())
     }
 
     /// Render operations are answered from the render queue, never through
@@ -4811,43 +5037,9 @@ impl App {
     fn split(&mut self) -> Result<String, String> {
         let project = self.editor.project();
         let at = rules::quantize(self.playback.position, project.settings.frame_rate);
-        let under = |clip: &Clip| clip.start < at && at < clip.end();
-        let mut targets: Vec<ClipId> = self
-            .selection
-            .clips
-            .iter()
-            .filter(|id| project.clip(**id).is_some_and(|(_, clip)| under(clip)))
-            .copied()
-            .collect();
-        if targets.is_empty() {
-            targets = project
-                .tracks
-                .iter()
-                .filter(|track| !track.locked)
-                .flat_map(|track| track.clips.iter())
-                .filter(|clip| under(clip))
-                .map(|clip| clip.id)
-                .collect();
-        }
-        // A split takes a clip's linked partners with it, so each family is
-        // asked for once.
-        let mut covered: Vec<ClipId> = Vec::new();
-        let mut commands = Vec::new();
-        for id in targets {
-            if covered.contains(&id) {
-                continue;
-            }
-            covered.extend(rules::related(project, &[id], false));
-            commands.push(Command::SplitClip { clip_id: id, at });
-        }
-        match commands.len() {
-            0 => Err("No clip is under the playhead.".to_owned()),
-            1 => self.edit(commands.into_iter().next().expect("one command")),
-            _ => self.edit(Command::Batch {
-                label: "Split clips".into(),
-                commands,
-            }),
-        }
+        let selected = self.selection.clips.to_vec();
+        let command = rules::split_command(project, at, &selected)?;
+        self.edit(command)
     }
 
     /// Adds a clip of `look` and selects it: on `track` from `at`, or at
@@ -4917,74 +5109,7 @@ impl App {
         asset: editor_core::AssetId,
         place: Option<(editor_core::TrackId, Time)>,
     ) -> Result<String, String> {
-        let project = self.editor.project();
-        let asset = project
-            .assets
-            .get(&asset)
-            .ok_or("That media is no longer in the library.")?;
-        if !rules::placeable(asset) {
-            return Err(
-                "A LUT is the table of a clip's LUT effect; it has no place on a track.".into(),
-            );
-        }
-        let usable = |track: &&Arc<Track>| !track.locked && rules::track_accepts(track.kind, asset);
-        let placed = place.and_then(|(track, time)| {
-            let track = project
-                .tracks
-                .iter()
-                .find(|t| t.id == track)
-                .filter(usable)?;
-            Some((track, rules::free_start(track, time, asset.duration, &[])))
-        });
-        // Without a place, a clip goes after the last one on the first track
-        // of its kind.
-        let home = rules::home_track(asset);
-        let placed = placed.or_else(|| {
-            let track = project
-                .tracks
-                .iter()
-                .filter(|track| track.kind == home)
-                .find(usable)?;
-            let end = track
-                .clips
-                .iter()
-                .map(Clip::end)
-                .max()
-                .unwrap_or(Time::ZERO);
-            Some((track, end))
-        });
-        let (clip, command) = match placed {
-            Some((track, start)) => {
-                let clip = Clip::from_asset(asset, start);
-                (
-                    clip.id,
-                    Command::AddClip {
-                        track_id: track.id,
-                        clip,
-                    },
-                )
-            }
-            None => {
-                let count = project.tracks.iter().filter(|t| t.kind == home).count();
-                let track = Track::new(format!("{} {}", kind_name(home), count + 1), home);
-                let clip = Clip::from_asset(asset, Time::ZERO);
-                (
-                    clip.id,
-                    Command::Batch {
-                        label: "Add clip".into(),
-                        commands: vec![
-                            Command::AddTrack {
-                                track: track.clone(),
-                            },
-                            Command::AddClip {
-                                track_id: track.id,
-                                clip,
-                            },
-                        ],
-                    },
-                )
-            }
-        };
+        let (command, clip) = rules::place_asset(self.editor.project(), asset, place)?;
         let done = self.edit(command)?;
         self.selection.only(clip);
         Ok(done)
@@ -6257,7 +6382,7 @@ impl eframe::App for App {
         self.take_sound(ctx);
         self.step_ducking(ctx);
         self.take_saves(ctx);
-        self.take_agent_calls();
+        self.take_agent_calls(ctx);
         self.take_ai();
         self.take_renders(ctx);
         self.take_proxies(ctx);
@@ -6746,7 +6871,7 @@ fn key_is_free(owned: bool, key: Key) -> bool {
 /// nothing left to be read on, and nowhere a person would look for them:
 /// they go with the media, in the same step of the history, and are named.
 /// Media a clip still uses is left to the project to refuse.
-fn remove_asset_command(project: &Project, asset: AssetId) -> (Command, Option<String>) {
+pub(crate) fn remove_asset_command(project: &Project, asset: AssetId) -> (Command, Option<String>) {
     let plain = Command::RemoveAssets {
         asset_ids: vec![asset],
     };

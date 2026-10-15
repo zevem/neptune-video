@@ -10,6 +10,7 @@ mod audio;
 mod decode;
 pub mod export;
 mod import;
+pub mod inspect;
 mod lut;
 mod process;
 pub mod proxy;

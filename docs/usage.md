@@ -5,6 +5,10 @@ unchanged and records durable edits through the same validated history used by
 external agents. The [verification record](verification.md) identifies tested
 flows and remaining platform/media gates.
 
+
+AI agents in MCP clients such as Claude Code and Codex can edit the same
+projects, live in the window or on their own: see [Aster for MCP clients](mcp.md).
+
 ## Projects and recovery
 
 The project menu creates, opens, saves and duplicates `.aster` documents.

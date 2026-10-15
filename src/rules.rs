@@ -398,6 +398,22 @@ fn handles(project: &Project, clip: &Clip) -> Option<(Time, Time)> {
 /// time: it keeps one frame of clip, stays off its neighbours and inside its
 /// source.
 pub fn trim_range(project: &Project, track: &Track, clip: &Clip, edge: Edge) -> (Time, Time) {
+    range(project, track, clip, edge, false)
+}
+
+/// [`trim_range`] for a ripple trim: the clip keeps its start and what
+/// comes after it moves by the change of its length, so its neighbours do
+/// not bound it; only its source and its one frame do.
+pub fn ripple_trim_range(
+    project: &Project,
+    track: &Track,
+    clip: &Clip,
+    edge: Edge,
+) -> (Time, Time) {
+    range(project, track, clip, edge, true)
+}
+
+fn range(project: &Project, track: &Track, clip: &Clip, edge: Edge, ripple: bool) -> (Time, Time) {
     let rate = project.settings.frame_rate;
     let shortest = frame(rate);
     let handles = handles(project, clip);
@@ -406,7 +422,7 @@ pub fn trim_range(project: &Project, track: &Track, clip: &Clip, edge: Edge) -> 
             let previous = track
                 .clips
                 .iter()
-                .filter(|other| other.id != clip.id && other.end() <= clip.start)
+                .filter(|other| !ripple && other.id != clip.id && other.end() <= clip.start)
                 .map(Clip::end)
                 .max()
                 .unwrap_or(Time::ZERO);
@@ -424,7 +440,7 @@ pub fn trim_range(project: &Project, track: &Track, clip: &Clip, edge: Edge) -> 
             let next = track
                 .clips
                 .iter()
-                .filter(|other| other.id != clip.id && other.start >= clip.end())
+                .filter(|other| !ripple && other.id != clip.id && other.start >= clip.end())
                 .map(|other| other.start)
                 .min();
             let mut most = next.map_or(Time::MAX, |next| next - clip.end());
@@ -466,7 +482,39 @@ fn crop_holds(project: &Project, clip: &Clip, edge: Edge, delta: Time) -> bool {
 /// a time map is one the project refuses. The edge stops on the last frame
 /// before such a place, and takes a place beyond it when asked for one.
 pub fn trim_delta(project: &Project, track: &Track, clip: &Clip, edge: Edge, wanted: Time) -> Time {
-    let (least, most) = trim_range(project, track, clip, edge);
+    delta_within(
+        project,
+        clip,
+        edge,
+        wanted,
+        trim_range(project, track, clip, edge),
+    )
+}
+
+/// [`trim_delta`] for a ripple trim, within [`ripple_trim_range`].
+pub fn ripple_trim_delta(
+    project: &Project,
+    track: &Track,
+    clip: &Clip,
+    edge: Edge,
+    wanted: Time,
+) -> Time {
+    delta_within(
+        project,
+        clip,
+        edge,
+        wanted,
+        ripple_trim_range(project, track, clip, edge),
+    )
+}
+
+fn delta_within(
+    project: &Project,
+    clip: &Clip,
+    edge: Edge,
+    wanted: Time,
+    (least, most): (Time, Time),
+) -> Time {
     let wanted = wanted.clamp(least, most);
     if crop_holds(project, clip, edge, wanted) {
         return wanted;
@@ -526,6 +574,133 @@ pub fn ruler_step(points_per_second: f32, fps: f64, spacing: f32) -> (f64, u32) 
         }
     }
     (7200.0, 4)
+}
+
+/// The track kind as the window names its tracks: "Video 2".
+pub fn kind_name(kind: TrackKind) -> &'static str {
+    match kind {
+        TrackKind::Video => "Video",
+        TrackKind::Audio => "Audio",
+        TrackKind::Text => "Text",
+    }
+}
+
+/// The edit that places `asset` as a clip: on the given track at the first
+/// free time from the given one, else after the last clip on the first
+/// usable track of its kind, else on a new track. Answers the clip's ID.
+pub fn place_asset(
+    project: &Project,
+    asset: AssetId,
+    place: Option<(TrackId, Time)>,
+) -> Result<(Command, ClipId), String> {
+    let asset = project
+        .assets
+        .get(&asset)
+        .ok_or("That media is no longer in the library.")?;
+    if !placeable(asset) {
+        return Err(
+            "A LUT is the table of a clip's LUT effect; it has no place on a track.".into(),
+        );
+    }
+    let usable = |track: &&std::sync::Arc<Track>| !track.locked && track_accepts(track.kind, asset);
+    let placed = place.and_then(|(track, time)| {
+        let track = project
+            .tracks
+            .iter()
+            .find(|t| t.id == track)
+            .filter(usable)?;
+        Some((track, free_start(track, time, asset.duration, &[])))
+    });
+    // Without a place, a clip goes after the last one on the first track
+    // of its kind.
+    let home = home_track(asset);
+    let placed = placed.or_else(|| {
+        let track = project
+            .tracks
+            .iter()
+            .filter(|track| track.kind == home)
+            .find(usable)?;
+        let end = track
+            .clips
+            .iter()
+            .map(Clip::end)
+            .max()
+            .unwrap_or(Time::ZERO);
+        Some((track, end))
+    });
+    let (clip, command) = match placed {
+        Some((track, start)) => {
+            let clip = Clip::from_asset(asset, start);
+            (
+                clip.id,
+                Command::AddClip {
+                    track_id: track.id,
+                    clip,
+                },
+            )
+        }
+        None => {
+            let count = project.tracks.iter().filter(|t| t.kind == home).count();
+            let track = Track::new(format!("{} {}", kind_name(home), count + 1), home);
+            let clip = Clip::from_asset(asset, Time::ZERO);
+            (
+                clip.id,
+                Command::Batch {
+                    label: "Add clip".into(),
+                    commands: vec![
+                        Command::AddTrack {
+                            track: track.clone(),
+                        },
+                        Command::AddClip {
+                            track_id: track.id,
+                            clip,
+                        },
+                    ],
+                },
+            )
+        }
+    };
+    Ok((command, clip))
+}
+
+/// The edit that splits at `at`: the clips of `selected` strictly under it,
+/// else every clip under it on an unlocked track, each linked family once.
+pub fn split_command(project: &Project, at: Time, selected: &[ClipId]) -> Result<Command, String> {
+    let under = |clip: &Clip| clip.start < at && at < clip.end();
+    let mut targets: Vec<ClipId> = selected
+        .iter()
+        .filter(|id| project.clip(**id).is_some_and(|(_, clip)| under(clip)))
+        .copied()
+        .collect();
+    if targets.is_empty() {
+        targets = project
+            .tracks
+            .iter()
+            .filter(|track| !track.locked)
+            .flat_map(|track| track.clips.iter())
+            .filter(|clip| under(clip))
+            .map(|clip| clip.id)
+            .collect();
+    }
+    // A split takes a clip's linked partners with it, so each family is
+    // asked for once.
+    let mut covered: Vec<ClipId> = Vec::new();
+    let mut commands = Vec::new();
+    for id in targets {
+        if covered.contains(&id) {
+            continue;
+        }
+        covered.extend(related(project, &[id], false));
+        commands.push(Command::SplitClip { clip_id: id, at });
+    }
+    match commands.len() {
+        0 => Err("No clip is under the playhead.".to_owned()),
+        1 => Ok(commands.into_iter().next().expect("one command")),
+        _ => Ok(Command::Batch {
+            label: "Split clips".into(),
+            commands,
+        }),
+    }
 }
 
 #[cfg(test)]

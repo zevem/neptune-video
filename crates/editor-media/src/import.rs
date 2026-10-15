@@ -15,7 +15,10 @@ use std::{
 const MAX_IMPORT_FILES: usize = 10_000;
 const MAX_SOURCE_PIXELS: u64 = 64_000_000;
 
-pub(crate) struct Imported {
+/// What one import found: the assets, the folders they were found in and
+/// the files that could not be read.
+#[derive(Debug, Default)]
+pub struct Imported {
     pub assets: Vec<Asset>,
     pub folders: Vec<MediaFolder>,
     pub errors: Vec<ImportError>,
@@ -86,6 +89,18 @@ pub(crate) fn import_paths(
     processes: &Processes,
     cancelled: impl Fn() -> bool,
 ) -> Imported {
+    import_paths_within(paths, processes, cancelled, &|_| true)
+}
+
+/// `import_paths`, reading only files and folders whose canonical path
+/// `allowed` accepts: a link inside a folder that leads elsewhere is
+/// refused under its own name, before anything is read through it.
+pub(crate) fn import_paths_within(
+    paths: Vec<PathBuf>,
+    processes: &Processes,
+    cancelled: impl Fn() -> bool,
+    allowed: &dyn Fn(&Path) -> bool,
+) -> Imported {
     let mut result = Imported {
         assets: Vec::new(),
         folders: Vec::new(),
@@ -127,6 +142,13 @@ pub(crate) fn import_paths(
                 continue;
             }
         };
+        if !allowed(&absolute) {
+            result.errors.push(ImportError {
+                path,
+                message: "It leads outside the folders this import may read".into(),
+            });
+            continue;
+        }
         if !seen.insert(absolute.clone()) {
             // A directly selected file may be encountered again through an
             // imported folder. Preserve that folder membership without duplicates.
@@ -288,7 +310,8 @@ pub(crate) fn probe(
         asset
     } else {
         let mut command = tool_command("ffprobe");
-        command.args(["-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height,duration,avg_frame_rate,r_frame_rate:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation", "-of", "json"])
+        // Only the local file: a probe never follows a reference elsewhere.
+        command.args(["-protocol_whitelist", "file", "-v", "error", "-show_entries", "format=duration,format_name:stream=codec_type,width,height,duration,avg_frame_rate,r_frame_rate:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation", "-of", "json"])
             .arg(path);
         if cancelled() {
             return Err(MediaError::Cancelled);
@@ -335,9 +358,43 @@ fn number(value: &Value) -> Option<f64> {
         .filter(|value| value.is_finite())
 }
 
+/// FFmpeg formats that read other files or draw text rather than holding
+/// media themselves: playlists, concatenation lists, manifests and text
+/// shown as video. A file in one of them is never media.
+pub const REFERENCE_FORMATS: &[&str] = &[
+    "hls",
+    "applehttp",
+    "concat",
+    "dash",
+    "imf",
+    "tty",
+    "bin",
+    "xbin",
+    "adf",
+    "idf",
+    "sdp",
+    "rtsp",
+    "ffmetadata",
+];
+
+/// Whether ffprobe's `format_name` (a comma-separated list) names one of
+/// [`REFERENCE_FORMATS`].
+pub fn is_reference_format(format_name: &str) -> bool {
+    format_name
+        .split(',')
+        .any(|name| REFERENCE_FORMATS.contains(&name.trim()))
+}
+
 pub(crate) fn asset_from_probe(path: &Path, bytes: &[u8]) -> Result<Asset, MediaError> {
     let value: Value = serde_json::from_slice(bytes)
         .map_err(|error| MediaError::Decode(format!("Invalid ffprobe response: {error}")))?;
+    if let Some(format) = value["format"]["format_name"].as_str()
+        && is_reference_format(format)
+    {
+        return Err(MediaError::Invalid(format!(
+            "This is a {format} file, which refers to other files rather than holding media"
+        )));
+    }
     let streams = value["streams"]
         .as_array()
         .ok_or_else(|| MediaError::Invalid("File contains no media streams".into()))?;

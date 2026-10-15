@@ -510,18 +510,30 @@ pub fn read_file(path: &Path) -> Result<(Vec<Cue>, Option<String>), String> {
     Ok((cues, header.or(named)))
 }
 
-/// Writes a subtitle file whole: beside it first, then in its place.
+/// Writes a subtitle file whole: to a new hidden file beside it first, then
+/// renamed into its place, so nothing already there is followed or
+/// clobbered on the way.
 pub fn write_file(path: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
     let shown = path.display();
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = std::path::PathBuf::from(temporary);
-    std::fs::write(&temporary, text)
-        .and_then(|()| std::fs::rename(&temporary, path))
-        .map_err(|error| {
-            let _ = std::fs::remove_file(&temporary);
-            format!("Captions were not saved to {shown}: {error}")
-        })
+    let name = path.file_name().map_or_else(
+        || "captions".into(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let temporary = path.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)
+    })();
+    written.map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        format!("Captions were not saved to {shown}: {error}")
+    })
 }
 
 /// Text of a subtitle file: UTF-8 (its mark dropped), UTF-16 with a mark,

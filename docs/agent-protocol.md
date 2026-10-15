@@ -77,7 +77,7 @@ acceptance in [verification](verification.md).
 ## Requests and results
 
 The CLI reads one JSON request per line and writes one JSON response per line.
-Requests must end in a newline and fit within 1 MiB. Start with an inspection:
+Requests must end in a newline and fit within 16 MiB. Start with an inspection:
 
 ```json
 {"request_id":"inspect-1","operation":"inspect"}
@@ -115,6 +115,46 @@ protocol clients may submit `AddAssets` and `RestoreProject`; the native model's
 `proposal_schema` excludes both. An external agent still needs valid asset
 metadata and core preconditions; exposing a command does not bypass validation
 or grant filesystem/provider tools.
+
+### History, the document and saving
+
+`apply` answers `applied` with `created`, the IDs the edit added (tracks,
+clips, assets, folders, markers and trackers), so a client never has to
+find them by looking again. `history` lists the labels of the undo
+entries, oldest first, and of the redo entries, next first:
+
+```json
+{"request_id":"history-1","operation":"history"}
+```
+
+`document` describes the document as the session that owns it sees it:
+`project_id`, `context_id`, `name`, `path`, `dirty`, `saving`,
+`conflicted`, the window's `playhead` and `selection`, `can_undo`,
+`can_redo`, `file_version` (`bytes:sha256` of the file it last read or
+saved), `editing` (the person holds a change that is not yet an edit),
+`asking` (the window is asking the person something), `save_count` and
+`last_save`. A window answers it even while busy:
+
+```json
+{"request_id":"document-1","operation":"document"}
+```
+
+`save` saves to the document's own file, or with `destination` to a new
+file that must not exist yet; it needs the project and context guards and
+saves the current revision. A window starts its ordinary save, so the
+answer comes before the file is written: `save_count` and `last_save`
+in `document` tell when it is done. A headless session saves at once.
+
+```json
+{"request_id":"save-1","operation":"save","expected_project_id":"00000000-0000-0000-0000-000000000000","expected_context_id":"00000000-0000-0000-0000-000000000000"}
+{"request_id":"save-2","operation":"save","expected_project_id":"00000000-0000-0000-0000-000000000000","expected_context_id":"00000000-0000-0000-0000-000000000000","destination":"/absolute/copy.aster"}
+```
+
+While the person is in the middle of a change, a window refuses every
+mutation (`apply`, `undo`, `redo`, `save`) with `person_editing`, and with
+`desktop_busy` while it is asking the person something; nothing is applied
+and the client tries again. [MCP clients](mcp.md) reach the same
+operations through `aster-mcp`.
 
 ### Look, motion and speed commands
 

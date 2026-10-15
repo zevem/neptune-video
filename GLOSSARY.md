@@ -591,6 +591,29 @@ edit proposal. Later selection or playhead changes do not retarget that request.
 A declared incomplete view of a captured project that retains the selected
 clips, their linked/grouped relatives and source limits.
 
+**MCP server**:
+`aster-mcp`, which lets an AI agent in an MCP client create, inspect, edit,
+analyse, preview and export projects with the editor's own commands.
+
+**Edit authority**:
+Where the project an MCP server edits lives: in the server itself, saved
+after every edit (local), or in a running Aster window (desktop). There is
+one authority per project at a time.
+_Avoid_: Replica, mirror
+
+**Root**:
+A folder an MCP server may read media from and write projects, exports and
+pictures to. Paths outside the roots are refused.
+
+**Job**:
+Long work an agent started (transcription, a model install, scene
+detection, loudness, an export) with its progress, result and a way to
+cancel it. A job never edits the project; its result is applied by an edit.
+
+**Agent's own entry**:
+A history entry an MCP session made. Its undo takes back only its own
+entries unless it is told otherwise.
+
 **Edit proposal**:
 A validated set of suggested editing commands and their before/after project
 states, awaiting review and application as one history entry.

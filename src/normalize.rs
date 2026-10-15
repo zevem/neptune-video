@@ -230,6 +230,27 @@ struct Asked {
     effects: Vec<Effect>,
 }
 
+/// What a loudness measurement of `clip` depends on (its media file, the
+/// stretch of it heard and its enabled audio effects) as one number: a
+/// measurement is for the clip only while this stays the same.
+pub fn sound_key(project: &Project, clip: ClipId) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let asked = Asked::of(project, clip)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!(
+        "{:?}",
+        (
+            asked.asset.id,
+            &asked.source,
+            asked.from,
+            asked.span,
+            &asked.effects
+        )
+    )
+    .hash(&mut hasher);
+    Some(hasher.finish())
+}
+
 impl Asked {
     fn of(project: &Project, id: ClipId) -> Option<Self> {
         let (_, clip) = project.clip(id)?;

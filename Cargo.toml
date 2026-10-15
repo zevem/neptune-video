@@ -21,6 +21,10 @@ rust-version.workspace = true
 description = "A native, agent-driven desktop video editor"
 default-run = "aster"
 
+[lib]
+name = "aster_editor"
+path = "src/lib.rs"
+
 [[bin]]
 name = "aster"
 path = "src/main.rs"
@@ -28,6 +32,10 @@ path = "src/main.rs"
 [[bin]]
 name = "aster-agent"
 path = "src/bin/aster-agent.rs"
+
+[[bin]]
+name = "aster-mcp"
+path = "src/bin/aster-mcp.rs"
 
 [dependencies]
 editor-core = { path = "crates/editor-core" }
@@ -42,6 +50,23 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 directories = "6"
+# The MCP server (`aster-mcp`): the official Rust SDK over stdio and
+# Streamable HTTP on loopback.
+rmcp = { version = "=3.5.1", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "io-std", "net", "signal", "sync", "time", "fs"] }
+tokio-util = "0.7"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+base64 = "0.23"
+schemars = { version = "1.2.1", features = ["uuid1"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "process", "time"] }
+tempfile = "3.27"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = "0.31"

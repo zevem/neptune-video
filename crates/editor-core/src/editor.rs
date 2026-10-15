@@ -194,6 +194,10 @@ impl Editor {
     pub fn history(&self) -> impl Iterator<Item = &HistoryEntry> {
         self.past.iter()
     }
+    /// The redo entries, the next redo first.
+    pub fn future(&self) -> impl Iterator<Item = &HistoryEntry> {
+        self.future.iter().rev()
+    }
     pub fn undo(&mut self) -> bool {
         let Some(entry) = self.past.pop() else {
             return false;
@@ -355,6 +359,18 @@ impl Editor {
         at: Time,
         target_track: Option<TrackId>,
     ) -> Result<EditOutcome, EditError> {
+        let command = self.paste_command(clipboard, at, target_track)?;
+        self.dispatch(command)
+    }
+
+    /// The edit `paste` makes, without making it: one "Paste clips" batch
+    /// with fresh clip, link, group and look IDs.
+    pub fn paste_command(
+        &self,
+        clipboard: &Clipboard,
+        at: Time,
+        target_track: Option<TrackId>,
+    ) -> Result<Command, EditError> {
         if clipboard.clips.is_empty() {
             return Err(EditError::Invalid("empty clipboard".into()));
         }
@@ -419,7 +435,7 @@ impl Editor {
             }
             commands.push(Command::AddClip { track_id, clip });
         }
-        self.dispatch(Command::Batch {
+        Ok(Command::Batch {
             label: "Paste clips".into(),
             commands,
         })

@@ -303,8 +303,8 @@ def package(root: Path, build_record: Path, cargo_metadata: Path, target: str,
                   regular(Path(__file__)): digest(Path(__file__))}
         record = json.loads(build_record.read_text())
         before = source_snapshot(root, record)
-        if set(record["binaries"]) != {"aster", "aster-agent"} or not str(record.get("profile", "")).startswith("release"):
-            raise ValueError("A verified release record with both application binaries is required")
+        if set(record["binaries"]) != {"aster", "aster-agent", "aster-mcp"} or not str(record.get("profile", "")).startswith("release"):
+            raise ValueError("A verified release record with every application binary is required")
         if record.get("target", target) != target:
             raise ValueError("Build record target differs from package target")
         version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]

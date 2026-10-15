@@ -807,6 +807,53 @@ Open:
   reproduced and its log shows nothing
   ([ticket 15](../.scratch/export-and-rendering/issues/15-implementation-follow-ups.md)).
 
+### Review
+
+A review in four parts (state and integrity, security, tools against the
+window, jobs and lifecycle) checked each finding a second time. 29
+findings were confirmed, and each was fixed in the build above:
+
+- **Work in no file.** Recovered work, or an edit whose save was refused,
+  could be deleted by close, open, attach, handover or shutdown. It is
+  now kept: those calls refuse, and `discard` and shutdown leave it in the
+  recovery copy. Save As works while the file is in conflict. A refused
+  save renews the editing context, and the session now follows it.
+  `project_open` loads the new project before letting the old one go.
+- **The window** now answers reads while the person edits; only changes
+  wait.
+- **Undo.** The agent's own undo and redo now step over several entries.
+  An edit saved without its recovery copy keeps its result and IDs.
+- **Writing and reading files.**
+  - Every numbered frame file is checked.
+  - Pictures and caption files are written through a new hidden file
+    renamed into place, so dangling links are refused.
+  - FFmpeg formats that read other files (playlists, concat lists,
+    manifests) or draw text as video are never media.
+  - `AddAssets` needs importable media and probes it again.
+  - Folder walks do not read links that lead outside.
+  - Fonts outside the roots stop renders.
+  - Attaching to a window whose project path cannot be resolved is
+    refused.
+- **Tools.**
+  - `text_edit` with a template keeps the template's look.
+  - A loudness or transcript result applies only to the project and clip
+    state it was measured on.
+  - Ripple trims are bounded by the source, not by neighbours.
+  - `clip_add` on a new track honours `at`.
+  - Moves to another track keep the window's rule of one track and the
+    same kind.
+  - `text_add` places and fits for the length asked.
+  - Fades with both edges are one check.
+  - Drop-frame timecode and huge hours are refused.
+- **Jobs.**
+  - Local exports survive a project switch or a handover.
+  - Speech jobs run one at a time, and a panicking speech worker answers.
+  - Jobs are cancelled before the server exits.
+  - Frames are encoded off the protocol threads, a call's frames have a
+    pixel budget and stop when it is cancelled, and contact sheets fit
+    2048 pixels.
+  - Resource notifications are sent at most twice a second.
+
 ### Not verified
 
 - **macOS and Windows.** Nothing in this section was built or run there:
@@ -1232,6 +1279,120 @@ replayed. Polling, inter-batch prefetch, unflushed OS caches and uncontrolled
 host/power conditions limit interpretation; GPU, native fps, audio and target
 runtime remain outside this diagnostic. [Performance](performance.md#optimized-distinct-video-worker-diagnostic)
 records cold/random/cached distributions and further limits.
+
+## Native MCP
+
+[`aster-mcp`](mcp.md) ([ADR 0010](adr/0010-mcp-reaches-the-editor-through-the-agent-protocol.md),
+[spec](../.scratch/native-mcp/spec.md)) was driven on 2026-10-14 on one
+macOS host with a debug build. Nothing here covers Linux, Windows, a release
+build or an Intel Mac ([ticket 05](../.scratch/native-mcp/issues/05-linux-and-windows-acceptance.md)).
+
+### Host and build
+
+| Item | Value |
+| --- | --- |
+| Host | Apple Silicon Mac, 8 CPUs, 8 GB RAM, macOS 26.5.2 (Darwin 25.5.0), Retina display |
+| Build | `cargo build --locked --bins` (dev profile), pinned toolchain 1.97.1. Final binaries (SHA-256): `target/debug/aster` `fbe83a90cd092ffcbea95e0c5eb1f770abf18fe08793d27f1c398a5ec3137fae`; `target/debug/aster-mcp` `1aa890ddd3fbdbb0d7e4cf1a128b774e04407434b5371fdf00fb0a16ad68f367` |
+| FFmpeg | 9.0.2 from `.tools/media/macos-aarch64`, found beside the checkout |
+| Clients | the rmcp 3.5.1 client (tests), Claude Code 2.1.300, Codex CLI 0.162.1, a JSON-RPC script over stdio, curl over HTTP |
+| Isolation | a fresh temporary folder per test or run as the only root, with its own `--desktop-settings`, `--models`, sessions and connection files; windows started with `--settings` inside it |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `cargo test --locked --test mcp` (9 end-to-end tests: create, import, timeline edits, effects, transitions, keyframes, titles, music, batches, dry runs, stale revisions, frames, contact sheet, scene and loudness jobs, preview and export, undo, checkpoints, resources, reopening in a second server and with the editor's loader, roots and overwrites, a killed server, a stopped editor's recovery copy kept through close, create and a stopped server, the agent's undo and redo over several entries, dangling links, playlists passed off as media, links in imported folders, HTTP auth and a session) | passed |
+| The same with `ASTER_TEST_DESKTOP=1`: a real `aster` window, `project_open` routed to it, an edit, a frame, undo, redo and save through it | passed |
+| `cargo test --locked --lib` (with the `mcp::` unit tests for paths, times, jobs, the contact-sheet layout and the command schema) | 1122 passed |
+| `cargo test --locked -p editor-media` (with the new scene, details, playlist and import-predicate tests) | 451 passed |
+| `cargo test --locked -p editor-agent` with the provider fixture | 75 passed, 1 failed: `provider::tests::an_unrepresentable_native_path_is_refused_before_creating_an_instruction_file` (`Illegal byte sequence`, os error 92), which fails the same way without this work on this host |
+| `cargo clippy --locked -p aster-editor -p editor-media --lib --bins --tests`, `cargo fmt --check` for the touched packages, `scripts/check-architecture.py` | clean |
+| `scripts/test-package-release.py`, `scripts/test-native-test-runner.py` with `aster-mcp` among the binaries | passed with `TMPDIR` outside `/var`; with the default `TMPDIR` they fail on this host before and after this work, because `/var` is a symbolic link |
+| HTTP with curl: no token, wrong token, `Host: evil.example`, `Origin: https://evil.example`, a 5 MB body | 401, 401, 403, 403, 413; a valid token opened a session. The connection file was mode 0600 and was removed on SIGTERM |
+| SIGTERM, SIGHUP and SIGINT to a stdio server with a project open | exit 0; lock released and recovery copy removed |
+| `tools/list` | 39 tools, 40,854 bytes on the wire: 106 bytes under the 40 KiB the test enforces, so a new tool needs room made for it |
+| Whisper `tiny` installed by `transcription_models`, then `transcribe_start` on macOS `say` speech and `captions {from_transcript}` | words with frame times; five captions |
+| An export cancelled 0.5 s into rendering | ended `cancelled`; no file left at the destination |
+
+### Real clients
+
+Claude Code and Codex each built an edited video from raw footage using
+only the Aster tools
+([record](../.scratch/native-mcp/evidence/real-clients-2026-10-14.md)).
+Each run created the project, inspected the media, built and trimmed the
+timeline with a dissolve, transcribed and captioned the speech, added a
+title and music, looked at frames and fixed what it saw, and exported a
+preview and the final file. Claude Code made 41 calls, one of them refused
+and corrected. Codex made 39 calls, none refused, once its editing tools
+were approved in its configuration. Both runs used an earlier build.
+Claude Code ran the same brief again on the final build: 38 calls, none
+refused, saved at revision 12. Its `promo.mp4` is 1280x720, 30 fps,
+9.47 s, with sound, and no recovery copy was left.
+
+### Window and person
+
+A debug `aster` window with a task-owned `--settings` was driven with key
+presses sent through System Events:
+
+- The person's Cmd+Z and M (marker) reached the agent at once.
+- The agent's `history {op: undo}` refused the person's entry with
+  `not_agent_entry`.
+- The agent's transition, look and title appeared in the window as they
+  were made.
+- The agent's `project_save` saved through the window.
+
+Captures of the final build (hashes above), at 1440x900 unless noted, in
+[`.scratch/native-mcp/captures`](../.scratch/native-mcp/captures):
+
+- `1-person-opens-agent-project.png`: a project an agent made, left with
+  SIGTERM, opened by a person: no restore prompt.
+- `2-agent-edits-live-in-window.png`: after the person's marker and save,
+  the agent's wipe, look and title appearing in the person's window.
+- `3-after-agent-undo-and-save.png`: the agent's own title undone and the
+  project saved through the window.
+- `4-narrow-window-agent-project.png`: the saved project reopened at
+  820x640.
+- `5-person-opens-claude-code-project.png`: the project Claude Code made
+  on the final build, opened by a person: saved, no restore prompt, with
+  its captions, title, dissolve and faded music.
+
+Not captured: a window refusing an agent's edit during a person's drag
+or dialog (`person_editing`, `desktop_busy`). The refusal is covered by
+code and by the protocol, but no key presses in this run held a drag or
+opened a dialog.
+
+### Defects found and fixed
+
+1. `project_open` refused `project_busy` when a window had the file open
+   with unsaved work; it now attaches to the window.
+2. A failed `project_open` had already closed the open project; the new
+   project is now read first.
+3. Opening a file whose recovery copy held a stopped editor's unsaved
+   work would have replaced that copy at the first edit; it now refuses
+   `recovery_available`.
+4. Servers stopped by a signal (as Claude Code and Codex stop them) left
+   their lock and recovery copy; signals now release the project.
+5. `render_export_start` failed `capabilities_pending` in a server's first
+   seconds; it now waits for the encoder check.
+6. `tools/list` was 102 KB; it is now under 40 KiB.
+7. Smaller ones: a one-command edit kept its builder's label ("Normalize
+   loudness" for a volume change); `job {op: cancel}` answered the state
+   before the cancel took effect; caption export needed a track ID when
+   the project had one caption track; an out-of-range text style gave no
+   ranges; undo with nothing to undo said `not_agent_entry`.
+
+### Not verified
+
+- Linux, Windows, Intel Macs and release builds. On Windows the stdio
+  descriptor move, the connection file's permissions and the crash test
+  do not apply as written.
+- Whether a minimized or hidden window answers within the host's 5 s.
+- Clients other than Claude Code, Codex and the rmcp client; the
+  `2026-07-28` protocol revision's stateless HTTP mode.
+- Performance under many concurrent HTTP clients; frame rendering where no
+  graphics adapter opens.
+- Transcription with models other than `tiny`; GPU and hardware-encoder
+  paths beyond the preview export's `hevc_videotoolbox`.
 
 ## Platform matrix
 

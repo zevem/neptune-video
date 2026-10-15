@@ -464,6 +464,41 @@ come. When 4 of the last 16 such advances, across layers, were late, it asks
 at half until playback stops, so starting playback does not restart every
 decoder pipe.
 
+## MCP server
+
+`aster-mcp` ([guide](mcp.md), [ADR 0010](adr/0010-mcp-reaches-the-editor-through-the-agent-protocol.md))
+lives in `src/mcp/` of the root package's library and depends on the same
+crates as the desktop; the core gains nothing for it.
+
+```text
+MCP client ── stdio or loopback HTTP (rmcp) ──▶ AsterServer (tools, resources)
+    │ typed tools build Commands with the window's rules (rules.rs, titles,
+    │ captions, fades, effects) from a fresh snapshot
+    ▼
+authority thread (bounded queue) ── one guarded AgentRequest at a time ──▶
+    local:   Editor + DocumentSession, saved after every edit (headless.rs)
+    desktop: the window's AgentHost session → editor_agent::handle on its thread
+frames thread: headless FrameRenderer + SourceReader (frame_render, contact_sheet)
+jobs: transcription, model installs, scenes, loudness (≤ 4 running, 64 kept);
+      exports in the local RenderQueue or the window's render queue
+```
+
+- **Workspace** (`workspace.rs`) owns the authority, the binding
+  `(project_id, context_id, path)`, the agent's own undo and redo pairs, the
+  windows it found (looked for at most once a second) and the local render
+  queue. Only the authority thread touches it.
+- **Tools** (`tools/*.rs`) parse typed parameters (`TimeSpec` for
+  frame-accurate times), check paths against the roots, build one `Command`
+  and hand it to `Workspace::apply`. `apply` validates it as a dry run on the
+  snapshot, refuses new overlaps unless asked, and sends it guarded by the
+  snapshot's revision.
+- **Jobs** (`jobs.rs`) run on their own threads with progress and a cancel
+  flag. They read snapshots and never edit.
+- **Server** (`server.rs`) routes tools, serves the `aster://` resources and
+  polls them twice a second while a client is subscribed, to notify changes.
+- **HTTP** (`http.rs`) wraps rmcp's `StreamableHttpService` in axum with
+  bearer authentication, `Host` and `Origin` checks and a body limit.
+
 ## Asynchronous work
 
 Directory scans, probing, decoding, serialization and filesystem sync run on

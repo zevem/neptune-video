@@ -27,6 +27,7 @@ Read guidance when its branch applies:
 | Workers, rendering, decoding or resource policy | [performance](docs/performance.md) |
 | Frontend, icons, input or motion | [interface design](docs/design.md) |
 | Native verification, support or release claims | [verification](docs/verification.md) |
+| MCP server or tools | [MCP guide](docs/mcp.md), [ADR 0010](docs/adr/0010-mcp-reaches-the-editor-through-the-agent-protocol.md) and the [native MCP spec](.scratch/native-mcp/spec.md) |
 
 Keep `desktop → editor-core`, `desktop → editor-media`, `desktop → editor-store`
 and `desktop → editor-agent`; the domain core is independent of GUI, codecs,

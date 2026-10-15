@@ -79,14 +79,16 @@ real file-manager drops before declaring Linux release support.
 On macOS, install Rust, the Xcode command-line tools and CMake
 (`brew install cmake`), run `python3 scripts/fetch-media-tools.py`, then build
 with `cargo build --release --locked --bins`. The executable is
-`target/release/aster`. Native Metal, audio,
+`target/release/aster`, with `aster-agent` and the MCP server `aster-mcp`
+([setup](mcp.md)) beside it. Native Metal, audio,
 Retina/IME, Intel/Apple Silicon support policy and notarized packaging remain
 acceptance work.
 
 On Windows, use Rust's MSVC toolchain with Visual Studio C++ build tools, their
 CMake component, the Windows SDK and LLVM's libclang (set `LIBCLANG_PATH` to its
 `bin` directory if it is not found), then run the same Cargo build. Executables are
-`target/release/aster.exe` and `target/release/aster-agent.exe`. Run
+`target/release/aster.exe`, `target/release/aster-agent.exe` and
+`target/release/aster-mcp.exe`. Run
 `python scripts/fetch-media-tools.py` once for the FFmpeg the app runs. Native GPU/audio, Unicode paths, DPI, file dialogs,
 clipboard and installer signing remain acceptance work.
 
