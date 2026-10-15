@@ -22,6 +22,31 @@ const STOPPED: u8 = 4;
 const MAX_STREAM_BYTES: usize = 32 * 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 256 * 1024;
 
+/// How much a provider may print. A planning request is one bounded answer;
+/// an agent conversation goes on, and a tool's pictures travel through its
+/// lines, so its lines may be larger and its stream is not counted whole.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Limits {
+    pub line: usize,
+    pub stream: usize,
+    pub stderr: usize,
+}
+
+impl Limits {
+    pub(super) const PLANNING: Self = Self {
+        line: MAX_OUTPUT_BYTES,
+        stream: MAX_STREAM_BYTES,
+        stderr: MAX_STDERR_BYTES,
+    };
+    /// A line holds at most one tool result, whose pictures are capped by the
+    /// tool; what the agent printed before is not held.
+    pub(super) const CONVERSATION: Self = Self {
+        line: 256 * 1024 * 1024,
+        stream: usize::MAX,
+        stderr: usize::MAX,
+    };
+}
+
 enum Event {
     Json(Value),
     Invalid,
@@ -44,7 +69,7 @@ impl OwnedChild {
     }
 }
 
-pub(super) struct Process {
+pub(crate) struct Process {
     input: Option<ChildStdin>,
     output: Option<Receiver<Event>>,
     reason: Arc<AtomicU8>,
@@ -67,9 +92,25 @@ impl Process {
     /// Configure provider-specific inputs only after its private directory
     /// exists, before any provider code/configuration can start executing.
     pub(super) fn spawn_with(
+        command: Command,
+        cancel: Arc<AtomicBool>,
+        timeout_seconds: u64,
+        configure: impl FnOnce(&mut Command, &Path) -> Result<(), AiError>,
+    ) -> Result<Self, AiError> {
+        Self::spawn_limited(
+            command,
+            cancel,
+            timeout_seconds,
+            Limits::PLANNING,
+            configure,
+        )
+    }
+
+    pub(super) fn spawn_limited(
         mut command: Command,
         cancel: Arc<AtomicBool>,
         timeout_seconds: u64,
+        limits: Limits,
         configure: impl FnOnce(&mut Command, &Path) -> Result<(), AiError>,
     ) -> Result<Self, AiError> {
         if cancel.load(Ordering::Acquire) {
@@ -175,7 +216,7 @@ impl Process {
         process.readers.push(
             thread::Builder::new()
                 .name("aster-ai-stdout".into())
-                .spawn(move || read_stdout(stdout, send, reason))
+                .spawn(move || read_stdout(stdout, send, reason, limits))
                 .map_err(|_| AiError::WorkerStopped)?,
         );
         let reason = process.reason.clone();
@@ -183,7 +224,7 @@ impl Process {
         process.readers.push(
             thread::Builder::new()
                 .name("aster-ai-stderr".into())
-                .spawn(move || drain_stderr(stderr, reason))
+                .spawn(move || drain_stderr(stderr, reason, limits.stderr))
                 .map_err(|_| AiError::WorkerStopped)?,
         );
         Ok(process)
@@ -193,7 +234,7 @@ impl Process {
         self.directory.path()
     }
 
-    pub(super) fn send(&mut self, value: &Value) -> Result<(), AiError> {
+    pub(crate) fn send(&mut self, value: &Value) -> Result<(), AiError> {
         let bytes = serde_json::to_vec(value)
             .map_err(|_| AiError::Invalid("Cannot encode AI protocol request".into()))?;
         self.write(&bytes)?;
@@ -236,27 +277,30 @@ impl Process {
 
     pub(super) fn next(&mut self) -> Result<Value, AiError> {
         loop {
-            self.check()?;
-            let result = self
-                .output
-                .as_ref()
-                .ok_or(AiError::WorkerStopped)?
-                .recv_timeout(Duration::from_millis(25));
-            self.check()?;
-            match result {
-                Ok(Event::Json(value)) => return Ok(value),
-                Ok(Event::Invalid) => {
-                    return Err(AiError::Provider(
-                        "AI provider returned an invalid protocol message".into(),
-                    ));
-                }
-                Ok(Event::Eof) | Err(RecvTimeoutError::Disconnected) => {
-                    return Err(AiError::Provider(
-                        "AI provider exited before completing the request".into(),
-                    ));
-                }
-                Err(RecvTimeoutError::Timeout) => {}
+            if let Some(value) = self.poll(Duration::from_millis(25))? {
+                return Ok(value);
             }
+        }
+    }
+
+    /// The next message if one comes within `wait`.
+    pub(crate) fn poll(&mut self, wait: Duration) -> Result<Option<Value>, AiError> {
+        self.check()?;
+        let result = self
+            .output
+            .as_ref()
+            .ok_or(AiError::WorkerStopped)?
+            .recv_timeout(wait);
+        self.check()?;
+        match result {
+            Ok(Event::Json(value)) => Ok(Some(value)),
+            Ok(Event::Invalid) => Err(AiError::Provider(
+                "AI provider returned an invalid protocol message".into(),
+            )),
+            Ok(Event::Eof) | Err(RecvTimeoutError::Disconnected) => Err(AiError::Provider(
+                "AI provider exited before completing the request".into(),
+            )),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
         }
     }
 
@@ -296,7 +340,7 @@ impl Drop for Process {
     }
 }
 
-fn read_stdout(stdout: impl Read, send: SyncSender<Event>, reason: Arc<AtomicU8>) {
+fn read_stdout(stdout: impl Read, send: SyncSender<Event>, reason: Arc<AtomicU8>, limits: Limits) {
     let mut reader = BufReader::with_capacity(8192, stdout);
     let mut line = Vec::new();
     let mut total = 0usize;
@@ -326,7 +370,7 @@ fn read_stdout(stdout: impl Read, send: SyncSender<Event>, reason: Arc<AtomicU8>
         let newline = buffer.iter().position(|byte| *byte == b'\n');
         let take = newline.map_or(buffer.len(), |at| at + 1);
         total = total.saturating_add(take);
-        if total > MAX_STREAM_BYTES || take > MAX_OUTPUT_BYTES.saturating_sub(line.len()) {
+        if total > limits.stream || take > limits.line.saturating_sub(line.len()) {
             let _ = reason.compare_exchange(0, OUTPUT_LIMIT, Ordering::AcqRel, Ordering::Acquire);
             return;
         }
@@ -354,7 +398,7 @@ fn emit_line(line: &[u8], send: &SyncSender<Event>) -> bool {
     }
 }
 
-fn drain_stderr(mut stderr: impl Read, reason: Arc<AtomicU8>) {
+fn drain_stderr(mut stderr: impl Read, reason: Arc<AtomicU8>, limit: usize) {
     let mut buffer = [0u8; 8192];
     let mut total = 0usize;
     loop {
@@ -370,7 +414,7 @@ fn drain_stderr(mut stderr: impl Read, reason: Arc<AtomicU8>) {
             Err(_) => return,
             Ok(count) => {
                 total = total.saturating_add(count);
-                if total > MAX_STDERR_BYTES {
+                if total > limit {
                     let _ = reason.compare_exchange(
                         0,
                         OUTPUT_LIMIT,

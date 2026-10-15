@@ -1,10 +1,12 @@
 //! Local, authenticated agent transport. All edits still enter the core reducer.
 mod ai;
 mod context;
+pub mod conversation;
 mod host;
 mod planner;
 mod provider;
 pub use ai::*;
+pub use conversation::{Conversation, ToolServer, TurnEvent};
 use editor_core::export::{Capabilities, ExportError, ExportPreset, ExportSettings, RenderJobInfo};
 use editor_core::{Command, Editor, Project};
 pub use host::*;

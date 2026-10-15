@@ -118,3 +118,33 @@ distribution and broader production gates remain open in
 [verification](../../docs/verification.md).
 The R14 51-case/57-guard baseline and [eleven-case draft](../../artifacts/native/platform-regressions-round1/README.md)
 remain historical. No native platform execution follows from local preparation.
+
+## Comments
+
+2026-10-14: The Agent tab's Ask mode now defaults to Made as it works, a
+live conversation whose only tools are `aster-mcp` pinned to the window
+([in-app agent spec](../in-app-agent/spec.md),
+[ADR 0011](../../docs/adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md)).
+The planner this spec describes stays as Proposed for review
+(`AiSettings.review`) and still serves caption translation; its contract
+above is unchanged. "Provider tools, unrelated MCP servers, shell
+execution and project instruction discovery are disabled" and "the model
+receives editing metadata" now hold for the planner only: the live agent
+reaches Aster's MCP tools, and rendered frames, contact sheets,
+transcripts, measurements, and file names and paths inside its roots reach
+the provider. Decided on the
+owner's behalf (2026-10-14): Made as it works is the default for new and
+existing settings. Verified on one macOS host with debug builds
+([native runs](../in-app-agent/evidence/native-runs-2026-10-14.md));
+Linux, Windows and release builds are unverified.
+
+2026-10-15: The live agent's `aster-mcp` is no longer pinned to the
+window. It starts in the window and, like an outside MCP agent, may create,
+open and close projects of its own and come back; its roots are live
+through `--roots-file` and include folders the person adds in Settings ›
+Agent › Folders ([in-app agent spec](../in-app-agent/spec.md),
+[issue 06](../in-app-agent/issues/06-same-reach-as-an-outside-agent.md)).
+Decided on the owner's behalf (2026-10-15): the in-app agent has the same
+reach as an outside agent. The planner and its contract above are
+unchanged. Covered by tests on one macOS host; native runs are pending and
+will be recorded in [verification](../../docs/verification.md#in-app-agent).

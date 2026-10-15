@@ -23,9 +23,17 @@ production release gates remain in [verification](docs/verification.md).
   position/scale/rotation/opacity/reflection and canvas presets/backgrounds.
 - Local authenticated agent access with project/context/revision guards, shared
   edit validation and undo history.
-- Native Claude/Codex requests, reviewable editing proposals, cancellation and
-  guarded edits as one undo step; unchanged proposals preserve history. This
-  first planner uses project metadata.
+- An Agent panel that talks with the person's signed-in Claude Code or Codex.
+  By default the agent edits the open project as it works, through Aster's MCP
+  tools started in that window: it can look at frames, each edit appears at
+  once as one undo step shared with the person, and like any MCP client it can
+  also make, open and export other projects. Set to Proposed for review, a
+  planner that uses project metadata returns one proposal that changes nothing
+  until it is applied; unchanged proposals preserve history. Debug builds were
+  run with both providers on macOS only.
+- `aster-mcp`, an MCP server through which an agent in an MCP client creates,
+  inspects, edits, analyses, previews and exports projects with the window's
+  own commands, on its own or in a running Aster window.
 - Titles with fonts, colours, outlines, shadows and backgrounds; fade, pop,
   bounce, typewriter, slide and wipe animations by line, word or letter; lower
   thirds, title cards, callouts, stickers and emoji with editable texts and
@@ -95,8 +103,8 @@ remain release work.
 | `crates/editor-core` | Typed project/timeline model, titles and captions, validated commands, undo/redo, frame timing and export plans |
 | `crates/editor-media` | Media probing, decoding, the text renderer, speech recognition, export encoding, proxies and bounded worker services |
 | `crates/editor-store` | Versioned save/load, autosave, recovery and checkpoints |
-| `crates/editor-agent` | Native provider planning, exact validated proposals and local authenticated editing transport |
-| `src/` | Native desktop UI, compositor, render queue and `aster-agent` command interface |
+| `crates/editor-agent` | Native provider planning, the Agent panel's provider conversation, exact validated proposals and local authenticated editing transport |
+| `src/` | Native desktop UI, compositor, render queue, `aster-agent` command interface and `aster-mcp` MCP server |
 
 ## Documentation
 
@@ -104,7 +112,8 @@ remain release work.
 - [Export and rendering spec](.scratch/export-and-rendering/spec.md) and [ADR 0009](docs/adr/0009-export-renders-originals-through-the-preview-compositor.md)
 - [Installation](docs/installation.md) and [user guide](docs/usage.md)
 - [Agent protocol](docs/agent-protocol.md)
-- [Native AI editing](docs/native-ai.md)
+- [Native AI editing](docs/native-ai.md) and [ADR 0011](docs/adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md)
+- [MCP server](docs/mcp.md) and [ADR 0010](docs/adr/0010-mcp-reaches-the-editor-through-the-agent-protocol.md)
 - [Architecture](docs/architecture.md) and [domain vocabulary](GLOSSARY.md)
 - [Interface design](docs/design.md) and [performance](docs/performance.md)
 - [Development](docs/development.md) and [verification/release gates](docs/verification.md)

@@ -10,18 +10,73 @@ use super::errors::{ToolError, codes};
 use std::{
     ffi::OsString,
     path::{Component, Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::SystemTime,
 };
+
+/// The most a roots file may hold.
+const MOST_ROOTS_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Roots {
+    roots: Vec<PathBuf>,
+    /// Folders named in a file that another program rewrites while this
+    /// server runs (`--roots-file`), read again whenever it changed.
+    added: Option<Arc<Added>>,
+}
+
+#[derive(Debug)]
+struct Added {
+    file: PathBuf,
+    /// The file as last read: its identity, and the usable folders it named.
+    read: Mutex<(Option<Seen>, Vec<PathBuf>)>,
+}
+
+/// What tells one version of the roots file from another: it is replaced
+/// whole, so a new version is a new file.
+type Seen = (Option<SystemTime>, u64, u64);
+
+impl Added {
+    /// The folders the file names now. A file that is missing, too large or
+    /// not understood names none; a folder that is gone, too wide or inside
+    /// another is left out.
+    fn current(&self) -> Vec<PathBuf> {
+        let seen = std::fs::metadata(&self.file).ok().map(|metadata| {
+            #[cfg(unix)]
+            let identity = std::os::unix::fs::MetadataExt::ino(&metadata);
+            #[cfg(not(unix))]
+            let identity = 0;
+            (metadata.modified().ok(), metadata.len(), identity)
+        });
+        let mut read = self.read.lock().unwrap_or_else(|e| e.into_inner());
+        if read.0 == seen && seen.is_some() {
+            return read.1.clone();
+        }
+        let folders = match seen {
+            Some((_, len, _)) if len <= MOST_ROOTS_BYTES => std::fs::read(&self.file)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<RootsFile>(&bytes).ok())
+                .map(|file| super::usable_roots(file.roots))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        *read = (seen, folders.clone());
+        folders
+    }
+}
+
+/// A roots file: `{"roots": ["/path", …]}`.
+#[derive(serde::Deserialize)]
+struct RootsFile {
     roots: Vec<PathBuf>,
 }
 
 impl Roots {
     /// The roots named, else the working directory unless it is the whole
-    /// disk, the home folder or a system folder.
-    pub fn new(named: Vec<PathBuf>, cwd: &Path) -> Result<Self, String> {
-        let implicit = named.is_empty();
+    /// disk, the home folder or a system folder. With a roots file, the
+    /// folders it names are roots too, and the working directory is not.
+    pub fn new(named: Vec<PathBuf>, cwd: &Path, file: Option<PathBuf>) -> Result<Self, String> {
+        let implicit = named.is_empty() && file.is_none();
         let named = if implicit {
             vec![cwd.to_path_buf()]
         } else {
@@ -49,21 +104,39 @@ impl Roots {
             }
             roots.push(canonical);
         }
-        Ok(Self { roots })
+        Ok(Self {
+            roots,
+            added: file.map(|file| {
+                Arc::new(Added {
+                    file,
+                    read: Mutex::new((None, Vec::new())),
+                })
+            }),
+        })
     }
 
-    pub fn list(&self) -> &[PathBuf] {
-        &self.roots
+    /// The roots now: those named, then those the roots file names.
+    pub fn list(&self) -> Vec<PathBuf> {
+        let mut all = self.roots.clone();
+        if let Some(added) = &self.added {
+            for root in added.current() {
+                if !all.contains(&root) {
+                    all.push(root);
+                }
+            }
+        }
+        all
     }
 
-    /// Where relative paths are taken from.
-    pub fn first(&self) -> &Path {
-        &self.roots[0]
+    /// Where relative paths are taken from; none while a roots file names
+    /// no folder.
+    pub fn first(&self) -> Option<PathBuf> {
+        self.list().into_iter().next()
     }
 
     /// Whether a canonical path is under a root.
     pub fn contains(&self, canonical: &Path) -> bool {
-        self.roots.iter().any(|root| inside(canonical, root))
+        self.list().iter().any(|root| inside(canonical, root))
     }
 
     /// Whether an absolute path, existing or not, leads under a root once
@@ -84,9 +157,9 @@ impl Roots {
             codes::OUTSIDE_ROOTS,
             format!(
                 "{} is not inside the folders this server may use ({}); the person can add one \
-                 with --root",
+                 with --root, or for Aster's own agent in Settings › Agent › Folders",
                 given.display(),
-                self.roots
+                self.list()
                     .iter()
                     .map(|root| root.display().to_string())
                     .collect::<Vec<_>>()
@@ -112,11 +185,13 @@ impl Roots {
         if odd_windows_name(given) {
             return Err(self.outside(given));
         }
-        Ok(if given.is_absolute() {
-            given.to_path_buf()
-        } else {
-            self.first().join(given)
-        })
+        if given.is_absolute() {
+            return Ok(given.to_path_buf());
+        }
+        match self.first() {
+            Some(first) => Ok(first.join(given)),
+            None => Err(self.outside(given)),
+        }
     }
 
     /// An existing file inside the roots, to read. Refused when it is a
@@ -267,7 +342,7 @@ fn inside(path: &Path, root: &Path) -> bool {
 }
 
 /// The whole disk, the home folder or a system folder.
-fn too_wide(canonical: &Path) -> bool {
+pub(super) fn too_wide(canonical: &Path) -> bool {
     if canonical.parent().is_none() {
         return true;
     }
@@ -327,7 +402,7 @@ mod tests {
     use super::*;
 
     fn roots(dir: &Path) -> Roots {
-        Roots::new(vec![dir.to_path_buf()], dir).unwrap()
+        Roots::new(vec![dir.to_path_buf()], dir, None).unwrap()
     }
 
     #[test]
@@ -399,9 +474,11 @@ mod tests {
     #[test]
     fn the_whole_disk_and_the_home_folder_are_refused_as_roots() {
         let disk = if cfg!(windows) { r"C:\" } else { "/" };
-        assert!(Roots::new(Vec::new(), Path::new(disk)).is_err());
+        assert!(Roots::new(Vec::new(), Path::new(disk), None).is_err());
         if let Some(home) = directories::BaseDirs::new() {
-            assert!(Roots::new(vec![home.home_dir().to_path_buf()], Path::new(disk)).is_err());
+            assert!(
+                Roots::new(vec![home.home_dir().to_path_buf()], Path::new(disk), None).is_err()
+            );
         }
     }
 }

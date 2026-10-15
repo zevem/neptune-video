@@ -46,8 +46,38 @@ Options:
   --models DIR            Where speech models are kept (ASTER_MODELS_DIR).
   --aster PATH            The Aster program `desktop {op: open}` launches;
                           the `aster` beside this program by default.
+  --window FILE           Start in the Aster window whose session file
+                          this is: attach to it at once, and go back to it
+                          when desktop {op: attach} names no window. Aster
+                          starts its own agent this way.
+  --roots-file FILE       A JSON file {\"roots\": [DIR, …]} naming more
+                          folders the server may use, read again whenever
+                          it changes. Aster keeps one for its own agent.
+  --tag TAG               Begin request ids with TAG (mcp by default), so a
+                          window can tell this server's requests apart.
   --help, --version
 ";
+
+/// Of `wanted`, the folders that can be roots: existing, followed through
+/// their links, not too wide, each once and none inside another.
+pub(crate) fn usable_roots(wanted: Vec<PathBuf>) -> Vec<PathBuf> {
+    // The first stays first: relative paths are taken from it.
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for path in wanted {
+        let Ok(path) = std::fs::canonicalize(path) else {
+            continue;
+        };
+        if path.is_dir() && !paths::too_wide(&path) && !roots.contains(&path) {
+            roots.push(path);
+        }
+    }
+    let all = roots.clone();
+    roots.retain(|root| {
+        !all.iter()
+            .any(|other| other != root && root.starts_with(other))
+    });
+    roots
+}
 
 /// What the command line asked for.
 #[derive(Debug, Default)]
@@ -58,6 +88,9 @@ struct Options {
     sessions: Option<PathBuf>,
     models: Option<PathBuf>,
     aster: Option<PathBuf>,
+    window: Option<PathBuf>,
+    roots_file: Option<PathBuf>,
+    tag: Option<String>,
 }
 
 fn parse(args: impl Iterator<Item = String>) -> Result<Option<Options>, String> {
@@ -81,6 +114,20 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Option<Options>, String> 
             "--sessions" => options.sessions = Some(PathBuf::from(value("--sessions")?)),
             "--models" => options.models = Some(PathBuf::from(value("--models")?)),
             "--aster" => options.aster = Some(PathBuf::from(value("--aster")?)),
+            "--window" => options.window = Some(PathBuf::from(value("--window")?)),
+            "--roots-file" => {
+                options.roots_file = Some(PathBuf::from(value("--roots-file")?));
+            }
+            "--tag" => {
+                let tag = value("--tag")?;
+                if tag.is_empty()
+                    || tag.len() > 64
+                    || !tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                {
+                    return Err("--tag is 1–64 letters, digits and dashes".to_owned());
+                }
+                options.tag = Some(tag);
+            }
             "--http" => {
                 let address = match args.peek() {
                     Some(next) if !next.starts_with("--") => args.next().unwrap_or_default(),
@@ -116,7 +163,7 @@ pub fn run() -> i32 {
         named.extend(std::env::split_paths(&list).filter(|path| !path.as_os_str().is_empty()));
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let roots = match Roots::new(named, &cwd) {
+    let roots = match Roots::new(named, &cwd, options.roots_file.clone()) {
         Ok(roots) => Arc::new(roots),
         Err(message) => {
             eprintln!("aster-mcp: {message}");
@@ -154,6 +201,15 @@ pub fn run() -> i32 {
     let mut workspace = Workspace::new(roots.clone(), sessions);
     workspace.desktop_program = aster;
     workspace.desktop_settings = options.desktop_settings.clone();
+    if let Some(tag) = options.tag.clone() {
+        workspace.set_tag(tag);
+    }
+    if let Some(window) = options.window.clone() {
+        // A window that is not answering yet is attached at the first call.
+        if let Err(error) = workspace.pin(window) {
+            eprintln!("aster-mcp: {error}");
+        }
+    }
     let shared = Arc::new(Shared {
         authority: Authority::start(workspace),
         jobs: jobs::Jobs::default(),

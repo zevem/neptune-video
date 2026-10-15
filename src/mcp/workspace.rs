@@ -147,6 +147,15 @@ pub struct Workspace {
     pub desktop_program: Option<PathBuf>,
     pub desktop_settings: Option<PathBuf>,
     pub launched_window: Option<std::process::Child>,
+    /// The session file of the window this server was started for
+    /// (`--window`): it works there first, and comes back there when it
+    /// is told to attach and names no window.
+    home: Option<PathBuf>,
+    /// It still works in that window's project, so it follows the window
+    /// when the window shows no project of its own yet.
+    following: bool,
+    /// What request ids begin with, so a window can tell whose they are.
+    tag: String,
 }
 
 impl Workspace {
@@ -166,7 +175,35 @@ impl Workspace {
             desktop_program: None,
             desktop_settings: None,
             launched_window: None,
+            home: None,
+            following: false,
+            tag: "mcp".to_owned(),
         }
+    }
+
+    /// Request ids begin with `tag`.
+    pub fn set_tag(&mut self, tag: String) {
+        self.tag = tag;
+    }
+
+    /// Starts in the window whose session file is `file`: attaches now,
+    /// or at the first call if the window is not answering yet. Like any
+    /// server it may then make, open and close projects of its own;
+    /// `desktop {op: attach}` naming no window brings it back.
+    pub fn pin(&mut self, file: PathBuf) -> Result<(), ToolError> {
+        self.launched.push(file.clone());
+        self.home = Some(file);
+        self.following = true;
+        self.attach(None).map(|_| ())
+    }
+
+    /// A server still following its window, which had no project for it
+    /// yet, attaches to what the window shows now.
+    fn ready(&mut self) -> Result<(), ToolError> {
+        if self.following && matches!(self.backend, Backend::Empty) {
+            self.attach(None)?;
+        }
+        Ok(())
     }
 
     pub fn authority_name(&self) -> &'static str {
@@ -193,7 +230,7 @@ impl Workspace {
     ) -> AgentRequest {
         self.requests += 1;
         AgentRequest {
-            request_id: format!("mcp-{}", self.requests),
+            request_id: format!("{}-{}", self.tag, self.requests),
             expected_revision,
             expected_project_id: self.binding.as_ref().map(|binding| binding.project_id),
             expected_context_id: self.binding.as_ref().map(|binding| binding.context_id),
@@ -215,6 +252,7 @@ impl Workspace {
                 destination: Some(_)
             }
         );
+        self.ready()?;
         let request = self.request(operation, expected_revision);
         if let Some(response) = self.local_exports(&request) {
             return Ok(response);
@@ -403,6 +441,7 @@ impl Workspace {
 
     /// The project as it is now.
     pub fn snapshot(&mut self) -> Result<Snapshot, ToolError> {
+        self.ready()?;
         self.check_handover()?;
         match &self.backend {
             Backend::Empty => Err(ToolError::no_project()),
@@ -667,6 +706,7 @@ impl Workspace {
 
     /// The document as its owner sees it, with the project's revision.
     pub fn document(&mut self) -> Result<(u64, DocumentInfo), ToolError> {
+        self.ready()?;
         self.check_handover()?;
         match &self.backend {
             Backend::Empty => Err(ToolError::no_project()),
@@ -733,6 +773,9 @@ impl Workspace {
         if !discard {
             self.check_leavable()?;
         }
+        // Letting go is a choice: a server started for a window does not
+        // follow it back on its own.
+        self.following = false;
         let backend = std::mem::replace(&mut self.backend, Backend::Empty);
         self.binding = None;
         self.own_undo.clear();
@@ -838,6 +881,7 @@ impl Workspace {
     /// Opens `path` on the server, or attaches to the window that has it
     /// open with the same contents.
     pub fn open(&mut self, path: &Path, recover: bool) -> Result<(), ToolError> {
+        self.following = false;
         if recover && !editor_store::recovery_path(path).exists() {
             return Err(ToolError::not_found(format!(
                 "There is no recovery copy of {}: it was saved, or opened since",
@@ -946,6 +990,27 @@ impl Workspace {
     /// Edits the project open in a window from now on.
     pub fn attach(&mut self, instance: Option<Uuid>) -> Result<Session, ToolError> {
         let sessions = self.discover(true);
+        // A server started for a window goes back to it when no window
+        // is named.
+        let home = self.home.as_ref().map(|file| {
+            sessions
+                .iter()
+                .find(|session| &session.file == file)
+                .map(|session| session.descriptor.instance_id)
+        });
+        let instance = match (instance, home) {
+            (Some(named), _) => Some(named),
+            (None, Some(Some(own))) => Some(own),
+            (None, Some(None)) => {
+                return Err(ToolError::new(
+                    codes::DESKTOP_CLOSED,
+                    "The Aster window this agent was started in did not answer; it may have \
+                     closed",
+                ));
+            }
+            (None, None) => None,
+        };
+        let going_home = matches!(home, Some(Some(own)) if instance == Some(own));
         let local_path = self.binding.as_ref().and_then(|b| b.path.clone());
         let chosen: Vec<&Session> = sessions
             .iter()
@@ -984,10 +1049,12 @@ impl Workspace {
             return Err(ToolError::new(
                 codes::OUTSIDE_ROOTS,
                 "The window's project is outside the folders this server may use; the person \
-                 can add one with --root",
+                 can add one with --root, or for Aster's own agent in Settings \u{203a} Agent \u{203a} \
+                 Folders",
             ));
         }
         self.become_desktop(&session);
+        self.following = going_home;
         Ok(session)
     }
 
@@ -1120,7 +1187,7 @@ impl Workspace {
             };
             self.requests += 1;
             let request = AgentRequest {
-                request_id: format!("mcp-{}", self.requests),
+                request_id: format!("{}-{}", self.tag, self.requests),
                 expected_revision: None,
                 expected_project_id: None,
                 expected_context_id: None,
@@ -1149,6 +1216,7 @@ impl Workspace {
     /// Launches the `aster` window beside this server on the project's
     /// file and edits it there once it answers.
     pub fn launch_desktop(&mut self, path: Option<PathBuf>) -> Result<Session, ToolError> {
+        self.following = false;
         if let Some(child) = &mut self.launched_window
             && child.try_wait().ok().flatten().is_none()
         {

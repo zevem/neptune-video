@@ -1,10 +1,15 @@
 //! Native provider adapters share bounded process ownership and no GUI work.
+mod claude_agent;
 mod codex;
+mod codex_agent;
 mod process;
 #[cfg(windows)]
 mod windows;
-use crate::{AiConfig, AiContext, AiError, AiProvider, planner};
-use process::Process;
+use crate::{AiConfig, AiContext, AiError, AiProvider, ToolServer, conversation, planner};
+use claude_agent::ClaudeAgent;
+use codex_agent::CodexAgent;
+use process::Limits;
+pub(crate) use process::Process;
 use serde_json::Value;
 use std::{
     process::Command,
@@ -87,7 +92,7 @@ pub(crate) fn plan(
             command,
             cancel,
             config.timeout_seconds,
-            configure_codex_instructions,
+            |command, directory| configure_codex_instructions(command, directory, planner::SYSTEM),
         )?,
     };
     match config.provider {
@@ -98,6 +103,223 @@ pub(crate) fn plan(
         }
         AiProvider::Codex => codex::plan(&mut process, config, &prompt, &schema),
     }
+}
+
+/// What a conversation's provider said or did, in the order it happened.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Heard {
+    /// Words for the person.
+    Said(String),
+    /// A tool call began. `op` is its `op` argument, when it has one.
+    Called {
+        call: String,
+        tool: String,
+        op: Option<String>,
+    },
+    /// A tool call ended. `detail` is the edit's label, or why it was refused.
+    Returned {
+        call: String,
+        ok: bool,
+        detail: Option<String>,
+    },
+    /// The request is answered; the conversation waits for the next one.
+    Finished { model: Option<String> },
+    /// A protocol message for the provider, sent by `Agent::receive`.
+    Send(Value),
+}
+
+/// A tool result's content, read as the Aster server writes it: whether it
+/// is a refusal, and the label of the edit it made or the refusal's reason.
+fn summary(content: &Value) -> (bool, Option<String>) {
+    let text = match content {
+        Value::String(text) => text.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter(|block| block["type"] == "text")
+            .filter_map(|block| block["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
+    let short = |text: &str| text.chars().take(240).collect::<String>();
+    match serde_json::from_str::<Value>(&text) {
+        Ok(value) if value["code"].is_string() && value["message"].is_string() => {
+            (true, value["message"].as_str().map(short))
+        }
+        Ok(value) if value["changed"] == true => (false, value["label"].as_str().map(short)),
+        _ => (false, None),
+    }
+}
+
+/// A conversation with a provider whose only tools are one Aster server's.
+pub(crate) struct Agent(Party);
+
+enum Party {
+    Claude(ClaudeAgent),
+    Codex(Box<CodexAgent>),
+}
+
+impl Agent {
+    /// Asks `prompt`, now or once the provider is ready for it.
+    pub(crate) fn ask(&mut self, process: &mut Process, prompt: &str) -> Result<(), AiError> {
+        match &mut self.0 {
+            Party::Claude(agent) => process.send(&agent.ask(prompt)),
+            Party::Codex(agent) => {
+                for message in agent.ask(prompt) {
+                    process.send(&message)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// What one message from the provider means. Replies it needs are sent.
+    pub(crate) fn receive(
+        &mut self,
+        process: &mut Process,
+        frame: &Value,
+    ) -> Result<Vec<Heard>, AiError> {
+        let heard = match &mut self.0 {
+            Party::Claude(agent) => agent.receive(frame)?,
+            Party::Codex(agent) => agent.receive(frame)?,
+        };
+        let mut told = Vec::with_capacity(heard.len());
+        for heard in heard {
+            match heard {
+                Heard::Send(message) => process.send(&message)?,
+                other => told.push(other),
+            }
+        }
+        Ok(told)
+    }
+}
+
+/// Starts a conversation: the provider runs with `server` as its only tools,
+/// approved for that server alone, in a private folder of its own. The
+/// process lives until it is dropped, `deadline_seconds` pass or `cancel`.
+pub(crate) fn converse(
+    config: &AiConfig,
+    server: &ToolServer,
+    cancel: Arc<AtomicBool>,
+    deadline_seconds: u64,
+) -> Result<(Process, Agent), AiError> {
+    for text in
+        std::iter::once(server.command.to_str()).chain(server.args.iter().map(|a| Some(a.as_str())))
+    {
+        if text.is_none_or(|text| text.contains('\0')) {
+            return Err(AiError::Invalid(
+                "The editing tools' command cannot be passed to the provider".into(),
+            ));
+        }
+    }
+    let executable = resolve_executable(config)?;
+    let mut command = Command::new(executable);
+    match config.provider {
+        AiProvider::Claude => {
+            // Not --safe-mode: it turns off every MCP server, ours included.
+            // The person's settings, instructions, hooks and commands stay
+            // out through the options below.
+            command
+                .args([
+                    "--print",
+                    "--verbose",
+                    "--input-format",
+                    "stream-json",
+                    "--output-format",
+                    "stream-json",
+                    "--tools",
+                    "",
+                    "--strict-mcp-config",
+                    "--allowedTools",
+                    "mcp__aster__*",
+                    "--permission-mode",
+                    "dontAsk",
+                    "--setting-sources",
+                    "",
+                    "--disable-slash-commands",
+                    "--no-session-persistence",
+                    "--max-turns",
+                    "400",
+                ])
+                .arg("--system-prompt")
+                .arg(conversation::INSTRUCTIONS);
+            if let Some(model) = &config.model {
+                command.arg("--model").arg(model);
+            }
+            if let Some(effort) = &config.effort {
+                command.arg("--effort").arg(effort);
+            }
+            command
+                .env_remove("CLAUDECODE")
+                .env_remove("CLAUDE_CODE_SESSION_ID");
+            let process = Process::spawn_limited(
+                command,
+                cancel,
+                deadline_seconds,
+                Limits::CONVERSATION,
+                |command, directory| configure_claude_server(command, directory, server),
+            )?;
+            Ok((process, Agent(Party::Claude(ClaudeAgent::default()))))
+        }
+        AiProvider::Codex => {
+            command.arg("app-server");
+            for feature in conversation_disabled() {
+                command.arg("-c").arg(format!("features.{feature}=false"));
+            }
+            command.arg("-c").arg("web_search=\"disabled\"");
+            for setting in [
+                "project_doc_max_bytes=0",
+                "project_doc_fallback_filenames=[]",
+                "notify=[]",
+            ] {
+                command.arg("-c").arg(setting);
+            }
+            let mut process = Process::spawn_limited(
+                command,
+                cancel,
+                deadline_seconds,
+                Limits::CONVERSATION,
+                |command, directory| {
+                    configure_codex_instructions(command, directory, conversation::INSTRUCTIONS)
+                },
+            )?;
+            let agent = CodexAgent::new(config, server, process.directory());
+            process.send(&CodexAgent::initialize())?;
+            Ok((process, Agent(Party::Codex(Box::new(agent)))))
+        }
+    }
+}
+
+/// The server goes to Claude in a private file rather than on its command
+/// line, so no path is shown to other users of the computer.
+fn configure_claude_server(
+    command: &mut Command,
+    directory: &std::path::Path,
+    server: &ToolServer,
+) -> Result<(), AiError> {
+    use std::{fs::OpenOptions, io::Write};
+    let path = std::path::absolute(directory.join("aster-tools.json"))
+        .map_err(|_| AiError::Provider("Cannot resolve the private tool configuration".into()))?;
+    let config = serde_json::json!({"mcpServers":{"aster":{
+        "type":"stdio",
+        "command":server.command,
+        "args":server.args,
+        "env":{}
+    }}});
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .map_err(|_| AiError::Provider("Cannot create the private tool configuration".into()))?;
+    file.write_all(config.to_string().as_bytes())
+        .map_err(|_| AiError::Provider("Cannot write the private tool configuration".into()))?;
+    command.arg("--mcp-config").arg(path);
+    Ok(())
 }
 
 /// The encoded schema is an argument beside the planner instructions, so it
@@ -114,6 +336,7 @@ fn command_line_schema(bytes: usize) -> Result<(), AiError> {
 fn configure_codex_instructions(
     command: &mut Command,
     directory: &std::path::Path,
+    instructions: &str,
 ) -> Result<(), AiError> {
     use std::{fs::OpenOptions, io::Write};
     let path =
@@ -135,7 +358,7 @@ fn configure_codex_instructions(
     })?;
     // Codex rejects an empty/whitespace-only configured instruction file.
     // This file contains only our source-controlled prompt, never user data.
-    file.write_all(planner::SYSTEM.as_bytes())
+    file.write_all(instructions.as_bytes())
         .map_err(|_| AiError::Provider("Cannot write the private Codex instruction file".into()))?;
     // CLI overrides apply before Codex loads its config. Explicit baseInstructions
     // alone still makes Codex read an inherited model_instructions_file first.
@@ -261,7 +484,7 @@ fn validate_windows_launcher(provider: AiProvider, path: &std::path::Path) -> Re
 #[cfg(any(windows, test))]
 fn claude_batch_error() -> AiError {
     AiError::Provider(
-        "Claude planning requires the native Windows CLI: install it and choose claude.exe in AI settings. .cmd and .bat launchers cannot carry the editing schema.".into(),
+        "Claude needs the native Windows CLI: install it and choose claude.exe in AI settings. .cmd and .bat launchers cannot pass Aster's schema and instructions safely.".into(),
     )
 }
 
@@ -302,6 +525,19 @@ pub(super) const DISABLED_FEATURES: &[&str] = &[
     "in_app_browser",
     "memories",
 ];
+
+/// Codex calls MCP tools from its code-mode host, which reaches only the
+/// tools a thread enables. A conversation keeps it; a planner, with no
+/// tools at all, does not.
+pub(super) const CONVERSATION_FEATURES: &[&str] = &["code_mode_host"];
+
+/// The features a conversation turns off.
+pub(super) fn conversation_disabled() -> impl Iterator<Item = &'static str> {
+    DISABLED_FEATURES
+        .iter()
+        .copied()
+        .filter(|feature| !CONVERSATION_FEATURES.contains(feature))
+}
 
 fn claude_result(value: Value, config: &AiConfig) -> Result<ProviderOutput, AiError> {
     if value.get("type").and_then(Value::as_str) != Some("result")
@@ -399,7 +635,7 @@ mod tests {
         let directory = parent.path().join("Unicode 日本語 folder");
         std::fs::create_dir(&directory).unwrap();
         let mut command = Command::new("owned-provider");
-        configure_codex_instructions(&mut command, &directory).unwrap();
+        configure_codex_instructions(&mut command, &directory, planner::SYSTEM).unwrap();
         let path = directory.join("aster-model-instructions.txt");
         assert_eq!(std::fs::read(&path).unwrap(), planner::SYSTEM.as_bytes());
         let arguments: Vec<_> = command
@@ -443,7 +679,7 @@ mod tests {
             .join(std::ffi::OsStr::from_bytes(b"non-utf8-\xff"));
         std::fs::create_dir(&directory).unwrap();
         let mut command = Command::new("owned-provider");
-        assert!(configure_codex_instructions(&mut command, &directory).is_err());
+        assert!(configure_codex_instructions(&mut command, &directory, planner::SYSTEM).is_err());
         assert_eq!(std::fs::read_dir(directory).unwrap().count(), 0);
         assert_eq!(command.get_args().count(), 0);
     }

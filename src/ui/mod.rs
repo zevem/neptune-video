@@ -228,6 +228,14 @@ pub enum Action {
     /// Ask the model for a proposal. Nothing is edited until it is applied.
     AiSubmit(String),
     AiCancel,
+    /// Edits come back as proposals to review, or are made as it works.
+    SetAiReview(bool),
+    /// Lets the agent use one more folder, chosen in a dialog.
+    AddAgentFolder,
+    /// Takes back a folder the person had let the agent use.
+    RemoveAgentFolder(usize),
+    /// End the agent's conversation; the next request starts a new one.
+    AiNewConversation,
     /// Apply or close the proposal a request brought back, by that request.
     AiApply(uuid::Uuid),
     AiDiscard(uuid::Uuid),

@@ -1025,6 +1025,31 @@ async fn http_answers_only_its_token_on_the_loopback_and_works_for_a_client() {
 
 /// The same project in an Aster window and over MCP: the agent's edits
 /// appear in the window, and the window's own edits in what the agent reads.
+/// A window saves on its own time: waits until `project_status` says its
+/// save to `path` is over, and gives that status.
+async fn window_saved(client: &Client, path: &Path) -> Value {
+    let mut status = Value::Null;
+    for _ in 0..120 {
+        status = call(client, "project_status", json!({})).await;
+        if status["saving"] == false && status["last_save"]["path"] == json!(path) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(status["last_save"]["ok"], true, "{status}");
+    status
+}
+
+/// A window a test started, closed however the test ends.
+struct Window(std::process::Child);
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_edits_the_project_open_in_a_window() {
     if std::env::var_os("ASTER_TEST_DESKTOP").is_none() {
@@ -1053,14 +1078,16 @@ async fn an_agent_edits_the_project_open_in_a_window() {
     client.cancel().await.unwrap();
 
     let settings = dir.join("settings/settings.json");
-    let mut window = std::process::Command::new(env!("CARGO_BIN_EXE_aster"))
-        .arg("--settings")
-        .arg(&settings)
-        .arg(&project)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let _window = Window(
+        std::process::Command::new(env!("CARGO_BIN_EXE_aster"))
+            .arg("--settings")
+            .arg(&settings)
+            .arg(&project)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     let (client, _) = stdio(&dir).await;
     let mut listed = Value::Null;
     for _ in 0..90 {
@@ -1104,7 +1131,8 @@ async fn an_agent_edits_the_project_open_in_a_window() {
         1
     );
     call(&client, "history", json!({"op": "redo"})).await;
-    let saved = call(&client, "project_save", json!({})).await;
+    call(&client, "project_save", json!({})).await;
+    let saved = window_saved(&client, &project).await;
     assert_eq!(saved["dirty"], false, "{saved}");
     client.cancel().await.unwrap();
 
@@ -1117,6 +1145,208 @@ async fn an_agent_edits_the_project_open_in_a_window() {
             .sum::<usize>(),
         2
     );
-    let _ = window.kill();
-    let _ = window.wait();
+}
+
+/// The server Aster's own Agent tab starts: pinned to one window's session
+/// and naming its requests with the tab's tag.
+async fn pinned(dir: &Path, session: &Path) -> Client {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_aster-mcp"));
+    command
+        .args(server_args(dir))
+        .arg("--window")
+        .arg(session)
+        .args(["--tag", "aster-tab"])
+        .current_dir(dir)
+        .stderr(Stdio::null());
+    let transport = TokioChildProcess::new(command).expect("aster-mcp starts");
+    ().serve(transport).await.expect("an MCP session starts")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_started_for_a_closed_window_still_makes_projects_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().canonicalize().unwrap();
+    let client = pinned(&dir, &dir.join("settings/sessions/gone.json")).await;
+    let status = call(&client, "project_status", json!({})).await;
+    assert_eq!(status["authority"], "none", "{status}");
+    // It follows its window, which does not answer.
+    assert_eq!(
+        refused(&client, "project_inspect", json!({})).await,
+        "desktop_closed"
+    );
+    assert_eq!(
+        refused(&client, "desktop", json!({"op": "attach"})).await,
+        "desktop_closed"
+    );
+    // Like any server, it makes a project of its own and stays with it.
+    let other = dir.join("other.aster");
+    let made = call(&client, "project_create", json!({"path": other})).await;
+    assert_eq!(made["authority"], "local", "{made}");
+    call(&client, "track_edit", json!({"op": "add", "kind": "video"})).await;
+    assert_eq!(
+        call(&client, "project_status", json!({})).await["authority"],
+        "local"
+    );
+    call(&client, "project_close", json!({})).await;
+    // Once it let go by choice it does not go looking for the window.
+    let status = call(&client, "project_status", json!({})).await;
+    assert_eq!(status["authority"], "none", "{status}");
+    let opened = call(&client, "project_open", json!({"path": other})).await;
+    assert_eq!(opened["authority"], "local", "{opened}");
+    client.cancel().await.unwrap();
+    assert!(other.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_folders_in_a_roots_file_are_read_again_when_it_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().canonicalize().unwrap();
+    let media = media(&dir);
+    let (work, more) = (dir.join("work"), dir.join("more"));
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(&more).unwrap();
+    let footage = more.join("b.mp4");
+    std::fs::copy(&media.b, &footage).unwrap();
+    let file = dir.join("agent.roots");
+    let write = |roots: &[&Path]| {
+        let part = dir.join("agent.roots.part");
+        std::fs::write(&part, serde_json::to_vec(&json!({"roots": roots})).unwrap()).unwrap();
+        std::fs::rename(&part, &file).unwrap();
+    };
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_aster-mcp"));
+    command
+        .arg("--roots-file")
+        .arg(&file)
+        .arg("--desktop-settings")
+        .arg(dir.join("settings/settings.json"))
+        .arg("--models")
+        .arg(dir.join("models"))
+        .current_dir(&dir)
+        .stderr(Stdio::null());
+    let client =
+        ().serve(TokioChildProcess::new(command).expect("aster-mcp starts"))
+            .await
+            .expect("an MCP session starts");
+    // No file yet: no folder, not even the one it was started in.
+    let project = work.join("roots.aster");
+    assert_eq!(
+        refused(&client, "project_create", json!({"path": project})).await,
+        "outside_roots"
+    );
+    write(&[&work]);
+    call(&client, "project_create", json!({"path": project})).await;
+    assert_eq!(
+        refused(&client, "media_import", json!({"paths": [footage]})).await,
+        "outside_roots"
+    );
+    // A folder named later is usable at once, in the same session; one
+    // that is too wide is left out.
+    write(&[&work, &more, Path::new("/")]);
+    let imported = call(&client, "media_import", json!({"paths": [footage]})).await;
+    assert_eq!(imported["media"].as_array().unwrap().len(), 1, "{imported}");
+    let status = call(&client, "project_status", json!({})).await;
+    assert_eq!(status["roots"], json!([work, more]), "{status}");
+    // A folder taken out is refused again.
+    write(&[&work]);
+    assert_eq!(
+        refused(&client, "media_inspect", json!({"path": footage})).await,
+        "outside_roots"
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agent_tab_server_starts_in_its_window_and_may_leave_and_come_back() {
+    if std::env::var_os("ASTER_TEST_DESKTOP").is_none() {
+        eprintln!("skipped: set ASTER_TEST_DESKTOP=1 on a computer with a display");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().canonicalize().unwrap();
+    let media = media(&dir);
+    let project = dir.join("tab.aster");
+    let (client, _) = stdio(&dir).await;
+    call(&client, "project_create", json!({"path": project})).await;
+    let imported = call(&client, "media_import", json!({"paths": [media.a]})).await;
+    client.cancel().await.unwrap();
+
+    let _window = Window(
+        std::process::Command::new(env!("CARGO_BIN_EXE_aster"))
+            .arg("--settings")
+            .arg(dir.join("settings/settings.json"))
+            .arg(&project)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let sessions = dir.join("settings/sessions");
+    let mut session = None;
+    for _ in 0..90 {
+        session = std::fs::read_dir(&sessions).ok().and_then(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+        });
+        if session.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let session = session.expect("the window publishes its session");
+
+    let client = pinned(&dir, &session).await;
+    let added = call(
+        &client,
+        "clip_add",
+        json!({"asset_id": imported["media"][0]["asset_id"]}),
+    )
+    .await;
+    assert_eq!(added["authority"], "desktop", "{added}");
+    call(&client, "history", json!({"op": "undo"})).await;
+    assert_eq!(
+        timeline(&client).await["clips"].as_array().unwrap().len(),
+        0
+    );
+    call(&client, "history", json!({"op": "redo"})).await;
+    let copy = dir.join("copy.aster");
+    call(&client, "project_save", json!({"destination": copy})).await;
+    window_saved(&client, &copy).await;
+    let saved = editor_store::load_project(&copy).unwrap();
+    assert_eq!(saved.tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 1);
+
+    // It may leave the window for a project of its own, as any agent may…
+    let other = dir.join("other.aster");
+    let made = call(&client, "project_create", json!({"path": other})).await;
+    assert_eq!(made["authority"], "local", "{made}");
+    let theirs = call(&client, "media_import", json!({"paths": [media.a]})).await;
+    call(
+        &client,
+        "clip_add",
+        json!({"asset_id": theirs["media"][0]["asset_id"]}),
+    )
+    .await;
+    // …which leaves the window's project as it was…
+    let window_project = editor_store::load_project(&project).unwrap();
+    assert_eq!(
+        window_project
+            .tracks
+            .iter()
+            .map(|t| t.clips.len())
+            .sum::<usize>(),
+        0,
+        "nothing was saved to the window's file"
+    );
+    // …and come back to its window by naming none.
+    let back = call(&client, "desktop", json!({"op": "attach"})).await;
+    assert_eq!(back["status"]["authority"], "desktop", "{back}");
+    assert_eq!(
+        timeline(&client).await["clips"].as_array().unwrap().len(),
+        1,
+        "the window still has the agent's clip"
+    );
+    client.cancel().await.unwrap();
+    let other = editor_store::load_project(&other).unwrap();
+    assert_eq!(other.tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 1);
 }

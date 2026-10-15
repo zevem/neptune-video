@@ -1,14 +1,395 @@
 # Native AI editing
 
-Aster's Rust backend invokes an installed Claude or Codex CLI to propose typed
-edits to the captured project. The person reviews the proposal before applying
-it through the same reducer and history as manual editing. Actual provider
-completion and Linux desktop interaction, including unchanged proposals, are
-verified below at named checkpoints. Source/build, desktop editing and provider
-acceptance retain their recorded identities; native target/provider and broader
-production gates remain.
+The Agent tab's Ask mode works with the person's installed Claude Code or
+Codex CLI in one of two ways. The **Edits** row in Settings › Agent
+[As it works | For review] and the panel's menu (Edits: Made as it works /
+Proposed for review) choose between them. The setting is
+`AiSettings.review`, false by default.
+
+- **Made as it works**, the default. A conversation with the provider whose
+  only tools are Aster's MCP server, `aster-mcp`: the same program and the
+  same 39 tools that outside MCP clients use, with nothing refused. The
+  server starts in this window, so an edit to the window's project enters
+  its authenticated agent session and goes through the same command
+  boundary, validation and undo history as the person's edits. Each such
+  edit appears in the window at once as one undo step. Like any MCP agent,
+  it may also create, open, save and close other projects.
+  See [Made as it works](#made-as-it-works) and
+  [ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md).
+- **Proposed for review**. Aster's Rust backend invokes the CLI with every
+  tool and MCP server disabled to propose typed edits to the captured
+  project. The person reviews the proposal before applying it through the
+  same reducer and history as manual editing
+  ([ADR 0004](adr/0004-native-ai-produces-reviewed-edit-proposals.md)).
+  Caption translation always uses this path, whatever the setting.
+
+Command mode, the local command language, is unchanged.
+
+The two modes disclose different things to the provider. The planner behind
+**Proposed for review** receives project metadata only, no pixels. The live
+agent can render frames, contact sheets and transcripts and send them to the
+provider; [what reaches the provider](#what-reaches-the-provider) lists it.
+
+For proposals, actual provider completion and Linux desktop interaction,
+including unchanged proposals, are verified below at named checkpoints.
+Source/build, desktop editing and provider acceptance retain their recorded
+identities; native target/provider and broader production gates remain. The
+live agent was built and run on one macOS host, first in debug builds; its
+second round, which lets it leave its window and read its folders live, was
+run there on 2026-10-15 with release builds
+([run notes](../.scratch/in-app-agent/evidence/native-runs-2026-10-15.md),
+[verification](verification.md#in-app-agent), [evidence](#evidence)).
+Linux and Windows windows are not verified for it.
+
+## Made as it works
+
+Decided on the owner's behalf (2026-10-14): the in-app agent is an MCP agent.
+Ask defaults to it, and the earlier proposal path stays as the **Proposed for
+review** setting. The decision is recorded in
+[ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md);
+the feature folder is [.scratch/in-app-agent](../.scratch/in-app-agent/).
+
+### Launching the agent
+
+The window runs the program the `ASTER_MCP` environment variable names, else
+the `aster-mcp` beside the running `aster` executable, found through its
+canonical path. If `ASTER_MCP` names something that is not a file, or no
+`aster-mcp` is beside `aster`, the request fails with a message in the
+panel. Its arguments are:
+
+```text
+--window <this window's session file> --tag aster-tab-<instance>
+--roots-file <session file with extension .roots>
+--desktop-settings <settings file> --models <models dir>
+```
+
+`--window` starts the server in the window whose session descriptor is that
+file: it attaches at once, or at its first call if the window is not
+answering yet, and goes back to that window when `desktop {op: attach}`
+names no window. It does not lock the server to the window. `--tag` names
+its request IDs `aster-tab-<instance>-N`, where `<instance>` is the window's
+agent session instance ID in 32 hex digits, so the window can tell its own
+agent's requests from an outside client's and from another window's agent.
+With one shared tag, a window that an agent opened with `desktop {op: open}`
+took that agent's edits for its own agent's and hid their "Agent: …" rows
+(found in the 2026-10-15 native runs). `--roots-file` names the folders the
+agent may use; see [Folders](#folders). The [MCP guide](mcp.md) describes
+all three options.
+
+The provider is launched once per conversation, and the person's words reach
+it on stdin, never in its arguments.
+
+**Claude Code** (verified with 2.1.300):
+
+```text
+claude --print --verbose --input-format stream-json --output-format stream-json
+  --tools "" --strict-mcp-config --mcp-config <aster-tools.json>
+  --allowedTools "mcp__aster__*" --permission-mode dontAsk
+  --setting-sources "" --disable-slash-commands --no-session-persistence
+  --max-turns 400 --system-prompt <instructions> [--model …] [--effort …]
+```
+
+`aster-tools.json` is a private file, created with mode 0600 on Unix in the
+conversation's private working directory, that names one stdio server,
+`aster`.
+The server's path and arguments are therefore not on Claude's command line. Built-in
+tools are off. The stream's first `init` line must report the `aster` server
+as `connected`, or the request fails. A conversation does not use
+`--safe-mode`: in 2.1.300 it drops every MCP server, Aster's included
+(probed). The planner still uses it.
+
+**Codex** (verified with codex-cli 0.162.1): `codex app-server` with the
+planner's disabled features except `code_mode_host`, web search disabled,
+`project_doc_max_bytes=0`, empty project-doc fallback names and `notify=[]`.
+`thread/start` sets every MCP server the person's configuration names to
+`enabled: false`, by name only, and adds one server, `aster_window`, with
+`startup_timeout_sec` 30, `tool_timeout_sec` 300 and
+`default_tools_approval_mode` `approve`. The thread uses approval policy
+`never`, a read-only sandbox without network access, the shell tool off and
+Aster's instructions as both base and developer instructions. Codex 0.162.1
+calls MCP tools through its code-mode host: with `code_mode_host` off it
+answered "I couldn't call aster_window.project_status because the tool host
+is disabled". Any request from the server to the client (an approval), a
+call to another server's tool or a failed server start ends the request as an
+error. Follow-ups are new turns on the same thread.
+
+The instructions are Aster's own text and carry no person data. They say that
+the aster tools are the agent's only tools; that every edit appears at once
+and is one undo step shared with the person; to look before changing
+(`project_inspect`, `media_inspect`, `frame_render`, `contact_sheet`); to pass
+`expected_revision`; to wait and retry on `person_editing` or `desktop_busy`;
+to check work by looking at frames; that long work runs as jobs; that it
+starts on the project open in the window and, like any agent with these
+tools, may also create, open, save and close projects; that a project no
+window shows is edited by the server itself and saved after every edit;
+that `desktop {op: open}` shows a project in a new window and
+`desktop {op: attach}` naming no window brings it back to the person's
+window; to say so when it leaves the person's project, and to come back
+unless asked otherwise; that `project_save {destination}` saves a copy, which
+a window writes on its own time, shown by `project_status.last_save`; that
+only folders the person allowed can be used, and the person can add one in
+Settings › Agent; to undo only its own edits unless asked; to ask instead of
+guessing; and to answer briefly in the person's language.
+
+Each request is prefixed with the window's state at the moment of asking:
+"[In the window, the playhead is at X s (frame N) and the selected clips are
+… / no clips are selected.]" The playhead and selection are not targets the
+agent is bound to; it reads the project through its tools.
+
+### Conversation runtime
+
+[conversation.rs](../crates/editor-agent/src/conversation.rs) owns the
+provider process on one worker thread per window. It never edits: the
+provider edits through the server, and the runtime reports what it said and
+did.
+
+| Interface | Contract |
+| --- | --- |
+| `ToolServer` | The MCP server's program and arguments, passed to the provider as text. |
+| `Conversation::ask` | Sends one request of 1–65,536 bytes without NUL; a second request while one is active returns `Busy`. Starts a new conversation when none is running or its party changed. |
+| `Conversation::stop` | Kills the provider process and ends the conversation. |
+| `Conversation::end` | Ends the conversation; the next request starts a new one. |
+| `Conversation::poll` | Returns `TurnEvent`s without waiting: `Started {fresh}` first, then `Said`, `Called {tool, op}` and `Returned {ok, detail}`, and exactly one of `Finished {model}`, `Failed` or `Cancelled` last. |
+| `INSTRUCTIONS` | Aster's system text for the provider, above. |
+
+A conversation continues while the provider, executable, model, effort and
+the server's command and arguments stay the same. A change to any of them
+makes the next request start a new conversation, and the panel says "A new
+conversation started, because the agent's provider, model or effort changed.
+It remembers nothing of the last one." The folders the agent may use are not
+in the arguments, so a change to them does not start a new conversation.
+
+| Resource | Current bound |
+| --- | --- |
+| Request | 1–65,536 bytes, no NUL |
+| Active requests per window | 1 |
+| Provider process lifetime | 12 hours |
+| Silence from the provider during a request | 600 s, then the request fails |
+| Unread events | 4096; the oldest steps are dropped first, never a request's end |
+| Claude turns per request | 400 (`--max-turns`) |
+| Process line / total stdout / stderr | 256 MiB / not bounded in total / not bounded in total; a conversation is long-lived and one line holds one tool result |
+| Codex tool server start / tool call | 30 s / 300 s |
+
+### The panel
+
+A request shows its steps as the agent works. A step has words for its tool
+(for example "Looked at frames", "Trimmed clips", "Undid an edit") and is
+running (a spinner), done (✓ with the edit's history label), refused (with
+the reason) or stopped. The agent's replies are shown with a small Markdown
+subset: **bold**, `code`, `#` headings and `-` or `*` bullets. While it works,
+the row reads "Working… Ns · N changes" ("Working… Ns" before the first
+change) with **Cancel**. While a conversation
+continues, the field's hint is "Reply, or ask for more".
+
+After each request a note names the provider, the model and the changes:
+"Claude · claude-opus-5-5 · 3 changes; undo and redo take them back"
+("1 change, which undo or redo takes back"; "no changes"). The panel counts
+changes rather than edits because the agent's own undo is one too. It counts
+this window's changes by their `aster-tab-<instance>-N` requests, and the
+tool results that report a change; any more than this window saw are changes
+in other projects, which this window's undo does not reach. The note then ends
+" · 1 change in another project" or " · N changes in other projects", and
+when none were made here its first part reads "Claude · claude-opus-5-5 ·
+no changes here". The window does not add the "Agent: …" rows it shows for
+outside MCP clients for its own agent's requests; those rows stay for
+outside clients.
+
+The panel's introduction, under "Ask the agent", says what the agent may
+use: "It sees the frames, transcripts and sound levels it asks for, and the
+files in this project's folders, in your Movies, Music, Pictures, Desktop,
+Documents and Downloads folders and in folders you add in Settings. It can
+also make, open and export other projects. Follow-up requests continue the
+conversation."
+
+The panel's menu has **Answered by**, **Effort**, **Edits** (Made as it works
+/ Proposed for review), **New conversation** and **Model…**.
+
+### What reaches the provider
+
+The planner's metadata-only rule in
+[planning context and disclosure](#planning-context-and-disclosure) applies
+to **Proposed for review** only. The live agent's provider receives the
+person's words, prefixed with the window's playhead and selection note, and
+whatever the tools the agent calls return: the project's editing data,
+rendered frames and contact sheets as PNG or JPEG images, transcripts, level
+and loudness measurements, and file names and paths inside the folders it
+may use. This includes other projects it opens or creates. It goes to
+Anthropic or OpenAI under the person's own CLI sign-in and terms. Aster does
+not upload source media files; the provider receives tool results only.
+
+The agent cannot read files outside the folders it may use, run shell
+commands, browse the web or use other MCP servers. Aster's instructions are
+visible in the provider's process arguments to other users of the computer
+(`ps`); they are Aster's own text. The person's words, the server's path and
+the folders are not in the arguments.
+
+### Folders
+
+The window wants the server to use these folders, in order: the project
+file's folder, the parent folder of every asset, the folders the person added
+in Settings › Agent › Folders, and the person's Videos or Movies, Desktop,
+Documents, Downloads, Music and Pictures folders. It writes them to a roots
+file beside its agent session file, `{"roots": [DIR, …]}`, with mode 0600 on
+Unix, written whole (a part file renamed over it) by a thread of its own.
+While the agent talks, the window checks each frame whether the project's
+revision, its path or the person's folders changed, and only then works the
+list out again and has the file rewritten. It never waits on the disk while
+drawing, except when a request is sent while no conversation is going on,
+so a server is about to start and read the file, and the folders changed
+since the file was last written: then it waits up to one second for the
+thread to finish. When the folders are unchanged it never waits, and while
+a conversation goes on the file follows changes without a wait. The file is
+removed when the window closes.
+
+The server reads the file again whenever it changes, so a folder added or
+taken out applies to the next tool call in the same conversation. It filters
+the list as it filters `--root`: canonical paths, existing directories only,
+no folder too wide (home, drive or system folders) and no folder inside
+another. With a roots file and no `--root`, the working directory is not a
+folder it may use. A missing, unreadable or over-256-KiB file names no folder.
+`project_status.roots` lists the current folders. A path outside them is
+refused `outside_roots`, whose message ends "the person can add one with
+--root, or for Aster's own agent in Settings › Agent › Folders".
+
+Importing media from a new folder adds that folder to the file, and the
+conversation continues.
+
+**Settings › Agent › Folders.** Below **Edits**, each added folder has a row
+with its name (the full path on hover) and **Remove**. The **Folders** row's
+**Add folder…** opens a native folder dialog titled "A folder the agent may
+use". A folder that is too wide is refused with a notice: "… is too wide for
+the agent; choose a folder inside it". The note under the Agent settings
+names the folders the agent may use. The setting is `AiSettings.folders`,
+empty by default. It works like `--root` for an outside MCP agent.
+
+### Other projects and refusals
+
+The server starts in its window but is not locked to it. `project_create`,
+`project_open`, `project_close` and `desktop {op: open}` work as for any MCP
+client: a project no window shows is edited by the server itself and saved
+after every edit, `desktop {op: open}` shows a project in a new window, and
+`desktop {op: attach}` with an `instance_id` attaches to another window.
+`desktop {op: attach}` naming no window goes back to the window it started
+in.
+
+The server follows its window until the agent closes, opens or launches a
+project by choice. While it follows and has no project, it attaches to that
+window again at its next call; attaching back to the window makes it follow
+again. If that window is gone, calls fail with
+`desktop_closed` (or `indeterminate` when it stopped answering after an edit
+was sent), and so does `desktop {op: attach}` naming no window. The agent can
+still create and open projects of its own.
+
+The agent's `history {op: undo}` follows the MCP rule: it takes back only
+the agent's own entries recorded since it last attached. After it leaves the
+person's window and comes back, its earlier entries there need
+`allow_person: true` or the person's own undo.
+
+Refusals shared with outside clients apply to the in-app agent too:
+`person_editing` while the person is mid-gesture and `desktop_busy` while a
+dialog is open. Outside MCP clients and the in-app agent can edit the same
+window at once. The window serializes their requests one at a time, and typed
+tools with `expected_revision` are guarded by revision.
+
+### Stopping and ending
+
+**Stop** or **Cancel** kills the provider process at once and ends the
+conversation; there is no graceful interrupt. Changes already made stay, and
+the note says "Stopped. The N changes already made stay; undo and redo take
+them back." ("Stopped. The change already made stays; undo or redo takes it
+back." for one; "Stopped. Nothing was changed." for none). Changes the agent
+made in other projects are added as " · 1 change in another project" or
+" · N changes in other projects"; when it changed nothing here but something
+elsewhere, the first part reads "Stopped. Nothing was changed here." An
+export the agent already queued in a window keeps running in that window's
+render queue, where the person can cancel it.
+
+A conversation also ends on **New conversation** ("New conversation. The
+agent remembers nothing of the last one."), when the person opens or creates
+another project in the window ("Another project is open, so the agent's
+conversation ended."), on a failure, after 12 hours and after 600 s of a
+request without a word from the provider. The agent's own work on other
+projects does not end it.
+
+### Evidence
+
+[Verification](verification.md#in-app-agent) records the tests, the eleven
+native runs with both providers and the captures in
+[.scratch/in-app-agent/captures](../.scratch/in-app-agent/captures/), with the
+builds that made them and the defects fixed during the runs. In short: on one
+macOS 26.5.2 arm64 host with debug builds, `cargo test --locked --lib` passed
+1124 tests, the MCP integration tests passed 11, three runs in a row,
+including a server editing its own window, and Claude Code 2.1.300 and
+Codex 0.162.1 conversations edited, looked at frames, followed up and undid
+their own steps; the person's Cmd+Z took back a Codex edit. Claude also
+exported, saved and was stopped mid-request. The
+[run notes](../.scratch/in-app-agent/evidence/native-runs-2026-10-14.md) keep
+each request. Those runs used the first design, in which the server refused
+to open, create or close projects and the folders were fixed for a
+conversation.
+
+The second round (2026-10-15) removed both restrictions. Tests cover it on
+the same host: the MCP integration tests, now 12, include a server started
+for a closed window that still makes, edits, closes and opens projects of its
+own; a server that edits its window, makes and edits a project of its own
+while the window's file stays untouched, and comes back to its window with
+`desktop {op: attach}`; and a roots file whose folders are read again when it
+changes. A unit test in [ai.rs](../src/ai.rs) covers the roots file being
+written whole, for its owner only, replaced and removed. Native runs of this
+round were made on 2026-10-15 with release builds on one macOS host, with
+both providers; [verification](verification.md#in-app-agent) records them
+and the [run notes](../.scratch/in-app-agent/evidence/native-runs-2026-10-15.md)
+keep each request. Linux and Windows windows are not verified.
+
+### Limitations
+
+- **Stop** is not a graceful interrupt. It kills the provider and ends the
+  conversation; the next request starts a new one.
+- The agent's undo follows the MCP rule: it takes back only its own entries
+  recorded since it last attached. After it leaves the person's window and
+  comes back, its earlier edits there need `allow_person: true` or the
+  person's own undo.
+- The panel's change count and the window's undo cover this window only.
+  Changes in other projects are counted in the note but are not taken back
+  by this window's undo.
+- The agent may use only the folders in [Folders](#folders); media elsewhere
+  is refused until the person imports it or adds its folder in Settings ›
+  Agent › Folders.
+- The second round, in which the agent may leave its window and the folders
+  change during a conversation, was run natively on 2026-10-15 with release
+  builds on one macOS host only
+  ([run notes](../.scratch/in-app-agent/evidence/native-runs-2026-10-15.md),
+  [verification](verification.md#in-app-agent)); Linux and Windows windows
+  are not verified.
+- Aster's instructions are visible in the provider's process arguments.
+  They are Aster's own text; the person's words go on stdin.
+- Outside MCP clients and the in-app agent can edit the same window at once.
+  The window takes their requests one at a time; only typed tools given
+  `expected_revision` refuse a project the other changed first.
+- The agent cannot listen to sound. It judges audio by levels and loudness
+  measurements only.
+- Codex needs its `code_mode_host` feature for MCP tools in 0.162.1. Other
+  Codex versions are unverified, as are Claude Code versions other than
+  2.1.300.
+- No window ran on Linux or Windows. From the macOS host, `editor-agent`
+  type-checks and passes Clippy for both targets, and a Linux container ran
+  the root package's Clippy and tests without a display
+  ([verification](verification.md#in-app-agent)). On Windows the planner refuses a Claude `.cmd` or `.bat` launcher
+  because its schema is in the arguments. A conversation puts no schema in
+  the arguments, but it resolves the executable the same way, so the code
+  refuses such a launcher for it too, with the planner's message; this was
+  not run on Windows.
+- Release builds ran on one macOS host only, for the second round
+  (2026-10-15); the first round ran in debug builds there.
+- Provider sign-in, model access and usage limits are the person's own.
+- These checks establish that edits land, validate and undo; they do not
+  establish that a result matches the person's creative intent.
 
 ## Runtime contract
+
+This contract and the sections after it describe the planner behind
+**Proposed for review** and caption translation, and the evidence recorded
+for it.
 
 The public interface lives in
 [editor-agent](../crates/editor-agent/src/lib.rs),
@@ -67,6 +448,9 @@ planner tests in [planner.rs](../crates/editor-agent/src/planner.rs).
 
 ## Planning context and disclosure
 
+This section applies to **Proposed for review** and caption translation only.
+The live agent sends more; see [what reaches the provider](#what-reaches-the-provider).
+
 The worker sends the person's request, selected IDs, playhead and serialized
 project metadata. That metadata includes names, local source paths, text clips,
 canvas settings, timing, transforms, track state and available source metadata.
@@ -117,8 +501,8 @@ speech, and the schema shares the provider's command line with the planner
 text.
 
 **Translate into…** in the Captions tab's track menu, and
-`translate captions to <language>` in the command panel, send an ordinary Ask
-request built by the editor. It selects every caption of the track, so each
+`translate captions to <language>` in the command panel, send a proposal
+request built by the editor, whatever the **Edits** setting. It selects every caption of the track, so each
 is sent whole, and asks for one `copy_captions` command with a text per
 caption in timeline order. The answer is reviewed and applied like any other
 proposal; the core refuses one with the wrong number of texts. The request
@@ -138,6 +522,11 @@ asked to translate, so translation quality, kept line breaks and caption
 counts from a real provider are unverified.
 
 ## Provider boundary and process ownership
+
+This section describes the planner's launch. The live agent's launch is in
+[launching the agent](#launching-the-agent); it shares the executable
+resolution, credential handling and process ownership below, with the
+conversation limits in its own table.
 
 Install and sign in with the selected provider CLI separately. Aster resolves
 its executable on the planning worker before entering a private temporary
@@ -190,6 +579,8 @@ kill-on-close Job Object and resume only after assignment through
 Only owned process groups/jobs are terminated. No tools-disabled CLI setting is
 a general sandbox for an arbitrary untrusted replacement executable.
 
+Planner bounds:
+
 | Resource | Current bound |
 | --- | --- |
 | User request / serialized planning context | 32 KiB / 1 MiB |
@@ -212,6 +603,9 @@ a fallback edit or an invented successful response. Raw provider error/account
 payloads and stderr are not passed through to the UI.
 
 ## Evidence and remaining acceptance
+
+This section records the planner and the editor around it. The live agent's
+evidence is under [Made as it works](#evidence).
 
 The immutable [round-fifteen source/build checkpoint](../artifacts/production-readiness/final/round15-build-record.json)
 (`dfbb53e9` source, `362ba180` Linux release) passed 521 Linux tests, including 81 agent

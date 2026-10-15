@@ -467,7 +467,8 @@ a fixed list and checked against its SHA-256 sum, or chosen by hand.
 **Caption translation**:
 A copy of a caption track in another language, written by the native AI
 provider, reviewed as an edit proposal and added as one history entry above
-the source, which is hidden.
+the source, which is hidden. It is always proposed for review, whichever way
+the Agent panel's edits are set.
 
 **Subtitle file**:
 A SubRip (`.srt`) or WebVTT (`.vtt`) file. Importing one makes a caption track;
@@ -586,6 +587,8 @@ normal validation and history rules.
 **Captured editing context**:
 The project state, selected clips and playhead captured when requesting an AI
 edit proposal. Later selection or playhead changes do not retarget that request.
+The in-app agent has none: the window tells it the playhead and selected clips
+in words with each request, and it looks at the project through its tools.
 
 **Focused editing context**:
 A declared incomplete view of a captured project that retains the selected
@@ -593,7 +596,8 @@ clips, their linked/grouped relatives and source limits.
 
 **MCP server**:
 `aster-mcp`, which lets an AI agent in an MCP client create, inspect, edit,
-analyse, preview and export projects with the editor's own commands.
+analyse, preview and export projects with the editor's own commands. Its tools
+are also the in-app agent's only tools.
 
 **Edit authority**:
 Where the project an MCP server edits lives: in the server itself, saved
@@ -603,7 +607,17 @@ _Avoid_: Replica, mirror
 
 **Root**:
 A folder an MCP server may read media from and write projects, exports and
-pictures to. Paths outside the roots are refused.
+pictures to. Paths outside the roots are refused. The window chooses the
+in-app agent's roots: the project's folder, its media's folders, the
+person's usual folders for video, pictures, music, documents, downloads and
+the desktop, and the folders the person adds in Settings › Agent. A home
+folder, a drive or a system folder is too wide to be one.
+
+**Roots file**:
+A JSON file named with `--roots-file` that lists more roots for an MCP
+server, read again whenever it changes. The window writes one beside its
+agent session file and rewrites it when the in-app agent's roots change, so
+they change without a new conversation.
 
 **Job**:
 Long work an agent started (transcription, a model install, scene
@@ -616,5 +630,55 @@ entries unless it is told otherwise.
 
 **Edit proposal**:
 A validated set of suggested editing commands and their before/after project
-states, awaiting review and application as one history entry.
+states, awaiting review and application as one history entry. Only requests
+proposed for review and caption translations make one.
 _Avoid_: Applied edit, generated project
+
+**Ask**:
+The Agent panel's mode that sends the person's words to the Claude Code or
+Codex the person has signed in to. Its edits are made as it works or proposed
+for review.
+_Avoid_: Command, which is the panel's local command language
+
+**In-app agent**:
+The person's Claude Code or Codex, talking with them in the Agent panel and
+editing the window's project as it works, with the MCP server's tools as its
+only tools. Like any MCP client it may also make, open and edit other
+projects. Also called the live agent, as against the planner.
+_Avoid_: Assistant, planner; MCP client, which is an outside program
+
+**Conversation**:
+The in-app agent's run of requests to one provider process, in which it
+remembers what was asked before. It ends on Stop, New conversation, another
+project the person opens or creates in the window, a failure, 12 hours or a
+request that goes 600 seconds without a word from the provider; the agent's
+own work on other projects does not end it. A change of provider, its program, model or effort
+starts a new one with the next request; a change of roots does not.
+_Avoid_: Session, which is an editing session or a window's agent session
+
+**Made as it works**:
+The Agent panel's default way of answering: each edit the in-app agent makes
+appears in the window at once as one history entry, shared with the person's
+undo and redo.
+_Avoid_: Auto-apply, which suggests a proposal applied unseen
+
+**Proposed for review**:
+The Agent panel's other way of answering: a planner that sees the project's
+data and no pictures returns one edit proposal, which changes nothing until
+the person applies it.
+_Avoid_: Ask, which is the mode either way of answering belongs to
+
+**Home window**:
+The Aster window an MCP server started with `--window FILE` begins in: the
+one whose session file is `FILE`. The server attaches to it at once, or at its
+first call if the window is not answering yet, and goes back to it when
+`desktop {op: attach}` names no window. It may still create, open and close
+projects and attach to other windows like any server. The in-app agent's
+server starts in its own window.
+_Avoid_: Pinned server, which suggests the server cannot leave it
+
+**Request tag**:
+The start of an MCP server's request ids, set with `--tag` (`mcp` when none is
+given). The in-app agent's server uses `aster-tab-<instance>`, the window's
+agent session instance id in 32 hex digits, by which each window tells its
+own agent's requests from an outside client's or another window's agent's.

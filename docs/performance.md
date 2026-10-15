@@ -764,6 +764,37 @@ point of the tile in view; a column reads the least and greatest of the
 buckets its stretch of source touches, so a frame at the widest zoom reads
 every bucket of the media in view. That cost is not measured.
 
+The Agent tab's live agent ([native AI](native-ai.md#made-as-it-works)) has
+one worker thread a window (`editor-agent/src/conversation.rs`), started with
+the window, and at most one provider process, started by the first request
+and kept for the follow-ups. The provider starts `aster-mcp` as its own
+child; that server reaches the window through its agent session, one request
+at a time, answered on the window's logic pass like an outside client's. One
+request is answered at a time, and a prompt is 64 KiB at most. A provider's
+output line is 256 MiB at most, but its output in all is not bounded,
+because a conversation lasts; at most 4,096 events wait to be read, the
+oldest steps dropped first and never a request's end. A request that goes
+600 s without a word from the provider fails, a process lives 12 hours at
+most, Claude takes 400 turns at most, and Codex gives a tool 300 s. Stop
+kills the provider's whole process group, its server included (seen on
+macOS; Windows uses its own group and was not tried). The window is woken for each
+event read. The server's folders are in a roots file that a thread of the
+window's own (`aster-agent-roots`) writes whole, so the window does not wait
+on the disk while drawing. While the agent talks the window compares the
+revision, project path and the person's added folders each frame and
+recomputes the folders only when one of them changes; the person's usual
+folders (Movies, Desktop, Documents and the rest) are looked up once. The
+only wait is when a request is sent while no conversation is going on and
+the folders changed since the file was last written: the window hands the
+thread the folders and waits at most 1 s for the file, because the server
+about to start reads it at once. With the folders unchanged it never waits,
+and while a conversation goes on the file follows changes without a wait.
+The server reads the file again only when its modified
+time, length or (on Unix) inode changes, and reads at most 256 KiB. Tests
+cover the file's writing and rereading; the cost of these writes and checks
+is not measured. The memory and CPU of the provider and `aster-mcp` during a
+conversation, and the cost of a long panel of steps, are not measured.
+
 ## Advanced editing budgets
 
 These are the bounds the [advanced-editing](../.scratch/advanced-editing/spec.md)

@@ -4,7 +4,9 @@
 same validated commands and undo history as the desktop. It supplies a local
 transport and command/schema protocol. The crate also supplies
 [native provider planning](native-ai.md); that reviewed proposal workflow uses
-a narrower schema and the same reducer.
+a narrower schema and the same reducer. The Agent tab's default conversation
+edits instead through [`aster-mcp`](mcp.md#asters-agent-tab), which reaches
+the window through this protocol.
 
 ## Headless sessions
 

@@ -281,7 +281,7 @@ establish native platform acceptance.
 | History | Undo/redo, named checkpoints, reversible checkpoint restore, crash recovery and recovery leases | XTest checkpoint restore/undo/redo, crash recovery offer and optimized exit/relaunch retaining the full undo/redo chain; store shared-root/corruption/lease tests. Ordinary `.aster` open starts fresh history; recovery sidecar retains it |
 | Looks, animation and motion | Keyframes, transitions, effects, looks, speed, masks, blend, colour, keying, tracking, stabilization as preview | See [advanced editing](#advanced-editing): Linux headless tests, device readback on two adapters and native captures on virtual displays; no playback rate or other platform, and no effect was checked in an [export](#export-and-rendering) |
 | Audio editing | Waveforms, fades, track volume and solo, detached audio, background music, voiceover recording, audio effects, keep pitch, loudness normalization, ducking, beats, Save audio as and stem separation, as preview | See [audio editing](#audio-editing): macOS headless tests, mixer and lane readback, launch captures and native acceptance captures of the driven release build on one host; nothing listened to, no device opened, no Linux or Windows run |
-| Native AI | Claude/Codex CLI planning, captured/focused metadata, review/apply/discard/cancel and exact prepared-state commits | Exact reviewed split IDs verified through the public runtime; `2c596cb0` both real-provider split/undo/redo and owned no-op/stale fixtures passed. Prior db30 cancel/reopen evidence stays scoped. Metadata only; no audiovisual semantic analysis |
+| Native AI | Agent tab conversation with the Claude Code or Codex CLI through `aster-mcp` started in the window, each edit one undo step, with the reach of an outside agent (other projects, person-added folders) ("Made as it works", the default); Claude/Codex CLI planning, captured/focused metadata, review/apply/discard/cancel and exact prepared-state commits ("Proposed for review" and caption translation) | See [in-app agent](#in-app-agent): real Claude Code 2.1.300 and Codex 0.162.1 conversations on one macOS host, debug and release builds, with captures; no Linux or Windows window. Planning: exact reviewed split IDs verified through the public runtime; `2c596cb0` both real-provider split/undo/redo and owned no-op/stale fixtures passed. Prior db30 cancel/reopen evidence stays scoped. Planning sends metadata only; the live agent sends rendered frames, contact sheets and transcripts to the provider and cannot listen to sound |
 | Titles, captions and graphics | Styled titles, text animation, captions from speech with word times, karaoke, caption editing, SRT/VTT, caption languages and AI translation, lower thirds, title cards, callouts, stickers, emoji, editable templates, kept looks and brand colours, as preview | See [titles, captions and motion graphics](#titles-captions-and-motion-graphics): Linux headless tests, a real Whisper model on synthetic English speech and native captures on a virtual display; one title and two captions, burned in and embedded, in [Linux exports](#export-and-rendering); no playback rate, real provider translation or other platform |
 | Export and rendering | Export dialog with poster and saved presets; render queue with pause, resume, cancel, retry and part files; MP4, MOV, WebM and sound-only files; software and hardware encoders; caption sidecars, embedding and burn-in; proxies and preview quality | See [export and rendering](#export-and-rendering): one Linux host, release build, every matrix export matched its expected values and sound was within 0.1 ms of the picture; NVENC only among hardware encoders; no macOS, Windows or long render |
 
@@ -1394,6 +1394,280 @@ opened a dialog.
 - Transcription with models other than `tiny`; GPU and hardware-encoder
   paths beyond the preview export's `hevc_videotoolbox`.
 
+## In-app agent
+
+By default ("Made as it works"), the Agent tab's Ask mode edits through
+[`aster-mcp`](mcp.md) started in its own window
+([ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md),
+[feature folder](../.scratch/in-app-agent/)). It is a conversation with the
+installed Claude Code or Codex CLI whose only tools are the same 39 tools
+outside MCP clients use. Every edit in the window goes through the window's
+agent session and is one undo step in the window's history. Like an outside
+agent it may also make, open, save, export and close other projects and
+come back to its window, and it may use the folders the person adds in
+Settings › Agent › Folders, which reach the running conversation through a
+roots file. "Proposed for review" keeps the earlier one-proposal planner,
+and caption translation always uses it. It was driven on 2026-10-14 with
+debug builds and on 2026-10-15 with release builds, on one macOS host. No
+window was run on Linux, Windows or an Intel Mac; the cross-target checks
+below are type checks and tests only.
+
+The planner sends project metadata only. The live agent's tools return the
+project's editing data, rendered frames, contact sheets, transcripts, level
+and loudness measurements, and file names and paths inside its roots, and all
+of that reaches the provider under the person's own sign-in and terms
+([what reaches the provider](native-ai.md#what-reaches-the-provider)). Aster
+uploads no source media file. The agent cannot read files outside its roots,
+run shell commands, browse the web or use other MCP servers.
+
+### Host and build
+
+| Item | Value |
+| --- | --- |
+| Host | Apple Silicon Mac (arm64), 8 CPUs, 8 GB RAM, macOS 26.5.2 (Darwin 25.5.0) |
+| Release build | `cargo build --release --locked --bins`, pinned toolchain 1.97.1, run from `target/release` (2026-10-15). Final build G (SHA-256): `aster` `4ac9f25dd9c484a7b9c5ab9536d1af68773330aee0cdb94c4d98aadabf78d5e0`; `aster-mcp` `350d1ab77af9f7491869f9b372bbc0cbda20f9e1d20b8baa0c3dea1278d508b6`; `aster-agent` `6f7c7fb7a0af2620accb4ec21c7207281504ad11687cf203d5cb47f58dba614a`: run 20, capture 29. Build E (`aster` `6cbc3c01…`, `aster-mcp` `387e6d3d…`), before defect 12: runs 12–17, captures 16–25. Build F (`aster` `3c184d51…`, same `aster-mcp`): runs 18–19, captures 26–28. G changes only the folders file's wait (written and waited for only when the folders changed before a conversation starts), the window-project refusal's wording and comments |
+| Debug build | `cargo build --locked --bins` (dev profile), pinned toolchain 1.97.1. Debug build D (SHA-256): `target/debug/aster` `3ceedd91bc57ebb4ef33f315beea9e4d84cfb8eda9e4784d63c071457a489f87`; `target/debug/aster-mcp` `a8dea38a9f59f96cd6183c4ab833501eb2dd05020c163bb48b3e8df409658124`; `target/debug/aster-agent` `f1a4901ed32cce7acd2f6afc44ce0e62d970dbf1f070d6f268e4effd97ee0147` |
+| Builds per capture | Captures 01–05: builds before A. Build A (`aster` `94e5cee8…`, `aster-mcp` `03c65742…`): run 8 and the first two requests of run 9, captures 06–09. Build B (`aster` `cfb88ea4…`, `aster-mcp` `827ebb47…`), with the shorter working row and the "changes" wording: captures 10–11. Build C (`aster` `06af350d…`, `aster-mcp` `f0d5557b…`) adds the restart note: run 11, captures 12–13. Build D adds the panel introduction's full folder list and the Windows launcher message (defects 10 and 11): captures 14–15 |
+| Providers | Claude Code 2.1.300 (`claude-opus-5-5`, effort Medium; Low, then Medium, in run 11) and Codex CLI 0.162.1 (`gpt-6.1-sol`), each under the host's existing sign-in |
+| Isolation | a fresh task-owned folder per run with `footage/` holding `interview.mp4`, `street.mp4`, `bars.mp4` and `music.m4a`, and the Whisper `tiny` model; for the release runs also an `extra/` folder outside the project's. Windows at 1280x800 points (wide) and 820x640 points (narrow) |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `cargo test --locked --lib` (with `markdown_marks_are_read_not_shown` and `a_step_ends_once_and_steps_left_running_stop_with_the_request` in `src/ui/agent.rs`; `the_agents_folders_are_written_whole_for_its_owner_only_and_replaced_when_they_change` and `a_window_knows_its_own_agents_requests_from_another_windows` in `src/ai.rs`) | 1126 passed |
+| `ASTER_TEST_DESKTOP=1 cargo test --locked --test mcp` (12 tests). `a_server_started_for_a_closed_window_still_makes_projects_of_its_own` runs without a display: a server started for a gone window answers `desktop_closed` while it follows it, then makes, edits, closes and opens a project of its own and does not look for the window again. `the_agent_tab_server_starts_in_its_window_and_may_leave_and_come_back` needs one: it edits the window's project with authority `desktop`, undoes and redoes, saves a copy and waits for `project_status.last_save`, makes and edits a project of its own while the window's file stays as it was, and comes back with `desktop {op: attach}` naming no window. `the_folders_in_a_roots_file_are_read_again_when_it_changes`: no file, no folder; a folder named later is usable in the same session, `/` is left out, a folder taken out is refused again. These replace the first round's pinned-server tests | passed, five runs in a row on the final code |
+| `cargo test --locked -p editor-agent --lib` with `ASTER_PROVIDER_TEST_FIXTURE`. New: three conversation tests against a fake `claude` script (several turns keep one process, ending starts afresh, Stop ends within 3 s, a missing provider fails), three Claude stream tests and three Codex tests, one of them checking that the shell stays off and `code_mode_host` stays on | 84 passed, 1 failed: `provider::tests::an_unrepresentable_native_path_is_refused_before_creating_an_instruction_file` (os error 92), the same host failure recorded under [native MCP](#native-mcp), not caused by this work |
+| `cargo clippy --locked -p aster-editor -p editor-agent --lib --bins --tests -- -D warnings`, `cargo fmt --check`, `scripts/check-architecture.py` | clean |
+| `cargo check` and `cargo clippy -- -D warnings` of `editor-agent` (lib, bins, examples, tests) for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu`, from this Mac | clean. The root package could not be checked for Windows from here: `whisper-rs-sys` needs CMake and a Windows C toolchain |
+| Linux container (Colima, Debian bookworm, aarch64, `rust:1.97.1-bookworm`, the CI's packages plus `cmake` and `libclang-dev`): clippy of `aster-editor` and `editor-agent` with `-D warnings`, `cargo test --locked --test mcp` without a display, the `ai::` and `mcp::` unit tests, and `editor-agent`'s tests | Clippy clean. `--test mcp`: 12 passed with Aster's pinned FFmpeg 8.1 for linux-aarch64 and Mesa's software Vulkan (lavapipe); with Debian's FFmpeg 5.1 the export test fails because that FFmpeg refuses the decoder's `-thread_queue_size` placement, and without a Vulkan driver `frame_render` has no adapter. No display: the two window tests return early, so no Linux window was exercised. `ai::` and `mcp::` unit tests: 25 passed. `editor-agent`: 87 passed, including the test that fails with os error 92 on this Mac |
+
+### Native runs
+
+Runs 1–11 were typed into the Agent tab of a debug `aster` window on
+2026-10-14; runs 12–19 into a release window on 2026-10-15, with the full
+requests in [the release runs](../.scratch/in-app-agent/evidence/native-runs-2026-10-15.md).
+
+1. Claude, wide window, an earlier build: a full promo brief. In about 2
+   minutes it imported the footage, built interview, street (2 s) and bars
+   with a dissolve, ripple-trimmed the interview, transcribed it and made
+   5 captions, titled it "Aster Promo" and then enlarged the title with an
+   outline, added the music in two pieces with a fade, exported
+   `promo_preview.mp4` (960x540) and `promo.mp4` (1280x720, 30/1 fps,
+   9.472 s, with sound) and saved. 11 edits.
+2. The same conversation: "Change the title text to Aster Promo 2026 and
+   make it yellow." (1 edit), then "Actually, undo the colour you just
+   picked but keep the new words." It remembered the earlier turn, undid its
+   own step and applied the words again (2 changes).
+3. Stop during "Waiting for a job" in a request for a contact sheet, a fade
+   out and an export of `promo-v2.mp4`. The edit already made stayed, and
+   the queued export finished in the window's render queue. No `claude` or
+   `aster-mcp` process was left.
+4. Codex: the first attempt answered "I couldn't access Aster's tools"
+   (defect 1 below). After the fix it added a marker "Codex was here" at
+   3 s and made the street clip black and white, then checked a frame.
+   2 edits.
+5. The person pressed Cmd+Z in the window: the agent's last edit, the
+   black-and-white effect, was undone and Redo became available.
+6. Codex, narrow window: a marker "Narrow" at 1 s and a frame check. The
+   steps and the note fit.
+7. "Proposed for review", Claude: "Rename the marker at 1 second to
+   Opening." gave a proposal (Remove marker, Add marker) with Discard and
+   Apply. Nothing was applied.
+8. Build A, a fresh folder, Claude, wide window: import the footage, put
+   interview then bars with a half-second dissolve, a title "Final build" for
+   2 s, `music.m4a` at -12 dB, look at a frame, export `final.mp4` beside the
+   project and save. 7 edits. ffprobe read `final.mp4` as 1280x720, 30/1 fps,
+   7.509 s, with video and audio; the project was saved.
+9. Builds A and B, Codex, narrow window: "Make the Final build title bigger
+   and move it near the top, check a frame at 1 s" (2 edits), then "Undo only
+   the move you just made, keep the bigger size." It undid only the move, in
+   the same thread. Then a marker "Cut" at 4 s, bars faded in over 0.5 s and
+   frames looked at, at 4 and 5 s.
+10. After the windows closed, no `claude`, `aster-mcp` or `ffmpeg` process
+    of the task remained. Two Codex app-server processes started on
+    September 27 and October 10 belong to the person and were left alone.
+11. Build C, Claude, effort Low: "How many clips are on the timeline? Do not
+    change anything." gave a correct answer and the note "no changes". After
+    effort changed to Medium, "What did I ask you a moment ago?" showed the
+    restart note, and the agent said it could not tell. No task process was
+    left afterwards.
+12. Release build E, Claude, wide: asked to make a separate `teaser.aster`
+    without changing the person's project, cut street then bars with a
+    title, export `teaser.mp4`, then come back and add a marker. It made the
+    project with local authority, exported `teaser.mp4` (1280x720, 30/1 fps,
+    7.019 s, with sound), came back and added the marker. Note: "1 change,
+    which undo or redo takes back · 3 changes in other projects". The roots
+    file was mode 0600 and named the project's folder, `footage/` and the
+    six usual folders.
+13. The same conversation: importing `extra/b-roll.mp4` was refused
+    `outside_roots`, and the agent named Settings › Agent and changed
+    nothing. The person added `extra` with "Add folder…" in the native
+    dialog; the roots file named it within the frame. "I added that folder
+    in Settings. Try again please." imported it and put it at 7.49 s, in the
+    same `claude` process, with no restart note. A folder chosen by mistake
+    on the first try reached the roots file too, and "Remove" took it out of
+    both again.
+14. Build E, Codex, narrow: a half-second fade out on the b-roll, an export
+    to `codex.mp4` (1280x720, 30/1 fps, 11.520 s, with sound) and a save; the
+    window showed "Saved" and the file held the fade.
+15. Build E, Codex, narrow: Stop at 22 s, after ten markers and five
+    captions: "Stopped. The 11 changes already made stay; undo and redo take
+    them back."
+16. Build E, Codex, narrow: Stop 7 s into a contact sheet and export:
+    "Stopped. Nothing was changed."; no export was written. After each Stop
+    no Codex or `aster-mcp` process of the task was left.
+17. Build E, Codex, narrow: open `teaser.aster` in a new window with
+    `desktop {op: open}`, retitle it "Teaser 2", save, come back and count the
+    person's clips (8). Note: "no changes here · 1 change in another
+    project". The second window hid the edit's row (defect 12).
+18. Build F, Claude, wide: the same with "Teaser 3". The second window listed
+    "Agent: Edit text" and "Agent: Save"; the home window's note read "no
+    changes here · 1 change in another project".
+19. Build F, narrow: Settings › Agent with an added folder fits at 820x640.
+    After the windows were quit no task process, session file or roots
+    file was left.
+20. Build G, Claude, wide, a new window and conversation: "Which folders may
+    you use right now? Check project_status, tell me whether a folder named
+    extra is among them, and change nothing." It listed the project's
+    folders, `extra` and the six usual folders, and changed nothing: the
+    server read the folders file the window wrote before it started.
+
+### Captures
+
+In [`.scratch/in-app-agent/captures`](../.scratch/in-app-agent/captures):
+
+- `01-claude-steps-live.png`: run 1, Claude's steps appearing in the panel
+  as it builds the promo.
+- `02-claude-follow-up-same-conversation.png`: run 2, the colour undone and
+  the new words kept in the same conversation.
+- `03-stopped-mid-request.png`: run 3, the Stop note in its earlier wording
+  (defect 3).
+- `04-person-undoes-agent-edit.png`: run 5, the person's Cmd+Z took back the
+  agent's black-and-white effect; Redo is available.
+- `05-proposed-for-review-mode.png`: run 7, the reviewed proposal with
+  Discard and Apply, nothing applied.
+- `06-final-claude-working.png`: run 8 working on build A; the row still
+  cut to "3 edi…" (defect 5).
+- `07-final-claude-done.png`: run 8 done.
+- `08-final-codex-narrow.png`: run 9 at 820x640, the title bigger and moved.
+- `09-final-codex-follow-up.png`: run 9, only the move undone.
+- `10-final-narrow-working-row.png`: build B, the working row "Working… 15s"
+  fits at 820x640.
+- `11-final-codex-done-note.png`: build B, the note "Codex · gpt-6.1-sol ·
+  2 changes; undo and redo take them back".
+- `12-final-agent-menu.png`: build C, the agent menu: Answered by, Effort,
+  Edits (Made as it works, Proposed for review), New conversation, Model….
+- `13-final-restart-note.png`: build C, the restart note after the effort
+  changed, and the agent saying it could not tell.
+- `14-final-intro-wide.png`: build D, a new window's introduction naming all
+  six folders.
+- `15-final-intro-narrow.png`: build D at 820x640; the second paragraph is
+  further down the panel's scrolling log.
+- `16-release-claude-makes-another-project.png`: run 12, back in the window
+  with the note naming changes in another project.
+- `17-release-folder-outside-refused.png`: run 13, the refusal naming
+  Settings › Agent.
+- `18-release-settings-folder-added.png`: run 13, Settings › Agent with the
+  added folder, Remove and "Add folder…".
+- `19-release-same-conversation-uses-folder.png`: run 13, the import done in
+  the same conversation.
+- `20-release-codex-narrow-export-saved.png`: run 14, exported and saved at
+  820x640.
+- `21-release-codex-working-before-stop.png` and
+  `22-release-codex-stopped-changes-stay.png`: run 15, before and after Stop.
+- `23-release-codex-stopped-nothing-changed.png`: run 16.
+- `24-release-codex-back-from-another-window.png`: run 17, the note "no
+  changes here · 1 change in another project".
+- `25-release-second-window-missing-row-defect.png`: run 17, the second
+  window without the edit's row (defect 12).
+- `26-release-second-window-shows-agent-rows.png`: run 18, both rows.
+- `27-release-claude-back-in-its-window.png`: run 18, the home window.
+- `28-release-settings-folders-narrow.png`: run 19.
+- `29-release-g-new-conversation-reads-folders.png`: run 20.
+
+Not captured: the in-app agent refused while the person holds a drag or a
+dialog is open (`person_editing`, `desktop_busy`), and an outside MCP client
+editing the same window as the in-app agent at the same time. Both go through
+the window's existing refusal and one-at-a-time request path; no run held a
+drag, opened a dialog or connected a second client.
+
+### Defects found and fixed during the runs
+
+1. Codex 0.162.1 calls MCP tools through its code-mode host. Conversations
+   started with the planner's disabled features, which include
+   `code_mode_host`, so the first Codex run answered "I couldn't access
+   Aster's tools". Conversations now keep `code_mode_host` on, with the shell
+   tool still off; a test checks both.
+2. The window listed its own agent's exports as "Agent: Export …" rows, the
+   rows it shows for outside MCP clients. Requests from this window's agent
+   (request IDs starting `aster-tab-`) now show only as the agent's steps;
+   outside clients keep their rows.
+3. The Stop note read "Stopped. The 1 edit already made stays; undo takes
+   them back." One change and several changes now have their own wording.
+4. Notes said "edits", but the count includes the agent's own undo. Notes
+   and the working row now say "changes".
+5. At 820x640 the working row was cut to "3 edi…". It now reads
+   "Working… Ns · N changes" and fits.
+6. A pinned server looked at the path given to `project_create` or
+   `project_open` before refusing. Superseded on 2026-10-15: the server no
+   longer refuses them at all.
+7. A failed run of a desktop test left its `aster` window open. Both
+   desktop tests now close their window when they fail.
+8. When the provider, model, effort or roots changed, the next request
+   started a new conversation without saying so. The panel now says so.
+   Since 2026-10-15 the folders are a live roots file and no longer start a
+   new conversation; the note reads "A new conversation started, because
+   the agent's provider, model or effort changed. It remembers nothing of
+   the last one."
+9. `an_agent_edits_the_project_open_in_a_window`, committed with native MCP,
+   asserted `dirty: false` straight after `project_save` to a window. A
+   window saves on its own time and answers with `saving: true`, so the test
+   failed in 2 of 16 runs. Both desktop tests now wait, as an agent should,
+   until `project_status` shows `saving: false` and `last_save` for the
+   file.
+10. The panel's introduction named only the Movies, Desktop, Documents and
+    Downloads folders; `agent_roots` also allows Music and Pictures. It now
+    names all six, and says the agent sees frames, transcripts and sound
+    levels rather than sound.
+11. On Windows, the refusal of a Claude `.cmd` or `.bat` launcher said
+    "Claude planning requires…" when it refused a conversation too. It now
+    says "Claude needs the native Windows CLI…" for both. Not run on
+    Windows.
+12. Every window started its agent's server with the same `--tag
+    aster-tab`, and took any `aster-tab-` request for its own agent's, whose
+    steps it shows in its own panel. When one window's agent edited a
+    project in a second window, the second window hid that edit's row (run
+    17). Each window now tags its agent with its own instance,
+    `aster-tab-<instance>`, and claims only those requests; a unit test
+    checks another window's tag, the bare prefix and an outside client's.
+
+### Limits
+
+The in-app agent's limits are listed once, in
+[native AI](native-ai.md#limitations): Stop ends the conversation, Aster's
+instructions are visible in the provider's arguments, the agent cannot
+listen, its undo after leaving and coming back reaches only its entries
+since it came back, and sign-in, model access and usage limits are the
+person's own.
+
+### Not verified
+
+- Any window on Linux, Windows or an Intel Mac. On Windows the planner
+  refuses a Claude `.cmd` shim because its schema is in the arguments. A
+  conversation puts no schema there but resolves the executable the same
+  way, so the code refuses a `.cmd` or `.bat` launcher for it too; nothing
+  was tried on Windows. On Windows the roots file is not limited to its
+  owner, and the server tells its versions apart by modified time and
+  length only.
+- Codex versions other than 0.162.1, which needs `code_mode_host` for MCP
+  tools, and Claude Code versions other than 2.1.300.
+- The 12-hour conversation lifetime and the 600 s limit without a word from
+  the provider; both are code limits that no run reached.
+- The refusals and the concurrent outside client named under captures.
+- Claude on a long request in a narrow window; Claude ran wide, Codex
+  narrow.
+
 ## Platform matrix
 
 The [R15 optimized three-mode run](../artifacts/production-readiness/multilayer-preview-round3/root-measurement-verification.json)
@@ -1566,7 +1840,7 @@ complete missing-media UX or native wake/presentation acceptance.
 | Durable projects | Native interruption/full-disk/permission tests, long-history recovery, atomic replacement on all OSes and conflict policy for concurrent manual project writers |
 | Desktop quality | Accessibility, complete keyboard/IME behavior, clipboard/file drops, DPI/display changes, minimized/idle behavior and shutdown cleanup |
 | Distribution | OS/architecture packages, clean-machine launch, signing/notarization, notices and update/release policy |
-| Provider integration | [Portable process-fault fixtures](../.scratch/native-ai/issues/01-portable-process-fault-fixtures.md) and native Windows job teardown; macOS/Windows real sign-in/model/failure/cancel behavior; semantic audiovisual analysis if advertised |
+| Provider integration | [Portable process-fault fixtures](../.scratch/native-ai/issues/01-portable-process-fault-fixtures.md) and native Windows job teardown; Windows real sign-in/model/failure/cancel behavior, and macOS on a release build (the [in-app agent](#in-app-agent) ran real Claude Code and Codex conversations, Stop included, on a macOS debug build only); in-app agent conversations on Linux and Windows, a Claude `.cmd` shim, other Claude Code and Codex versions, and a Stop that interrupts without ending the conversation; semantic audio analysis if advertised |
 
 Export was outside the user's first core-feature phase. It is now implemented,
 with Linux-only evidence in [export and rendering](#export-and-rendering);

@@ -461,12 +461,59 @@ pub fn settings(
                                 actions.push(Action::SetAiEffort(effort));
                             }
                         });
+                        row(ui, p, "Edits", |ui| {
+                            let mut review = settings.ai.review;
+                            if widgets::segmented(
+                                ui,
+                                p,
+                                &mut review,
+                                &[(false, "As it works"), (true, "For review")],
+                                190.0,
+                            ) {
+                                actions.push(Action::SetAiReview(review));
+                            }
+                        });
+                        // Like --root for an outside agent: folders the
+                        // agent may use besides the project's and the
+                        // person's usual places.
+                        for (index, folder) in settings.ai.folders.iter().enumerate() {
+                            let name = folder.file_name().map_or_else(
+                                || folder.display().to_string(),
+                                |name| name.to_string_lossy().into_owned(),
+                            );
+                            row(ui, p, &name, |ui| {
+                                if widgets::button(ui, p, Some(Icon::Trash), "Remove", Kind::Plain)
+                                    .on_hover_text(folder.display().to_string())
+                                    .clicked()
+                                {
+                                    actions.push(Action::RemoveAgentFolder(index));
+                                }
+                            });
+                        }
+                        row(ui, p, "Folders", |ui| {
+                            if widgets::button(ui, p, Some(Icon::Plus), "Add folder…", Kind::Plain)
+                                .on_hover_text(
+                                    "Let the agent read media from and save to this folder, \
+                                     besides the project's folders and your usual ones",
+                                )
+                                .clicked()
+                            {
+                                actions.push(Action::AddAgentFolder);
+                            }
+                        });
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(
                                     "Requests go through the Claude or Codex command line \
                                  installed on this computer, with the sign-in it already \
-                                 has. Aster keeps no key or password.",
+                                 has. Aster keeps no key or password. As it works, the \
+                                 agent edits with every tool an outside agent has, and \
+                                 each edit is a step you can undo. It may use the \
+                                 project's folders, your Movies, Music, Pictures, \
+                                 Desktop, Documents and Downloads folders, and those \
+                                 added here. For review, it proposes edits from the \
+                                 project's data alone, and nothing changes until you \
+                                 apply them.",
                                 )
                                 .font(theme::regular(11.5))
                                 .color(p.muted),

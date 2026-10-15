@@ -8,6 +8,8 @@ flows and remaining platform/media gates.
 
 AI agents in MCP clients such as Claude Code and Codex can edit the same
 projects, live in the window or on their own: see [Aster for MCP clients](mcp.md).
+By default, Ask in the [Agent panel](#the-agent-panel) uses the same tools
+inside the window.
 
 ## Projects and recovery
 
@@ -673,7 +675,8 @@ adding them would drop a redo or an open AI plan, they wait in the panel
 Spanish` in the command panel, asks the AI provider chosen in the Agent panel
 (Claude or Codex, signed in through its own CLI) for a copy of the track in
 another language. The captions' text, times and the rest of the project's
-editing data are sent; no sound is. The answer is shown as a plan to review:
+editing data are sent; no sound is. The answer is always shown as a plan to
+review, even when Ask is set to make edits as it works:
 **Apply** adds the translated track above the original, with the same times,
 and hides the original, as one undo step. Translation quality depends on the
 provider and was not checked by this project.
@@ -1340,26 +1343,148 @@ Linux only; the Alt chords are untested as Option on macOS.
 | Command/Ctrl+Shift+K | Open native AI Ask panel |
 | Command/Ctrl+Comma | Preferences |
 
-The panel's Command mode interprets supported editing phrases or raw command
-JSON locally. Ask mode invokes an installed Claude or Codex CLI using its own
+## The Agent panel
+
+The Agent panel has two modes. **Command** interprets supported editing phrases
+or raw command JSON locally; no model is asked. **Ask** sends your request to
+the Claude Code or Codex command line installed on this computer, using its own
 sign-in. Select the provider, model, effort or executable override in the panel
-menu or Settings; credentials are not stored in Aster preferences or projects.
-Windows Claude requires its native `claude.exe`, because batch launchers cannot
-carry the editing schema.
+menu or **Settings › Agent**; credentials are not stored in Aster preferences
+or projects. On Windows, Aster refuses a Claude `.cmd` or `.bat` launcher and
+needs the native `claude.exe`.
 
-An Ask request sends names, local source paths, text, timing and other project
-metadata. It sends no source video/image/audio bytes. Review the summary,
-commands and before/after changes before Apply; a changed proposal commits that
-exact validated state as one undo step. A proposal already matching the project
-shows "No changes" and preserves existing undo/redo. A later edit or reopening
-makes the proposal
-stale, and Cancel stops its owned request. Provider errors leave the project
-unchanged. Scene understanding, transcription and beat detection are outside
-this metadata planner: it reads markers made from beats, not the beats, and
-cannot start a measurement, a duck, a recording or a separation. See
-[native AI editing](native-ai.md) for the runtime contract and evidence.
+Ask edits in one of two ways, chosen under **Edits** in **Settings › Agent**
+(**As it works** or **For review**) or in the **Edits** section of the Ask menu
+(**Made as it works** or **Proposed for review**). Made as it works is the
+default. [Caption translation](#translating-captions) is always proposed for
+review, whichever is chosen. [ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md)
+records why.
 
-this metadata planner; captions from speech are made locally (see
+### Made as it works
+
+Ask starts a conversation with the provider whose only tools are Aster's MCP
+server, `aster-mcp`: the same program and the same 39 tools that
+[MCP clients](mcp.md) use, started in this window. Every edit to this window's
+project goes through the window's agent session, with the same validation and
+undo history as your own edits, and appears in the window at once.
+
+- **Steps, live.** Each tool call shows as a step while it runs, then a check
+  and the edit's name, or the reason it was refused. The agent's replies show
+  between the steps, with bold, code, headings and bullets. A working row
+  reads, for example, "Working… 15s · 2 changes", with **Cancel**.
+- **Follow-ups.** After a request the field reads "Reply, or ask for more". A
+  follow-up continues the same conversation, so "undo the colour you just
+  picked" refers to the last request. Each request also tells the agent where
+  the playhead is and which clips are selected.
+- **Stop.** While a request runs, the Ask button becomes **Stop the request**;
+  it and **Cancel** both stop the provider at once. Stop is not a graceful
+  interrupt: it ends the conversation, and the next request starts a new one.
+  Changes already made stay.
+- **New conversation**, in the Ask menu, ends the conversation; the panel says
+  "New conversation. The agent remembers nothing of the last one." A
+  conversation also ends when you open or create another project in the
+  window, on a failure, after 12 hours, or after a request goes 10 minutes
+  without a word from the provider.
+- **Restart note.** If the provider, executable, model or effort changed since
+  the last request, the next request starts a new conversation and the panel
+  says "A new conversation started, because the agent's provider, model or
+  effort changed. It remembers nothing of the last one." A change to the
+  folders the agent may use does not start a new conversation.
+- **Notes after a request.** A finished request ends with the provider, the
+  model and the count, such as "Codex · gpt-6.1-sol · 2 changes; undo and redo
+  take them back", "1 change, which undo or redo takes back" or "no changes".
+  A change is an edit or the agent's own undo. A stopped request ends with
+  "Stopped. Nothing was changed." or "Stopped. The 2 changes already made
+  stay; undo and redo take them back." Changes in projects this window does
+  not show are counted apart, such as "· 1 change in another project"; with
+  none here the note reads "no changes here" or "Stopped. Nothing was changed
+  here." This window's undo does not reach them.
+
+The agent starts on the project open in its window. Like any MCP client, it
+can also create, open, save and close projects: a project no window shows is
+edited by the agent's server itself and saved after every edit, and the agent
+can show it in a new window. When the agent attaches without naming a window,
+it comes back to this one. Aster's instructions tell it to say so when it
+leaves your project, and to come back unless you ask otherwise. It can save
+this project, or save a copy as a new file.
+
+It can read and import files, and save projects, exports and pictures, inside
+these folders: the project file's folder, the folder of each imported file,
+your Videos (Movies on macOS), Desktop, Documents, Downloads, Music and
+Pictures folders, and the folders you add in **Settings › Agent**. Folders
+that are too wide, such as your home folder, a drive or a system folder, are
+left out. A file elsewhere is refused until you import it yourself or add its
+folder. The folders follow the project while the conversation goes on:
+importing a file from a new folder, or adding or removing a folder, takes
+effect for the agent's later tool calls, without a new conversation.
+
+To add a folder, choose **Add folder…** in the **Folders** row of
+**Settings › Agent** and pick it in the folder dialog. Each added folder gets
+a row with its name; hover shows the full path, and **Remove** takes it out.
+A folder that is too wide is not added, and Aster says "… is too wide for the
+agent; choose a folder inside it".
+
+The agent cannot run shell commands, browse the web or use other MCP servers
+or tools.
+
+Each of its edits is one step in the window's history, shared with yours.
+Command/Ctrl+Z undoes the agent's last edit like your own, and Redo brings it
+back. Aster's instructions tell the agent to undo only its own edits unless
+you ask; after it leaves this window and comes back, its earlier edits here
+count as yours to its undo. While you are in the middle of a gesture or a
+dialog is open, its edit is refused, and the agent is told to wait and try
+again. An MCP client and the panel's agent can edit the same window at once;
+the window applies one request at a time.
+
+Exports the agent starts in this window run in the window's
+[render queue](#the-render-queue) like your own, where you can cancel them.
+Stopping the request does not cancel an export already queued there: one
+queued before Stop finished in the queue.
+
+Unlike a proposal for review, the agent sees what its tools return: rendered
+frames and contact sheets as images, transcripts, level and loudness
+measurements, file names, paths and other project data inside the folders
+above, and the playhead and selection note. Aster does not upload the source
+media files themselves. The agent cannot listen to sound; it judges audio
+from levels and loudness measurements. Your words reach the provider on its
+standard input. Aster's own instructions to the agent are on the provider's
+command line, where other programs on this computer can read them; they hold
+no project data. Anthropic or OpenAI receive this under your own sign-in and
+terms, and sign-in, model access and usage limits are yours.
+
+Made as it works needs:
+
+- Claude Code or the Codex CLI, installed and signed in. Claude Code 2.1.300
+  and codex-cli 0.162.1 were checked; other versions are unverified. Codex
+  reaches MCP tools through its `code_mode_host` feature, which Aster leaves
+  on for the conversation while it turns Codex's other features off.
+- `aster-mcp` beside the `aster` executable, or the `ASTER_MCP` environment
+  variable naming it. Without it the request fails and names the missing
+  file.
+
+This mode was run on one macOS host with debug builds, with Claude and Codex,
+in wide and 820 by 640 point windows: live steps, follow-ups, Stop, the
+person's undo of an agent edit, an agent export checked with ffprobe, and the
+restart note. The [captures](../.scratch/in-app-agent/captures/) show those
+states. Leaving the window for projects of the agent's own, coming back,
+and folders added while a conversation goes on were run on 2026-10-15 with
+release builds on the same macOS host;
+[verification](verification.md#in-app-agent) and the
+[run notes](../.scratch/in-app-agent/evidence/native-runs-2026-10-15.md)
+record them. Linux and Windows windows are not verified.
+
+### Proposed for review
+
+An Ask request for review sends names, local source paths, text, timing and
+other project metadata. It sends no source video/image/audio bytes. Review the
+summary, commands and before/after changes before Apply; a changed proposal
+commits that exact validated state as one undo step. A proposal already
+matching the project shows "No changes" and preserves existing undo/redo. A
+later edit or reopening makes the proposal stale, and Cancel stops its owned
+request. Provider errors leave the project unchanged. Scene understanding,
+transcription and beat detection are outside this metadata planner: it reads
+markers made from beats, not the beats, and cannot start a measurement, a
+duck, a recording or a separation. Captions from speech are made locally (see
 [captions from speech](#captions-from-speech)), and the planner sees caption
 text, not sound. See [native AI editing](native-ai.md) for the runtime
 contract and evidence.

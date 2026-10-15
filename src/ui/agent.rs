@@ -1,11 +1,13 @@
-//! The agent panel: a request to the model with the proposal it brings back,
-//! the command line, and the live session external agents connect to.
+//! The agent panel: a request to the model and what it did, the command
+//! line, and the live session external agents connect to.
 //!
 //! Nothing here pretends. "Ask" sends the request to the signed-in provider
-//! through `crate::ai` and shows only what its runtime reported: waiting, a
-//! proposal, a failure or a cancellation. A proposal edits nothing until it
-//! is applied. "Command" runs the exact language in `crate::agent` and asks
-//! no model. Both end in the same commands as every other edit.
+//! through `crate::ai` and shows only what its runtime reported. As it works,
+//! the agent's words and each tool step it takes appear as they happen, and
+//! its edits land in the project at once. For review, its proposal edits
+//! nothing until it is applied. "Command" runs the exact language in
+//! `crate::agent` and asks no model. All end in the same commands as every
+//! other edit.
 use super::{
     Action,
     widgets::{self, Kind, icon_button, menu_item, menu_style},
@@ -40,9 +42,30 @@ pub enum Entry {
     },
     /// What the model proposed, and what became of it.
     Plan(PlanCard),
+    /// What the agent said while it worked.
+    Said(String),
+    /// One tool step the agent took.
+    Step(Step),
     /// Something that happened and needs no mark.
     Note(String),
     Help,
+}
+
+pub struct Step {
+    pub call: String,
+    pub what: String,
+    pub state: StepState,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum StepState {
+    Running,
+    /// Done; the edit it made, when it made one.
+    Done(Option<String>),
+    /// Refused, and why when the tool said.
+    Refused(Option<String>),
+    /// The request ended before the step did.
+    Stopped,
 }
 
 pub struct PlanCard {
@@ -99,6 +122,30 @@ impl AgentState {
         self.stick = true;
     }
 
+    /// Records how the tool step `call` ended.
+    pub fn step_ended(&mut self, call: &str, state: StepState) {
+        let step = self.log.iter_mut().rev().find_map(|entry| match entry {
+            Entry::Step(step) if step.call == call && step.state == StepState::Running => {
+                Some(step)
+            }
+            _ => None,
+        });
+        if let Some(step) = step {
+            step.state = state;
+        }
+    }
+
+    /// The request ended: steps still running did not finish.
+    pub fn steps_stopped(&mut self) {
+        for entry in &mut self.log {
+            if let Entry::Step(step) = entry
+                && step.state == StepState::Running
+            {
+                step.state = StepState::Stopped;
+            }
+        }
+    }
+
     /// Records what became of the proposal request `id` brought back.
     pub fn settle(&mut self, id: uuid::Uuid, state: PlanState) {
         let card = self.log.iter_mut().rev().find_map(|entry| match entry {
@@ -118,6 +165,10 @@ pub struct WaitingInput<'a> {
     /// The provider's process is running.
     pub started: bool,
     pub cancelling: bool,
+    /// The agent is editing as it works, not planning for review.
+    pub working: bool,
+    /// Edits it made so far.
+    pub edits: usize,
 }
 
 pub struct AgentInput<'a> {
@@ -132,6 +183,8 @@ pub struct AgentInput<'a> {
     pub waiting: Option<WaitingInput<'a>>,
     /// The open proposal is still about the project as it stands.
     pub current: bool,
+    /// A conversation goes on: the next request continues it.
+    pub talking: bool,
 }
 
 pub fn show(
@@ -173,6 +226,8 @@ pub fn show(
                     Entry::Answer { ok, lines } => answer(ui, p, *ok, lines),
                     Entry::External { ok, text } => external(ui, p, *ok, text),
                     Entry::Plan(card) => plan(ui, p, card, input.current, actions),
+                    Entry::Said(text) => said(ui, p, text),
+                    Entry::Step(step) => step_row(ui, p, step),
                     Entry::Note(text) => note(ui, p, text),
                     Entry::Help => examples(ui, p),
                 }
@@ -214,7 +269,9 @@ pub fn show(
     )));
     let response = edit.add(
         egui::TextEdit::singleline(&mut state.input)
-            .hint_text(if input.ask {
+            .hint_text(if input.ask && input.talking {
+                "Reply, or ask for more"
+            } else if input.ask {
                 "Describe an edit"
             } else {
                 "Type a command, or “help”"
@@ -349,6 +406,21 @@ fn mode_bar(ui: &mut Ui, rect: Rect, input: &AgentInput, actions: &mut Vec<Actio
                 }
             }
             ui.separator();
+            heading(ui, "Edits");
+            for (review, name) in [(false, "Made as it works"), (true, "Proposed for review")] {
+                let on = input.ai.review == review;
+                if menu_item(ui, p, chosen(on), name, "").clicked() {
+                    actions.push(Action::SetAiReview(review));
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if input.talking
+                && menu_item(ui, p, Some(Icon::Plus), "New conversation", "").clicked()
+            {
+                actions.push(Action::AiNewConversation);
+                ui.close();
+            }
             if menu_item(ui, p, Some(Icon::Settings), "Model…", "").clicked() {
                 actions.push(Action::OpenSettings);
                 ui.close();
@@ -428,7 +500,27 @@ fn introduction(ui: &mut Ui, p: &Palette, input: &AgentInput) {
                 .color(p.secondary),
         );
     };
-    if input.ask {
+    if input.ask && !input.ai.review {
+        title(ui, "Ask the agent");
+        body(
+            ui,
+            &format!(
+                "{} edits this project with Aster's own tools while you watch: it can \
+                 look at frames, import media, cut and arrange clips, add effects, \
+                 titles and captions, transcribe speech, mix sound and export. Each \
+                 edit appears here as it is made and is one step you can undo.",
+                input.ai.provider.name()
+            ),
+        );
+        body(
+            ui,
+            "It sees the frames, transcripts and sound levels it asks for, and \
+             the files in this project's folders, in your Movies, Music, \
+             Pictures, Desktop, Documents and Downloads folders and in folders \
+             you add in Settings. It can also make, open and export other \
+             projects. Follow-up requests continue the conversation.",
+        );
+    } else if input.ask {
         title(ui, "Ask for an edit");
         body(
             ui,
@@ -559,6 +651,118 @@ fn note(ui: &mut Ui, p: &Palette, text: &str) {
     );
 }
 
+/// What the agent said while it worked.
+fn said(ui: &mut Ui, p: &Palette, text: &str) {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+        icons::paint(ui.painter(), rect.shrink(1.0), Icon::Sparkles, p.accent);
+        ui.add(egui::Label::new(written(text, p)).wrap());
+    });
+}
+
+/// The agent's words with the little Markdown models write: **strong**,
+/// `code`, headings and bullets. Anything else is shown as it was written.
+fn written(text: &str, p: &Palette) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let plain = egui::TextFormat::simple(theme::regular(12.5), p.fg);
+    let strong = egui::TextFormat::simple(theme::medium(12.5), p.fg);
+    let code = egui::TextFormat::simple(theme::mono(11.5), p.secondary);
+    for (index, line) in text.lines().enumerate() {
+        if index > 0 {
+            job.append("\n", 0.0, plain.clone());
+        }
+        let trimmed = line.trim_start();
+        let (line, heading) = match trimmed.strip_prefix('#') {
+            Some(_) => (trimmed.trim_start_matches('#').trim_start(), true),
+            None => (line, false),
+        };
+        let line = match trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            Some(rest) if !heading => {
+                job.append("•  ", 0.0, plain.clone());
+                rest
+            }
+            _ => line,
+        };
+        let mut bold = heading;
+        let mut mono = false;
+        let mut rest = line;
+        while !rest.is_empty() {
+            let next = [rest.find("**"), rest.find('`')]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(rest.len());
+            let format = if mono {
+                &code
+            } else if bold {
+                &strong
+            } else {
+                &plain
+            };
+            if next > 0 {
+                job.append(&rest[..next], 0.0, format.clone());
+            }
+            rest = &rest[next..];
+            if let Some(after) = rest.strip_prefix("**").filter(|_| !mono) {
+                bold = !bold || heading;
+                rest = after;
+            } else if let Some(after) = rest.strip_prefix('`') {
+                mono = !mono;
+                rest = after;
+            } else if !rest.is_empty() {
+                // `**` inside code: shown as it is.
+                job.append(&rest[..2], 0.0, code.clone());
+                rest = &rest[2..];
+            }
+        }
+    }
+    job
+}
+
+/// One tool step: what it was and how it ended, with the edit it made.
+fn step_row(ui: &mut Ui, p: &Palette, step: &Step) {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+        let (detail, ink) = match &step.state {
+            StepState::Running => {
+                ui.put(rect, egui::Spinner::new().size(11.0).color(p.muted));
+                (None, p.secondary)
+            }
+            StepState::Done(edit) => {
+                icons::paint(ui.painter(), rect.shrink(2.0), Icon::Check, p.green);
+                (edit.as_deref(), p.secondary)
+            }
+            StepState::Refused(why) => {
+                icons::paint(ui.painter(), rect.shrink(1.0), Icon::Warning, p.yellow);
+                (why.as_deref(), p.secondary)
+            }
+            StepState::Stopped => {
+                icons::paint(ui.painter(), rect.shrink(2.0), Icon::Close, p.muted);
+                (None, p.muted)
+            }
+        };
+        let mut text = egui::text::LayoutJob::default();
+        text.append(
+            &step.what,
+            0.0,
+            egui::TextFormat::simple(theme::regular(12.0), ink),
+        );
+        if let Some(detail) = detail {
+            text.append(
+                &format!("  {detail}"),
+                0.0,
+                egui::TextFormat::simple(theme::regular(12.0), p.muted),
+            );
+        }
+        ui.add(egui::Label::new(text).wrap());
+    });
+}
+
 /// The request in flight: that it is, for how long, and the way to stop it.
 fn waiting_row(ui: &mut Ui, p: &Palette, waiting: &WaitingInput, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
@@ -578,6 +782,14 @@ fn waiting_row(ui: &mut Ui, p: &Palette, waiting: &WaitingInput, actions: &mut V
                 "Cancelling…".to_owned()
             } else if !waiting.started {
                 format!("Starting {}…", waiting.provider)
+            } else if waiting.working {
+                // The picker names the provider; the time and the count
+                // are what must fit beside Cancel.
+                match waiting.edits {
+                    0 => format!("Working… {}s", waiting.seconds),
+                    1 => format!("Working… {}s · 1 change", waiting.seconds),
+                    n => format!("Working… {}s · {n} changes", waiting.seconds),
+                }
             } else {
                 format!("{} is planning… {}s", waiting.provider, waiting.seconds)
             };
@@ -761,6 +973,43 @@ mod tests {
             },
             state: PlanState::Open,
         })
+    }
+
+    #[test]
+    fn markdown_marks_are_read_not_shown() {
+        let p = Palette::new(theme::Appearance::Dark, theme::Accent::default());
+        let job = written("## Done\n- **Exports:** `promo.mp4` is ready", &p);
+        assert_eq!(job.text, "Done\n•  Exports: promo.mp4 is ready");
+        let unclosed = written("a `b ** c` d", &p);
+        assert_eq!(unclosed.text, "a b ** c d");
+    }
+
+    #[test]
+    fn a_step_ends_once_and_steps_left_running_stop_with_the_request() {
+        let mut state = AgentState::default();
+        for call in ["a", "b"] {
+            state.push(Entry::Step(Step {
+                call: call.into(),
+                what: "Edited clips".into(),
+                state: StepState::Running,
+            }));
+        }
+        state.step_ended("a", StepState::Done(Some("Trim clip".into())));
+        state.step_ended("a", StepState::Refused(None));
+        state.steps_stopped();
+        let states: Vec<_> = (state.log.iter())
+            .filter_map(|entry| match entry {
+                Entry::Step(step) => Some(step.state.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            states,
+            [
+                StepState::Done(Some("Trim clip".into())),
+                StepState::Stopped
+            ]
+        );
     }
 
     #[test]

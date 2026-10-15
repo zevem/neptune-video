@@ -28,7 +28,9 @@ use crate::{
     ui::{
         self, Action, ClipDraft, DraftHold, PresetChange, Selection, TrackProgress, TrackRequest,
         Transport,
-        agent::{AgentInput, AgentState, Entry, PlanCard, PlanState, WaitingInput},
+        agent::{
+            AgentInput, AgentState, Entry, PlanCard, PlanState, Step, StepState, WaitingInput,
+        },
         captions_tab,
         inspector::{InspectorInput, InspectorState, ProjectDraft},
         library::{LibraryInput, LibraryState},
@@ -282,6 +284,8 @@ enum Pick {
     SpeechModel,
     /// The folder the export sheet writes into.
     ExportFolder,
+    /// A folder the agent may use.
+    AgentFolder,
 }
 
 /// A subtitle file's cues and the language it names, or why it was not
@@ -417,6 +421,12 @@ pub struct App {
     last_save: Option<editor_agent::SaveOutcome>,
     /// The model the agent panel asks.
     ai: Planner,
+    /// The agent that edits this window's project as it works.
+    live: ai::Agent,
+    /// What this window's agent begins its request ids with.
+    agent_tag: String,
+    /// What the agent's folders were last worked out from.
+    agent_roots_basis: Option<(u64, Option<PathBuf>, Vec<PathBuf>)>,
     /// The document's revision when the open dialog was shown.
     open_revision: u64,
     recovery_dir: Option<PathBuf>,
@@ -1033,6 +1043,10 @@ impl App {
             Err(error) => (None, None, Some(error.to_string())),
         };
 
+        let agent_tag = host.as_ref().map_or_else(
+            || ai::TAG.to_owned(),
+            |host| ai::window_tag(host.descriptor().instance_id),
+        );
         let right_tab = if settings.agent_panel {
             RightTab::Agent
         } else {
@@ -1050,6 +1064,7 @@ impl App {
             host,
             session_path,
             session_problem,
+            agent_tag,
             path: None,
             document: None,
             origin: Origin::Ordinary,
@@ -1059,6 +1074,8 @@ impl App {
             preparing: false,
             conflicted: false,
             ai: Planner::new(wake(ctx)),
+            live: ai::Agent::new(wake(ctx)),
+            agent_roots_basis: None,
             open_revision: 0,
             recovery_dir: None,
             unsaved_base: None,
@@ -1429,6 +1446,12 @@ impl App {
         self.origin = Origin::Ordinary;
         self.conflicted = false;
         // What the model was asked, or proposed, was about the old document.
+        if self.live.talking() || self.live.turn().is_some() {
+            self.live.end();
+            self.agent.push(Entry::Note(
+                "Another project is open, so the agent's conversation ended.".to_owned(),
+            ));
+        }
         if let Some(open) = self.ai.forget() {
             self.agent.settle(
                 open,
@@ -1929,6 +1952,13 @@ impl App {
                     Job::Picked(Pick::ImportFolder, path.into_iter().collect())
                 });
             }
+            Pick::AgentFolder => {
+                let choice = dialog.set_title("A folder the agent may use").pick_folder();
+                self.spawn(ctx, "aster-dialog", move || {
+                    let path = pollster::block_on(choice).map(|file| file.path().to_path_buf());
+                    Job::Picked(Pick::AgentFolder, path.into_iter().collect())
+                });
+            }
             Pick::ExportFolder => {
                 let mut dialog = dialog.set_title("Export to folder");
                 if let Some(folder) = self.export.as_ref().and_then(|state| state.folder()) {
@@ -2143,6 +2173,24 @@ impl App {
                 }
                 // The sheet that asked must still be open; otherwise the
                 // answer is dropped.
+                Job::Picked(Pick::AgentFolder, paths) => {
+                    for path in paths {
+                        // The same rule as the server's: a home, drive or
+                        // system folder is too wide to hand an agent.
+                        if crate::mcp::usable_roots(vec![path.clone()]).is_empty() {
+                            self.notify(
+                                ctx,
+                                format!(
+                                    "{} is too wide for the agent; choose a folder inside it",
+                                    path.display()
+                                ),
+                                true,
+                            );
+                        } else if !self.settings.ai.folders.contains(&path) {
+                            self.settings.ai.folders.push(path);
+                        }
+                    }
+                }
                 Job::Picked(Pick::ExportFolder, paths) => {
                     if let Some(state) = self.export.as_mut() {
                         state.folder_chosen(paths.into_iter().next());
@@ -3859,6 +3907,8 @@ impl App {
                     continue;
                 }
             };
+            // This window's own agent shows its steps itself.
+            let own = ai::own_request(&self.agent_tag, &call.request.request_id);
             // Only changes wait for the person; reading the project never does.
             if let Some(what) = &what
                 && let Some((code, message)) = self.agent_refusal()
@@ -3868,10 +3918,12 @@ impl App {
                 call.reply(editor_agent::AgentResponse::error(
                     request_id, revision, code, message,
                 ));
-                self.agent.push(Entry::External {
-                    ok: false,
-                    text: format!("Agent asked for “{what}”; held back while you edit"),
-                });
+                if !own {
+                    self.agent.push(Entry::External {
+                        ok: false,
+                        text: format!("Agent asked for “{what}”; held back while you edit"),
+                    });
+                }
                 continue;
             }
             let before = self.editor.revision();
@@ -3879,6 +3931,12 @@ impl App {
             let changed = self.editor.revision() != before;
             if changed {
                 self.document_changed();
+                if own {
+                    self.live.count_edit();
+                }
+            }
+            if own {
+                continue;
             }
             if let Some(what) = what {
                 self.agent.push(Entry::External {
@@ -4084,6 +4142,7 @@ impl App {
         );
         if let (AgentOperation::QueueExport { .. }, editor_agent::AgentResult::RenderJob { job }) =
             (&call.request.operation, &result)
+            && !ai::own_request(&self.agent_tag, &call.request.request_id)
         {
             self.agent.push(Entry::External {
                 ok: true,
@@ -4899,7 +4958,26 @@ impl App {
 
             Action::AgentSubmit(line) => self.agent_submit(ctx, line),
             Action::AiSubmit(prompt) => self.ai_submit(ctx, prompt),
-            Action::AiCancel => self.ai.cancel(),
+            Action::AiCancel => {
+                if self.live.turn().is_some() {
+                    self.live.stop();
+                } else {
+                    self.ai.cancel();
+                }
+            }
+            Action::SetAiReview(review) => self.settings.ai.review = review,
+            Action::AddAgentFolder => self.pick(ctx, Pick::AgentFolder),
+            Action::RemoveAgentFolder(index) => {
+                if index < self.settings.ai.folders.len() {
+                    self.settings.ai.folders.remove(index);
+                }
+            }
+            Action::AiNewConversation => {
+                self.live.end();
+                self.agent.push(Entry::Note(
+                    "New conversation. The agent remembers nothing of the last one.".to_owned(),
+                ));
+            }
             Action::AiApply(id) => return self.ai_apply(ctx, id).map(Some),
             Action::AiDiscard(id) => {
                 if self.ai.discard(id) {
@@ -5193,8 +5271,156 @@ impl App {
     /// Sends `prompt` to the model with the document as it stands. The
     /// answer arrives as an event; nothing is edited by asking.
     fn ai_submit(&mut self, ctx: &egui::Context, prompt: String) {
+        if !self.settings.ai.review {
+            self.agent_converse(ctx, prompt);
+            return;
+        }
         let selected = self.selection.clips.clone();
         self.ai_ask(ctx, prompt.clone(), prompt, &selected);
+    }
+
+    /// Sends `prompt` to the agent that edits as it works. It reaches this
+    /// window through `aster-mcp`, started in the session the window
+    /// publishes, and its edits come back as requests like any connected
+    /// agent's. Nothing is waited for here, except a changed folders file
+    /// before a conversation starts.
+    fn agent_converse(&mut self, ctx: &egui::Context, prompt: String) {
+        let prompt = prompt.trim().to_owned();
+        if prompt.is_empty() {
+            return;
+        }
+        // A value still held in a field is part of what is being asked about.
+        self.commit_drafts(ctx, true);
+        self.agent.push(Entry::Prompt(prompt.clone()));
+        let asked = self.tool_server().and_then(|server| {
+            if let Some(session) = self.session_path.clone() {
+                // While it talks the file follows every change already;
+                // a server about to start must find it written.
+                let wanted = self.agent_roots();
+                let starting = !self.live.follows_roots();
+                self.live.set_roots(&roots_file(&session), wanted, starting);
+            }
+            let told = self.window_note(&prompt);
+            self.live.ask(&self.settings.ai, server, told)
+        });
+        if let Err(problem) = asked {
+            self.agent.push(Entry::Answer {
+                ok: false,
+                lines: vec![problem],
+            });
+        }
+    }
+
+    /// The request with what the window shows: the playhead and selection
+    /// the person sees, which the agent cannot see for itself.
+    fn window_note(&self, prompt: &str) -> String {
+        let rate = self.editor.project().settings.frame_rate;
+        let seconds = self.playback.position.as_seconds();
+        let frame = (seconds * rate.numerator as f64 / rate.denominator.max(1) as f64).round();
+        let selected = if self.selection.clips.is_empty() {
+            "no clips are selected".to_owned()
+        } else {
+            format!(
+                "the selected clips are {}",
+                (self.selection.clips.iter())
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        format!(
+            "[In the window, the playhead is at {seconds:.3} s (frame {frame}) and {selected}.]\n\n{prompt}"
+        )
+    }
+
+    /// `aster-mcp`, started in this window, with the folders it may use.
+    fn tool_server(&self) -> Result<editor_agent::ToolServer, String> {
+        let session = self.session_path.as_deref().ok_or_else(|| {
+            format!(
+                "The agent reaches the project through this window's agent session, which \
+                 is not open: {}",
+                self.session_problem
+                    .as_deref()
+                    .unwrap_or("it could not be published")
+            )
+        })?;
+        let command = ai::tool_program()?;
+        let text = |path: &Path| {
+            path.to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("{} cannot be passed to the agent", path.display()))
+        };
+        // The folders are in a file the server reads again whenever it
+        // changes, so a new one does not end the conversation.
+        let mut args = vec![
+            "--window".to_owned(),
+            text(session)?,
+            "--tag".to_owned(),
+            self.agent_tag.clone(),
+            "--roots-file".to_owned(),
+            text(&roots_file(session))?,
+        ];
+        if let Some(settings) = &self.settings_path {
+            args.push("--desktop-settings".to_owned());
+            args.push(text(settings)?);
+        }
+        if let Some(models) = &self.models_dir {
+            args.push("--models".to_owned());
+            args.push(text(models)?);
+        }
+        Ok(editor_agent::ToolServer { command, args })
+    }
+
+    /// The folders the agent may read and write: the project's, its
+    /// media's, those the person added, and the person's usual places.
+    /// The server leaves out any that is gone, too wide or inside another.
+    /// Never the home
+    /// folder, a drive or a system folder.
+    fn agent_roots(&self) -> Vec<PathBuf> {
+        let project = self.editor.project();
+        let mut wanted: Vec<PathBuf> = Vec::new();
+        if let Some(path) = (self.document.as_ref())
+            .map(|document| document.path().to_path_buf())
+            .or_else(|| self.path.clone())
+            && let Some(parent) = path.parent()
+        {
+            wanted.push(parent.to_path_buf());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for asset in project.assets.values() {
+            if let Some(parent) = asset.path.parent()
+                && seen.insert(parent)
+            {
+                wanted.push(parent.to_path_buf());
+            }
+        }
+        wanted.extend(self.settings.ai.folders.iter().cloned());
+        wanted.extend(usual_folders().iter().cloned());
+        wanted
+    }
+
+    /// Keeps the agent's roots file up to date while it talks: the person
+    /// imports from a new folder, adds one in Settings, or saves the
+    /// project somewhere else.
+    fn follow_agent_roots(&mut self) {
+        if !self.live.follows_roots() {
+            return;
+        }
+        let Some(session) = self.session_path.clone() else {
+            return;
+        };
+        // Only an edit, a save elsewhere or Settings changes them.
+        let basis = (
+            self.editor.revision(),
+            self.path.clone(),
+            self.settings.ai.folders.clone(),
+        );
+        if self.agent_roots_basis.as_ref() == Some(&basis) {
+            return;
+        }
+        self.agent_roots_basis = Some(basis);
+        let wanted = self.agent_roots();
+        self.live.set_roots(&roots_file(&session), wanted, false);
     }
 
     /// Asks the model `prompt` about `selected`, whose clips are in its
@@ -5257,6 +5483,76 @@ impl App {
 
     /// What the model's runtime reported, shown as it was reported.
     fn take_ai(&mut self) {
+        self.follow_agent_roots();
+        while let Some(heard) = self.live.poll() {
+            match heard {
+                ai::Heard::Started { restarted } => {
+                    if restarted {
+                        self.agent.push(Entry::Note(
+                            "A new conversation started, because the agent's provider, model or \
+                             effort changed. It remembers nothing of the last one."
+                                .to_owned(),
+                        ));
+                    }
+                }
+                ai::Heard::Said(text) => self.agent.push(Entry::Said(text)),
+                ai::Heard::Called { call, what } => self.agent.push(Entry::Step(Step {
+                    call,
+                    what,
+                    state: StepState::Running,
+                })),
+                ai::Heard::Returned { call, ok, detail } => self.agent.step_ended(
+                    &call,
+                    if ok {
+                        StepState::Done(detail)
+                    } else {
+                        StepState::Refused(detail)
+                    },
+                ),
+                ai::Heard::Finished {
+                    by,
+                    edits,
+                    elsewhere,
+                } => {
+                    self.agent.steps_stopped();
+                    let mut note = match edits {
+                        // A change may be an edit or the agent's own undo,
+                        // so both ways back are named.
+                        0 if elsewhere > 0 => format!("{by} · no changes here"),
+                        0 => format!("{by} · no changes"),
+                        1 => format!("{by} · 1 change, which undo or redo takes back"),
+                        n => format!("{by} · {n} changes; undo and redo take them back"),
+                    };
+                    if elsewhere > 0 {
+                        note.push_str(&elsewhere_note(elsewhere));
+                    }
+                    self.agent.push(Entry::Note(note));
+                }
+                ai::Heard::Failed(message) => {
+                    self.agent.steps_stopped();
+                    self.agent.push(Entry::Answer {
+                        ok: false,
+                        lines: vec![message],
+                    });
+                }
+                ai::Heard::Cancelled { edits, elsewhere } => {
+                    self.agent.steps_stopped();
+                    let mut note = match edits {
+                        0 if elsewhere > 0 => "Stopped. Nothing was changed here.".to_owned(),
+                        0 => "Stopped. Nothing was changed.".to_owned(),
+                        1 => "Stopped. The change already made stays; undo or redo takes it back."
+                            .to_owned(),
+                        n => format!(
+                            "Stopped. The {n} changes already made stay; undo and redo take them back."
+                        ),
+                    };
+                    if elsewhere > 0 {
+                        note.push_str(&elsewhere_note(elsewhere));
+                    }
+                    self.agent.push(Entry::Note(note));
+                }
+            }
+        }
         while let Some(update) = self.ai.poll() {
             self.agent.push(match update {
                 ai::Update::Planned(plan) => Entry::Plan(PlanCard {
@@ -6306,13 +6602,27 @@ impl App {
                     session_problem: self.session_problem.as_deref(),
                     ask: self.settings.agent_ask,
                     ai: &self.settings.ai,
-                    waiting: self.ai.waiting().map(|waiting| WaitingInput {
-                        provider: waiting.provider.name(),
-                        seconds: waiting.since.elapsed().as_secs(),
-                        started: waiting.started,
-                        cancelling: waiting.cancelling,
-                    }),
+                    waiting: match (self.live.turn(), self.ai.waiting()) {
+                        (Some(turn), _) => Some(WaitingInput {
+                            provider: turn.provider.name(),
+                            seconds: turn.since.elapsed().as_secs(),
+                            started: turn.started,
+                            cancelling: turn.cancelling,
+                            working: true,
+                            edits: turn.edits,
+                        }),
+                        (None, Some(waiting)) => Some(WaitingInput {
+                            provider: waiting.provider.name(),
+                            seconds: waiting.since.elapsed().as_secs(),
+                            started: waiting.started,
+                            cancelling: waiting.cancelling,
+                            working: false,
+                            edits: 0,
+                        }),
+                        (None, None) => None,
+                    },
                     current: self.ai.open_is_current(&self.editor),
+                    talking: self.live.talking(),
                 },
                 actions,
             ),
@@ -7006,6 +7316,44 @@ fn export_chords(input: &mut egui::InputState, overlay: &Overlay) -> Option<Acti
 #[cfg(test)]
 #[path = "app_export_tests.rs"]
 mod export_tests;
+
+/// The file naming the folders this window's agent may use, beside the
+/// window's agent session.
+fn roots_file(session: &Path) -> PathBuf {
+    session.with_extension("roots")
+}
+
+/// The person's usual places for media and work, looked up once.
+fn usual_folders() -> &'static [PathBuf] {
+    static FOLDERS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    FOLDERS.get_or_init(|| {
+        directories::UserDirs::new()
+            .map(|dirs| {
+                [
+                    dirs.video_dir(),
+                    dirs.desktop_dir(),
+                    dirs.document_dir(),
+                    dirs.download_dir(),
+                    dirs.audio_dir(),
+                    dirs.picture_dir(),
+                ]
+                .into_iter()
+                .flatten()
+                .map(Path::to_path_buf)
+                .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// The part of a note about edits the agent made in projects this window
+/// does not show, which its undo does not reach.
+fn elsewhere_note(elsewhere: usize) -> String {
+    match elsewhere {
+        1 => " · 1 change in another project".to_owned(),
+        n => format!(" · {n} changes in other projects"),
+    }
+}
 
 #[cfg(test)]
 mod tests {

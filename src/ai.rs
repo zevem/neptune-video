@@ -1,20 +1,33 @@
 //! The model behind the agent panel.
 //!
 //! A request goes to the Claude or Codex command line the person has already
-//! signed in to, through `editor_agent::AiRuntime`. That runtime owns the
-//! provider process; nothing here waits for it. What comes back is a proposal
-//! of ordinary commands, validated against the document it was planned for,
-//! and it changes nothing until the person applies it.
+//! signed in to. It is answered one of two ways:
 //!
-//! This module is the only place the application touches the runtime. It
-//! keeps which request is being waited for, holds the one proposal that is
-//! open, and turns both into plain values the panel can draw. An answer the
-//! runtime did not give is never made up here: every state the panel shows
-//! follows from an event.
-use editor_agent::{AiConfig, AiContext, AiEvent, AiProposal, AiProvider, AiRuntime};
+//! - **As it works** (`Agent`): the provider edits this window's project
+//!   with the tools of `aster-mcp`, the same tools an outside agent has,
+//!   started in this window. Every edit lands here at once, through the same
+//!   guarded requests an outside agent sends, as one step of the history.
+//!   `editor_agent::Conversation` owns the provider's process.
+//! - **For review** (`Planner`): the provider returns a proposal of
+//!   ordinary commands, through `editor_agent::AiRuntime`, validated against
+//!   the document it was planned for; it changes nothing until the person
+//!   applies it.
+//!
+//! This module is the only place the application touches either runtime.
+//! Nothing here waits for a provider, and an answer a runtime did not give is
+//! never made up: every state the panel shows follows from an event.
+use editor_agent::{
+    AiConfig, AiContext, AiEvent, AiProposal, AiProvider, AiRuntime, Conversation, ToolServer,
+    TurnEvent,
+};
 use editor_core::{Clip, ClipId, Command, Editor, Project, Time};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf, time::Instant};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 use uuid::Uuid;
 
 /// Steps listed on a proposal before the rest are counted.
@@ -100,6 +113,13 @@ pub struct AiSettings {
     /// Where the provider's program is, when it is not on the search path.
     pub claude_executable: Option<PathBuf>,
     pub codex_executable: Option<PathBuf>,
+    /// Requests come back as proposals to review, made by a planner that
+    /// sees only the project's data. Otherwise the agent edits as it works,
+    /// with every tool an outside agent has.
+    pub review: bool,
+    /// Folders the person lets the agent use besides the project's own and
+    /// their usual places, as `--root` does for an outside agent.
+    pub folders: Vec<PathBuf>,
 }
 
 impl AiSettings {
@@ -152,6 +172,388 @@ impl AiSettings {
             ..AiConfig::default()
         }
     }
+}
+
+/// Request ids of this window's own agent begin with this, so its edits
+/// are told apart from those of an agent that connected from outside.
+pub const TAG: &str = "aster-tab";
+
+/// The tag this window's agent begins its request ids with: the window's
+/// own, since another window's agent may also edit the project shown here.
+pub fn window_tag(instance: Uuid) -> String {
+    format!("{TAG}-{}", instance.simple())
+}
+
+/// Whether a request came from the agent of the window tagged `tag`.
+pub fn own_request(tag: &str, request_id: &str) -> bool {
+    request_id
+        .strip_prefix(tag)
+        .is_some_and(|rest| rest.starts_with('-'))
+}
+
+/// A request the agent is answering.
+pub struct Turn {
+    id: Uuid,
+    pub provider: Provider,
+    pub since: Instant,
+    /// The provider's process has the request.
+    pub started: bool,
+    pub cancelling: bool,
+    /// Edits it made so far, as this window counted them.
+    pub edits: usize,
+    /// Tool calls that said they changed a project, this window's or
+    /// another one the agent made or opened.
+    pub changed: usize,
+}
+
+/// What the agent did, as the panel shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Heard {
+    /// The request reached the provider; `restarted` when it began a new
+    /// conversation although nobody ended the last one, because the
+    /// provider or its settings changed.
+    Started {
+        restarted: bool,
+    },
+    Said(String),
+    /// A tool call began, in the words the panel uses.
+    Called {
+        call: String,
+        what: String,
+    },
+    /// A tool call ended: its edit's label, or why it was refused.
+    Returned {
+        call: String,
+        ok: bool,
+        detail: Option<String>,
+    },
+    /// Answered, with who answered and how many edits it made in this
+    /// window and in other projects.
+    Finished {
+        by: String,
+        edits: usize,
+        elsewhere: usize,
+    },
+    Failed(String),
+    Cancelled {
+        edits: usize,
+        elsewhere: usize,
+    },
+}
+
+/// The agent that edits this window's project as it works.
+pub struct Agent {
+    conversation: Result<Conversation, String>,
+    turn: Option<Turn>,
+    /// A conversation has been started and not ended.
+    talking: bool,
+    roots: Option<RootsFile>,
+}
+
+/// The file naming the folders the agent may use, which its server reads
+/// again whenever it changes: written whole on a thread of its own, so the
+/// window never waits on the disk while it draws.
+struct RootsFile {
+    path: PathBuf,
+    sent: Option<Vec<PathBuf>>,
+    writer: mpsc::Sender<(Vec<PathBuf>, Option<mpsc::SyncSender<()>>)>,
+}
+
+impl RootsFile {
+    fn new(path: PathBuf) -> Option<Self> {
+        let (writer, asked) = mpsc::channel::<(Vec<PathBuf>, Option<mpsc::SyncSender<()>>)>();
+        let file = path.clone();
+        std::thread::Builder::new()
+            .name("aster-agent-roots".into())
+            .spawn(move || {
+                while let Ok((roots, done)) = asked.recv() {
+                    let _ = write_roots(&file, &roots);
+                    if let Some(done) = done {
+                        let _ = done.send(());
+                    }
+                }
+                let _ = std::fs::remove_file(&file);
+            })
+            .ok()?;
+        Some(Self {
+            path,
+            sent: None,
+            writer,
+        })
+    }
+}
+
+/// Replaces `file` with `{"roots": [...]}`, readable by its owner only.
+fn write_roots(file: &Path, roots: &[PathBuf]) -> std::io::Result<()> {
+    let named: Vec<&str> = roots.iter().filter_map(|root| root.to_str()).collect();
+    let bytes = serde_json::to_vec(&serde_json::json!({ "roots": named }))?;
+    let part = file.with_extension(format!("roots-part-{}", Uuid::new_v4().simple()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let written = options.open(&part).and_then(|mut out| {
+        use std::io::Write;
+        out.write_all(&bytes)?;
+        out.sync_all()
+    });
+    match written.and_then(|()| std::fs::rename(&part, file)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&part);
+            Err(error)
+        }
+    }
+}
+
+impl Agent {
+    pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            conversation: Conversation::new(wake).map_err(|error| error.to_string()),
+            turn: None,
+            talking: false,
+            roots: None,
+        }
+    }
+
+    /// Names in `file` the folders the agent may use, when they changed.
+    /// `wait` waits, a second at most, until the file is written: a server
+    /// about to start reads it at once. Only a change is ever waited for.
+    pub fn set_roots(&mut self, file: &Path, wanted: Vec<PathBuf>, wait: bool) {
+        if self.roots.as_ref().is_none_or(|roots| roots.path != file) {
+            self.roots = RootsFile::new(file.to_path_buf());
+        }
+        let Some(roots) = &mut self.roots else {
+            return;
+        };
+        if roots.sent.as_ref() == Some(&wanted) {
+            return;
+        }
+        let (done, written) = if wait {
+            let (done, written) = mpsc::sync_channel(1);
+            (Some(done), Some(written))
+        } else {
+            (None, None)
+        };
+        if roots.writer.send((wanted.clone(), done)).is_ok() {
+            roots.sent = Some(wanted);
+            if let Some(written) = written {
+                let _ = written.recv_timeout(Duration::from_secs(1));
+            }
+        }
+    }
+
+    /// Whether the window keeps a roots file for its agent now.
+    pub fn follows_roots(&self) -> bool {
+        self.roots.is_some() && (self.talking || self.turn.is_some())
+    }
+
+    pub fn turn(&self) -> Option<&Turn> {
+        self.turn.as_ref()
+    }
+
+    /// Whether a conversation goes on, so the next request continues it.
+    pub fn talking(&self) -> bool {
+        self.talking
+    }
+
+    /// Sends `prompt`, continuing the conversation when there is one with
+    /// the same provider. `server` is the tool server started in this window.
+    pub fn ask(
+        &mut self,
+        settings: &AiSettings,
+        server: ToolServer,
+        prompt: String,
+    ) -> Result<(), String> {
+        if self.turn.is_some() {
+            return Err("The agent is still working. Stop it first.".to_owned());
+        }
+        let conversation = self
+            .conversation
+            .as_ref()
+            .map_err(|problem| format!("The agent cannot be started: {problem}"))?;
+        let id = conversation
+            .ask(settings.config(), server, prompt)
+            .map_err(|error| error.to_string())?;
+        self.turn = Some(Turn {
+            id,
+            provider: settings.provider,
+            since: Instant::now(),
+            started: false,
+            cancelling: false,
+            edits: 0,
+            changed: 0,
+        });
+        Ok(())
+    }
+
+    /// Stops the request. Its provider stops at once and the conversation
+    /// ends; edits already made stay, each a step of the history.
+    pub fn stop(&mut self) {
+        if let (Ok(conversation), Some(turn)) = (&self.conversation, &mut self.turn)
+            && !turn.cancelling
+        {
+            turn.cancelling = true;
+            conversation.stop();
+        }
+    }
+
+    /// Ends the conversation: the next request starts a new one.
+    pub fn end(&mut self) {
+        if let Ok(conversation) = &self.conversation {
+            conversation.end();
+        }
+        if let Some(turn) = &mut self.turn {
+            turn.cancelling = true;
+        }
+        self.talking = false;
+    }
+
+    /// An edit of this agent's landed in the window.
+    pub fn count_edit(&mut self) {
+        if let Some(turn) = &mut self.turn {
+            turn.edits += 1;
+        }
+    }
+
+    /// The next thing the agent did in the request being answered.
+    pub fn poll(&mut self) -> Option<Heard> {
+        loop {
+            let event = self.conversation.as_ref().ok()?.poll()?;
+            let Some(turn) = self.turn.as_mut().filter(|turn| turn.id == event.turn()) else {
+                continue;
+            };
+            let edits = turn.edits;
+            let elsewhere = turn.changed.saturating_sub(turn.edits);
+            let provider = turn.provider;
+            return Some(match event {
+                TurnEvent::Started { fresh, .. } => {
+                    turn.started = true;
+                    let restarted = fresh && self.talking;
+                    self.talking = true;
+                    Heard::Started { restarted }
+                }
+                TurnEvent::Said { text, .. } => Heard::Said(text),
+                TurnEvent::Called { call, tool, op, .. } => Heard::Called {
+                    call,
+                    what: step_words(&tool, op.as_deref()),
+                },
+                TurnEvent::Returned {
+                    call, ok, detail, ..
+                } => {
+                    // A result that names its edit is a change, wherever
+                    // it was made.
+                    if ok && detail.is_some() {
+                        turn.changed += 1;
+                    }
+                    Heard::Returned { call, ok, detail }
+                }
+                TurnEvent::Finished { model, .. } => {
+                    self.turn = None;
+                    Heard::Finished {
+                        by: match model.filter(|model| !model.is_empty()) {
+                            Some(model) => format!("{} · {model}", provider.name()),
+                            None => provider.name().to_owned(),
+                        },
+                        edits,
+                        elsewhere,
+                    }
+                }
+                TurnEvent::Failed { message, .. } => {
+                    self.turn = None;
+                    self.talking = false;
+                    Heard::Failed(message)
+                }
+                TurnEvent::Cancelled { .. } => {
+                    self.turn = None;
+                    self.talking = false;
+                    Heard::Cancelled { edits, elsewhere }
+                }
+            });
+        }
+    }
+}
+
+/// `aster-mcp`: named by `ASTER_MCP`, else the one installed beside this
+/// program (links followed, so a linked `aster` finds its own).
+pub fn tool_program() -> Result<PathBuf, String> {
+    if let Some(named) = std::env::var_os("ASTER_MCP").filter(|named| !named.is_empty()) {
+        let named = PathBuf::from(named);
+        return if named.is_file() {
+            Ok(named)
+        } else {
+            Err(format!(
+                "ASTER_MCP names {}, which is not a program",
+                named.display()
+            ))
+        };
+    }
+    let exe = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|error| format!("Cannot find where Aster is installed: {error}"))?;
+    let beside = exe.with_file_name(format!("aster-mcp{}", std::env::consts::EXE_SUFFIX));
+    if beside.is_file() {
+        Ok(beside)
+    } else {
+        Err(format!(
+            "The agent's editing tools, {}, are missing. Reinstall Aster, or build them with \
+             cargo build --bins.",
+            beside.display()
+        ))
+    }
+}
+
+/// A tool call in the words of the panel.
+pub fn step_words(tool: &str, op: Option<&str>) -> String {
+    let words = match (tool, op) {
+        ("project_status" | "project_inspect", _) => "Looked at the project",
+        ("project_settings", _) => "Project settings",
+        ("project_save", _) => "Saved the project",
+        ("project_create" | "project_open" | "project_close" | "desktop", _) => "Projects",
+        ("media_import", _) => "Imported media",
+        ("media_inspect", _) => "Inspected media",
+        ("media_remove", _) => "Removed media",
+        ("media_folder", _) => "Library folders",
+        ("track_edit", _) => "Tracks",
+        ("clip_add", _) => "Added clips",
+        ("clip_edit", Some("trim")) => "Trimmed clips",
+        ("clip_edit", Some("split")) => "Split clips",
+        ("clip_edit", Some("move")) => "Moved clips",
+        ("clip_edit", Some("delete")) => "Deleted clips",
+        ("clip_edit", _) => "Edited clips",
+        ("marker_edit", _) => "Markers",
+        ("effects_catalog", _) => "Looked at effects",
+        ("effect_edit", _) => "Effects",
+        ("transition_set", _) => "Transition",
+        ("retime_set", _) => "Speed",
+        ("keyframes_set", _) => "Animation",
+        ("text_add", _) => "Added text",
+        ("text_edit", _) => "Text style",
+        ("captions", _) => "Captions",
+        ("templates", _) => "Templates",
+        ("audio_edit", _) => "Sound",
+        ("transcription_models", _) => "Speech models",
+        ("transcribe_start", _) => "Transcribing speech",
+        ("frame_render", _) => "Looked at frames",
+        ("contact_sheet", _) => "Looked at a contact sheet",
+        ("scenes_start", _) => "Finding scene cuts",
+        ("loudness_start", _) => "Measuring loudness",
+        ("render_capabilities", _) => "Export options",
+        ("render_export_start", _) => "Exporting",
+        ("job", Some("wait")) => "Waiting for a job",
+        ("job", _) => "Jobs",
+        ("history", Some("undo")) => "Undid an edit",
+        ("history", Some("redo")) => "Redid an edit",
+        ("history", _) => "History",
+        ("checkpoint", _) => "Checkpoint",
+        ("edit_apply", _) => "Edited",
+        ("edit_schema", _) => "Read the editing reference",
+        (other, _) => return other.replace('_', " "),
+    };
+    words.to_owned()
 }
 
 /// A model name as it is handed to a command line: one short printable word.
@@ -510,6 +912,49 @@ fn look_changes(was: &Clip, is: &Clip) -> Vec<String> {
 mod tests {
     use super::*;
     use editor_core::{Clip, Track, TrackKind, Transform};
+
+    #[test]
+    fn a_window_knows_its_own_agents_requests_from_another_windows() {
+        let (here, there) = (Uuid::new_v4(), Uuid::new_v4());
+        let tag = window_tag(here);
+        assert!(own_request(&tag, &format!("{tag}-3")));
+        assert!(!own_request(&tag, &format!("{}-3", window_tag(there))));
+        assert!(!own_request(&tag, "aster-tab-3"));
+        assert!(!own_request(&tag, "mcp-3"));
+        assert!(!own_request(&tag, &format!("{tag}3")));
+    }
+
+    #[test]
+    fn the_agents_folders_are_written_whole_for_its_owner_only_and_replaced_when_they_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("window.roots");
+        let mut agent = Agent::new(|| {});
+        let read = || -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap()
+        };
+        agent.set_roots(&file, vec![PathBuf::from("/a")], true);
+        assert_eq!(read(), serde_json::json!({"roots": ["/a"]}));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        agent.set_roots(&file, vec![PathBuf::from("/a"), PathBuf::from("/b")], true);
+        assert_eq!(read(), serde_json::json!({"roots": ["/a", "/b"]}));
+        // Nothing but the file is left beside it.
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
+        assert_eq!(left.len(), 1);
+        // The window that closes takes its file with it.
+        drop(agent);
+        for _ in 0..100 {
+            if !file.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!file.exists());
+    }
 
     #[test]
     fn a_model_name_is_one_printable_word() {

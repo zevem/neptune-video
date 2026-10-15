@@ -425,7 +425,7 @@ fn provider(message: &str) -> AiError {
 
 /// Current stable CodexErrorInfo discriminants only. Raw provider messages,
 /// details, HTTP bodies and account/configuration fields never reach the UI.
-fn turn_failure(error: &Value) -> AiError {
+pub(super) fn turn_failure(error: &Value) -> AiError {
     let info = &error["codexErrorInfo"];
     let code = info.as_str().or_else(|| {
         info.as_object()
@@ -468,11 +468,11 @@ fn turn_failure(error: &Value) -> AiError {
     })
 }
 
-fn valid_identity(id: &str) -> bool {
+pub(super) fn valid_identity(id: &str) -> bool {
     !id.is_empty() && id.len() <= MAX_ID_BYTES && !id.chars().any(char::is_control)
 }
 
-fn identity(value: &Value) -> Result<&str, AiError> {
+pub(super) fn identity(value: &Value) -> Result<&str, AiError> {
     value
         .as_str()
         .filter(|id| valid_identity(id))

@@ -594,7 +594,7 @@ and Windows. For automated cases:
 | Keyboard, IME, DPI, clipboard, dialogs, drops, accessibility | KEY-01, IME-01, DPI-01, CLP-04, PRJ-01, PRJ-03, IMP-01 to IMP-03, ACC-01 |
 | Platform specifics | WIN-01 (console windows, long paths), MAC-01 (signature, prompts) |
 | Protocol guards and descriptor privacy (not UI) | PRT-01 |
-| Native AI review, exact apply, cancel, stale, discard, teardown, failure | AI-01 to AI-06 |
+| Native AI review, exact apply, cancel, stale, discard, teardown, failure (the Agent tab's **Edits** set to Proposed for review; fresh settings start in Made as it works) | AI-01 to AI-06 |
 
 ## Evidence in the report
 

@@ -4,7 +4,8 @@
 create, inspect, edit, analyse, preview and export Aster projects. It edits
 with the same validated, undoable commands as the window, so a person can open
 the project an agent made, or watch and continue the one an agent is editing
-in a running Aster window.
+in a running Aster window. Aster's own Agent tab edits through it too by
+default, starting in its window.
 
 The server is a native binary built beside `aster` and `aster-agent`
 (`cargo build --release --locked --bins`). It uses the official Rust MCP SDK,
@@ -18,7 +19,8 @@ The server reads and writes only inside its **roots**: the folders named with
 `--root` (repeatable) or `ASTER_MCP_ROOTS` (separated as `PATH` is). Without
 either it uses the folder it starts in, unless that is a home, drive or system
 folder, which it refuses. Give it the folder that holds the footage and where
-projects and exports should go.
+projects and exports should go. `--roots-file` names more folders in a file
+the server reads again whenever it changes.
 
 ### Claude Code
 
@@ -96,13 +98,27 @@ it from its own environment so that FFmpeg and windows it starts never see it.
 | `--sessions DIR` | Where windows publish their live sessions |
 | `--models DIR` | Speech models (also `ASTER_MODELS_DIR`) |
 | `--aster PATH` | The window program `desktop {op: open}` starts; the `aster` beside the server by default |
+| `--window FILE` | Start in the window whose session descriptor is FILE: attach to it at once, and go back to it when `desktop {op: attach}` names no window. See [Aster's Agent tab](#asters-agent-tab) |
+| `--roots-file FILE` | A JSON file, `{"roots": [DIR, …]}`, naming more folders the server may use; see below |
+| `--tag TAG` | Begin request ids with TAG, as `TAG-1`, `TAG-2` and so on, so a window can tell this server's requests apart; 1–64 ASCII letters, digits and dashes; `mcp` by default |
+
+A roots file is read again whenever it changes, so a folder added to it can
+be used in the same session and a folder taken out is refused again. Replace
+the file whole rather than writing it in place. A file over 256 KiB, missing,
+unreadable or not understood names no folder. Each folder it names must exist
+and must not be too wide (a home, drive or system folder) or inside another
+folder the file names; any other is left out. `--root` folders still apply and come first. With
+a roots file and no `--root`, the working directory is not a root, and while
+there are no roots every path is refused with `outside_roots`.
+`project_status` lists the current roots.
 
 Over stdio, standard output carries only the protocol. Anything else that
 would print there goes to standard error.
 
 ## How the server edits
 
-**One project per server.** `project_create` and `project_open` choose it;
+**One project per server.** `project_create` and `project_open` choose it
+(a server started with `--window` starts on its window's project);
 `project_status` says where it is:
 
 - **local**: the server edits the file itself. It holds the file's lock, saves
@@ -214,11 +230,91 @@ a typed tool.
 8. The person opens the `.aster` file in Aster, or watches it all happen in
    the window when the project was opened there.
 
+## Aster's Agent tab
+
+The Agent tab's live agent ("Edits: Made as it works") is this same server.
+The window holds a conversation with the installed Claude Code or Codex CLI
+whose only tools are this server's: no shell, no web and none of the
+person's own MCP servers. The agent's edits enter the window's agent session
+as an outside client's do, and each is one step in the window's undo
+history. [ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md)
+records the design.
+
+The window starts the program `ASTER_MCP` names, or the `aster-mcp` beside
+its own `aster`, as:
+
+```bash
+aster-mcp --window SESSION.json --tag aster-tab-INSTANCE \
+  --roots-file SESSION.roots --desktop-settings SETTINGS --models DIR
+```
+
+`SESSION.json` is the window's own session descriptor and `INSTANCE` its
+agent session's instance id, 32 hex digits. `SESSION.roots`, beside
+it, is a roots file only its owner can read. The window writes it from a
+thread of its own and rewrites it whenever the folders it wants change while
+the agent talks: the project file's folder, the folder of every asset, the
+person's Videos (Movies), Desktop, Documents, Downloads, Music and Pictures
+folders, and the folders the person added in Settings › Agent › Folders. The
+server leaves out a folder that is gone, too wide or inside another one the
+file names, and refuses a file anywhere else with `outside_roots`. The file is removed when
+the window closes. Importing media from a new folder or adding a folder does
+not restart the conversation; a new provider, model or effort does.
+
+A server started with `--window` starts in that window and can leave it, as
+any MCP client can:
+
+- It attaches to the window's project at once, or at its first call when
+  the window is not answering yet. While it follows its window and has no
+  project, it attaches again on its next call.
+- `project_create`, `project_open`, `project_close` and `desktop {op: open}`
+  work as for any client. A project no window shows is edited by the server
+  itself and saved after every edit; `desktop {op: open}` shows it in a new
+  window, and `desktop {op: attach}` with an `instance_id` moves to another
+  window. Creating, opening or closing a project, or opening a window,
+  stops it following its window.
+- `desktop {op: attach}` naming no window brings it back to its own window,
+  and it follows the window again. `history {op: undo}` takes back only the
+  edits it made since it last attached, so after leaving and coming back
+  its earlier edits need `allow_person: true` or the person's own undo.
+- `project_save {destination}` saves a copy, which a window writes on its
+  own time; `project_status` reports `last_save`.
+- While it follows its window and the window is gone, it refuses with
+  `desktop_closed`, as does `desktop {op: attach}` naming no window. A
+  window that stops answering after an edit was sent gives `indeterminate`,
+  as for any client.
+- The window ends the conversation when the person opens or makes another
+  project in it.
+
+With `--tag aster-tab-INSTANCE` its request ids are `aster-tab-INSTANCE-1`,
+`aster-tab-INSTANCE-2` and so on; an outside server's are `mcp-N` unless it
+is given another tag. Each window claims only requests with its own tag, so
+another window's agent is an outside client to it. The
+window counts its own agent's edits for the turn, and the changes the agent
+reports in other projects, and shows its "Agent: …" rows only for outside
+clients. `person_editing` and `desktop_busy` refuse the Agent tab as they
+refuse any client.
+
+External MCP clients and the Agent tab can edit the same window at the same
+time. The window takes their requests one at a time, and a typed tool given
+`expected_revision` refuses with `stale_revision` when the other changed
+the project first.
+
+The Agent tab was verified on one macOS host in debug builds with Claude
+Code 2.1.300 and codex-cli 0.162.1 while its server was locked to its window.
+Starting in the window and leaving it, and the roots file, are covered by
+`tests/mcp.rs` and by unit tests; native runs of them are recorded in
+[verification](verification.md#in-app-agent) once made. Codex 0.162.1 calls MCP
+tools only with its `code_mode_host` feature on, so the window leaves it
+on; other Codex versions are unverified. Linux, Windows and release builds
+are unverified. See [verification](verification.md#in-app-agent).
+
 ## Safety
 
 - Paths are resolved through symbolic links and must stay inside the roots.
-  A path containing `..` is refused. A refusal does not say whether the file
-  exists.
+  A path containing `..` is refused. The `outside_roots` message lists the
+  roots and says that the person can add one with `--root`, or for Aster's
+  own agent in Settings › Agent › Folders. A refusal does not say whether
+  the file exists.
 - Nothing is replaced without `overwrite: true`: projects, exports, pictures
   and caption files alike. Exports are written to a part file and renamed
   when they are complete.

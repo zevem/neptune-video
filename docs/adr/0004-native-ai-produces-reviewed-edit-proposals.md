@@ -25,3 +25,10 @@ silently change the meaning of an edit.
 The initial adapters reuse native CLI authentication and offer metadata-driven
 editing, not audiovisual content analysis. See [native AI](../native-ai.md) for
 implemented contracts and backend versus native acceptance evidence.
+
+[ADR 0011](0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md)
+narrows where this record applies. The Agent tab's Ask mode now edits
+through `aster-mcp` started in its window by default, with the same tools
+an outside MCP agent has. Reviewed proposals
+remain for the "Proposed for review" setting and for caption translation,
+and they work as described here.
