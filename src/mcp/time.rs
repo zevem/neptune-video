@@ -7,8 +7,8 @@ use editor_core::{FrameRate, Time};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// A point or length on the timeline. Give exactly one field. Points are
-/// snapped to the nearest start of a project frame.
+/// Give exactly one field. Editing tools snap to project frames;
+/// picture tools preserve seconds/us and use source rate with asset_id.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TimeSpec {

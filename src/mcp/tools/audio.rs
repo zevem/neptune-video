@@ -43,7 +43,7 @@ pub struct AudioParams {
     pub solo: Option<bool>,
     /// `music`: the sound to lay under the project.
     #[serde(default)]
-    pub asset_id: Option<Uuid>,
+    pub asset_id: Option<String>,
     /// `noise`: 0 to 1.
     #[serde(default)]
     pub amount: Option<f32>,
@@ -166,7 +166,8 @@ impl AsterServer {
                     })
                 }
                 "music" => {
-                    let asset = params.asset_id.ok_or_else(|| ToolError::invalid("Give asset_id"))?;
+                    let given = params.asset_id.ok_or_else(|| ToolError::invalid("Give asset_id"))?;
+                    let asset = super::resolve_asset_id(project, &given)?;
                     crate::rules::background_music(project, asset).map_err(refused)
                 }
                 "detach" => {
@@ -182,6 +183,9 @@ impl AsterServer {
                 }
                 "normalize" => {
                     let measured = measured.expect("read above");
+                    if !measured["clips"].is_array() {
+                        return Err(ToolError::invalid("A mix measurement cannot normalize individual clips; measure clip_ids with loudness_start first"));
+                    }
                     if measured["project_id"].as_str() != Some(project.id.to_string().as_str()) {
                         return Err(ToolError::new(
                             crate::mcp::errors::codes::PROJECT_CHANGED,

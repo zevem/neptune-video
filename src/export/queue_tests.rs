@@ -1131,3 +1131,26 @@ fn shutdown_cancels_everything_and_refuses_more() {
     assert!(!rig.queue.retry(b));
     rig.none_started();
 }
+
+#[test]
+fn headless_shutdown_waits_for_the_runners_resources_to_drop() {
+    struct Resource(Arc<AtomicBool>);
+    impl Drop for Resource {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let dropped = Arc::new(AtomicBool::new(false));
+    let resource = Resource(dropped.clone());
+    let queue = RenderQueue::with_parts(
+        || {},
+        Arc::new(|| Ok(caps())),
+        Box::new(move |_, _| {
+            let _held = &resource;
+            Finish::Cancelled
+        }),
+    );
+    queue.shutdown_and_join();
+    assert!(dropped.load(Ordering::Acquire));
+    queue.shutdown_and_join();
+}

@@ -1232,9 +1232,12 @@ fn a_file_whose_audio_effects_break_a_rule_is_refused_and_preserved() {
             load_project_with_session(&path).map(|_| ()).unwrap_err(),
             save_project(&path, editor.project()).unwrap_err(),
         ] {
-            // The reason whole: "effect" is also inside two other refusals.
+            // Compare the reason without its clip context: "effect" is also
+            // inside two other refusals.
             match error {
-                StoreError::Edit(EditError::Invalid(found)) => assert_eq!(found, reason),
+                StoreError::Edit(EditError::Invalid(found)) => {
+                    assert_eq!(found.split(" (clip ").next().unwrap(), reason)
+                }
                 other => panic!("expected Invalid({reason}), got {other}"),
             }
         }

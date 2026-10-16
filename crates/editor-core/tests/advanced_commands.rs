@@ -165,7 +165,7 @@ fn rejected(editor: &mut Editor, command: Command) -> EditError {
 
 fn invalid(editor: &mut Editor, command: Command, what: &str) {
     match rejected(editor, command) {
-        EditError::Invalid(found) => assert_eq!(found, what),
+        EditError::Invalid(found) => assert_eq!(found.split(" (clip ").next().unwrap(), what),
         other => panic!("expected invalid {what}, found {other:?}"),
     }
 }

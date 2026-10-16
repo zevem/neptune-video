@@ -118,6 +118,7 @@ pub struct Editor {
     // Acknowledgements name the submitted document, even if the user edits or
     // undoes while the atomic write is in progress.
     submitted_saves: BTreeMap<u64, Arc<Project>>,
+    changes: crate::changes::ChangeJournal,
 }
 impl Default for Editor {
     fn default() -> Self {
@@ -130,6 +131,7 @@ impl Default for Editor {
             future: Vec::new(),
             revision: 0,
             submitted_saves: BTreeMap::new(),
+            changes: crate::changes::ChangeJournal::default(),
         }
     }
 }
@@ -145,6 +147,7 @@ impl Editor {
             future: Vec::new(),
             revision: 0,
             submitted_saves: BTreeMap::new(),
+            changes: crate::changes::ChangeJournal::default(),
         })
     }
     pub fn project(&self) -> &Project {
@@ -198,10 +201,20 @@ impl Editor {
     pub fn future(&self) -> impl Iterator<Item = &HistoryEntry> {
         self.future.iter().rev()
     }
+    /// Transient bounded change journal, including undo and redo.
+    pub fn changes_since(&self, revision: u64) -> ChangesSince {
+        self.changes.since(revision, self.revision)
+    }
     pub fn undo(&mut self) -> bool {
         let Some(entry) = self.past.pop() else {
             return false;
         };
+        self.changes.record(
+            self.revision.saturating_add(1),
+            &format!("Undo {}", entry.label),
+            &entry.after,
+            &entry.before,
+        );
         self.current = entry.before.clone();
         self.future.push(entry);
         self.revision = self.revision.saturating_add(1);
@@ -211,6 +224,12 @@ impl Editor {
         let Some(entry) = self.future.pop() else {
             return false;
         };
+        self.changes.record(
+            self.revision.saturating_add(1),
+            &format!("Redo {}", entry.label),
+            &entry.before,
+            &entry.after,
+        );
         self.current = entry.after.clone();
         self.past.push(entry);
         self.revision = self.revision.saturating_add(1);
@@ -264,6 +283,7 @@ impl Editor {
             future: state.future,
             revision: state.revision,
             submitted_saves: BTreeMap::new(),
+            changes: crate::changes::ChangeJournal::default(),
         })
     }
     pub fn dispatch_at(
@@ -318,6 +338,12 @@ impl Editor {
                 changed: false,
             });
         }
+        self.changes.record(
+            self.revision.saturating_add(1),
+            &prepared.label,
+            &prepared.before,
+            &prepared.after,
+        );
         self.past.push(HistoryEntry {
             label: prepared.label.clone(),
             before: prepared.before.clone(),
@@ -567,9 +593,12 @@ fn crop_local(clip: &mut Clip, from: Time, to: Time) -> Result<(), EditError> {
         .iter()
         .map(|track| anim_range(clip, track))
         .collect();
-    for (track, range) in clip.animation.iter_mut().zip(ranges) {
+    for (index, (track, range)) in clip.animation.iter_mut().zip(ranges).enumerate() {
         if !track.crop(from, to, range) {
-            return Err(EditError::Invalid("animation keys".into()));
+            return Err(EditError::Invalid(format!(
+                "animation keys (clip {}, animation[{index}] {:?}, target {:?}): the cut curve cannot be represented",
+                clip.id, track.key, track.target
+            )));
         }
     }
     if let Some(retime) = &clip.retime {
@@ -913,6 +942,32 @@ fn apply(project: &mut Project, command: Command, depth: usize) -> Result<(), Ed
             }
         }
         Command::AddClip { track_id, clip } => track_mut(project, track_id, true)?.clips.push(clip),
+        Command::PatchClip {
+            clip_id,
+            patch,
+            trim_animation,
+        } => {
+            let clip = clip_mut(project, clip_id)?;
+            if matches!(trim_animation, AnimationTrim::Crop)
+                && let Some(value) = patch.get("duration")
+            {
+                let duration: Time = serde_json::from_value(value.clone()).map_err(|error| {
+                    EditError::Invalid(format!("clip {clip_id} duration: {error}"))
+                })?;
+                if !duration.is_valid() || duration <= Time::ZERO {
+                    return Err(EditError::Invalid(format!(
+                        "clip {clip_id} duration: must be positive and within the timeline"
+                    )));
+                }
+                if duration < clip.duration {
+                    crop_local(clip, Time::ZERO, duration)?;
+                    clip.duration = duration;
+                    fit_transitions(clip, frame);
+                    fit_fades(clip);
+                }
+            }
+            *clip = crate::patch::merge_clip(clip, patch)?;
+        }
         Command::DeleteClips { clip_ids, ripple } => {
             let selected = expand(project, &clip_ids, true)?;
             let mut intervals: Vec<_> = selected

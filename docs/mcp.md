@@ -138,7 +138,14 @@ If a window opens the file while the server is editing it locally, the
 server hands over to the window when both have the same version. If they
 differ it refuses with `desktop_stale` or `desktop_conflict`; it never has
 two writers. While the person is in the middle of a gesture or a dialog the
-window refuses with `person_editing` or `desktop_busy`: wait and try again.
+window refuses with `person_editing` or `desktop_busy`. Editing tools, history
+undo/redo, checkpoint restore and project save accept `wait_if_busy: true`:
+retry explicit refusals for up to five seconds, retaining the original
+project, context and revision guards. An individual request can still take
+the transport's normal connection/read timeout. A human edit meanwhile still
+returns `stale_revision` for edits and explicitly guarded saves; an
+unguarded save retains its existing current-state semantics. An indeterminate
+mutation is never replayed.
 
 **Every edit is one undoable step.** Typed tools build the same commands the
 window builds, from the editor's own rules (placement, trimming, fades,
@@ -152,6 +159,8 @@ transitions, title templates, captions), and every result names what it did:
 - `expected_revision` refuses an edit with `stale_revision` when the project
   changed since the agent looked.
 - `dry_run: true` validates an edit and applies nothing.
+- `wait_if_busy: true` waits for a temporary desktop refusal without changing
+  targets or adopting a newer revision.
 - `allow_overlap: true` lets clips overlap on a track, which the window never
   does.
 - `history {op: undo}` takes back only the agent's own last edit and refuses
@@ -161,43 +170,128 @@ transitions, title templates, captions), and every result names what it did:
 - IDs are stable: an ID the agent captured keeps naming the same asset, track
   or clip, whatever is selected in the window.
 
-**Times are frame-accurate.** Typed tools take a time as exactly one of
+**Times.** Typed tools take a time as exactly one of
 `{"frame": 120}`, `{"seconds": 4.0}`, `{"us": 4000000}` or
 `{"timecode": "00:00:04:00"}` (non-drop, at the project's rate). A time is
-snapped to the nearest frame start, as the window snaps, and times are reported in all
-four forms. `edit_apply` takes core commands, whose times are integer
-microseconds.
+snapped to the nearest frame start for timeline placement, as the window
+snaps. Source in-points, picture `seconds`/`us`, inspection ranges and mix
+measurement ranges retain exact microseconds. Asset picture `frame`/timecode
+uses the source rate; timeline picture frame/timecode uses the project rate.
+Reported frame/timecode describes the containing frame while `us` retains the
+requested time. The existing source-frame selector still selects on the
+source's frame grid; this does not add arbitrary VFR-PTS or HDR acceptance.
+`edit_apply` takes core commands with integer microsecond times.
 
 ## Tools
 
 | Area | Tools |
 | --- | --- |
-| Project | `project_status`, `project_create`, `project_open`, `project_save`, `project_inspect` (summary, timeline, media, full), `project_settings`, `project_close`, `desktop` |
-| Media | `media_import` (files and folders, deduplicated), `media_inspect` (with every stream ffprobe reports), `media_remove`, `media_folder` |
-| Timeline | `track_edit`, `clip_add`, `clip_edit` (move, trim, split, delete with ripple, speed, transform, link, group, duplicate), `marker_edit` |
+| Project | `project_status`, `project_create`, `project_open`, `project_save`, `project_inspect` (summary, tracks, timeline, clips, media, full), `project_settings`, `project_close`, `desktop` |
+| Media | `media_import` (files and folders, deduplicated), `media_inspect` (with every stream ffprobe reports), `media_usage`, `media_remove`, `media_folder` |
+| Timeline | `track_edit`, `clip_add`, `patch_clip`, `offset_clips`, `clip_edit` (move, trim, split, delete with ripple, speed, transform, link, group, duplicate), `marker_edit` |
 | Effects | `effects_catalog`, `effect_edit` (effects, audio presets, masks, blend modes, looks), `transition_set`, `retime_set` (ramps, reverse, freeze, pitch) |
 | Animation | `keyframes_set` (any animatable clip, effect or mask parameter, with easing) |
 | Text | `text_add`, `text_edit` (style, colour, entrance and exit animations), `captions` (from a transcript, `.srt`/`.vtt` import and export, add, retime, split, merge, retype, language, translate) |
 | Templates | `templates` (list, preview as a picture, apply a look), then `text_add {template_id}` |
 | Audio | `audio_edit` (volume, fades, track mix, background music, detach, noise reduction, loudness normalization) |
 | Transcription | `transcription_models` (list, install), `transcribe_start` (Whisper words with timeline times) |
-| Analysis | `frame_render`, `contact_sheet`, `scenes_start`, `loudness_start`, `media_inspect` |
-| Render | `render_capabilities`, `render_export_start` (presets, settings, quick preview, a range) |
+| Analysis | `frame_render`, `contact_sheet`, `scenes_start`, `loudness_start` (clips or timeline mix), `media_inspect` |
+| Render | `frames_export` (numbered images, isolated layers), `render_capabilities`, `render_export_start` (presets, settings, quick preview, a range) |
 | Jobs | `job` (list, status, wait with progress, cancel; pause, resume, retry and remove for exports) |
-| History | `history`, `checkpoint` |
+| History | `history` (list with object/field diffs, changes_since, undo, redo), `checkpoint` |
 | Everything else | `edit_apply` (any core command, in an all-or-nothing batch), `edit_schema` |
 
 Resources: `aster://project`, `aster://history` and `aster://jobs`. A
 subscribed client gets `notifications/resources/updated` when they change.
 
+**Inspect live state in small answers.** `project_inspect {scope: tracks}`
+returns track IDs, names, hide/mute/solo/lock state, gain and counts without
+media or clip objects. The default summary contains settings and counts;
+media metadata is available through `scope: media`. Timeline and media pages
+default to 50 items, accept `limit` (1–500) and `offset`, and return `total`
+and `next_offset`. Summary/tracks use the same track pagination; timeline
+includes only its first page of track summaries with `tracks_total` and
+`tracks_truncated`. Check `revision` between pages. Clip queries accept
+`track_ids`, `clip_ids`, `asset_ids`, a half-open `time_range: {start,end}`
+and top-level `fields`. IDs are always included. `scope: clips` or filtered
+`scope: full` returns `{track_id, clip}`, where `clip` is the exact core
+`add_clip.clip` object, including keys, effects and text styling. It reads
+unsaved live edits. `fields` intentionally makes those objects partial;
+omit it when round-tripping. Bare `scope: full` retains the whole-project
+view. Inspection answers are capped at 4 MiB.
+
+**Patch without replacing.** `patch_clip {clip_id, start?, duration?,
+source_in?, asset_id?, changes?}` retains the clip ID and unspecified
+properties. `changes` recursively merges stored clip objects, replaces arrays
+and clears optional fields with null; its times are integer microseconds.
+For example, `changes: {content: {style: {line_height: 1.4}}}` updates a text
+style field. Unknown fields and attempts to replace IDs or link/group
+relationships are refused. Use `effect_edit` and `keyframes_set` to change
+individual effects/animation tracks. Shortening defaults to cropping existing
+timed data with interpolated boundary keys, matching the existing trim rules;
+`trim_animation: preserve` instead refuses data that no longer fits. Explicit
+replacement keys/words must fit. `clip_edit {op: trim}` remains the operation
+for a source-aligned head trim. `offset_clips {clip_ids, delta}` shifts the
+set by a signed TimeSpec, including linked/grouped movement. Failures name
+the owning clip and offending animation/key/word/effect where applicable.
+
+Asset selection in `clip_add`, `patch_clip`, picture tools, `media_inspect`,
+`media_usage`, `scenes_start`, `audio_edit` and `effect_edit` accepts a full
+UUID or a unique hexadecimal prefix of at least four digits. Ambiguous
+prefixes are refused; results always return full IDs. Raw commands and
+multi-asset ID lists still require full UUIDs. `media_usage {asset_id}`
+returns source/effect references with track/clip/effect IDs, paged through
+`limit` and `offset`.
+
+`history {op: list}` adds object/field summaries to the existing labels.
+`history {op: changes_since, since_revision: N}` returns the last 128
+revision events, including human edits, undo and redo. History labels retain
+the latest 50 undo/next 50 redo entries. Journal entries retain at most 256
+object changes and mark truncation; a changed track beyond the 4,096-clip
+comparison budget returns a `clips: null` hint and truncation. Scalar values describe simple
+changes such as hide/mute. The journal is transient. Check `complete` and
+`oldest_revision`; after reload or eviction, take a fresh inspection instead
+of assuming no intervening edits. Keep the `context_id` alongside a revision.
+
 **Pictures.** `frame_render` draws the timeline, or one media file, at given
 times through the export's compositor: effects, masks, titles, captions and
 transitions included. It returns PNG or JPEG images, at most 48 frames of at
-most 2048 pixels a side and 64 million pixels in all, and can also save
-them inside the roots. `contact_sheet` draws up to 48 evenly spaced frames
-as one picture of at most 2048 pixels a side.
+most 2048 pixels a side and 64 Mi pixels (67,108,864) in all, and can also save
+them inside the roots. Output parents are created automatically.
+`contact_sheet` accepts explicit `times` in order or up to 48 evenly spaced
+frames as one picture of at most 2048 pixels a side; combining explicit times
+with range/count options is refused. Picture tools accept `only_tracks`,
+`exclude_tracks` or `solo_clip`. `only_tracks` and `solo_clip` reveal selected
+hidden tracks only in the rendered snapshot; transforms, grade and effects are preserved
+without editing visibility or history.
 
-**Jobs.** Transcription, model installs, scene detection, loudness and
+`frames_export {destination: "…/frames", from, to, size, format}` starts a
+job writing `frame-000001.png` (or `.jpg`) onward. It accepts the same asset
+and isolation options. Sampling defaults to the subject's rational frame
+rate; `step` accepts a frame count or exact time interval. The half-open
+range contains at most 100,000 frames. One frame at a time crosses a bounded
+delivery buffer; inline-render memory caps remain in force. The result gives
+the count, filename pattern, revision and sampling recipe. Cancellation or a
+later failure keeps completed pictures. Native encoded-video export still
+renders the authority's project; use isolated frame dumps for mattes.
+
+An omitted range covers the subject; `solo_clip` starts at the clip's own
+start and ends at its end. `asset_id` cannot be combined with track or clip
+selection. An explicit `to` is limited to the subject's end.
+
+**Measure the mix before export.** `loudness_start {scope: timeline}` (or
+`mix`) measures integrated LUFS and true peak from the stereo export PCM
+after its master limiter, including clip/track gains, fades, effects,
+mute/solo and detached-audio ownership. Optional `from`/`to` selects a
+range; `track_ids` limits contributions while retaining mute/solo rules.
+`per_track: true` additionally measures each selected track through its own
+master stage (at most 64 tracks). Those readings are not additive stems.
+The result carries project/context/revision, measurement range and notices
+for unavailable filters. Silent or too-short/quiet measurements have a
+status and null figures. Mix jobs do not normalize clips; keep using
+`loudness_start {clip_ids}` followed by `audio_edit {op: normalize}` for that.
+
+**Jobs.** Transcription, model installs, scene detection, loudness, frame dumps and
 exports run as jobs. A start tool answers at once with a `job_id`. `job {op:
 wait}` waits at most 50 s and sends progress notifications when the client
 asked for them. Jobs never edit: apply their results with `captions {op:
@@ -350,7 +444,7 @@ These are not offered, or not verified:
 - Starting motion tracking, stabilization, stem separation, beat detection,
   ducking or voiceover recording. Their results already in a project are kept
   and rendered.
-- Renaming clips, moving markers, renaming or removing library folders, and
+- Moving markers, renaming or removing library folders, and
   relinking media.
 - MCP Tasks, the protocol's own long-running operations. Jobs and `job` stand
   in for them.

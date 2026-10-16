@@ -1280,6 +1280,82 @@ host/power conditions limit interpretation; GPU, native fps, audio and target
 runtime remain outside this diagnostic. [Performance](performance.md#optimized-distinct-video-worker-diagnostic)
 records cold/random/cached distributions and further limits.
 
+## MCP productivity follow-up
+
+On 2026-10-15, the [ten-point MCP review](../.scratch/mcp-productivity/review.md)
+verified the reported friction against the source and generated fixtures, then
+added live filtered inspection, in-place clip patches, contextual validation,
+exact/isolated pictures, streaming image sequences, mix loudness, revision
+change summaries, busy waiting, explicit contact times and media usage/prefixes.
+Existing move/trim/interpolation and raw apply revision checks were distinguished
+from actual gaps. The original session/project and HDR sources were unavailable.
+
+The host was Linux x86-64, Ubuntu 26.04.1 LTS, Rust 1.97.1, locked dependencies,
+CI profile, and the checkout's FFmpeg/ffprobe
+`n8.1.3-9-g29e619e767-20260930`. Mandatory media preflight passed. The
+[build/source record](../artifacts/mcp-productivity/verification.json) contains
+the source digest and final `aster`/`aster-mcp` binary SHA-256 values. These
+are unoptimized CI builds, not release performance evidence.
+
+**580 focused tests passed, zero failed/ignored:** 261 core, 100 store,
+115 agent (with the owned provider fixture), 29 desktop MCP units,
+23 export-queue units, 20 media audio, 16 media export, and 16 real MCP integration tests. The
+integration run used `ASTER_TEST_DESKTOP=1` on a private Xvfb display, so both
+window/agent-tab protocol tests executed; none returned through a missing-display
+skip. Projects, settings, models, media and sessions were task-owned temporary
+storage. The graphics adapter was not recorded; this establishes finite native
+protocol behavior, not physical display/audio acceptance.
+
+Commands and logs:
+
+- `cargo test --profile ci -p editor-core --locked` — [core](../artifacts/mcp-productivity/core-tests.log).
+- `cargo test --profile ci -p editor-store --locked` — [store](../artifacts/mcp-productivity/store-tests.log).
+- `python3 scripts/test-workspace.py --profile ci --package editor-agent` — [agent](../artifacts/mcp-productivity/agent-tests.log).
+- `cargo test --profile ci -p aster-editor --lib --locked mcp::` — [MCP units](../artifacts/mcp-productivity/mcp-unit-tests.log).
+- `cargo test --profile ci -p aster-editor --lib --locked export::queue::tests`
+  — [queue](../artifacts/mcp-productivity/queue-tests.log).
+- `cargo test --profile ci -p editor-media --lib --locked audio::tests` and
+  `export::tests` — [audio](../artifacts/mcp-productivity/media-audio-tests.log),
+  [export](../artifacts/mcp-productivity/media-export-tests.log).
+- `xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24' env -u WAYLAND_DISPLAY ASTER_TEST_DESKTOP=1 cargo test --profile ci -p aster-editor --test mcp --locked -- --nocapture --test-threads=1`
+  — [native MCP](../artifacts/mcp-productivity/mcp-integration-tests.log).
+- Denied-warning all-target Clippy passed for the five affected packages;
+  [all-package log](../artifacts/mcp-productivity/clippy.log) and
+  [final desktop follow-up](../artifacts/mcp-productivity/clippy-final-desktop.log).
+  `cargo fmt --all -- --check`, `git diff --check` and
+  `python3 scripts/check-architecture.py` passed.
+
+The pixel regression compares a 60 fps source with an off-project-grid in-point
+in a 30 fps project, then checks transformed/graded isolated stills and dumps,
+hidden/excluded tracks, explicit sheet times, nested directories, a 60-frame
+job and unchanged editing state. It exposed and now guards stale decode-size
+caches across snapshots. Mix controls check coherent summing, mute, silence,
+post-limiter stereo measurement and no edits; persistence controls cover clip
+identity and patch undo/redo through save/recovery. The 43-tool catalog is
+37,342 bytes, below the existing 40 KiB budget.
+
+An early MCP run passed tool assertions while its frame worker crashed during
+process shutdown. A direct lifecycle probe retained real exit statuses and
+reproduced SIGSEGV in both frame-only and both frame-plus-export controls;
+export-only controls initially exited cleanly. Removing an incidental frame-lane
+timeout exposed the matching export-worker race in two export-only trials
+([intermediate evidence](../artifacts/mcp-productivity/shutdown-probe-export-red/report.json)).
+The server now cancels and joins both GPU-owning workers before process exit;
+GUI shutdown retains its bounded behavior. A standing subprocess-exit regression
+checks frame, export and combined workflows, and
+the [final six-trial lifecycle matrix](../artifacts/mcp-productivity/shutdown-probe-final/report.json)
+requires successful responses, clean exit 0 and no native failure diagnostics.
+The [original red evidence](../artifacts/mcp-productivity/shutdown-probe/README.md)
+and process trace are retained. No C-library stack was captured; GDB changed
+timing and did not reproduce the crash.
+
+Remaining limits: isolated native encoded-video export is not offered (isolated
+PNG/JPEG sequences are); exact VFR PTS and original HDR footage are unverified;
+mix values are PCM before codec encoding; history journals are transient and
+explicitly truncated. No release build, native macOS/Windows run, real-provider
+conversation, throughput benchmark or normal/narrow UI capture was taken for
+this follow-up. It does not replace the existing platform/UI acceptance gates.
+
 ## Native MCP
 
 [`aster-mcp`](mcp.md) ([ADR 0010](adr/0010-mcp-reaches-the-editor-through-the-agent-protocol.md),

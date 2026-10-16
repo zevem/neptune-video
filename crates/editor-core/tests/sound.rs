@@ -186,7 +186,9 @@ fn volume_keys(values: &[(f64, f32)]) -> AnimTrack {
 fn refused(editor: &mut Editor, command: Command, what: &str) {
     let (before, revision) = (editor.snapshot(), editor.revision());
     match editor.dispatch(command) {
-        Err(EditError::Invalid(reason)) => assert_eq!(reason, what),
+        Err(EditError::Invalid(reason)) => {
+            assert_eq!(reason.split(" (clip ").next().unwrap(), what)
+        }
         other => panic!("expected Invalid({what}), got {other:?}"),
     }
     assert!(Arc::ptr_eq(&before, &editor.snapshot()));
@@ -197,7 +199,9 @@ fn refused(editor: &mut Editor, command: Command, what: &str) {
 #[track_caller]
 fn invalid(project: &Project, what: &str) {
     match project.validate() {
-        Err(EditError::Invalid(reason)) => assert_eq!(reason, what),
+        Err(EditError::Invalid(reason)) => {
+            assert_eq!(reason.split(" (clip ").next().unwrap(), what)
+        }
         other => panic!("expected Invalid({what}), got {other:?}"),
     }
 }
@@ -1359,7 +1363,7 @@ fn an_audio_effect_is_whole_takes_no_points_or_media_and_is_not_keyed() {
             keys: vec![keys(spec.default)],
         });
         assert!(
-            matches!(&keyed, Err(EditError::Invalid(reason)) if reason == "audio clip look"),
+            matches!(&keyed, Err(EditError::Invalid(reason)) if reason.split(" (clip ").next() == Some("audio clip look")),
             "{kind:?}: {keyed:?}"
         );
         assert!(Arc::ptr_eq(&before, &f.editor.snapshot()));
@@ -1400,7 +1404,7 @@ fn an_audio_clip_holds_sixteen_audio_effects_and_not_seventeen() {
     let (before, revision) = (f.editor.snapshot(), f.editor.revision());
     assert!(matches!(
         f.editor.dispatch(set_effects(f.song, twice)),
-        Err(EditError::Invalid(reason)) if reason == "effect"
+        Err(EditError::Invalid(reason)) if reason.split(" (clip ").next() == Some("effect")
     ));
     assert!(Arc::ptr_eq(&before, &f.editor.snapshot()));
     assert_eq!(f.editor.revision(), revision);
@@ -1429,7 +1433,9 @@ fn a_refused_set_effects_leaves_the_stack_and_the_history_as_they_were() {
     ];
     for (stack, what) in refusals {
         match f.editor.dispatch(set_effects(f.song, stack)) {
-            Err(EditError::Invalid(reason)) => assert_eq!(reason, what),
+            Err(EditError::Invalid(reason)) => {
+                assert_eq!(reason.split(" (clip ").next().unwrap(), what)
+            }
             other => panic!("expected Invalid({what}), got {other:?}"),
         }
         assert!(Arc::ptr_eq(&after, &f.editor.snapshot()));
@@ -1446,7 +1452,7 @@ fn a_refused_set_effects_leaves_the_stack_and_the_history_as_they_were() {
     };
     assert!(matches!(
         f.editor.dispatch(batch),
-        Err(EditError::Invalid(reason)) if reason == "audio effect on a picture clip"
+        Err(EditError::Invalid(reason)) if reason.split(" (clip ").next() == Some("audio effect on a picture clip")
     ));
     assert!(Arc::ptr_eq(&after, &f.editor.snapshot()));
     assert_eq!(clip(&f.editor, f.song).effects, voice);

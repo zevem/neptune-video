@@ -43,6 +43,7 @@ mod separate;
 
 pub use beats::{BeatGrid, MAX_BEATS, beats};
 pub use extract::{ExtractJob, part_path};
+pub(crate) use loudness::summary as loudness_summary;
 pub use loudness::{LOUDNESS_FLOOR, Loudness, LoudnessJob};
 pub use peaks::{
     KeptPeaks, MAX_PEAK_BUCKETS, PEAK_ALGORITHM, PEAK_CACHE_BYTES, PEAK_CACHE_ENTRIES,

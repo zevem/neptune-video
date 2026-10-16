@@ -123,11 +123,30 @@ or grant filesystem/provider tools.
 `apply` answers `applied` with `created`, the IDs the edit added (tracks,
 clips, assets, folders, markers and trackers), so a client never has to
 find them by looking again. `history` lists the labels of the undo
-entries, oldest first, and of the redo entries, next first:
+entries, oldest first, and of the redo entries, next first. Its additional
+`past_entries`/`future_entries` contain bounded object/field summaries.
+Labels and details retain the latest 50 undo entries (oldest first) and next
+50 redo entries (next first), with labels capped at 256 characters;
+`truncated` indicates omitted entries on either side. The label-array format remains:
 
 ```json
 {"request_id":"history-1","operation":"history"}
 ```
+
+`changes_since` reads a transient journal of durable revision changes,
+including human commands, undo and redo, without a full project inspection:
+
+```json
+{"request_id":"changes-1","operation":"changes_since","revision":12}
+```
+
+The response includes `result.project_id`, `result.context_id`, and a
+`result.changes` object reporting `revision`, `oldest_revision`, `complete` and
+`entries` (at most 128 events, each at most 256 object changes). A false
+`complete` or truncated entry requires fresh inspection. Reopening/recovery
+starts a new journal; context identity must still be checked.
+History/journal reads enforce project/context guards when supplied; unguarded
+reads remain available.
 
 `document` describes the document as the session that owns it sees it:
 `project_id`, `context_id`, `name`, `path`, `dirty`, `saving`,
@@ -143,7 +162,8 @@ saved), `editing` (the person holds a change that is not yet an edit),
 
 `save` saves to the document's own file, or with `destination` to a new
 file that must not exist yet; it needs the project and context guards and
-saves the current revision. A window starts its ordinary save, so the
+saves the current revision. Optional `expected_revision` is enforced when
+provided. A window starts its ordinary save, so the
 answer comes before the file is written: `save_count` and `last_save`
 in `document` tell when it is done. A headless session saves at once.
 
@@ -165,6 +185,7 @@ enforced by `Project::validate`; a refused command leaves the document unchanged
 
 | Command | Fields | Rule |
 | --- | --- | --- |
+| `patch_clip` | `clip_id`, `patch`, `trim_animation` | Partial stored clip fields; objects merge, arrays replace, null clears optional fields. Identity and link/group fields are protected. Shortening with default `crop` fits existing timed data before applying explicit replacements; `preserve` validates strictly. |
 | `set_effects` | `clip_id`, `effects` | At most 16 effects, in render order. Keeping an effect's `id` keeps its keyframes; tracks of a removed effect are dropped. |
 | `set_masks` | `clip_id`, `masks` | At most 8 masks; same ID rule. |
 | `set_blend_mode` | `clip_id`, `mode` | |

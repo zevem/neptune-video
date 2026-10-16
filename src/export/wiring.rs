@@ -363,6 +363,7 @@ pub fn render_result(
         | AgentOperation::Redo
         | AgentOperation::Capabilities
         | AgentOperation::History
+        | AgentOperation::ChangesSince { .. }
         | AgentOperation::Document
         | AgentOperation::Save { .. } => AgentResult::error(
             codes::UNSUPPORTED,

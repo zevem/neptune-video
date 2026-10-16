@@ -42,15 +42,26 @@ pub struct Imported {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct InspectParams {
-    /// Media in the project.
+    /// Media UUID or unique hexadecimal prefix (at least four digits).
     #[serde(default)]
-    pub asset_id: Option<Uuid>,
+    pub asset_id: Option<String>,
     /// Or a file inside the roots, imported or not.
     #[serde(default)]
     pub path: Option<String>,
     /// Include every stream and format field ffprobe reports.
     #[serde(default)]
     pub details: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UsageParams {
+    /// Media UUID or unique hexadecimal prefix (at least four digits).
+    pub asset_id: String,
+    #[serde(default)]
+    pub offset: usize,
+    /// At most 500 references; 50 by default.
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -150,81 +161,95 @@ impl AsterServer {
         let guard = params.guard;
         let result = self
             .on(move |workspace| {
-                let snapshot = workspace.snapshot()?;
-                let project = &snapshot.project;
-                if let Some(folder) = folder_id
-                    && !project.folders.contains_key(&folder)
-                {
-                    return Err(ToolError::not_found(format!("No media folder {folder}")));
-                }
-                let known: BTreeMap<&std::path::Path, &editor_core::Asset> =
-                    (project.assets.values())
-                        .map(|asset| (asset.path.as_path(), asset))
+                workspace.with_wait(guard.wait_if_busy, |workspace| {
+                    let snapshot = workspace.snapshot()?;
+                    if let Some(expected) = guard.expected_revision
+                        && expected != snapshot.revision
+                    {
+                        return Err(ToolError::new(
+                            "stale_revision",
+                            format!(
+                                "The project is at revision {}, not {expected}",
+                                snapshot.revision
+                            ),
+                        )
+                        .at(snapshot.revision));
+                    }
+                    let project = &snapshot.project;
+                    if let Some(folder) = folder_id
+                        && !project.folders.contains_key(&folder)
+                    {
+                        return Err(ToolError::not_found(format!("No media folder {folder}")));
+                    }
+                    let known: BTreeMap<&std::path::Path, &editor_core::Asset> =
+                        (project.assets.values())
+                            .map(|asset| (asset.path.as_path(), asset))
+                            .collect();
+                    let mut fresh: Vec<editor_core::Asset> = Vec::new();
+                    let mut media = Vec::new();
+                    for mut asset in assets {
+                        if let Some(existing) = known.get(asset.path.as_path()) {
+                            media.push(asset_view(project, existing, false));
+                            continue;
+                        }
+                        if asset.folder_id.is_none() {
+                            asset.folder_id = folder_id;
+                        }
+                        fresh.push(asset);
+                    }
+                    // The folders of what is imported, and only those.
+                    let used: std::collections::BTreeSet<Uuid> =
+                        fresh.iter().filter_map(|a| a.folder_id).collect();
+                    let mut keep: std::collections::BTreeSet<Uuid> = used.clone();
+                    let by_id: BTreeMap<Uuid, &MediaFolder> =
+                        folders.iter().map(|f| (f.id, f)).collect();
+                    for id in &used {
+                        let mut at = by_id.get(id).and_then(|folder| folder.parent_id);
+                        while let Some(parent) = at {
+                            if !keep.insert(parent) {
+                                break;
+                            }
+                            at = by_id.get(&parent).and_then(|folder| folder.parent_id);
+                        }
+                    }
+                    let mut commands: Vec<Command> = folders
+                        .iter()
+                        .filter(|folder| keep.contains(&folder.id))
+                        .map(|folder| {
+                            let mut folder = folder.clone();
+                            if folder.parent_id.is_none() {
+                                folder.parent_id = folder_id;
+                            }
+                            Command::AddFolder { folder }
+                        })
                         .collect();
-                let mut fresh: Vec<editor_core::Asset> = Vec::new();
-                let mut media = Vec::new();
-                for mut asset in assets {
-                    if let Some(existing) = known.get(asset.path.as_path()) {
-                        media.push(asset_view(project, existing, false));
-                        continue;
+                    if fresh.is_empty() {
+                        return Ok(Imported {
+                            edit: None,
+                            media,
+                            errors,
+                        });
                     }
-                    if asset.folder_id.is_none() {
-                        asset.folder_id = folder_id;
+                    for asset in &fresh {
+                        media.push(asset_view(project, asset, true));
                     }
-                    fresh.push(asset);
-                }
-                // The folders of what is imported, and only those.
-                let used: std::collections::BTreeSet<Uuid> =
-                    fresh.iter().filter_map(|a| a.folder_id).collect();
-                let mut keep: std::collections::BTreeSet<Uuid> = used.clone();
-                let by_id: BTreeMap<Uuid, &MediaFolder> =
-                    folders.iter().map(|f| (f.id, f)).collect();
-                for id in &used {
-                    let mut at = by_id.get(id).and_then(|folder| folder.parent_id);
-                    while let Some(parent) = at {
-                        if !keep.insert(parent) {
-                            break;
-                        }
-                        at = by_id.get(&parent).and_then(|folder| folder.parent_id);
-                    }
-                }
-                let mut commands: Vec<Command> = folders
-                    .iter()
-                    .filter(|folder| keep.contains(&folder.id))
-                    .map(|folder| {
-                        let mut folder = folder.clone();
-                        if folder.parent_id.is_none() {
-                            folder.parent_id = folder_id;
-                        }
-                        Command::AddFolder { folder }
-                    })
-                    .collect();
-                if fresh.is_empty() {
-                    return Ok(Imported {
-                        edit: None,
+                    commands.push(Command::AddAssets { assets: fresh });
+                    let command = Command::Batch {
+                        label: "Import media".into(),
+                        commands,
+                    };
+                    // Probed above, and only media inside the roots kept.
+                    let edit = workspace.apply_imported(
+                        &snapshot,
+                        command,
+                        guard.expected_revision,
+                        guard.dry_run,
+                    )?;
+                    Ok(Imported {
+                        edit: Some(edit),
                         media,
                         errors,
-                    });
-                }
-                for asset in &fresh {
-                    media.push(asset_view(project, asset, true));
-                }
-                commands.push(Command::AddAssets { assets: fresh });
-                let command = Command::Batch {
-                    label: "Import media".into(),
-                    commands,
-                };
-                // Probed above, and only media inside the roots kept.
-                let edit = workspace.apply_imported(
-                    &snapshot,
-                    command,
-                    guard.expected_revision,
-                    guard.dry_run,
-                )?;
-                Ok(Imported {
-                    edit: Some(edit),
-                    media,
-                    errors,
+                    })
                 })
             })
             .await?;
@@ -247,8 +272,9 @@ impl AsterServer {
         ct: CancellationToken,
     ) -> Result<Json<serde_json::Map<String, serde_json::Value>>, ToolError> {
         let (path, known) = match (params.asset_id, &params.path) {
-            (Some(id), None) => {
+            (Some(given), None) => {
                 let snapshot = self.on(|workspace| workspace.snapshot()).await?;
+                let id = super::resolve_asset_id(&snapshot.project, &given)?;
                 let asset =
                     snapshot.project.assets.get(&id).ok_or_else(|| {
                         ToolError::not_found(format!("No media {id} in the project"))
@@ -317,6 +343,42 @@ impl AsterServer {
             out.insert("details".into(), details);
         }
         Ok(Json(out))
+    }
+
+    #[tool(
+        description = "Find clips and effects using an asset, without probing media or saving the project.",
+        annotations(read_only_hint = true)
+    )]
+    async fn media_usage(
+        &self,
+        Parameters(params): Parameters<UsageParams>,
+    ) -> Result<Json<serde_json::Value>, ToolError> {
+        self.on(move |workspace| {
+            let snapshot = workspace.snapshot()?;
+            let project = &snapshot.project;
+            let id = super::resolve_asset_id(project, &params.asset_id)?;
+            let mut uses = Vec::new();
+            let mut total = 0;
+            let limit = params.limit.unwrap_or(50).clamp(1, 500);
+            let mut keep = |item| {
+                if total >= params.offset && uses.len() < limit { uses.push(item); }
+                total += 1;
+            };
+            for track in &project.tracks {
+                for clip in &track.clips {
+                    if clip.asset_id() == Some(id) {
+                        keep(serde_json::json!({"track_id": track.id, "clip_id": clip.id, "role": "source"}));
+                    }
+                    for effect in &clip.effects {
+                        if effect.asset_id == Some(id) {
+                            keep(serde_json::json!({"track_id": track.id, "clip_id": clip.id, "effect_id": effect.id, "role": "effect"}));
+                        }
+                    }
+                }
+            }
+            let next = params.offset.saturating_add(uses.len());
+            Ok(Json(serde_json::json!({"project_id": project.id, "revision": snapshot.revision, "asset_id": id, "uses": uses, "total": total, "next_offset": (next < total).then_some(next)})))
+        }).await
     }
 
     #[tool(

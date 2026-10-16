@@ -238,6 +238,330 @@ async fn revision(client: &Client) -> u64 {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_mcp_server_closes_its_render_workers_before_process_exit() {
+    for variant in ["frame", "export", "both"] {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path().canonicalize().unwrap();
+        let source = make(
+            &dir,
+            "shutdown.mp4",
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x90:rate=30:duration=0.2",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ],
+        );
+        let stderr = dir.join("server.stderr");
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_aster-mcp"))
+            .args(server_args(&dir))
+            .current_dir(&dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(std::fs::File::create(&stderr).unwrap())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        // Retain the real child: TokioChildProcess's graceful-shutdown wrapper
+        // discards its exit status, which hid native render-worker drop crashes.
+        let transport = (child.stdout.take().unwrap(), child.stdin.take().unwrap());
+        let client = ().serve(transport).await.unwrap();
+        call(
+            &client,
+            "project_create",
+            json!({"path": dir.join("shutdown.aster"), "width": 160, "height": 90}),
+        )
+        .await;
+        let imported = call(&client, "media_import", json!({"paths": [source]})).await;
+        call(
+            &client,
+            "clip_add",
+            json!({"asset_id": imported["media"][0]["asset_id"]}),
+        )
+        .await;
+        if variant != "export" {
+            call(
+                &client,
+                "frame_render",
+                json!({"times": [{"frame": 0}], "size": 160}),
+            )
+            .await;
+        }
+        if variant != "frame" {
+            let queued = call(
+                &client,
+                "render_export_start",
+                json!({"destination": dir.join("rendered.mp4"), "preset": "small-file"}),
+            )
+            .await;
+            let done = wait(&client, &queued).await;
+            assert_eq!(done["state"], "done", "{variant}: {done}");
+        }
+        client.cancel().await.unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(20), child.wait())
+            .await
+            .expect("the owned server exits without a timeout")
+            .unwrap();
+        assert!(
+            status.success(),
+            "{variant} server exit {status}; {}",
+            std::fs::read_to_string(&stderr).unwrap()
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mix_loudness_measures_the_export_mix_without_editing_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().canonicalize().unwrap();
+    let tone = make(
+        &dir,
+        "tone.wav",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:duration=2",
+            "-c:a",
+            "pcm_s16le",
+        ],
+    );
+    let (client, _) = stdio(&dir).await;
+    call(
+        &client,
+        "project_create",
+        json!({"path": dir.join("mix.aster")}),
+    )
+    .await;
+    let imported = call(&client, "media_import", json!({"paths": [tone]})).await;
+    let asset = id(&imported["media"][0]["asset_id"]);
+    let first = call(&client, "clip_add", json!({"asset_id": &asset[..8]})).await;
+    let clip = id(&first["created"][0]);
+    let tracks = timeline(&client).await;
+    let first_track = id(&tracks["clips"][0]["track_id"]);
+    let added = call(
+        &client,
+        "track_edit",
+        json!({"op": "add", "kind": "audio", "name": "Second"}),
+    )
+    .await;
+    let second_track = id(&added["created"][0]);
+    call(
+        &client,
+        "clip_add",
+        json!({"asset_id": asset, "track_id": second_track, "at": {"seconds": 0}}),
+    )
+    .await;
+    let before = revision(&client).await;
+    let uses = call(
+        &client,
+        "media_usage",
+        json!({"asset_id": &asset[..8], "limit": 1}),
+    )
+    .await;
+    assert_eq!(uses["asset_id"], asset);
+    assert_eq!(uses["total"], 2);
+    assert_eq!(uses["uses"].as_array().unwrap().len(), 1);
+    assert_eq!(uses["next_offset"], 1);
+    let probe = call(&client, "media_inspect", json!({"asset_id": &asset[..8]})).await;
+    assert_eq!(probe["asset"]["asset_id"], asset);
+    for dry_run in [false, true] {
+        assert_eq!(refused(&client, "edit_apply", json!({"commands": [{"type": "rename_project", "name": "Stale"}], "expected_revision": before - 1, "dry_run": dry_run})).await, "stale_revision");
+    }
+    assert_eq!(
+        refused(
+            &client,
+            "media_import",
+            json!({"paths": [tone], "expected_revision": before - 1})
+        )
+        .await,
+        "stale_revision"
+    );
+    let mix = wait(
+        &client,
+        &call(
+            &client,
+            "loudness_start",
+            json!({"scope": "timeline", "per_track": true}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(mix["state"], "done", "{mix}");
+    let result = &mix["result"];
+    assert_eq!(result["revision"], before);
+    let measured = |v: &Value| v["integrated_lufs"].as_f64().expect("measured LUFS");
+    let track = result["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["track_id"] == first_track)
+        .unwrap();
+    assert!(
+        (measured(result) - measured(track) - 6.0).abs() < 0.4,
+        "two identical voices add 6 dB: {result}"
+    );
+    assert!(result["true_peak_dbfs"].as_f64().unwrap().is_finite());
+    assert_eq!(revision(&client).await, before, "measurement never edits");
+    call(
+        &client,
+        "audio_edit",
+        json!({"op": "track", "track_id": second_track, "muted": true}),
+    )
+    .await;
+    let muted = wait(
+        &client,
+        &call(&client, "loudness_start", json!({"scope": "mix"})).await,
+    )
+    .await;
+    assert!(
+        (measured(&muted["result"]) - measured(track)).abs() < 0.2,
+        "muted voices are excluded: {muted}"
+    );
+    assert_eq!(
+        refused(
+            &client,
+            "audio_edit",
+            json!({"op": "normalize", "clip_ids": [clip], "job_id": mix["job_id"]})
+        )
+        .await,
+        "invalid"
+    );
+    call(
+        &client,
+        "audio_edit",
+        json!({"op": "track", "track_id": first_track, "muted": true}),
+    )
+    .await;
+    let silent = wait(
+        &client,
+        &call(
+            &client,
+            "loudness_start",
+            json!({"scope": "timeline", "from": {"seconds": 0.5}, "to": {"seconds": 1.5}}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(silent["result"]["status"], "silent", "{silent}");
+    assert!(silent["result"]["integrated_lufs"].is_null());
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_inspects_and_patches_live_clip_state_with_stable_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let (client, _) = stdio(dir.path()).await;
+    call(
+        &client,
+        "project_create",
+        json!({"name": "Unsaved live state"}),
+    )
+    .await;
+    let added = call(
+        &client,
+        "text_add",
+        json!({"text": "Presenter", "at": {"seconds": 0}, "duration": {"seconds": 4}}),
+    )
+    .await;
+    let clip_id = id(&added["created"][0]);
+    call(&client, "keyframes_set", json!({"clip_id": clip_id, "key": "opacity", "keys": [{"at": {"seconds": 0}, "value": 0}, {"at": {"seconds": 4}, "value": 1}]})).await;
+    let at = revision(&client).await;
+    let patched = call(
+        &client,
+        "patch_clip",
+        json!({"clip_id": clip_id, "expected_revision": at,
+            "start": {"seconds": 2}, "duration": {"seconds": 2.5},
+            "changes": {"content": {"style": {"wrap": 600}}, "transform": {"opacity": 0.8}}
+        }),
+    )
+    .await;
+    assert_eq!(
+        patched["created"],
+        json!([]),
+        "an in-place edit adds no IDs"
+    );
+    let inspect = call(
+        &client,
+        "project_inspect",
+        json!({"scope": "clips", "clip_ids": [clip_id]}),
+    )
+    .await;
+    let clip: editor_core::Clip =
+        serde_json::from_value(inspect["clips"][0]["clip"].clone()).unwrap();
+    assert_eq!(clip.id.to_string(), clip_id);
+    assert_eq!(clip.start.0, 2_000_000);
+    assert_eq!(clip.duration.0, 2_500_000);
+    assert_eq!(clip.animation[0].keys.last().unwrap().at.0, 2_500_000);
+    assert!((clip.animation[0].keys.last().unwrap().value - 0.625).abs() < 0.001);
+    let editor_core::ClipContent::Text { style, .. } = clip.content else {
+        panic!("text")
+    };
+    assert_eq!(style.wrap, 600.0);
+    let changes = call(
+        &client,
+        "history",
+        json!({"op": "changes_since", "since_revision": at}),
+    )
+    .await;
+    assert_eq!(changes["changes"]["complete"], true);
+    let objects = changes["changes"]["entries"][0]["objects"]
+        .as_array()
+        .unwrap();
+    assert!(
+        objects
+            .iter()
+            .any(|object| object["id"] == clip_id && object["fields"]["duration"] == 2_500_000)
+    );
+    let shifted = call(
+        &client,
+        "offset_clips",
+        json!({"clip_ids": [clip_id], "delta": {"seconds": -0.5}}),
+    )
+    .await;
+    let shifted_revision = shifted["revision"].as_u64().unwrap();
+    let state = call(
+        &client,
+        "project_inspect",
+        json!({"scope": "timeline", "clip_ids": [clip_id], "fields": ["start"]}),
+    )
+    .await;
+    assert_eq!(state["clips"][0]["start"]["us"], 1_500_000);
+    assert_eq!(
+        refused(
+            &client,
+            "patch_clip",
+            json!({"clip_id": clip_id, "changes": {"transform": {"opactiy": 0.5}}})
+        )
+        .await,
+        "invalid_edit"
+    );
+    assert_eq!(revision(&client).await, shifted_revision);
+    call(
+        &client,
+        "history",
+        json!({"op": "undo", "expected_revision": shifted_revision}),
+    )
+    .await;
+    let restored = call(
+        &client,
+        "project_inspect",
+        json!({"scope": "clips", "clip_ids": [clip_id]}),
+    )
+    .await;
+    assert_eq!(restored["clips"][0]["clip"]["start"], 2_000_000);
+    assert!(
+        call(&client, "project_status", json!({})).await["path"].is_null(),
+        "live inspection never requires a saved project file"
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_agent_makes_edits_looks_at_and_exports_a_video_that_a_person_can_open() {
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path().canonicalize().unwrap();
@@ -560,6 +884,10 @@ async fn every_tool_is_described_typed_and_the_list_fits_a_client_budget() {
         "project_create",
         "media_import",
         "clip_edit",
+        "patch_clip",
+        "offset_clips",
+        "media_usage",
+        "frames_export",
         "effect_edit",
         "keyframes_set",
         "text_add",
@@ -576,6 +904,7 @@ async fn every_tool_is_described_typed_and_the_list_fits_a_client_budget() {
         assert!(names.contains(&wanted), "{wanted} is offered");
     }
     let listed = serde_json::to_vec(&tools).unwrap().len();
+    eprintln!("tools/list: {listed} bytes for {} tools", tools.len());
     assert!(listed < 40 * 1024, "tools/list is {listed} bytes");
     client.cancel().await.unwrap();
 }
@@ -1349,4 +1678,221 @@ async fn the_agent_tab_server_starts_in_its_window_and_may_leave_and_come_back()
     client.cancel().await.unwrap();
     let other = editor_store::load_project(&other).unwrap();
     assert_eq!(other.tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exact_source_times_isolated_layers_and_streaming_dumps_preserve_the_project() {
+    use editor_core::{Clip, Command, Effect, EffectKind, ParamKey, ParamValue, Time};
+
+    fn picture(value: &Value) -> &str {
+        value["_content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["type"] == "image")
+            .unwrap()["data"]
+            .as_str()
+            .unwrap()
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().canonicalize().unwrap();
+    let source = make(
+        &dir,
+        "sixty.mp4",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=60:duration=2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+    );
+    let (client, _) = stdio(&dir).await;
+    let path = dir.join("layers.aster");
+    call(
+        &client,
+        "project_create",
+        json!({"path": path, "width": 160, "height": 90, "frame_rate": 30}),
+    )
+    .await;
+    let imported = call(&client, "media_import", json!({"paths": [source]})).await;
+    let asset_id = id(&imported["media"][0]["asset_id"]);
+    let stored = editor_store::load_project(&path).unwrap();
+    let asset = &stored.assets[&asset_id.parse().unwrap()];
+    let mut placed = Clip::from_asset(asset, Time::ZERO);
+    placed.source_in = Time(16_667);
+    placed.duration = Time::from_seconds(1.0);
+    let clip_id = placed.id;
+    let track_id = stored.tracks[0].id;
+    call(
+        &client,
+        "edit_apply",
+        json!({"commands": [Command::AddClip { track_id, clip: placed }]}),
+    )
+    .await;
+
+    let exact = call(
+        &client,
+        "frame_render",
+        json!({
+            "asset_id": &asset_id[..8], "times": [{"us": 16667}], "size": 160,
+            "save_to": dir.join("new/nested/source.png"),
+        }),
+    )
+    .await;
+    let source_frame = call(
+        &client,
+        "frame_render",
+        json!({"asset_id": asset_id, "times": [{"frame": 1}], "size": 160}),
+    )
+    .await;
+    assert_eq!(exact["frames"][0]["at"]["us"], 16667);
+    assert_eq!(exact["frames"][0]["at"]["frame"], 1);
+    assert!(
+        picture(&exact) == picture(&source_frame),
+        "a source frame uses the 60 fps source grid"
+    );
+    let off_grid_clip = call(
+        &client,
+        "frame_render",
+        json!({"solo_clip": clip_id, "times": [{"us": 0}], "size": 160}),
+    )
+    .await;
+    assert!(
+        picture(&exact) == picture(&off_grid_clip),
+        "source render matches an off-project-grid clip in-point"
+    );
+    assert!(dir.join("new/nested/source.png").is_file());
+
+    call(&client, "clip_edit", json!({"op": "transform", "clip_ids": [clip_id], "transform": {"scale": [0.7, 0.7], "position": [10.0, 0.0]}})).await;
+    let mut grade = Effect::new(EffectKind::Grade);
+    grade.params = vec![ParamValue {
+        key: ParamKey::Exposure,
+        value: -1.0,
+    }];
+    call(
+        &client,
+        "edit_apply",
+        json!({"commands": [Command::SetEffects { clip_id, effects: vec![grade] }]}),
+    )
+    .await;
+    let graded = call(
+        &client,
+        "frame_render",
+        json!({"times": [{"us": 0}], "size": 160}),
+    )
+    .await;
+    assert!(
+        picture(&exact) != picture(&graded),
+        "transform and grade affect the picture"
+    );
+    call(
+        &client,
+        "track_edit",
+        json!({"op": "set", "track_id": track_id, "hidden": true}),
+    )
+    .await;
+    let before = revision(&client).await;
+    let hidden = call(
+        &client,
+        "frame_render",
+        json!({"times": [{"us": 0}], "size": 160}),
+    )
+    .await;
+    assert!(picture(&hidden) != picture(&graded));
+    let isolated = call(
+        &client,
+        "frame_render",
+        json!({"solo_clip": clip_id, "times": [{"us": 0}], "size": 160}),
+    )
+    .await;
+    let only_track = call(
+        &client,
+        "frame_render",
+        json!({"only_tracks": [track_id], "times": [{"us": 0}], "size": 160}),
+    )
+    .await;
+    assert!(
+        picture(&isolated) == picture(&graded),
+        "isolation keeps the transform and grade"
+    );
+    assert!(picture(&only_track) == picture(&graded));
+    let excluded = call(
+        &client,
+        "frame_render",
+        json!({"exclude_tracks": [track_id], "times": [{"us": 0}], "size": 160}),
+    )
+    .await;
+    assert!(picture(&excluded) == picture(&hidden));
+
+    let sheet = call(
+        &client,
+        "contact_sheet",
+        json!({
+            "solo_clip": clip_id, "times": [{"us": 16667}, {"us": 100000}], "cell_size": 64,
+            "save_to": dir.join("sheet/new/contact.jpg"),
+        }),
+    )
+    .await;
+    assert_eq!(sheet["cells"].as_array().unwrap().len(), 2);
+    assert_eq!(sheet["cells"][0]["at"]["us"], 16667);
+    assert_eq!(sheet["cells"][1]["at"]["us"], 100000);
+    assert!(dir.join("sheet/new/contact.jpg").is_file());
+
+    let dump = wait(
+        &client,
+        &call(
+            &client,
+            "frames_export",
+            json!({
+                "asset_id": asset_id, "from": {"us": 0}, "to": {"seconds": 1},
+                "size": 64, "destination": dir.join("dump/new"),
+            }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(dump["state"], "done", "{dump}");
+    assert_eq!(
+        dump["result"]["count"], 60,
+        "one job writes more than the inline 48-frame limit"
+    );
+    assert_eq!(std::fs::read_dir(dir.join("dump/new")).unwrap().count(), 60);
+    assert!(dir.join("dump/new/frame-000060.png").is_file());
+    let solo_dump = wait(
+        &client,
+        &call(
+            &client,
+            "frames_export",
+            json!({
+                "solo_clip": clip_id, "from": {"us": 0}, "to": {"us": 33333},
+                "size": 160, "destination": dir.join("isolated"),
+            }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(solo_dump["state"], "done", "{solo_dump}");
+    let encoded =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, picture(&graded))
+            .unwrap();
+    assert!(
+        std::fs::read(dir.join("isolated/frame-000001.png")).unwrap() == encoded,
+        "an isolated frame dump must match the same clip's transformed and graded still"
+    );
+    assert_eq!(
+        revision(&client).await,
+        before,
+        "picture work changes no editing revision"
+    );
+    let stored = editor_store::load_project(&path).unwrap();
+    assert!(
+        stored.track(track_id).unwrap().hidden,
+        "picture work preserves the person's visibility"
+    );
+    client.cancel().await.unwrap();
 }

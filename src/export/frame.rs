@@ -209,6 +209,17 @@ impl FrameRenderer {
         self.deadline = deadline;
     }
 
+    /// Reuse this device and its pipelines for a new immutable project
+    /// snapshot. Clip decode sizes and held media belong to the previous
+    /// snapshot, even when clip and asset IDs stayed the same.
+    pub fn reset_project_cache(&mut self) {
+        self.sizes.clear();
+        self.held.clear();
+        self.titles.clear();
+        self.motions.clear();
+        self.luts.clear();
+    }
+
     /// What was drawn other than the viewer would show it, each said once:
     /// a stabilized clip without its camera's path, a lookup table that
     /// could not be read.

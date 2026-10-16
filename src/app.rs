@@ -3887,7 +3887,7 @@ impl App {
             let what = match &call.request.operation {
                 AgentOperation::Inspect => None,
                 AgentOperation::Capabilities => None,
-                AgentOperation::History => None,
+                AgentOperation::History | AgentOperation::ChangesSince { .. } => None,
                 AgentOperation::Document | AgentOperation::Save { .. } => {
                     self.document_operation(ctx, call);
                     continue;

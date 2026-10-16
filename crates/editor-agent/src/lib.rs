@@ -58,7 +58,7 @@ pub mod codes {
 }
 
 /// Every operation name, as `operation` spells it.
-pub const OPERATIONS: [&str; 16] = [
+pub const OPERATIONS: [&str; 17] = [
     "inspect",
     "apply",
     "undo",
@@ -75,6 +75,7 @@ pub const OPERATIONS: [&str; 16] = [
     "history",
     "document",
     "save",
+    "changes_since",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +128,10 @@ pub enum AgentOperation {
     },
     /// The labels of the undo and redo entries.
     History,
+    /// Compact changes in the current editing context, including undo and redo.
+    ChangesSince {
+        revision: u64,
+    },
     /// The document as the session that owns it sees it: its file, whether
     /// it is saved, and the playhead and selection of a window.
     Document,
@@ -326,6 +331,17 @@ pub enum AgentResult {
     Entries {
         past: Vec<String>,
         future: Vec<String>,
+        #[serde(default)]
+        past_entries: Vec<editor_core::ChangeSummary>,
+        #[serde(default)]
+        future_entries: Vec<editor_core::ChangeSummary>,
+        #[serde(default)]
+        truncated: bool,
+    },
+    Changes {
+        project_id: Uuid,
+        context_id: Uuid,
+        changes: editor_core::ChangesSince,
     },
     Document {
         document: Box<DocumentInfo>,
@@ -416,10 +432,10 @@ pub fn check_target(editor: &Editor, request: &AgentRequest) -> Result<(), Agent
 }
 
 /// The guards of `save`: the request names the project and editing context
-/// it means. The revision is not checked; the current one is saved.
+/// it means. An explicit revision is checked; otherwise the current one is saved.
 pub fn check_identity(editor: &Editor, request: &AgentRequest) -> Result<(), AgentResult> {
     let mut request = request.clone();
-    request.expected_revision = Some(editor.revision());
+    request.expected_revision = request.expected_revision.or(Some(editor.revision()));
     check_target(editor, &request)
 }
 
@@ -481,6 +497,32 @@ pub fn check_queue_export(editor: &Editor, request: &AgentRequest) -> Result<(),
 pub fn handle(editor: &mut Editor, request: AgentRequest) -> AgentResponse {
     let guard = if request.operation.is_mutation() {
         check_target(editor, &request).err()
+    } else if matches!(
+        &request.operation,
+        AgentOperation::History | AgentOperation::ChangesSince { .. }
+    ) {
+        // A journal belongs to one editing context. MCP binds these optional
+        // read guards before its snapshot, so replacing/reloading the project
+        // between requests cannot masquerade as an empty prior journal.
+        if request
+            .expected_project_id
+            .is_some_and(|id| id != editor.project().id)
+        {
+            Some(AgentResult::error(
+                codes::STALE_PROJECT,
+                "The session now contains a different project; inspect before reading history",
+            ))
+        } else if request
+            .expected_context_id
+            .is_some_and(|id| id != editor.instance_id())
+        {
+            Some(AgentResult::error(
+                codes::STALE_CONTEXT,
+                "The project was reloaded; inspect the new editing context before reading history",
+            ))
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -510,8 +552,36 @@ pub fn handle(editor: &mut Editor, request: AgentRequest) -> AgentResponse {
             changed: editor.redo(),
         },
         AgentOperation::History => AgentResult::Entries {
-            past: editor.history().map(|entry| entry.label.clone()).collect(),
-            future: editor.future().map(|entry| entry.label.clone()).collect(),
+            past: editor
+                .history()
+                .skip(editor.history().count().saturating_sub(50))
+                .map(|entry| entry.label.chars().take(256).collect())
+                .collect(),
+            future: editor
+                .future()
+                .take(50)
+                .map(|entry| entry.label.chars().take(256).collect())
+                .collect(),
+            past_entries: editor
+                .history()
+                .skip(editor.history().count().saturating_sub(50))
+                .map(|entry| {
+                    editor_core::summarize_changes(&entry.label, &entry.before, &entry.after)
+                })
+                .collect(),
+            future_entries: editor
+                .future()
+                .take(50)
+                .map(|entry| {
+                    editor_core::summarize_changes(&entry.label, &entry.before, &entry.after)
+                })
+                .collect(),
+            truncated: editor.history().count() > 50 || editor.future().count() > 50,
+        },
+        AgentOperation::ChangesSince { revision } => AgentResult::Changes {
+            project_id: editor.project().id,
+            context_id: editor.instance_id(),
+            changes: editor.changes_since(revision),
         },
         AgentOperation::Document | AgentOperation::Save { .. } => AgentResult::error(
             codes::UNSUPPORTED,
@@ -531,6 +601,7 @@ pub fn handle(editor: &mut Editor, request: AgentRequest) -> AgentResponse {
                 "reorder_track",
                 "set_track_state",
                 "add_clip",
+                "patch_clip",
                 "delete_clips",
                 "move_clips",
                 "trim_clip",

@@ -48,6 +48,23 @@ impl AudioRender {
         }
     }
 
+    /// Measures the same post-limiter PCM that an export writes, without a
+    /// temporary audio file. This blocks on the caller's worker thread and
+    /// uses this render's cancellation and decoder ownership.
+    pub fn measure_loudness(
+        &self,
+        project: Arc<Project>,
+        span: SampleSpan,
+        progress: &dyn Fn(f32),
+    ) -> Result<(crate::Loudness, Vec<String>), MediaError> {
+        let cancelled = || self.cancelled.load(Ordering::Acquire);
+        let result = super::loudness::measure(project, span, &self.processes, &cancelled, progress);
+        match result {
+            Err(_) if cancelled() => Err(MediaError::Cancelled),
+            result => result,
+        }
+    }
+
     /// Writes exactly `span.frames` interleaved little-endian `f32` sample
     /// frames of `project`'s sound from `span.start` to `out`, as playback
     /// would mix them at `span.rate` with `span.channels` channels. Silence
@@ -130,7 +147,9 @@ fn write(
         if cancelled() {
             return Err(MediaError::Cancelled);
         }
-        let chunk = mix.next().map_err(export_limit)?;
+        let chunk = mix
+            .next_up_to(span.frames - written)
+            .map_err(export_limit)?;
         let frames = ((chunk.len() / channels) as u64).min(span.frames - written);
         if frames == 0 {
             return Err(MediaError::Invalid(

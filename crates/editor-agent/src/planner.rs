@@ -267,6 +267,9 @@ pub fn proposal_schema() -> Value {
                     "set_words",
                     "set_graphic",
                     "set_text_style",
+                    // Partial JSON maps cannot be expressed by this closed
+                    // provider schema. MCP/core command discovery exposes it.
+                    "patch_clip",
                 ],
             );
         }
@@ -1415,6 +1418,7 @@ mod tests {
         let quoted = encoded.len() + encoded.matches('"').count() + SYSTEM.len();
         assert!(quoted < 31 * 1024, "{quoted} characters");
         assert!(!encoded.contains("restore_project"));
+        assert!(!encoded.contains("\"const\":\"patch_clip\""));
         assert!(!encoded.contains("\"const\":\"add_assets\""));
         assert!(!encoded.contains("#/definitions/Project"));
         assert_eq!(schema["additionalProperties"], false);

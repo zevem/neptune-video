@@ -874,3 +874,59 @@ fn every_documented_request_parses() {
         }
     }
 }
+
+#[test]
+fn history_and_journal_reads_honor_optional_project_and_context_guards() {
+    let original = Editor::default();
+    let original_project = original.project().id;
+    let original_context = original.instance_id();
+    let mut reopened = Editor::new(original.project().clone()).unwrap();
+    let mut replacement = Editor::default();
+    for operation in [
+        AgentOperation::History,
+        AgentOperation::ChangesSince { revision: 0 },
+    ] {
+        let mut guarded = request(operation.clone(), None);
+        guarded.expected_project_id = Some(original_project);
+        guarded.expected_context_id = Some(original_context);
+        assert!(matches!(handle(&mut reopened, guarded.clone()).result,
+            AgentResult::Error { code, .. } if code == codes::STALE_CONTEXT));
+        assert!(matches!(handle(&mut replacement, guarded).result,
+            AgentResult::Error { code, .. } if code == codes::STALE_PROJECT));
+        // Unguarded raw reads intentionally inspect the current session.
+        assert!(!matches!(
+            handle(&mut replacement, request(operation, None)).result,
+            AgentResult::Error { .. }
+        ));
+    }
+    // Either optional identity guard can also be supplied on its own.
+    let mut only_project = request(AgentOperation::History, None);
+    only_project.expected_project_id = Some(original_project);
+    assert!(matches!(
+        handle(&mut reopened, only_project).result,
+        AgentResult::Entries { .. }
+    ));
+    let mut only_context = request(AgentOperation::ChangesSince { revision: 0 }, None);
+    only_context.expected_context_id = Some(reopened.instance_id());
+    let response = handle(&mut reopened, only_context);
+    let AgentResult::Changes {
+        project_id,
+        context_id,
+        changes,
+    } = response.result
+    else {
+        panic!("Expected changes")
+    };
+    assert_eq!(project_id, reopened.project().id);
+    assert_eq!(context_id, reopened.instance_id());
+    assert!(changes.complete);
+    let wire = serde_json::to_value(AgentResult::Changes {
+        project_id,
+        context_id,
+        changes,
+    })
+    .unwrap();
+    assert_eq!(wire["project_id"], project_id.to_string());
+    assert_eq!(wire["context_id"], context_id.to_string());
+    assert_eq!(wire["changes"]["since_revision"], 0);
+}

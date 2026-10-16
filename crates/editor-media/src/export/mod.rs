@@ -12,6 +12,7 @@ mod args;
 mod audio;
 mod caps;
 mod encoder;
+mod loudness;
 mod reader;
 mod verify;
 

@@ -185,6 +185,7 @@ impl AsterServer {
                     };
                     settings.range = ExportRange::Span { start, end };
                 }
+                roots.create_parent(&destination)?;
                 let response = workspace.send(
                     AgentOperation::QueueExport {
                         settings,

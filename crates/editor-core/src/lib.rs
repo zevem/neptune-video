@@ -5,11 +5,13 @@
 //! off-thread review and a later commit through the same history boundary.
 pub mod animate;
 pub mod captions;
+mod changes;
 mod command;
 mod editor;
 pub mod export;
 pub mod look;
 mod model;
+mod patch;
 mod playback;
 mod query;
 pub mod render;
@@ -18,6 +20,7 @@ pub mod sound;
 pub mod title;
 
 pub use animate::{AnimTrack, Ease, Keyframe, ParamKey};
+pub use changes::{ChangeSummary, ChangesSince, ObjectChange, RevisionChange, summarize_changes};
 pub use command::*;
 pub use editor::*;
 pub use look::{

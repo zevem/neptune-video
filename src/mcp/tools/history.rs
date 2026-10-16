@@ -13,12 +13,19 @@ use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct HistoryParams {
-    /// `list`, `undo` or `redo`.
+    /// list (labels and object/field diffs), changes_since, undo or redo.
     pub op: String,
     /// Undo or redo an entry that is not this agent's own (the person's,
     /// or another client's).
     #[serde(default)]
     pub allow_person: bool,
+    /// For changes_since: return journal entries after this revision.
+    #[serde(default)]
+    pub since_revision: Option<u64>,
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+    #[serde(default)]
+    pub wait_if_busy: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -34,15 +41,14 @@ pub struct CheckpointParams {
     pub path: Option<String>,
     #[serde(default)]
     pub expected_revision: Option<u64>,
+    #[serde(default)]
+    pub wait_if_busy: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct HistoryView {
-    pub revision: u64,
-    /// Undo entries, oldest first.
-    pub past: Vec<String>,
-    /// Redo entries, the next first.
-    pub future: Vec<String>,
+    #[serde(flatten)]
+    pub entries: crate::mcp::workspace::HistoryListing,
     /// Whether the last entry is this agent's own.
     pub agent_can_undo: bool,
 }
@@ -50,13 +56,12 @@ pub struct HistoryView {
 pub async fn list(server: &AsterServer) -> Result<HistoryView, ToolError> {
     server
         .on(|workspace| {
-            let snapshot = workspace.snapshot()?;
-            let (past, future) = workspace.history()?;
+            let mut snapshot = workspace.snapshot()?;
+            let entries = workspace.history()?;
+            snapshot.revision = entries.revision;
             Ok(HistoryView {
-                revision: snapshot.revision,
-                past,
-                future,
                 agent_can_undo: workspace.agent_can_undo(&snapshot),
+                entries,
             })
         })
         .await
@@ -74,8 +79,9 @@ fn file_of(path: Option<PathBuf>) -> Result<PathBuf, ToolError> {
 #[tool_router(router = history_tools, vis = "pub(crate)")]
 impl AsterServer {
     #[tool(
-        description = "History: list the undo and redo entries, or undo / redo. Undo takes \
-                          back only this agent's own last edit unless allow_person."
+        description = "History labels and object/field diffs; changes_since returns a bounded \
+                          revision journal including human edits, undo and redo. Undo takes \
+                          only this agent's own last edit unless allow_person."
     )]
     async fn history(
         &self,
@@ -90,11 +96,27 @@ impl AsterServer {
                     serde_json::to_value(view).unwrap_or_default(),
                 );
             }
+            "changes_since" => {
+                let revision = params
+                    .since_revision
+                    .ok_or_else(|| ToolError::invalid("changes_since needs since_revision"))?;
+                let changes = self
+                    .on(move |workspace| workspace.changes_since(revision))
+                    .await?;
+                out.insert(
+                    "changes".into(),
+                    serde_json::to_value(changes).unwrap_or_default(),
+                );
+            }
             "undo" | "redo" => {
                 let redo = params.op == "redo";
                 let allow = params.allow_person;
                 let edited: Edited = self
-                    .on(move |workspace| workspace.step(redo, allow))
+                    .on(move |workspace| {
+                        workspace.with_wait(params.wait_if_busy, |workspace| {
+                            workspace.step(redo, allow, params.expected_revision)
+                        })
+                    })
                     .await?;
                 out.insert(
                     "edit".into(),
@@ -103,7 +125,7 @@ impl AsterServer {
             }
             other => {
                 return Err(ToolError::invalid(format!(
-                    "op is list, undo or redo, not {other}"
+                    "op is list, changes_since, undo or redo, not {other}"
                 )));
             }
         }
@@ -209,12 +231,14 @@ impl AsterServer {
                 let expected = params.expected_revision;
                 let edited = self
                     .on(move |workspace| {
-                        let snapshot = workspace.snapshot()?;
-                        let command = Command::RestoreProject {
-                            project: Box::new(restored),
-                        };
-                        // apply checks every path the checkpoint names.
-                        workspace.apply(&snapshot, command, expected, false, true)
+                        workspace.with_wait(params.wait_if_busy, |workspace| {
+                            let snapshot = workspace.snapshot()?;
+                            let command = Command::RestoreProject {
+                                project: Box::new(restored),
+                            };
+                            // apply checks every path the checkpoint names.
+                            workspace.apply(&snapshot, command, expected, false, true)
+                        })
                     })
                     .await?;
                 out.insert(

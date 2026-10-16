@@ -1239,9 +1239,21 @@ impl OfflineMix {
     /// The next 1024 sample frames (64 ms at 16 kHz), interleaved. Each chunk
     /// starts at its own sample time, so rounding never accumulates.
     pub(crate) fn next(&mut self) -> Result<Vec<f32>, MediaError> {
+        self.next_up_to(CHUNK_FRAMES as u64)
+    }
+
+    /// Up to one chunk, so a bounded render never reads clips that start
+    /// after its final requested sample.
+    pub(crate) fn next_up_to(&mut self, remaining: u64) -> Result<Vec<f32>, MediaError> {
+        let frames = remaining.min(CHUNK_FRAMES as u64) as usize;
+        if frames == 0 {
+            return Err(MediaError::Invalid(
+                "Invalid offline audio chunk size".into(),
+            ));
+        }
         let at = self.start + Time::from_seconds(self.frames as f64 / f64::from(self.rate));
-        let samples = self.mixer.chunk(at, CHUNK_FRAMES)?;
-        self.frames += CHUNK_FRAMES as u64;
+        let samples = self.mixer.chunk(at, frames)?;
+        self.frames += frames as u64;
         Ok(samples)
     }
 }
@@ -1263,6 +1275,34 @@ mod tests {
     use super::*;
     use editor_core::{Asset, Clip, MediaKind, Track, TrackKind};
     use std::{path::Path, process::Stdio};
+
+    #[test]
+    fn a_limited_offline_chunk_never_opens_sources_after_its_final_sample() {
+        let mut project = Project::new("Bounded audio tail");
+        let asset = Asset::new("not-read.wav".into(), MediaKind::Audio, Time(1_000_000));
+        Arc::make_mut(&mut project.assets).insert(asset.id, asset.clone());
+        project.tracks.clear();
+        for _ in 0..=MAX_VOICES {
+            let mut track = Track::new("Later sound", TrackKind::Audio);
+            track.clips.push(Clip::from_asset(&asset, Time(100)));
+            project.tracks.push(Arc::new(track));
+        }
+        let processes = Processes::default();
+        // No filter probe or media process is needed to prove admission.
+        let mut mix = OfflineMix {
+            mixer: Mixer::new(Arc::new(project), 1.0, 48_000, 2, processes.clone()),
+            start: Time::ZERO,
+            rate: 48_000,
+            frames: 0,
+        };
+        assert_eq!(mix.next_up_to(1).unwrap(), [0.0, 0.0]);
+        assert_eq!(mix.frames, 1);
+        assert_eq!(processes.started_tools(), 0);
+        // The following full chunk reaches those 17 clips, and admission
+        // rejects it before attempting to read their nonexistent source.
+        assert!(mix.next().is_err());
+        assert_eq!(processes.started_tools(), 0);
+    }
 
     fn constant_pcm_asset(path: &Path) -> Asset {
         const RATE: u32 = 48_000;

@@ -17,6 +17,18 @@ pub enum EditError {
     StaleRevision { expected: u64, actual: u64 },
 }
 
+/// What a shorter clip keeps of its existing clip-relative animation.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AnimationTrim {
+    /// Keep the remaining curve, synthesizing an interpolated end key. Fit
+    /// existing words, time maps, text animations, transitions and fades too.
+    #[default]
+    Crop,
+    /// Leave existing timed data unchanged; reject it if it no longer fits.
+    Preserve,
+}
+
 /// The sole mutation protocol for human interaction, shortcuts and agent tools.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -60,6 +72,17 @@ pub enum Command {
     AddClip {
         track_id: TrackId,
         clip: Clip,
+    },
+    /// Merge fields into exactly one existing clip, retaining its identity.
+    /// Objects merge recursively; arrays replace. Null removes an optional
+    /// field. Times are integer microseconds. Identity and relationships are
+    /// changed only by their own commands. Explicit timed data is validated
+    /// as supplied, after the trim policy fits the existing data.
+    PatchClip {
+        clip_id: ClipId,
+        patch: serde_json::Map<String, serde_json::Value>,
+        #[serde(default)]
+        trim_animation: AnimationTrim,
     },
     DeleteClips {
         clip_ids: Vec<ClipId>,
@@ -239,6 +262,7 @@ impl Command {
             Self::ReorderTrack { .. } => "Reorder track",
             Self::SetTrackState { .. } => "Change track",
             Self::AddClip { .. } => "Add clip",
+            Self::PatchClip { .. } => "Patch clip",
             Self::DeleteClips { ripple: true, .. } => "Ripple delete",
             Self::DeleteClips { .. } => "Delete clips",
             Self::MoveClips { .. } => "Move clips",

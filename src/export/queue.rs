@@ -210,6 +210,7 @@ pub(crate) type Runner = Box<dyn FnMut(&Ticket, &Handle) -> Finish + Send>;
 /// The export queue service. Dropping it shuts it down.
 pub struct RenderQueue {
     shared: Arc<Shared>,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl RenderQueue {
@@ -276,7 +277,7 @@ impl RenderQueue {
         });
         start_probe(&shared);
         let worker = Arc::clone(&shared);
-        if let Err(error) = thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("aster-render".into())
             .spawn(move || {
                 if let Some(first) = first {
@@ -284,11 +285,18 @@ impl RenderQueue {
                     let _ = catch_unwind(AssertUnwindSafe(first));
                 }
                 work(&worker, run);
-            })
-        {
-            shared.lock().broken = Some(format!("its thread could not start ({error})"));
+            });
+        let worker = match worker {
+            Ok(worker) => Some(worker),
+            Err(error) => {
+                shared.lock().broken = Some(format!("its thread could not start ({error})"));
+                None
+            }
+        };
+        Self {
+            shared,
+            worker: Mutex::new(worker),
         }
-        Self { shared }
     }
 
     /// What this host can export, as far as it is known.
@@ -685,6 +693,21 @@ impl RenderQueue {
             }
             drop(state);
             engine::clean(id, &destination);
+        }
+    }
+
+    /// Finish destroying the export's GPU before a headless process enters
+    /// native-library exit handlers. Interactive owners keep using the
+    /// bounded `shutdown`; this join belongs off their frame thread.
+    pub fn shutdown_and_join(&self) {
+        self.shutdown();
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            let _ = worker.join();
         }
     }
 }

@@ -47,8 +47,8 @@ pub struct TrackParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ClipAddParams {
-    /// The media to place.
-    pub asset_id: Uuid,
+    /// The media UUID or unique hexadecimal prefix (at least four digits).
+    pub asset_id: String,
     /// The track; the first usable one of the media's kind by default, or
     /// a new one.
     #[serde(default)]
@@ -283,9 +283,8 @@ impl AsterServer {
         self.edit(params.guard, move |snapshot| {
             let project = &snapshot.project;
             let rate = project.settings.frame_rate;
-            let asset = project.assets.get(&params.asset_id).ok_or_else(|| {
-                ToolError::not_found(format!("No media {} in the project", params.asset_id))
-            })?;
+            let asset_id = super::resolve_asset_id(project, &params.asset_id)?;
+            let asset = &project.assets[&asset_id];
             let at = params.at.as_ref().map(|at| at.at(rate)).transpose()?;
             let source_in = params
                 .source_in

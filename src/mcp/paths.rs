@@ -269,6 +269,32 @@ impl Roots {
         }
     }
 
+    /// Creates a checked destination's missing parent folders. Resolve
+    /// again before and after creation, so an existing link cannot move a
+    /// new folder outside the allowed roots.
+    pub fn create_parent(&self, place: &Path) -> Result<(), ToolError> {
+        let checked = self.destination(place, true)?;
+        let parent = checked
+            .parent()
+            .ok_or_else(|| ToolError::invalid("The destination has no parent folder"))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            ToolError::new(
+                codes::STORAGE,
+                format!("The output folder could not be created: {error}"),
+            )
+        })?;
+        let canonical = std::fs::canonicalize(parent).map_err(|error| {
+            ToolError::new(
+                codes::STORAGE,
+                format!("The output folder could not be read: {error}"),
+            )
+        })?;
+        if !self.contains(&canonical) {
+            return Err(self.outside(place));
+        }
+        Ok(())
+    }
+
     /// Whether media at `path`, as a project stores it, may be read.
     pub fn readable(&self, path: &Path) -> bool {
         path.is_absolute()
@@ -469,6 +495,35 @@ mod tests {
             codes::EXISTS
         );
         assert!(roots.destination(Path::new("taken.mp4"), true).is_ok());
+    }
+
+    #[test]
+    fn missing_output_folders_are_created_inside_the_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let roots = roots(root.path());
+        let place = roots
+            .destination(Path::new("out/new/frame.png"), false)
+            .unwrap();
+        roots.create_parent(&place).unwrap();
+        write_new(&place, b"picture").unwrap();
+        assert_eq!(std::fs::read(&place).unwrap(), b"picture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creating_output_folders_refuses_parent_links_outside_the_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let roots = roots(root.path());
+        let place = roots
+            .destination(Path::new("output/new/frame.png"), false)
+            .unwrap();
+        std::os::unix::fs::symlink(other.path(), root.path().join("output")).unwrap();
+        assert_eq!(
+            roots.create_parent(&place).unwrap_err().code,
+            codes::OUTSIDE_ROOTS
+        );
+        assert!(!other.path().join("new").exists());
     }
 
     #[test]

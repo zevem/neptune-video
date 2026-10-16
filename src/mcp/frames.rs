@@ -12,9 +12,9 @@ use editor_core::{
 use editor_media::{Frame, export::SourceReader};
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{SyncSender, TrySendError, sync_channel},
+        mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel},
     },
     thread,
     time::Duration,
@@ -45,12 +45,112 @@ struct Request {
     longest: u32,
     /// Raised when the caller stopped waiting: no more frames are drawn.
     cancel: Arc<AtomicBool>,
-    answer: tokio::sync::oneshot::Sender<Result<Vec<Drawn>, ToolError>>,
+    answer: Answer,
+}
+
+enum Answer {
+    Batch(tokio::sync::oneshot::Sender<Result<Vec<Drawn>, ToolError>>),
+    Stream(SyncSender<Result<Drawn, ToolError>>),
+}
+
+/// A frame dump keeps at most one finished frame waiting to be encoded.
+/// Dropping the receiver cancels the request without keeping a decoder.
+pub struct Stream {
+    frames: Receiver<Result<Drawn, ToolError>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Stream {
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<Result<Drawn, ToolError>, RecvTimeoutError> {
+        self.frames.recv_timeout(timeout)
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+    }
 }
 
 #[derive(Clone)]
 pub struct Frames {
-    requests: SyncSender<Request>,
+    lane: Arc<Lane>,
+}
+
+struct Lane {
+    requests: Mutex<Option<SyncSender<Request>>>,
+    stopped: Arc<AtomicBool>,
+    active: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    cancel_sources: Arc<Mutex<Option<SourceCancel>>>,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+type SourceCancel = Box<dyn Fn() + Send + Sync>;
+
+impl Lane {
+    fn shutdown(&self) {
+        self.stopped.store(true, Ordering::Release);
+        if let Some(cancel) = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            cancel.store(true, Ordering::Release);
+        }
+        if let Some(cancel) = self
+            .cancel_sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            cancel();
+        }
+        // This is the only sender. Dropping it wakes an idle worker
+        // without polling, even while other Frames handles remain alive.
+        self.requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for Lane {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn deliver(
+    sender: &SyncSender<Result<Drawn, ToolError>>,
+    mut picture: Result<Drawn, ToolError>,
+    cancelled: &AtomicBool,
+    stopped: &AtomicBool,
+) -> Result<(), ToolError> {
+    loop {
+        if cancelled.load(Ordering::Acquire) || stopped.load(Ordering::Acquire) {
+            return Err(ToolError::new(codes::JOB_FAILED, "Drawing was cancelled"));
+        }
+        match sender.try_send(picture) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Disconnected(_)) => {
+                return Err(ToolError::new(codes::JOB_FAILED, "Drawing was cancelled"));
+            }
+            Err(TrySendError::Full(waiting)) => picture = waiting,
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// The project as frames are drawn of it: captions burned in, as an export
@@ -64,7 +164,6 @@ struct Drawer {
     failed: Option<String>,
     renderer: Option<(Geometry, [u32; 2], FrameRenderer)>,
     reader: SourceReader,
-    stop: Arc<AtomicBool>,
 }
 
 struct Sources<'a>(&'a mut SourceReader);
@@ -100,13 +199,14 @@ impl Drawer {
         Ok(self.device.clone().expect("opened above"))
     }
 
-    fn draw(
+    fn draw_each(
         &mut self,
         project: &Project,
         times: &[Time],
         longest: u32,
-        cancel: &AtomicBool,
-    ) -> Result<Vec<Drawn>, ToolError> {
+        cancel: &Arc<AtomicBool>,
+        mut deliver: impl FnMut(Drawn) -> Result<(), ToolError>,
+    ) -> Result<(), ToolError> {
         let render = drawn_project(project);
         let canvas = [render.settings.width, render.settings.height];
         let output = output_size(&render, longest);
@@ -120,54 +220,84 @@ impl Drawer {
             let (device, queue) = self.device()?;
             let mut renderer = FrameRenderer::new(device, queue, geometry, &render, None)
                 .map_err(ToolError::unavailable)?;
-            renderer.set_stop(self.stop.clone());
             renderer.set_deadline(FRAME_DEADLINE);
             self.renderer = Some((geometry, canvas, renderer));
         }
         let (_, _, renderer) = self.renderer.as_mut().expect("made above");
+        // Each request can have a newer clip transform or source under
+        // the same IDs. Keep the GPU, not prior-snapshot derivations.
+        renderer.reset_project_cache();
+        renderer.set_stop(cancel.clone());
         // Fonts the project brought are the renderer's to load again.
-        let mut drawn = Vec::with_capacity(times.len());
-        for &at in times {
-            if cancel.load(Ordering::Acquire) {
-                return Err(ToolError::new(codes::JOB_FAILED, "Drawing was cancelled"));
+        let result = (|| {
+            for &at in times {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(ToolError::new(codes::JOB_FAILED, "Drawing was cancelled"));
+                }
+                let rgba = renderer
+                    .render(&render, at, &mut Sources(&mut self.reader))
+                    .map_err(|why| ToolError::new(codes::JOB_FAILED, why))?
+                    .to_vec();
+                deliver(Drawn {
+                    at,
+                    width: geometry.output[0],
+                    height: geometry.output[1],
+                    rgba,
+                })?;
             }
-            let rgba = renderer
-                .render(&render, at, &mut Sources(&mut self.reader))
-                .map_err(|why| ToolError::new(codes::JOB_FAILED, why))?
-                .to_vec();
-            drawn.push(Drawn {
-                at,
-                width: geometry.output[0],
-                height: geometry.output[1],
-                rgba,
-            });
-        }
+            Ok(())
+        })();
         // Decoders of other times are not kept.
         self.reader.retain(&|_| false);
-        Ok(drawn)
+        result
     }
 }
 
 impl Frames {
     pub fn start() -> Self {
         let (requests, inbox) = sync_channel::<Request>(2);
-        thread::Builder::new()
+        let stopped = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(Mutex::new(None::<Arc<AtomicBool>>));
+        let cancel_sources = Arc::new(Mutex::new(None::<SourceCancel>));
+        let publish_cancel = cancel_sources.clone();
+        let stopping = stopped.clone();
+        let drawing = active.clone();
+        let worker = thread::Builder::new()
             .name("aster-mcp-frames".into())
             .spawn(move || {
+                let reader = SourceReader::new();
+                *publish_cancel
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) =
+                    Some(Box::new(reader.canceller()));
                 let mut drawer = Drawer {
                     device: None,
                     failed: None,
                     renderer: None,
-                    reader: SourceReader::new(),
-                    stop: Arc::new(AtomicBool::new(false)),
+                    reader,
                 };
                 for request in inbox {
+                    *drawing.lock().unwrap_or_else(|error| error.into_inner()) =
+                        Some(request.cancel.clone());
+                    if stopping.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let mut drawn = Vec::new();
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        drawer.draw(
+                        drawer.draw_each(
                             &request.project,
                             &request.times,
                             request.longest,
                             &request.cancel,
+                            |picture| match &request.answer {
+                                Answer::Batch(_) => {
+                                    drawn.push(picture);
+                                    Ok(())
+                                }
+                                Answer::Stream(sender) => {
+                                    deliver(sender, Ok(picture), &request.cancel, &stopping)
+                                }
+                            },
                         )
                     }))
                     .unwrap_or_else(|_| {
@@ -177,11 +307,36 @@ impl Frames {
                             "Drawing the frame failed",
                         ))
                     });
-                    let _ = request.answer.send(result);
+                    *drawing.lock().unwrap_or_else(|error| error.into_inner()) = None;
+                    match request.answer {
+                        Answer::Batch(answer) => {
+                            let _ = answer.send(result.map(|()| drawn));
+                        }
+                        Answer::Stream(sender) => {
+                            if let Err(error) = result {
+                                let _ = deliver(&sender, Err(error), &request.cancel, &stopping);
+                            }
+                        }
+                    }
                 }
             })
             .expect("the frames thread starts");
-        Self { requests }
+        Self {
+            lane: Arc::new(Lane {
+                requests: Mutex::new(Some(requests)),
+                stopped,
+                active,
+                cancel_sources,
+                worker: Mutex::new(Some(worker)),
+            }),
+        }
+    }
+
+    /// Stop requests and decoders, then finish GPU destruction before the
+    /// headless process enters C-library exit handlers. Never called by a
+    /// native interactive frame.
+    pub fn shutdown(&self) {
+        self.lane.shutdown();
     }
 
     /// Draws `project` at each of `times`, the longest side at most
@@ -231,9 +386,47 @@ impl Frames {
             times,
             longest,
             cancel,
-            answer,
+            answer: Answer::Batch(answer),
         };
-        match self.requests.try_send(request) {
+        self.send(request)?;
+        answered
+            .await
+            .map_err(|_| ToolError::unavailable("The frame renderer stopped"))?
+    }
+
+    /// Draw a long, prevalidated sequence through the same bounded device
+    /// lane, retaining its decoder while a consumer writes each frame.
+    pub fn stream(
+        &self,
+        project: Arc<Project>,
+        times: Vec<Time>,
+        longest: u32,
+    ) -> Result<Stream, ToolError> {
+        let (sender, frames) = sync_channel(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.send(Request {
+            project,
+            times,
+            longest: longest.clamp(16, MOST_SIDE),
+            cancel: cancel.clone(),
+            answer: Answer::Stream(sender),
+        })?;
+        Ok(Stream { frames, cancel })
+    }
+
+    fn send(&self, request: Request) -> Result<(), ToolError> {
+        if self.lane.stopped.load(Ordering::Acquire) {
+            return Err(ToolError::unavailable("The frame renderer stopped"));
+        }
+        let requests = self
+            .lane
+            .requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(sender) = requests.as_ref() else {
+            return Err(ToolError::unavailable("The frame renderer stopped"));
+        };
+        match sender.try_send(request) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 return Err(ToolError::new(
@@ -245,9 +438,7 @@ impl Frames {
                 return Err(ToolError::unavailable("The frame renderer stopped"));
             }
         }
-        answered
-            .await
-            .map_err(|_| ToolError::unavailable("The frame renderer stopped"))?
+        Ok(())
     }
 }
 
@@ -330,6 +521,17 @@ pub fn sheet(cells: &[Drawn], columns: u32) -> (u32, u32, Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopped_frame_lane_refuses_calls_from_all_clones() {
+        let frames = Frames::start();
+        let other = frames.clone();
+        frames.shutdown();
+        other.shutdown();
+        let result = other.stream(Arc::new(Project::new("Stopped")), vec![Time::ZERO], 16);
+        assert!(matches!(result, Err(error) if error.code == codes::UNAVAILABLE));
+        assert!(frames.lane.worker.lock().unwrap().is_none());
+    }
 
     #[test]
     fn a_sheet_places_every_cell_in_reading_order() {

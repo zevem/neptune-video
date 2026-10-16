@@ -677,6 +677,9 @@ impl Project {
             }
             let mut previous = Time::ZERO;
             for clip in &track.clips {
+                let invalid = |what: &str| {
+                    EditError::Invalid(format!("{what} (clip {}, track {})", clip.id, track.id))
+                };
                 if !ids.insert(clip.id)
                     || !clip.start.is_valid()
                     || clip.start < previous
@@ -690,7 +693,7 @@ impl Project {
                     || !clip.gain.is_finite()
                     || !(0.0..=8.0).contains(&clip.gain)
                 {
-                    return Err(EditError::Invalid("clip bounds or transform".into()));
+                    return Err(invalid("clip bounds or transform"));
                 }
                 previous = clip.start;
                 // A fade is held to its edge, and the two never meet.
@@ -698,7 +701,7 @@ impl Project {
                     || clip.fade_out < Time::ZERO
                     || clip.fade_in + clip.fade_out > clip.duration
                 {
-                    return Err(EditError::Invalid("fades".into()));
+                    return Err(invalid("fades"));
                 }
                 let faded = !clip.fade_in.is_zero() || !clip.fade_out.is_zero();
                 match &clip.content {
@@ -720,11 +723,11 @@ impl Project {
                         if asset.kind != MediaKind::Image
                             && clip.source_span().1 > asset.duration + Time(2)
                         {
-                            return Err(EditError::Invalid("clip extends beyond source".into()));
+                            return Err(invalid("clip extends beyond source"));
                         }
                         // Only sound fades.
                         if faded && !asset.has_audio && asset.kind != MediaKind::Audio {
-                            return Err(EditError::Invalid("fades".into()));
+                            return Err(invalid("fades"));
                         }
                     }
                     ClipContent::Text {
@@ -744,21 +747,45 @@ impl Project {
                             || !(1.0..=4096.0).contains(font_size)
                             || !style.validate()
                         {
-                            return Err(EditError::Invalid("text style".into()));
+                            return Err(invalid("text style"));
                         }
-                        if [enter, exit]
-                            .into_iter()
-                            .flatten()
-                            .any(|animation| !animation.validate(frame, clip.duration))
-                            || !title::animations_fit(enter.as_ref(), exit.as_ref(), clip.duration)
-                        {
-                            return Err(EditError::Invalid("text animation".into()));
+                        for (edge, animation) in [("enter", enter), ("exit", exit)] {
+                            if let Some(animation) = animation
+                                && !animation.validate(frame, clip.duration)
+                            {
+                                return Err(EditError::Invalid(format!(
+                                    "text animation (clip {}, content.{edge}): duration {} us, delay {} us, clip duration {} us, minimum duration {} us",
+                                    clip.id,
+                                    animation.duration.0,
+                                    animation.delay.0,
+                                    clip.duration.0,
+                                    frame.0
+                                )));
+                            }
+                        }
+                        if !title::animations_fit(enter.as_ref(), exit.as_ref(), clip.duration) {
+                            return Err(EditError::Invalid(format!(
+                                "text animation (clip {}): content.enter and content.exit overlap within {} us",
+                                clip.id, clip.duration.0
+                            )));
                         }
                         if faded {
-                            return Err(EditError::Invalid("fades".into()));
+                            return Err(invalid("fades"));
                         }
                         if !title::words_valid(words, text, clip.duration) {
-                            return Err(EditError::Invalid("word times".into()));
+                            let detail = words.iter().enumerate().find(|(index, word)| {
+                                word.at < Time::ZERO
+                                    || word.end < word.at
+                                    || word.end > clip.duration
+                                    || (*index > 0 && words[*index - 1].at > word.at)
+                            }).map_or_else(
+                                || format!("{} times for {} words (maximum {})", words.len(), title::word_count(text), title::MAX_WORDS),
+                                |(index, word)| format!("content.words[{index}]: {}..{} us, clip duration {} us; times must be ordered and inside the clip", word.at.0, word.end.0, clip.duration.0),
+                            );
+                            return Err(EditError::Invalid(format!(
+                                "word times (clip {}): {detail}",
+                                clip.id
+                            )));
                         }
                         Self::validate_generated(clip)?;
                     }
@@ -767,10 +794,10 @@ impl Project {
                             return Err(EditError::IncompatibleTrack);
                         }
                         if faded {
-                            return Err(EditError::Invalid("fades".into()));
+                            return Err(invalid("fades"));
                         }
                         if !title::graphic_valid(*size, elements, frame, clip.duration) {
-                            return Err(EditError::Invalid("graphic".into()));
+                            return Err(invalid("graphic"));
                         }
                         Self::validate_generated(clip)?;
                     }
@@ -788,13 +815,13 @@ impl Project {
                             .iter()
                             .any(|a| a.target.is_some() || a.key != ParamKey::Gain))
                 {
-                    return Err(EditError::Invalid("audio clip look".into()));
+                    return Err(invalid("audio clip look"));
                 }
                 // The decoder of a clip on an audio track is the only one filtered.
                 if track.kind != TrackKind::Audio
                     && clip.effects.iter().any(|effect| effect.kind.is_audio())
                 {
-                    return Err(EditError::Invalid("audio effect on a picture clip".into()));
+                    return Err(invalid("audio effect on a picture clip"));
                 }
                 self.validate_look(clip, frame)?;
             }
@@ -837,7 +864,10 @@ impl Project {
             || !clip.blend.is_normal()
             || clip.retime.is_some()
         {
-            return Err(crate::EditError::Invalid("text clip look".into()));
+            return Err(crate::EditError::Invalid(format!(
+                "text clip look (clip {})",
+                clip.id
+            )));
         }
         Ok(())
     }
@@ -845,14 +875,17 @@ impl Project {
     // Bounds of the look, animation, time map, transitions and follow on one clip.
     fn validate_look(&self, clip: &Clip, frame: Time) -> Result<(), crate::EditError> {
         use crate::EditError;
-        let invalid = |what: &str| Err(EditError::Invalid(what.into()));
+        let invalid = |what: &str| Err(EditError::Invalid(format!("{what} (clip {})", clip.id)));
         if clip.effects.len() > look::MAX_EFFECTS || clip.masks.len() > look::MAX_MASKS {
             return invalid("effect or mask count");
         }
         let mut targets = HashSet::with_capacity(clip.effects.len() + clip.masks.len());
-        for effect in &clip.effects {
+        for (index, effect) in clip.effects.iter().enumerate() {
             if !targets.insert(effect.id) || !effect.validate() {
-                return invalid("effect");
+                return Err(EditError::Invalid(format!(
+                    "effect (clip {}, effects[{index}] {})",
+                    clip.id, effect.id
+                )));
             }
             if let Some(asset_id) = effect.asset_id {
                 let asset = self
@@ -869,9 +902,12 @@ impl Project {
                 }
             }
         }
-        for mask in &clip.masks {
+        for (index, mask) in clip.masks.iter().enumerate() {
             if !targets.insert(mask.id) || !mask.validate() {
-                return invalid("mask");
+                return Err(EditError::Invalid(format!(
+                    "mask (clip {}, masks[{index}] {})",
+                    clip.id, mask.id
+                )));
             }
         }
         if clip.animation.len() > animate::MAX_ANIM_TRACKS {
@@ -901,7 +937,34 @@ impl Project {
                 .any(|earlier| earlier.target == track.target && earlier.key == track.key)
                 || !track.validate(clip.duration, spec)
             {
-                return invalid("animation keys");
+                let detail = if clip.animation[..index]
+                    .iter()
+                    .any(|earlier| earlier.target == track.target && earlier.key == track.key)
+                {
+                    "duplicate animation target and parameter".to_owned()
+                } else if !(1..=animate::MAX_KEYFRAMES).contains(&track.keys.len()) {
+                    format!(
+                        "expected 1..={} keys, got {}",
+                        animate::MAX_KEYFRAMES,
+                        track.keys.len()
+                    )
+                } else {
+                    let bad = track.keys.iter().enumerate().find(|(key_index, key)| {
+                        key.at < Time::ZERO
+                            || key.at > clip.duration
+                            || !spec.contains(key.value)
+                            || !key.ease.validate()
+                            || (*key_index > 0 && track.keys[*key_index - 1].at >= key.at)
+                    });
+                    bad.map_or_else(
+                        || "keys must be strictly ordered and valid".into(),
+                        |(key_index, key)| format!("keys[{key_index}]: at {} us (expected 0..={} us), value {} (expected {}..={}), valid easing and strictly increasing times required", key.at.0, clip.duration.0, key.value, spec.min, spec.max),
+                    )
+                };
+                return Err(EditError::Invalid(format!(
+                    "animation keys (clip {}, animation[{index}], parameter {:?}, target {:?}): {detail}",
+                    clip.id, track.key, track.target
+                )));
             }
         }
         if let Some(retime) = &clip.retime

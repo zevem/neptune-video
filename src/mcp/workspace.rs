@@ -125,6 +125,24 @@ struct Own {
     after: u64,
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct HistoryListing {
+    pub revision: u64,
+    pub past: Vec<String>,
+    pub future: Vec<String>,
+    pub past_entries: Vec<editor_core::ChangeSummary>,
+    pub future_entries: Vec<editor_core::ChangeSummary>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ChangeListing {
+    pub project_id: Uuid,
+    pub context_id: Uuid,
+    #[serde(flatten)]
+    pub changes: editor_core::ChangesSince,
+}
+
 pub struct Workspace {
     pub roots: Arc<Roots>,
     pub backend: Backend,
@@ -140,6 +158,7 @@ pub struct Workspace {
     seen: Option<(Instant, Vec<Session>)>,
     notices: Vec<String>,
     requests: u64,
+    busy_deadline: Option<Instant>,
     /// The local render queue, made at the first export.
     pub renders: Option<crate::export::queue::RenderQueue>,
     /// The `aster` program `desktop` `open` launches, and the settings it
@@ -171,6 +190,7 @@ impl Workspace {
             seen: None,
             notices: Vec::new(),
             requests: 0,
+            busy_deadline: None,
             renders: None,
             desktop_program: None,
             desktop_settings: None,
@@ -240,7 +260,42 @@ impl Workspace {
 
     /// Sends one request to the authority. A window that does not answer
     /// an edit leaves it `indeterminate`: it may have landed.
+    /// Scope a bounded wait to one tool call. Only explicit refusals known to have
+    /// applied nothing are retried; transport failures and indeterminate results are final.
+    pub fn with_wait<R>(
+        &mut self,
+        wait: bool,
+        work: impl FnOnce(&mut Self) -> Result<R, ToolError>,
+    ) -> Result<R, ToolError> {
+        let previous = self.busy_deadline;
+        self.busy_deadline = wait.then(|| Instant::now() + Duration::from_secs(5));
+        let result = work(self);
+        self.busy_deadline = previous;
+        result
+    }
+
     pub fn send(
+        &mut self,
+        operation: AgentOperation,
+        expected_revision: Option<u64>,
+    ) -> Result<AgentResponse, ToolError> {
+        loop {
+            let response = self.send_once(operation.clone(), expected_revision)?;
+            let refused = matches!(&response.result, AgentResult::Error { code, .. }
+                if matches!(code.as_str(), "person_editing" | "desktop_busy" | "busy" | "timeout"));
+            if refused
+                && self
+                    .busy_deadline
+                    .is_some_and(|until| Instant::now() < until)
+            {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            return Ok(response);
+        }
+    }
+
+    fn send_once(
         &mut self,
         operation: AgentOperation,
         expected_revision: Option<u64>,
@@ -524,6 +579,18 @@ impl Workspace {
         dry_run: bool,
         allow_overlap: bool,
     ) -> Result<Edited, ToolError> {
+        if let Some(expected) = expected
+            && expected != snapshot.revision
+        {
+            return Err(ToolError::new(
+                "stale_revision",
+                format!(
+                    "The project is at revision {}, not {expected}; look again before editing",
+                    snapshot.revision
+                ),
+            )
+            .at(snapshot.revision));
+        }
         let prepared = PreparedEdit::from_snapshot(
             snapshot.project.clone(),
             snapshot.context_id,
@@ -603,8 +670,25 @@ impl Workspace {
 
     /// Undoes or redoes the agent's own last entry, or any entry with
     /// `allow_person`.
-    pub fn step(&mut self, redo: bool, allow_person: bool) -> Result<Edited, ToolError> {
+    pub fn step(
+        &mut self,
+        redo: bool,
+        allow_person: bool,
+        expected: Option<u64>,
+    ) -> Result<Edited, ToolError> {
         let snapshot = self.snapshot()?;
+        if let Some(expected) = expected
+            && expected != snapshot.revision
+        {
+            return Err(ToolError::new(
+                "stale_revision",
+                format!(
+                    "The project is at revision {}, not {expected}",
+                    snapshot.revision
+                ),
+            )
+            .at(snapshot.revision));
+        }
         let own = if redo {
             self.own_redo.last()
         } else {
@@ -693,11 +777,50 @@ impl Workspace {
             .is_some_and(|own| own.context == snapshot.context_id && own.after == snapshot.revision)
     }
 
-    pub fn history(&mut self) -> Result<(Vec<String>, Vec<String>), ToolError> {
+    pub fn history(&mut self) -> Result<HistoryListing, ToolError> {
         self.check_handover()?;
         let response = self.send(AgentOperation::History, None)?;
         match self.answer(response)? {
-            (_, AgentResult::Entries { past, future }) => Ok((past, future)),
+            (
+                revision,
+                AgentResult::Entries {
+                    past,
+                    future,
+                    past_entries,
+                    future_entries,
+                    truncated,
+                },
+            ) => Ok(HistoryListing {
+                revision,
+                past,
+                future,
+                past_entries,
+                future_entries,
+                truncated,
+            }),
+            _ => Err(ToolError::unavailable(
+                "The authority answered something else",
+            )),
+        }
+    }
+
+    pub fn changes_since(&mut self, revision: u64) -> Result<ChangeListing, ToolError> {
+        // Check the bound editing context before asking for this context's journal.
+        self.snapshot()?;
+        let response = self.send(AgentOperation::ChangesSince { revision }, None)?;
+        match self.answer(response)? {
+            (
+                _,
+                AgentResult::Changes {
+                    project_id,
+                    context_id,
+                    changes,
+                },
+            ) => Ok(ChangeListing {
+                project_id,
+                context_id,
+                changes,
+            }),
             _ => Err(ToolError::unavailable(
                 "The authority answered something else",
             )),
@@ -738,13 +861,17 @@ impl Workspace {
     }
 
     /// Saves the document, or saves it as a new file.
-    pub fn save(&mut self, destination: Option<PathBuf>) -> Result<DocumentInfo, ToolError> {
+    pub fn save(
+        &mut self,
+        destination: Option<PathBuf>,
+        expected: Option<u64>,
+    ) -> Result<DocumentInfo, ToolError> {
         // Save As writes a new file, which no window has open; it is how
         // work the window's file does not hold is kept.
         if destination.is_none() {
             self.check_handover()?;
         }
-        let response = self.send(AgentOperation::Save { destination }, None)?;
+        let response = self.send(AgentOperation::Save { destination }, expected)?;
         let (_, result) = self.answer(response)?;
         let AgentResult::Document { document } = result else {
             return Err(ToolError::unavailable(
@@ -1329,7 +1456,7 @@ impl Workspace {
     /// recovery copy go (its file is saved after every edit).
     pub fn shut_down(&mut self) {
         if let Some(queue) = self.renders.take() {
-            queue.shutdown();
+            queue.shutdown_and_join();
         }
         if let Some(mut child) = self.launched_window.take() {
             // The window is the person's now; it is not waited for.
@@ -1537,5 +1664,158 @@ impl Authority {
         answered
             .await
             .map_err(|_| ToolError::unavailable("The request failed inside the server"))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_revision_guards_dry_runs_before_validation_and_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = Arc::new(Roots::new(vec![dir.path().to_path_buf()], dir.path(), None).unwrap());
+        let mut workspace = Workspace::new(roots, None);
+        workspace.create(Project::new("Guard"), None).unwrap();
+        let snapshot = workspace.snapshot().unwrap();
+        let error = workspace
+            .apply(
+                &snapshot,
+                Command::RenameProject {
+                    name: "Changed".into(),
+                },
+                Some(99),
+                true,
+                false,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "stale_revision");
+        assert_eq!(workspace.snapshot().unwrap().revision, 0);
+        assert_eq!(workspace.snapshot().unwrap().project.name, "Guard");
+    }
+
+    #[test]
+    fn undo_and_save_refuse_a_stale_explicit_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = Arc::new(Roots::new(vec![dir.path().to_path_buf()], dir.path(), None).unwrap());
+        let mut workspace = Workspace::new(roots, None);
+        workspace.create(Project::new("Guard"), None).unwrap();
+        let snapshot = workspace.snapshot().unwrap();
+        workspace
+            .apply(
+                &snapshot,
+                Command::RenameProject {
+                    name: "Changed".into(),
+                },
+                Some(0),
+                false,
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            workspace.step(false, false, Some(0)).unwrap_err().code,
+            "stale_revision"
+        );
+        assert_eq!(
+            workspace
+                .save(Some(dir.path().join("guard.aster")), Some(0))
+                .unwrap_err()
+                .code,
+            "stale_revision"
+        );
+        assert!(!dir.path().join("guard.aster").exists());
+        assert_eq!(workspace.snapshot().unwrap().project.name, "Changed");
+    }
+    fn wait_scenario(first_code: &str, human_edit: bool) -> (AgentResponse, usize, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = Arc::new(Roots::new(vec![dir.path().to_path_buf()], dir.path(), None).unwrap());
+        let mut editor = Editor::new(Project::new("Original")).unwrap();
+        let project_id = editor.project().id;
+        let context_id = editor.instance_id();
+        let host = editor_agent::AgentHost::new(|| {}).unwrap();
+        let descriptor = host.descriptor().clone();
+        let code = first_code.to_owned();
+        let worker = thread::spawn(move || {
+            let mut calls = 0;
+            let until = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < until {
+                if let Some(call) = host.poll()
+                    && let Some(call) = call.claim()
+                {
+                    calls += 1;
+                    assert_eq!(call.request.expected_revision, Some(0));
+                    if calls == 1 {
+                        if human_edit {
+                            editor
+                                .dispatch(Command::RenameProject {
+                                    name: "Human edit".into(),
+                                })
+                                .unwrap();
+                        }
+                        let response = AgentResponse::error(
+                            call.request.request_id.clone(),
+                            editor.revision(),
+                            &code,
+                            "Test refusal",
+                        );
+                        call.reply(response);
+                        if code == "indeterminate" {
+                            break;
+                        }
+                    } else {
+                        let response = editor_agent::handle(&mut editor, call.request.clone());
+                        call.reply(response);
+                        break;
+                    }
+                } else {
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+            (calls, editor.project().name.clone())
+        });
+        let mut workspace = Workspace::new(roots, None);
+        workspace.backend = Backend::Desktop(Desktop { descriptor });
+        workspace.binding = Some(Binding {
+            project_id,
+            context_id,
+            path: None,
+        });
+        let response = workspace
+            .with_wait(true, |workspace| {
+                workspace.send(
+                    AgentOperation::Apply {
+                        command: Box::new(Command::RenameProject {
+                            name: "Agent edit".into(),
+                        }),
+                    },
+                    Some(0),
+                )
+            })
+            .unwrap();
+        let (calls, name) = worker.join().unwrap();
+        (response, calls, name)
+    }
+
+    #[test]
+    fn bounded_wait_retries_only_explicit_refusals_and_preserves_the_original_revision() {
+        let (response, calls, name) = wait_scenario("desktop_busy", false);
+        assert!(matches!(
+            response.result,
+            AgentResult::Applied { changed: true, .. }
+        ));
+        assert_eq!(calls, 2);
+        assert_eq!(name, "Agent edit");
+        let (response, calls, name) = wait_scenario("person_editing", true);
+        assert!(
+            matches!(response.result, AgentResult::Error { code, .. } if code == "stale_revision")
+        );
+        assert_eq!(calls, 2);
+        assert_eq!(name, "Human edit");
+        let (response, calls, name) = wait_scenario("indeterminate", false);
+        assert!(
+            matches!(response.result, AgentResult::Error { code, .. } if code == "indeterminate")
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(name, "Original");
     }
 }

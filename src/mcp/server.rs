@@ -62,18 +62,14 @@ pub struct AsterServer {
 /// A client reads every tool's schema before its first call, so they are
 /// kept small: results carry no output schema (the instructions describe
 /// the edit result every editing tool returns, and each result is JSON in
-/// `structuredContent`); input schemas lose the noise schemars adds and the
-/// time object's prose, which the instructions give once.
+/// `structuredContent`). Input schemas retain structure and prose for operation
+/// choices, stored shapes, values and units. Shared targeting/guard guidance
+/// lives in the server instructions and docs/mcp.md.
 fn compact(mut router: ToolRouter<AsterServer>) -> ToolRouter<AsterServer> {
     fn quiet(value: &mut serde_json::Value, prose: bool) {
         match value {
             serde_json::Value::Object(object) => {
-                if object
-                    .get("default")
-                    .is_some_and(serde_json::Value::is_null)
-                {
-                    object.remove("default");
-                }
+                object.remove("default");
                 if !prose {
                     object.remove("description");
                 }
@@ -105,12 +101,41 @@ fn compact(mut router: ToolRouter<AsterServer>) -> ToolRouter<AsterServer> {
                         // Property and definition names are kept.
                         ("properties" | "$defs", serde_json::Value::Object(named)) => {
                             for (name, schema) in named.iter_mut() {
-                                // Said once in the instructions instead.
-                                let shared = matches!(
+                                let semantic = matches!(
                                     name.as_str(),
-                                    "TimeSpec" | "expected_revision" | "dry_run" | "allow_overlap"
+                                    "op" | "changes"
+                                        | "delta"
+                                        | "detail"
+                                        | "fields"
+                                        | "params"
+                                        | "settings"
+                                        | "source_in"
+                                        | "step"
+                                        | "style"
+                                        | "time_range"
+                                        | "times"
+                                        | "trim_animation"
+                                        | "gain"
+                                        | "db"
+                                        | "mix"
+                                        | "position"
+                                        | "rotation"
+                                        | "scale"
+                                        | "threshold"
+                                        | "amount"
+                                        | "duration"
+                                        | "key"
+                                        | "rate"
+                                        | "speed"
+                                        | "strength"
+                                        | "ease"
+                                        | "target"
+                                        | "value"
+                                        | "size"
+                                        | "format"
+                                        | "cell_size"
                                 );
-                                quiet(schema, prose && !shared);
+                                quiet(schema, prose && semantic);
                             }
                         }
                         (_, inner) => quiet(inner, prose),
@@ -141,10 +166,16 @@ validated commands, history and file as the Aster window.
 Start with project_status. Make a project with project_create (a path makes the file at once), \
 or open one with project_open; desktop {op: list|attach} edits a project open in a running Aster \
 window, where every edit appears at once. Import media with media_import, then place it with \
-clip_add. project_inspect {scope: timeline} lists tracks and clips with their IDs.
+clip_add. Inspect scope tracks for slim track state; timeline/media are paged (50 by default, \
+next_offset continues). Filter by track_ids, clip_ids, asset_ids or time_range {start,end}; fields \
+selects top-level fields. scope clips with clip_ids returns exact live core clip objects, including \
+animation/effects/content; no save or disk read is needed. Asset inputs accept a full UUID or a \
+unique hexadecimal prefix of at least four digits; raw commands require full UUIDs.
 
 Times: typed tools take a TimeSpec object with exactly one of {frame} (project frames), \
 {seconds}, {us} (microseconds) or {timecode: \"HH:MM:SS:FF\"}, and report times in all of them. \
+Timeline placement is frame-snapped; source_in and picture seconds/us are exact. Asset picture \
+frame/timecode uses the source rate. \
 edit_apply takes core commands, whose times are integer microseconds and whose keyframe times are \
 relative to the clip's start.
 
@@ -154,10 +185,24 @@ Pass expected_revision to refuse an edit when the project changed since you look
 checks an edit without applying it; allow_overlap: true lets clips overlap on a track, which the \
 window never does. history {op: undo} takes back only your own last edit. \
 When the project is in a window, a refusal with code person_editing or desktop_busy means the \
-person is in the middle of something: wait and retry.
+person is in the middle of something: wait_if_busy: true retries explicit refusals for five \
+seconds (plus transport timeouts), keeping original project/context/revision guards. Indeterminate edits are \
+never retried. history {op: changes_since,since_revision} includes human edits, undo and redo; \
+if changes.complete is false, inspect again.
 
-Look at the result: frame_render draws the timeline at a time; contact_sheet draws many. \
-Long work runs as a job (transcribe_start, scenes_start, loudness_start, render_export_start): \
+Use patch_clip for partial in-place edits with stable IDs: start,duration,source_in,asset_id and \
+changes (stored objects merge, arrays replace, null clears optional fields). Shortening crops \
+existing keys with an interpolated boundary; trim_animation: preserve validates strictly. \
+clip_edit move/trim also preserves IDs; use it for source-aligned head trims. offset_clips shifts \
+clip_ids by a signed delta. effect_edit and keyframes_set edit individual effects/curves.
+
+Look at the result: frame_render draws exact times; contact_sheet accepts explicit times or evenly \
+samples a range. only_tracks/exclude_tracks/solo_clip isolate picture layers without changing \
+visibility. frames_export writes a long range as numbered pictures with bounded memory; output \
+folders are created. loudness_start {scope: timeline,per_track: true} measures the stereo export \
+mix after the master limiter; clip_ids measurements are for individual clip normalization. \
+media_usage finds source/effect references to an asset. \
+Long work runs as a job (transcribe_start, scenes_start, loudness_start, frames_export, render_export_start): \
 poll it with job {op: wait}. Jobs never edit; apply their results with captions \
 {op: from_transcript} or audio_edit {op: normalize}. edit_apply reaches every core command; \
 edit_schema describes them. Files are read and written only inside the server's root folders.";
@@ -203,28 +248,30 @@ impl AsterServer {
         build: impl FnOnce(&Snapshot) -> Result<Command, ToolError> + Send + 'static,
     ) -> Result<Json<Edited>, ToolError> {
         self.on(move |workspace| {
-            let snapshot = workspace.snapshot()?;
-            if let Some(expected) = guard.expected_revision
-                && expected != snapshot.revision
-            {
-                return Err(ToolError::new(
-                    "stale_revision",
-                    format!(
-                        "The project is at revision {}, not {expected}; look again before \
+            workspace.with_wait(guard.wait_if_busy, |workspace| {
+                let snapshot = workspace.snapshot()?;
+                if let Some(expected) = guard.expected_revision
+                    && expected != snapshot.revision
+                {
+                    return Err(ToolError::new(
+                        "stale_revision",
+                        format!(
+                            "The project is at revision {}, not {expected}; look again before \
                          editing",
-                        snapshot.revision
-                    ),
+                            snapshot.revision
+                        ),
+                    )
+                    .at(snapshot.revision));
+                }
+                let command = build(&snapshot)?;
+                workspace.apply(
+                    &snapshot,
+                    command,
+                    guard.expected_revision,
+                    guard.dry_run,
+                    guard.allow_overlap,
                 )
-                .at(snapshot.revision));
-            }
-            let command = build(&snapshot)?;
-            workspace.apply(
-                &snapshot,
-                command,
-                guard.expected_revision,
-                guard.dry_run,
-                guard.allow_overlap,
-            )
+            })
         })
         .await
         .map(Json)

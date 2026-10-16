@@ -124,7 +124,9 @@ fn text(edit: impl FnOnce(&mut Clip)) -> Result<(), EditError> {
 #[track_caller]
 fn invalid(result: Result<(), EditError>, what: &str) {
     match result {
-        Err(EditError::Invalid(reason)) => assert_eq!(reason, what),
+        Err(EditError::Invalid(reason)) => {
+            assert_eq!(reason.split(" (clip ").next().unwrap(), what)
+        }
         other => panic!("expected Invalid({what}), got {other:?}"),
     }
 }

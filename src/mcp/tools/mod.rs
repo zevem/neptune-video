@@ -9,6 +9,7 @@ pub mod effects;
 pub mod history;
 pub mod jobs;
 pub mod media;
+mod mix;
 pub mod project;
 pub mod render;
 pub mod text;
@@ -26,6 +27,9 @@ pub struct Guard {
     /// Refuse the edit unless the project is still at this revision.
     #[serde(default)]
     pub expected_revision: Option<u64>,
+    /// Wait up to five seconds for explicit busy refusals; never replay an uncertain edit.
+    #[serde(default)]
+    pub wait_if_busy: bool,
     /// Check the edit and say what it would do, without applying it.
     #[serde(default)]
     pub dry_run: bool,
@@ -49,6 +53,40 @@ pub fn track(project: &Project, id: Uuid) -> Result<&Track, ToolError> {
     project
         .track(id)
         .ok_or_else(|| ToolError::not_found(format!("No track {id} in the project")))
+}
+
+/// Resolves a full asset UUID or an unambiguous hexadecimal prefix. Return
+/// full IDs in every response so later calls need not depend on a prefix.
+pub fn resolve_asset_id(project: &Project, given: &str) -> Result<Uuid, ToolError> {
+    if let Ok(id) = Uuid::parse_str(given) {
+        return project
+            .assets
+            .contains_key(&id)
+            .then_some(id)
+            .ok_or_else(|| ToolError::not_found(format!("No media {id} in the project")));
+    }
+    let prefix: String = given.chars().filter(|ch| *ch != '-').collect();
+    if !(4..32).contains(&prefix.len()) || !prefix.bytes().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(ToolError::invalid(
+            "asset_id must be a full UUID or a unique prefix of at least four hexadecimal digits; use project_inspect {scope: media} to find it",
+        ));
+    }
+    let prefix = prefix.to_ascii_lowercase();
+    let mut matches = project
+        .assets
+        .keys()
+        .filter(|id| id.simple().to_string().starts_with(&prefix));
+    let Some(id) = matches.next().copied() else {
+        return Err(ToolError::not_found(format!(
+            "No media matches asset_id prefix {given}"
+        )));
+    };
+    if matches.next().is_some() {
+        return Err(ToolError::invalid(format!(
+            "asset_id prefix {given} matches several media; give a longer prefix or full UUID"
+        )));
+    }
+    Ok(id)
 }
 
 pub fn rate(project: &Project) -> FrameRate {
@@ -259,4 +297,43 @@ pub fn check_readable(
         ),
     )
     .with_detail(serde_json::json!({ "paths": outside })))
+}
+
+#[cfg(test)]
+mod asset_id_tests {
+    use super::*;
+    use editor_core::{Asset, MediaKind};
+
+    #[test]
+    fn asset_prefixes_resolve_uniquely_and_refuse_ambiguous_or_invalid_ids() {
+        let mut project = Project::new("Prefixes");
+        let mut a = Asset::new("a.png".into(), MediaKind::Image, Time(1_000_000));
+        a.id = Uuid::parse_str("abcde000-0000-4000-8000-000000000001").unwrap();
+        let mut b = a.clone();
+        b.id = Uuid::parse_str("abcdf000-0000-4000-8000-000000000002").unwrap();
+        std::sync::Arc::make_mut(&mut project.assets).insert(a.id, a.clone());
+        std::sync::Arc::make_mut(&mut project.assets).insert(b.id, b);
+        assert_eq!(resolve_asset_id(&project, "ABCDE").unwrap(), a.id);
+        assert_eq!(resolve_asset_id(&project, &a.id.to_string()).unwrap(), a.id);
+        assert!(
+            resolve_asset_id(&project, "abcd")
+                .unwrap_err()
+                .message
+                .contains("several")
+        );
+        assert_eq!(
+            resolve_asset_id(&project, "ffff").unwrap_err().code,
+            "not_found"
+        );
+        assert_eq!(
+            resolve_asset_id(&project, "abc").unwrap_err().code,
+            "invalid"
+        );
+        assert!(
+            resolve_asset_id(&project, "not-an-id")
+                .unwrap_err()
+                .message
+                .contains("project_inspect")
+        );
+    }
 }

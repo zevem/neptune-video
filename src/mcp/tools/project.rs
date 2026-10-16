@@ -1,7 +1,12 @@
 //! Projects: create, open, save, look at, change settings, close; and the
 //! Aster windows a project can be edited in.
 use super::{Guard, batch, clip_view, frame_rate, stamp};
-use crate::mcp::{errors::ToolError, server::AsterServer, time::Stamp, workspace::Workspace};
+use crate::mcp::{
+    errors::ToolError,
+    server::AsterServer,
+    time::{Stamp, TimeSpec},
+    workspace::Workspace,
+};
 use editor_core::{CanvasSettings, Command, Project};
 use rmcp::{Json, handler::server::wrapper::Parameters, tool, tool_router};
 use schemars::JsonSchema;
@@ -10,7 +15,8 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 /// The most clips `project_inspect` lists in one answer.
-const MOST_CLIPS: usize = 2000;
+const MOST_CLIPS: usize = 500;
+const DEFAULT_ITEMS: usize = 50;
 /// The largest whole project `project_inspect {scope: full}` returns.
 const MOST_FULL_BYTES: usize = 4 * 1024 * 1024;
 
@@ -51,18 +57,46 @@ pub struct SaveParams {
     /// a window's is saved when this is called.
     #[serde(default)]
     pub destination: Option<String>,
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+    #[serde(default)]
+    pub wait_if_busy: bool,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct InspectParams {
+    /// summary (default), tracks (no media or clips), timeline, clips, media or full.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Legacy single-track filter; combines with track_ids.
+    #[serde(default)]
+    pub track_id: Option<Uuid>,
+    #[serde(default)]
+    pub track_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub clip_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub asset_ids: Vec<Uuid>,
+    /// Clips intersecting this half-open timeline interval; exact times, not snapped.
+    #[serde(default)]
+    pub time_range: Option<InspectRange>,
+    /// full returns {track_id, clip}, where clip is the exact add_clip core object.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// Only these top-level clip/media fields (IDs always included).
+    #[serde(default)]
+    pub fields: Vec<String>,
+    /// Page size, 1 to 500; default 50. Use revision to detect changes between pages.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub offset: usize,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct InspectParams {
-    /// `summary` (the default): settings, tracks, media, markers.
-    /// `timeline`: every clip with its times and IDs. `media`: every media
-    /// file with its metadata. `full`: the whole project as stored.
-    #[serde(default)]
-    pub scope: Option<String>,
-    /// Only this track's clips.
-    #[serde(default)]
-    pub track_id: Option<Uuid>,
+pub struct InspectRange {
+    pub start: TimeSpec,
+    pub end: TimeSpec,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -360,126 +394,26 @@ impl AsterServer {
             None => None,
         };
         self.on(move |workspace| {
-            workspace.save(destination)?;
-            status_of(workspace)
+            workspace.with_wait(params.wait_if_busy, |workspace| {
+                workspace.save(destination, params.expected_revision)?;
+                status_of(workspace)
+            })
         })
         .await
         .map(Json)
     }
 
     #[tool(
-        description = "Read the project: summary (default), timeline (every clip with IDs and \
-                       times), media (every file's metadata) or full (the stored project).",
+        description = "Read live project state: summary, tracks, timeline, clips, media or full. \
+                       Filter and page clips/media; detail full returns exact add_clip objects.",
         annotations(read_only_hint = true)
     )]
     async fn project_inspect(
         &self,
         Parameters(params): Parameters<InspectParams>,
     ) -> Result<Json<serde_json::Map<String, serde_json::Value>>, ToolError> {
-        let roots = self.shared.roots.clone();
-        let scope = params.scope.unwrap_or_else(|| "summary".into());
         let snapshot = self.on(|workspace| workspace.snapshot()).await?;
-        let project = &snapshot.project;
-        let mut out = serde_json::Map::new();
-        out.insert("project_id".into(), serde_json::json!(project.id));
-        out.insert("revision".into(), snapshot.revision.into());
-        out.insert("scope".into(), scope.clone().into());
-        match scope.as_str() {
-            "summary" => {
-                out.insert("name".into(), project.name.clone().into());
-                out.insert(
-                    "settings".into(),
-                    serde_json::to_value(SettingsView::of(&project.settings)).unwrap_or_default(),
-                );
-                out.insert(
-                    "duration".into(),
-                    serde_json::to_value(stamp(project.duration(), project)).unwrap_or_default(),
-                );
-                out.insert(
-                    "tracks".into(),
-                    project
-                        .tracks
-                        .iter()
-                        .enumerate()
-                        .map(|(index, track)| {
-                            serde_json::json!({
-                                "track_id": track.id, "index": index, "name": track.name,
-                                "kind": track.kind, "clips": track.clips.len(),
-                                "locked": track.locked, "hidden": track.hidden, "muted": track.muted,
-                                "solo": track.solo, "gain": track.gain, "language": track.language,
-                                "end": stamp(track.clips.iter().map(|c| c.end()).max().unwrap_or_default(), project),
-                            })
-                        })
-                        .collect(),
-                );
-                out.insert("media".into(), media_list(project, &roots).into());
-                out.insert(
-                    "markers".into(),
-                    project
-                        .markers
-                        .iter()
-                        .map(|marker| serde_json::json!({"marker_id": marker.id, "at": stamp(marker.time, project), "label": marker.label}))
-                        .collect(),
-                );
-            }
-            "timeline" => {
-                let mut clips = Vec::new();
-                let mut truncated = false;
-                for track in &project.tracks {
-                    if params.track_id.is_some_and(|id| id != track.id) {
-                        continue;
-                    }
-                    for clip in &track.clips {
-                        if clips.len() == MOST_CLIPS {
-                            truncated = true;
-                            break;
-                        }
-                        clips.push(clip_view(project, track, clip));
-                    }
-                }
-                out.insert(
-                    "tracks".into(),
-                    project
-                        .tracks
-                        .iter()
-                        .enumerate()
-                        .map(|(index, track)| serde_json::json!({"track_id": track.id, "index": index, "name": track.name, "kind": track.kind, "locked": track.locked}))
-                        .collect(),
-                );
-                out.insert("clips".into(), clips.into());
-                out.insert("truncated".into(), truncated.into());
-            }
-            "media" => {
-                out.insert("media".into(), media_list(project, &roots).into());
-                out.insert(
-                    "folders".into(),
-                    project
-                        .folders
-                        .values()
-                        .map(|folder| serde_json::json!({"folder_id": folder.id, "name": folder.name, "parent_id": folder.parent_id}))
-                        .collect(),
-                );
-            }
-            "full" => {
-                let value = serde_json::to_value(&**project).unwrap_or_default();
-                let size = serde_json::to_vec(&value).map_or(0, |bytes| bytes.len());
-                if size > MOST_FULL_BYTES {
-                    return Err(ToolError::new(
-                        crate::mcp::errors::codes::TOO_LARGE,
-                        format!(
-                            "The project is {size} bytes; read scope timeline or media instead"
-                        ),
-                    ));
-                }
-                out.insert("project".into(), value);
-            }
-            other => {
-                return Err(ToolError::invalid(format!(
-                    "scope is summary, timeline, media or full, not {other}"
-                )));
-            }
-        }
-        Ok(Json(out))
+        inspect(&snapshot, &self.shared.roots, params).map(Json)
     }
 
     #[tool(
@@ -600,26 +534,364 @@ impl AsterServer {
     }
 }
 
+/// Build bounded, filtered views from the authority's live immutable snapshot.
+fn inspect(
+    snapshot: &crate::mcp::workspace::Snapshot,
+    roots: &crate::mcp::paths::Roots,
+    params: InspectParams,
+) -> Result<serde_json::Map<String, serde_json::Value>, ToolError> {
+    use serde_json::json;
+    let project = &snapshot.project;
+    let scope = params.scope.as_deref().unwrap_or("summary");
+    let limit = params.limit.unwrap_or(DEFAULT_ITEMS);
+    if !(1..=MOST_CLIPS).contains(&limit) {
+        return Err(ToolError::invalid(format!("limit is 1 to {MOST_CLIPS}")));
+    }
+    let full = match params.detail.as_deref() {
+        None | Some("summary") => false,
+        Some("full") => true,
+        Some(_) => return Err(ToolError::invalid("detail is summary or full")),
+    };
+    let range = params
+        .time_range
+        .as_ref()
+        .map(|range| {
+            let start = range.start.exact(project.settings.frame_rate)?;
+            let end = range.end.exact(project.settings.frame_rate)?;
+            if start >= end {
+                return Err(ToolError::invalid("time_range.end must follow start"));
+            }
+            Ok((start, end))
+        })
+        .transpose()?;
+    for id in params.track_id.iter().chain(&params.track_ids) {
+        super::track(project, *id)?;
+    }
+    for id in &params.clip_ids {
+        super::clip(project, *id)?;
+    }
+    for id in &params.asset_ids {
+        if !project.assets.contains_key(id) {
+            return Err(ToolError::not_found(format!(
+                "No asset {id} in the project"
+            )));
+        }
+    }
+    let tracks: Vec<_> = project
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, track)| {
+            params.track_id.is_none_or(|id| id == track.id)
+                && (params.track_ids.is_empty() || params.track_ids.contains(&track.id))
+        })
+        .collect();
+    let track_offset = if matches!(scope, "summary" | "tracks") {
+        params.offset
+    } else {
+        0
+    };
+    let track_views: Vec<_> = tracks.iter().skip(track_offset).take(limit).map(|(index, track)| json!({
+        "track_id": track.id, "index": index, "name": track.name, "kind": track.kind,
+        "clips": track.clips.len(), "locked": track.locked, "hidden": track.hidden,
+        "muted": track.muted, "solo": track.solo, "gain": track.gain,
+        "language": track.language,
+        "end": stamp(track.clips.iter().map(|clip| clip.end()).max().unwrap_or_default(), project),
+    })).collect();
+    let mut out = serde_json::Map::new();
+    out.insert("project_id".into(), json!(project.id));
+    out.insert("context_id".into(), json!(snapshot.context_id));
+    out.insert("revision".into(), snapshot.revision.into());
+    out.insert("scope".into(), scope.into());
+    match scope {
+        "summary" | "tracks" => {
+            out.insert("tracks".into(), track_views.into());
+            pagination(&mut out, tracks.len(), params.offset, limit);
+            if scope == "summary" {
+                out.insert("name".into(), project.name.clone().into());
+                out.insert(
+                    "settings".into(),
+                    json!(SettingsView::of(&project.settings)),
+                );
+                out.insert("duration".into(), json!(stamp(project.duration(), project)));
+                out.insert("media_count".into(), project.assets.len().into());
+                out.insert(
+                    "clips".into(),
+                    project
+                        .tracks
+                        .iter()
+                        .map(|track| track.clips.len())
+                        .sum::<usize>()
+                        .into(),
+                );
+                out.insert("markers".into(), project.markers.iter().skip(params.offset).take(limit).map(|marker| json!({
+                    "marker_id": marker.id, "at": stamp(marker.time, project), "label": marker.label,
+                })).collect());
+                out.insert("marker_count".into(), project.markers.len().into());
+                out.insert(
+                    "hint".into(),
+                    "Use scope media for paged asset metadata; tracks for only track state.".into(),
+                );
+            }
+        }
+        "timeline" | "clips" | "full"
+            if scope != "full"
+                || !params.clip_ids.is_empty()
+                || !params.track_ids.is_empty()
+                || params.track_id.is_some()
+                || range.is_some()
+                || !params.asset_ids.is_empty() =>
+        {
+            let mut total = 0usize;
+            let mut clips = Vec::with_capacity(limit);
+            let full = full || scope == "clips" || scope == "full";
+            for (_, track) in &tracks {
+                for clip in &track.clips {
+                    if (!params.clip_ids.is_empty() && !params.clip_ids.contains(&clip.id))
+                        || range
+                            .is_some_and(|(start, end)| clip.start >= end || start >= clip.end())
+                        || (!params.asset_ids.is_empty()
+                            && clip
+                                .asset_id()
+                                .is_none_or(|id| !params.asset_ids.contains(&id)))
+                    {
+                        continue;
+                    }
+                    let on_page = total >= params.offset && clips.len() < limit;
+                    total = total.saturating_add(1);
+                    if !on_page {
+                        continue;
+                    }
+                    let view = if full {
+                        let mut value = serde_json::to_value(clip).unwrap_or_default();
+                        project_fields(&mut value, &params.fields, &["id"]);
+                        json!({"track_id": track.id, "clip": value})
+                    } else {
+                        let mut value = clip_view(project, track, clip);
+                        project_fields(&mut value, &params.fields, &["clip_id", "track_id"]);
+                        value
+                    };
+                    clips.push(view);
+                }
+            }
+            out.insert("tracks".into(), track_views.into());
+            out.insert("clips".into(), clips.into());
+            out.insert("tracks_total".into(), tracks.len().into());
+            out.insert("tracks_truncated".into(), (tracks.len() > limit).into());
+            pagination(&mut out, total, params.offset, limit);
+        }
+        "media" => {
+            let matching = || {
+                project.assets.values().filter(|asset| {
+                    params.asset_ids.is_empty() || params.asset_ids.contains(&asset.id)
+                })
+            };
+            let total = matching().count();
+            let page = matching()
+                .skip(params.offset)
+                .take(limit)
+                .map(|asset| {
+                    let mut value = media_view(project, roots, asset);
+                    project_fields(&mut value, &params.fields, &["asset_id"]);
+                    value
+                })
+                .collect::<Vec<_>>();
+            out.insert("media".into(), page.into());
+            pagination(&mut out, total, params.offset, limit);
+            out.insert("folders".into(), project.folders.values().skip(params.offset).take(limit).map(|folder| json!({
+                "folder_id": folder.id, "name": folder.name, "parent_id": folder.parent_id,
+            })).collect());
+            out.insert("folder_count".into(), project.folders.len().into());
+        }
+        "full" => {
+            let value = serde_json::to_value(&**project).unwrap_or_default();
+            let size = serde_json::to_vec(&value).map_or(0, |bytes| bytes.len());
+            if size > MOST_FULL_BYTES {
+                return Err(ToolError::new(
+                    crate::mcp::errors::codes::TOO_LARGE,
+                    format!(
+                        "The project is {size} bytes; filter scope full by clip_ids or use paged timeline/media"
+                    ),
+                ));
+            }
+            out.insert("project".into(), value);
+        }
+        other => {
+            return Err(ToolError::invalid(format!(
+                "scope is summary, tracks, timeline, clips, media or full, not {other}"
+            )));
+        }
+    }
+    // Rich clips can be large individually; a bounded item count alone is insufficient.
+    if serde_json::to_vec(&out).map_or(0, |bytes| bytes.len()) > MOST_FULL_BYTES {
+        return Err(ToolError::new(
+            crate::mcp::errors::codes::TOO_LARGE,
+            "The inspection exceeds 4 MiB; use a smaller limit, clip_ids or fields",
+        ));
+    }
+    Ok(out)
+}
+
+fn project_fields(value: &mut serde_json::Value, fields: &[String], identities: &[&str]) {
+    if !fields.is_empty()
+        && let Some(object) = value.as_object_mut()
+    {
+        object.retain(|key, _| identities.contains(&key.as_str()) || fields.contains(key));
+    }
+}
+
+fn pagination(
+    out: &mut serde_json::Map<String, serde_json::Value>,
+    total: usize,
+    offset: usize,
+    limit: usize,
+) {
+    let next = offset.saturating_add(limit);
+    out.insert("total".into(), total.into());
+    out.insert("offset".into(), offset.into());
+    out.insert("truncated".into(), (next < total).into());
+    out.insert(
+        "next_offset".into(),
+        if next < total {
+            next.into()
+        } else {
+            serde_json::Value::Null
+        },
+    );
+}
+
 /// Every media file with what the project knows of it, and whether this
 /// server may read it.
-fn media_list(project: &Project, roots: &crate::mcp::paths::Roots) -> Vec<serde_json::Value> {
-    project
-        .assets
-        .values()
-        .map(|asset| {
-            serde_json::json!({
-                "asset_id": asset.id,
-                "name": asset.name,
-                "kind": asset.kind,
-                "path": asset.path,
-                "duration": stamp(asset.duration, project),
-                "width": asset.width,
-                "height": asset.height,
-                "frame_rate": asset.frame_rate.map(|rate| rate.fps()),
-                "has_audio": asset.has_audio,
-                "folder_id": asset.folder_id,
-                "readable": roots.readable(&asset.path),
-            })
-        })
-        .collect()
+fn media_view(
+    project: &Project,
+    roots: &crate::mcp::paths::Roots,
+    asset: &editor_core::Asset,
+) -> serde_json::Value {
+    serde_json::json!({
+        "asset_id": asset.id, "name": asset.name, "kind": asset.kind, "path": asset.path,
+        "duration": stamp(asset.duration, project), "width": asset.width, "height": asset.height,
+        "frame_rate": asset.frame_rate.map(|rate| rate.fps()), "has_audio": asset.has_audio,
+        "folder_id": asset.folder_id, "readable": roots.readable(&asset.path),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::{paths::Roots, workspace::Snapshot};
+    use editor_core::{Clip, Time, Track, TrackKind};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn fixture() -> (tempfile::TempDir, Roots, Snapshot) {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = Roots::new(vec![dir.path().to_path_buf()], dir.path(), None).unwrap();
+        let mut project = Project::new("Inspect");
+        let mut track = Track::new("Captions", TrackKind::Text);
+        for index in 0..75 {
+            track.clips.push(Clip::text(
+                format!("Caption {index}"),
+                Time(index * 2_000_000),
+                Time(2_000_000),
+            ));
+        }
+        project.tracks = vec![Arc::new(track)];
+        let snapshot = Snapshot {
+            project: Arc::new(project),
+            revision: 9,
+            context_id: Uuid::new_v4(),
+            can_undo: true,
+            can_redo: false,
+        };
+        (dir, roots, snapshot)
+    }
+
+    fn params(value: serde_json::Value) -> InspectParams {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn inspection_pages_clips_and_keeps_summary_and_tracks_slim() {
+        let (_dir, roots, snapshot) = fixture();
+        let summary = inspect(&snapshot, &roots, InspectParams::default()).unwrap();
+        assert!(!summary.contains_key("media"));
+        assert_eq!(summary["clips"], 75);
+        let tracks = inspect(&snapshot, &roots, params(json!({"scope":"tracks"}))).unwrap();
+        assert!(!tracks.contains_key("clips"));
+        assert_eq!(tracks["tracks"][0]["clips"], 75);
+        let first = inspect(&snapshot, &roots, params(json!({"scope":"timeline"}))).unwrap();
+        assert_eq!(first["clips"].as_array().unwrap().len(), 50);
+        assert_eq!(first["total"], 75);
+        assert_eq!(first["next_offset"], 50);
+        let second = inspect(
+            &snapshot,
+            &roots,
+            params(json!({"scope":"timeline", "offset":50})),
+        )
+        .unwrap();
+        assert_eq!(second["clips"].as_array().unwrap().len(), 25);
+        assert!(second["next_offset"].is_null());
+        assert_ne!(first["clips"][0]["clip_id"], second["clips"][0]["clip_id"]);
+    }
+
+    #[test]
+    fn full_selected_clips_round_trip_to_add_clip_without_saving() {
+        let (_dir, roots, snapshot) = fixture();
+        let clip = &snapshot.project.tracks[0].clips[6];
+        let selected = inspect(
+            &snapshot,
+            &roots,
+            params(json!({"scope":"full", "clip_ids":[clip.id]})),
+        )
+        .unwrap();
+        let returned: Clip = serde_json::from_value(selected["clips"][0]["clip"].clone()).unwrap();
+        assert_eq!(&returned, clip);
+        let command: Command = serde_json::from_value(json!({
+            "type":"add_clip", "track_id":snapshot.project.tracks[0].id,
+            "clip":selected["clips"][0]["clip"],
+        }))
+        .unwrap();
+        assert!(matches!(command, Command::AddClip { clip: returned, .. } if returned == *clip));
+        assert_eq!(selected["revision"], 9);
+    }
+
+    #[test]
+    fn inspection_combines_exact_range_ids_and_field_projection() {
+        let (_dir, roots, snapshot) = fixture();
+        let track = &snapshot.project.tracks[0];
+        let clip = &track.clips[1];
+        let selected = inspect(
+            &snapshot,
+            &roots,
+            params(json!({
+                "scope":"timeline", "track_ids":[track.id], "clip_ids":[clip.id],
+                "time_range":{"start":{"us":2_000_001},"end":{"us":4_000_000}},
+                "fields":["name"],
+            })),
+        )
+        .unwrap();
+        assert_eq!(
+            selected["clips"],
+            json!([{"clip_id":clip.id,"track_id":track.id,"name":clip.name}])
+        );
+        let touching = inspect(
+            &snapshot,
+            &roots,
+            params(json!({
+                "scope":"clips", "clip_ids":[clip.id],
+                "time_range":{"start":{"us":4_000_000},"end":{"us":5_000_000}},
+            })),
+        )
+        .unwrap();
+        assert_eq!(touching["total"], 0);
+        assert!(
+            inspect(
+                &snapshot,
+                &roots,
+                params(json!({"scope":"timeline", "track_ids":[Uuid::new_v4()]}))
+            )
+            .is_err()
+        );
+        assert!(inspect(&snapshot, &roots, params(json!({"limit":501}))).is_err());
+    }
 }

@@ -266,6 +266,7 @@ pub fn run() -> i32 {
         workspace.shut_down();
         Ok(())
     }));
+    shared.frames.shutdown();
     runtime.shutdown_timeout(std::time::Duration::from_secs(2));
     code
 }

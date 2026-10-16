@@ -103,7 +103,7 @@ pub struct EffectParams {
     pub enabled: Option<bool>,
     /// `add`, `update`: the LUT (for lut) or still (for difference_matte).
     #[serde(default)]
-    pub asset_id: Option<Uuid>,
+    pub asset_id: Option<String>,
     /// `add`, `update` of a curve effect: its points, x and y from 0 to 1.
     #[serde(default)]
     pub points: Option<Vec<[f32; 2]>>,
@@ -275,7 +275,11 @@ fn set_params(effect: &mut Effect, params: &BTreeMap<String, f32>) -> Result<(),
     Ok(())
 }
 
-fn change_effect(effect: &mut Effect, params: &EffectParams) -> Result<(), ToolError> {
+fn change_effect(
+    effect: &mut Effect,
+    params: &EffectParams,
+    project: &Project,
+) -> Result<(), ToolError> {
     set_params(effect, &params.params)?;
     if let Some(mix) = params.mix {
         effect.mix = mix;
@@ -283,8 +287,8 @@ fn change_effect(effect: &mut Effect, params: &EffectParams) -> Result<(), ToolE
     if let Some(enabled) = params.enabled {
         effect.enabled = enabled;
     }
-    if let Some(asset) = params.asset_id {
-        effect.asset_id = Some(asset);
+    if let Some(asset) = &params.asset_id {
+        effect.asset_id = Some(super::resolve_asset_id(project, asset)?);
     }
     if let Some(points) = &params.points {
         effect.points = points.clone();
@@ -529,7 +533,7 @@ impl AsterServer {
                         batch("Add effect", commands)?
                     };
                     for effect in added_effects(&mut command, project) {
-                        change_effect(effect, &params)?;
+                        change_effect(effect, &params, project)?;
                     }
                     Ok(command)
                 }
@@ -548,7 +552,7 @@ impl AsterServer {
                     if params.op == "remove" {
                         effects.remove(index);
                     } else {
-                        change_effect(&mut effects[index], &params)?;
+                        change_effect(&mut effects[index], &params, project)?;
                     }
                     Ok(Command::SetEffects {
                         clip_id: target.id,
