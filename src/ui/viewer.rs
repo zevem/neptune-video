@@ -29,8 +29,8 @@ use crate::{
 };
 use editor_core::{
     AnimTarget, Asset, AssetId, Clip, ClipId, ClipOverride, FrameRate, Layer, LayerSource, Mask,
-    MaskShape, MediaKind, ParamKey, Project, ProjectQuery, Reading, Time, Track, TrackKind,
-    Transform, look, render, resolve,
+    MaskShape, MediaKind, ParamKey, Project, ProjectQuery, Reading, RenderPlan, Time, Track,
+    TrackKind, Transform, look, render, resolve,
 };
 // The tests below build their clips from it.
 #[cfg(test)]
@@ -287,10 +287,22 @@ pub struct ViewerInput<'a> {
 }
 
 impl ViewerInput<'_> {
+    /// Bounds belong to an exact immutable root. A same-ID replacement must
+    /// never be evaluated through the snapshot it replaced.
+    fn indexed(&self) -> Option<&ProjectQuery> {
+        self.query
+            .filter(|query| std::ptr::eq(query.project(), self.project))
+    }
+
+    fn resolve(&self, overrides: &[ClipOverride]) -> RenderPlan {
+        match self.indexed() {
+            Some(query) => query.resolve(self.playhead, overrides),
+            None => resolve(self.project, self.playhead, overrides),
+        }
+    }
+
     fn active_clips(&self) -> impl Iterator<Item = (&Track, &Clip)> {
-        let indexed = self
-            .query
-            .filter(|query| std::ptr::eq(query.project(), self.project));
+        let indexed = self.indexed();
         let fallback = indexed.is_none().then_some(self.project);
         indexed
             .into_iter()
@@ -631,7 +643,7 @@ pub fn show(
     {
         overrides.push(held.clone());
     }
-    let mut plan = resolve(project, input.playhead, &overrides);
+    let mut plan = input.resolve(&overrides);
     let active: Vec<(&Track, &Clip)> = input.active_clips().collect();
     let staged: Vec<Option<Staged<'_>>> = plan
         .layers
@@ -755,7 +767,7 @@ pub fn show(
                 None => overrides.push(held.clone()),
             }
         }
-        plan = resolve(project, input.playhead, &overrides);
+        plan = input.resolve(&overrides);
     }
     let plan = plan;
 
@@ -2362,6 +2374,41 @@ mod preview_quality_tests;
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_matching_query_resolves_the_current_picture_and_its_draft() {
+        use std::sync::Arc;
+        let mut project = Project::new("Current root");
+        let clip = Clip::text("Current", Time::ZERO, Time(1_000_000));
+        let id = clip.id;
+        Arc::make_mut(&mut project.tracks[2]).clips.push(clip);
+        let project = Arc::new(project);
+        let query = ProjectQuery::new(Arc::clone(&project));
+        let palette = Palette::new(crate::theme::Appearance::Dark, crate::theme::Accent::Blue);
+        let input = ViewerInput {
+            p: &palette,
+            project: &project,
+            query: Some(&query),
+            playhead: Time(500_000),
+            playing: true,
+            speed: 1.0,
+            looping: false,
+            media: None,
+            record: Default::default(),
+        };
+        assert!(input.indexed().is_some());
+        let overrides = [ClipOverride {
+            clip: id,
+            transform: Some(Transform {
+                position: [23.0, -17.0],
+                ..Transform::default()
+            }),
+            ..ClipOverride::default()
+        }];
+        let plan = input.resolve(&overrides);
+        assert_eq!(plan, resolve(&project, input.playhead, &overrides));
+        assert_eq!(plan.layers[0].transform.position, [23.0, -17.0]);
+    }
+
+    #[test]
     fn mismatched_query_root_cannot_hide_a_replacement_clip() {
         use std::sync::Arc;
         let old = Arc::new(Project::new("Old root"));
@@ -2383,6 +2430,8 @@ mod tests {
             record: Default::default(),
         };
         assert_eq!(input.active_clips().count(), 1);
+        assert_eq!(input.resolve(&[]), resolve(&replacement, Time::ZERO, &[]));
+        assert_eq!(input.resolve(&[]).layers.len(), 1);
     }
 
     use super::*;

@@ -14,3 +14,7 @@ schemars = { version = "1.2.1", features = ["uuid1"] }
 [[bench]]
 name = "timeline"
 harness = false
+
+[[bench]]
+name = "render_plan"
+harness = false

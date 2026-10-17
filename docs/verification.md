@@ -5,6 +5,36 @@ editing evidence. Production readiness, CapCut/Palmier Pro parity and extreme
 performance remain goals requiring the gates below.
 Neptune was inspected read-only as the stack and engineering reference.
 
+## LeyFind preview follow-up (2026-10-16)
+
+The [investigation report](../artifacts/preview-performance-2026-10-16/REPORT.md)
+records a reproduced continuous-playback decoder restart loop, its failing
+real-service regression, and matched native before/after source-output traces
+on an isolated copy of the person's 49.5-second LeyFind reel. Preview quality
+stays Full and proxies stay off. Pixel hashes match across the tested decoder
+thread settings, including alpha. No project or source media is replaced.
+
+The pinned Linux build passes **954 focused tests** (262 core, 67 media service,
+43 decoder, 582 UI), formatting, architecture validation and denied-warning
+all-target Clippy for the three affected packages. A locked optimized `aster`
+is rebuilt; [the build record](../artifacts/preview-performance-2026-10-16/build-record.json)
+identifies its exact source and binary. Whole-workspace tests were not rerun.
+
+Native captures cover the final build playing, paused and in a narrow window
+on owned Weston/Xwayland with NVIDIA RTX 4060 GL. The source trace separates
+video progression from animated text and grain. Presenter starts fall from
+eight to one in the matched eight-second section; its longest gap between
+forwarded decoded pictures falls from 1,501 to 140 ms. Source-output counts
+include discarded catch-up frames and do not prove physical presentation.
+The longer controlled replay removes repeated starts within continuous clips;
+a failed default long replay remains recorded, with slower cold starts and
+later cut stalls. A final default repeat also passes the restart diagnostic,
+while the short final cutout still lacks new raw output in its active window.
+Cold loading and some overlay cut gaps remain. Physical audio/A-V sync,
+macOS/Windows, other codec/hardware combinations and long sessions are not
+verified by this follow-up. [Performance](performance.md#leyfind-playback-investigation-2026-10-16)
+records the resource tradeoff and measurement limits.
+
 ## Current performance-only checkpoint
 
 The [performance acceptance handover](../artifacts/performance-acceptance/round1/REPORT.md)

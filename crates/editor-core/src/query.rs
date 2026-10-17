@@ -1,6 +1,6 @@
 //! Derived interval lookup for an immutable project root. This is not saved
 //! project state: replacing a track rebuilds only that track's prefix bounds.
-use crate::{Clip, Project, Time, Track};
+use crate::{Clip, ClipOverride, Project, RenderPlan, Time, Track, TrackKind, render};
 use std::{collections::HashMap, sync::Arc};
 
 struct IndexedTrack {
@@ -92,5 +92,21 @@ impl ProjectQuery {
                     .active(time)
                     .map(move |clip| (indexed.track.as_ref(), clip))
             })
+    }
+
+    /// Evaluate this snapshot's complete picture using its interval bounds.
+    /// Transition partners, animation, effects and drafts use the same rules
+    /// as [`crate::resolve`]; expired prefixes are skipped before evaluation.
+    pub fn resolve(&self, time: Time, overrides: &[ClipOverride]) -> RenderPlan {
+        let active = self
+            .tracks
+            .iter()
+            .filter(|indexed| !indexed.track.hidden && indexed.track.kind != TrackKind::Audio)
+            .flat_map(|indexed| {
+                indexed
+                    .active(time)
+                    .map(move |clip| (indexed.track.as_ref(), clip))
+            });
+        render::resolve_active(&self.project, time, overrides, active)
     }
 }

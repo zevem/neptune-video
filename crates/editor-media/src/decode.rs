@@ -68,6 +68,10 @@ const GIF_STATE_BUDGET: usize = 64 * 1024 * 1024;
 // and packet queues are bounded separately; decoded caches retain their 64 MiB
 // byte limit regardless of how many pipes are warm.
 const VIDEO_DECODER_LIMIT: usize = 5;
+// Four input threads improve the measured 4K HEVC and transparent ProRes
+// preview path without allowing FFmpeg to choose an unbounded host-wide pool.
+// Keep output encoding and scaling separately limited to one thread.
+const VIDEO_DECODE_THREADS: &str = "4";
 // A speculative read has only four milliseconds. Large partial reads can
 // exhaust that deadline and destroy a useful sequential pipe; leave those
 // streams demand-driven instead of risking their continuity for future pixels.
@@ -112,9 +116,30 @@ struct VideoDecoder {
 }
 
 impl VideoDecoder {
-    fn compatible(&self, target: i64, dimensions: [u32; 2], source: &Source) -> bool {
+    fn compatible(
+        &self,
+        target: i64,
+        dimensions: [u32; 2],
+        source: &Source,
+        playback: bool,
+    ) -> bool {
+        // Cold decoding can take longer than twelve frames of a playing
+        // source. Reopening on every clock advance then repeats that startup
+        // forever. Playback may drain the larger of twelve frames or two
+        // source second, capped at 240 frames. Explicit seeks keep their short
+        // direct-seek window; the bound is source distance, not read time.
+        let forward = if playback {
+            source
+                .frame_rate
+                .unwrap_or_default()
+                .frame_at(Time(2_000_000))
+                .clamp(12, 240)
+        } else {
+            12
+        };
         target >= self.next_index
-            && (target - self.next_index <= 12 || self.fill.is_some_and(|until| target <= until))
+            && (target - self.next_index <= forward
+                || self.fill.is_some_and(|until| target <= until))
             && self.dimensions == dimensions
             && self.source == *source
     }
@@ -413,6 +438,23 @@ impl DecoderPool {
         job: &FrameJob,
         current: impl Fn() -> bool,
     ) -> Result<bool, MediaError> {
+        self.prepare_video_for(job, current, false)
+    }
+
+    pub fn prepare_playback_video(
+        &mut self,
+        job: &FrameJob,
+        current: impl Fn() -> bool,
+    ) -> Result<bool, MediaError> {
+        self.prepare_video_for(job, current, true)
+    }
+
+    fn prepare_video_for(
+        &mut self,
+        job: &FrameJob,
+        current: impl Fn() -> bool,
+        playback: bool,
+    ) -> Result<bool, MediaError> {
         if !current() {
             return Err(MediaError::Cancelled);
         }
@@ -455,7 +497,7 @@ impl DecoderPool {
             .iter()
             .position(|decoder| decoder.lane == job.lane)
         {
-            if self.decoders[index].compatible(target, dimensions, &source) {
+            if self.decoders[index].compatible(target, dimensions, &source, playback) {
                 return Ok(false);
             }
             if !current() {
@@ -493,6 +535,23 @@ impl DecoderPool {
         &mut self,
         job: &FrameJob,
         current: impl Fn() -> bool,
+    ) -> Result<Frame, MediaError> {
+        self.frame_for(job, current, false)
+    }
+
+    pub fn playback_frame(
+        &mut self,
+        job: &FrameJob,
+        current: impl Fn() -> bool,
+    ) -> Result<Frame, MediaError> {
+        self.frame_for(job, current, true)
+    }
+
+    fn frame_for(
+        &mut self,
+        job: &FrameJob,
+        current: impl Fn() -> bool,
+        playback: bool,
     ) -> Result<Frame, MediaError> {
         // A hint belongs only to this successful cold decode, never a cache hit
         // or a subsequent request which happens to reuse the same owner.
@@ -553,7 +612,14 @@ impl DecoderPool {
                 key.frame = index;
                 frame
             }
-            MediaKind::Video => self.video(job, frame_number, dimensions, &key.source, &current)?,
+            MediaKind::Video => self.video(
+                job,
+                frame_number,
+                dimensions,
+                &key.source,
+                &current,
+                playback,
+            )?,
             MediaKind::Audio => return Err(MediaError::Invalid("Audio has no video frame".into())),
             MediaKind::Lut => return Err(MediaError::Invalid("A LUT has no video frame".into())),
             MediaKind::Font => return Err(MediaError::Invalid("A font has no video frame".into())),
@@ -1062,6 +1128,7 @@ impl DecoderPool {
         dimensions: [u32; 2],
         source: &Source,
         current: &impl Fn() -> bool,
+        playback: bool,
     ) -> Result<Frame, MediaError> {
         let mut decoder = self
             .decoders
@@ -1071,8 +1138,8 @@ impl DecoderPool {
         // A frame behind the lane's pipe is a step backwards: the pipe that
         // replaces it starts a run earlier and keeps what it reads on the way.
         let mut run = None;
-        if let Some(old) =
-            (decoder.as_ref()).filter(|decoder| !decoder.compatible(target, dimensions, source))
+        if let Some(old) = (decoder.as_ref())
+            .filter(|decoder| !decoder.compatible(target, dimensions, source, playback))
         {
             run = old.run_start(target, dimensions, source);
             decoder = None;
@@ -1213,7 +1280,7 @@ pub(crate) fn video_command(
             "error",
             "-nostdin",
             "-threads",
-            "2",
+            VIDEO_DECODE_THREADS,
             "-ss",
         ])
         .arg(format!("{:.9}", target as f64 / rate.fps()))

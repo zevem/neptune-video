@@ -41,8 +41,9 @@ fn warmup_snapshot_keeps_admission_order_skips_posters_and_owns_four_pending_job
     let jobs = queue.video_warmup_jobs(&job);
     assert_eq!(jobs.len(), 4);
     for (prepared, consumer) in jobs.iter().zip(consumers[1..5].iter()) {
-        assert_eq!(prepared.lane, Lane::Consumer(*consumer));
-        assert!(queue.frame_current(prepared));
+        assert_eq!(prepared.job.lane, Lane::Consumer(*consumer));
+        assert!(prepared.purpose == FramePurpose::Playback);
+        assert!(queue.frame_current(&prepared.job));
     }
     assert_eq!(queue.pending_order, original_order);
     assert_eq!(queue.sequence, original_sequence);

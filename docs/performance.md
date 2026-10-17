@@ -4,6 +4,70 @@ This project targets responsive professional editing, not a benchmark inferred
 from Rust or GPU dependencies. Record actual results in
 [verification](verification.md) with raw artifacts and the tested workload.
 
+## LeyFind playback investigation (2026-10-16)
+
+The [task report](../artifacts/preview-performance-2026-10-16/REPORT.md) and
+[build record](../artifacts/preview-performance-2026-10-16/build-record.json)
+identify the optimized Linux build `a6526ea7` and its source snapshot. The
+reel has 162 clips, 15 tracks and 139 assets, including portrait 4K 10-bit
+HEVC near 60 fps, transparent ProRes overlays, effects and animated captions.
+Measurements use isolated project/settings copies on the i9-13900HX /
+NVIDIA RTX 4060 host, without CPU affinity changes.
+
+The fixed twelve-source-frame reuse window caused repeated cold seeks when
+decoding outlasted that window. A real-service regression first failed with
+two decoder starts instead of one after a simulated 600 ms clock advance.
+Playback now has a bounded forward catch-up window; explicit seeks retain the
+short window. Each admitted warmup request preserves its own purpose.
+
+Matched native replays of seconds 12–20 keep **Full quality and proxies off**.
+A task-owned, byte-preserving pipe wrapper observes decoder output separately
+from animated captions/grain, which can keep changing while video freezes:
+
+| Continuous source | Before | After |
+| --- | ---: | ---: |
+| Presenter decoder starts | 8 | 1 |
+| Presenter longest gap between forwarded source pictures | 1,501 ms | 140 ms |
+| Transparent cutout decoder starts | 4 | 1 |
+| Cutout longest gap between forwarded source pictures | 1,174 ms | 85 ms |
+| All decoder starts during playback | 19 | 5 |
+
+Forwarded pictures include frames discarded while catching up; their count is
+not a presentation frame rate. Gold dust retains a 393 ms output gap across
+its two clip uses. Native display timing, gapless cuts and audio sync are not
+established. The report retains normal/narrow captures and process cleanup.
+
+A 48-second control comparing one- and two-second catch-up windows on owned
+CPUs 0–15 reduces starts from 34 to 27 and removes repeated starts within
+continuous clips. This affinity is diagnostic only. A default 48-second run
+still fails at heavier cuts with much slower cold starts; short clip windows
+without new raw output can also reflect held/cached pictures. Default-host
+acceptance, instantaneous cuts and presentation cadence remain open.
+A final default repeat passes the restart diagnostic across all continuous
+clips (28 starts); 29 of 30 clip windows emit new raw pictures, with the short
+final cutout still lacking new output in its window. This is not full visual
+acceptance, and it does not erase the failed run.
+
+Four input decode threads also shorten matched standalone 60-frame full-size
+HEVC and dense ProRes-alpha runs by 31–43%, with identical RGBA hashes. One
+filter thread, one raw-output thread, five decoder pipes and existing cache
+budgets remain. Sampled codec-process PSS increases approximately 87 MiB per
+4K HEVC pipe and 51 MiB per dense ProRes pipe; this memory is outside logical
+frame caches. [Raw trials and tradeoffs](../artifacts/preview-performance-2026-10-16/media-audit/FINDINGS.md)
+include the excluded low-delay experiment, which regressed an H.264 control.
+
+Both viewer evaluations now use the immutable-root interval query. The
+[release benchmark](../crates/editor-core/benches/render_plan.rs) compares
+complete equal plans with five current layers and expired history. At 100,000
+clips / 1,000 tracks, same-process direct/indexed p95 is 334.31 / 84.44 µs;
+at 5,000 / 20 it is 10.27 / 2.69 µs. This metadata cost alone did not explain
+the reel's freezes. Follower lookups and timeline painting retain separate
+searches; the benchmark excludes media, GPU work and native presentation.
+
+```sh
+cargo bench --locked -p editor-core --bench render_plan
+```
+
 ## Current performance acceptance
 
 The [measured handover](../artifacts/performance-acceptance/round1/REPORT.md),

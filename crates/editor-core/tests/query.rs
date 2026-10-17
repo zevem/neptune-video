@@ -16,6 +16,12 @@ fn compare(query: &ProjectQuery) {
             .map(|(t, c)| (t.id, c.id))
             .collect();
         assert_eq!(actual, expected, "time {}", time.0);
+        assert_eq!(
+            query.resolve(time, &[]),
+            editor_core::resolve(query.project(), time, &[]),
+            "render plan at {}",
+            time.0
+        );
     }
 }
 

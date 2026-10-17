@@ -301,6 +301,26 @@ pub fn gain_at(clip: &Clip, playhead: Time) -> f32 {
 /// here, tracks bottom → top. A transition's outgoing clip is added directly
 /// below the clip it leads into.
 pub fn resolve(project: &Project, at: Time, overrides: &[ClipOverride]) -> RenderPlan {
+    let active = project
+        .tracks
+        .iter()
+        .filter(|track| !track.hidden && track.kind != TrackKind::Audio)
+        .flat_map(|track| {
+            track
+                .active_clips(at)
+                .map(move |clip| (track.as_ref(), clip))
+        });
+    resolve_active(project, at, overrides, active)
+}
+
+/// Both the convenience evaluator and the immutable-root query use these
+/// rules. Only the search for active clips differs between them.
+pub(crate) fn resolve_active<'a>(
+    project: &'a Project,
+    at: Time,
+    overrides: &[ClipOverride],
+    active: impl IntoIterator<Item = (&'a Track, &'a Clip)>,
+) -> RenderPlan {
     let settings = &project.settings;
     let cx = Context {
         project,
@@ -309,17 +329,15 @@ pub fn resolve(project: &Project, at: Time, overrides: &[ClipOverride]) -> Rende
         overrides,
     };
     let mut layers = Vec::new();
-    for track in &project.tracks {
+    for (track, clip) in active {
         if track.hidden || track.kind == TrackKind::Audio {
             continue;
         }
-        for clip in track.active_clips(at) {
-            let (transition, outgoing) = cx.transition(track, clip);
-            if let Some((partner, transition)) = outgoing {
-                layers.push(cx.layer(track, partner, Some(transition), true));
-            }
-            layers.push(cx.layer(track, clip, transition, false));
+        let (transition, outgoing) = cx.transition(track, clip);
+        if let Some((partner, transition)) = outgoing {
+            layers.push(cx.layer(track, partner, Some(transition), true));
         }
+        layers.push(cx.layer(track, clip, transition, false));
     }
     RenderPlan {
         canvas: [settings.width, settings.height],

@@ -383,3 +383,275 @@ fn retirement_invalidates_playback_and_releases_admission_after_its_old_job_fini
         expect_picture(&service, &job, 3);
     }
 }
+
+/// A delayed first decode leaves a playing clock well ahead of its pipe. It
+/// must catch up through that pipe rather than paying cold startup each turn.
+#[test]
+fn delayed_playback_catches_up_without_restarting_while_an_explicit_seek_still_restarts() {
+    use std::{io::Write, process::Child};
+    const SIZE: [u32; 2] = [64, 32];
+    const FRAMES: i64 = 300;
+
+    struct Encoder(Child);
+    impl Drop for Encoder {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let raw = directory.path().join("delayed-playback.rgba");
+    let pixels = |index: i64| {
+        [index as u8, (index >> 8) as u8, 131, 211].repeat((SIZE[0] * SIZE[1]) as usize)
+    };
+    let mut input = std::fs::File::create(&raw).unwrap();
+    for index in 0..FRAMES {
+        input.write_all(&pixels(index)).unwrap();
+    }
+    drop(input);
+    let path = directory.path().join("delayed-playback.nut");
+    let mut encoder = Encoder(
+        crate::process::tool_command("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
+            .args(["-f", "rawvideo", "-pixel_format", "rgba"])
+            .args(["-video_size", "64x32", "-framerate", "60", "-i"])
+            .arg(&raw)
+            .args(["-an", "-c:v", "ffv1", "-level", "3", "-pix_fmt", "bgra"])
+            .args(["-threads", "1", "-filter_threads", "1", "-f", "nut"])
+            .arg(&path)
+            .spawn()
+            .expect("owned playback catch-up encoder"),
+    );
+    assert!(encoder.0.wait().unwrap().success());
+    drop(encoder);
+    let rate = editor_core::FrameRate {
+        numerator: 60,
+        denominator: 1,
+    };
+    let mut asset = Asset::new(path, MediaKind::Video, rate.frame_time(FRAMES));
+    asset.width = SIZE[0];
+    asset.height = SIZE[1];
+    asset.frame_rate = Some(rate);
+    asset.file_size = std::fs::metadata(&asset.path).unwrap().len();
+    let service = MediaService::new(|| {}).unwrap();
+    let consumer = PreviewConsumer::new();
+    service
+        .set_preview_retention([Some(consumer), None, None])
+        .unwrap();
+    let picture = |index: i64| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(event) = service.poll() {
+                let MediaEvent::FrameReady {
+                    asset_id,
+                    time,
+                    consumer: returned,
+                    frame,
+                    ..
+                } = event
+                else {
+                    panic!("expected exact catch-up picture, received {event:?}");
+                };
+                assert_eq!((asset_id, returned), (asset.id, Some(consumer)));
+                assert_eq!(time, rate.frame_time(index));
+                assert_eq!([frame.width, frame.height], SIZE);
+                assert_eq!(frame.rgba.as_ref(), pixels(index));
+                break;
+            }
+            assert!(Instant::now() < deadline, "catch-up picture timed out");
+            thread::sleep(Duration::from_millis(1));
+        }
+    };
+    service
+        .request_preview(consumer, &asset, Time::ZERO, SIZE)
+        .unwrap();
+    picture(0);
+    assert_eq!(service.processes.started_tools(), 1);
+    // Model a 600 ms clock advance during startup without a timing-sensitive
+    // sleep. This crosses the interactive twelve-source-frame seek window.
+    service
+        .request_playback_preview(consumer, &asset, rate.frame_time(36), SIZE)
+        .unwrap();
+    picture(36);
+    assert_eq!(
+        service.processes.started_tools(),
+        1,
+        "advancing playback must not repeatedly restart its already warm source"
+    );
+    // Dense sources can stay more than one second behind after a cold seek.
+    // A second clock advance must keep catching up through that same pipe.
+    service
+        .request_playback_preview(consumer, &asset, rate.frame_time(126), SIZE)
+        .unwrap();
+    picture(126);
+    assert_eq!(
+        service.processes.started_tools(),
+        1,
+        "playback must recover when cold decoding leaves the clock 1.5 seconds ahead"
+    );
+    service
+        .request_preview(consumer, &asset, rate.frame_time(162), SIZE)
+        .unwrap();
+    picture(162);
+    assert_eq!(
+        service.processes.started_tools(),
+        2,
+        "an explicit seek still starts at its requested frame"
+    );
+    // The larger playback window remains finite: more than two source seconds
+    // skips directly to its target instead of draining an arbitrary interval.
+    service
+        .request_playback_preview(consumer, &asset, rate.frame_time(289), SIZE)
+        .unwrap();
+    picture(289);
+    assert_eq!(service.processes.started_tools(), 3);
+    service
+        .request_playback_preview(consumer, &asset, rate.frame_time(3), SIZE)
+        .unwrap();
+    picture(3);
+    assert_eq!(
+        service.processes.started_tools(),
+        4,
+        "playback intent cannot reuse a forwards-only pipe for an uncached earlier frame"
+    );
+    let processes = service.processes.clone();
+    drop(service);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while processes.retained_monitors() != 0 {
+        assert!(
+            Instant::now() < deadline,
+            "owned playback decoder survived close"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    // A cohort can contain both a seek and advancing playback. Preparing it
+    // must preserve each queued owner's intent, regardless of which one the
+    // worker dispatched first. Use the same actual source with independent
+    // asset identities so shared pixel-cache hits cannot hide a restarted pipe.
+    let service = fixture();
+    let mut pool = DecoderPool::new(service.processes.clone());
+    let owners = [PreviewConsumer::new(), PreviewConsumer::new()];
+    let mut other = asset.clone();
+    other.id = uuid::Uuid::new_v4();
+    let assets = [&asset, &other];
+    let finish = |pending: PendingFrame, pool: &mut DecoderPool| {
+        let frame = if pending.purpose == FramePurpose::Playback {
+            pool.playback_frame(&pending.job, || true)
+        } else {
+            pool.frame(&pending.job, || true)
+        }
+        .unwrap();
+        let index = rate.frame_at(pending.job.time);
+        assert_eq!(frame.rgba.as_ref(), pixels(index));
+        assert!(publish_result(&service.shared, &pending.job, Ok(frame)).unwrap());
+        let MediaEvent::FrameReady {
+            asset_id,
+            consumer,
+            time,
+            ..
+        } = service.poll().unwrap()
+        else {
+            panic!("expected owned mixed-cohort picture");
+        };
+        assert_eq!(asset_id, pending.job.asset.id);
+        assert_eq!(time, pending.job.time);
+        assert_eq!(consumer.map(Lane::Consumer), Some(pending.job.lane));
+    };
+    for (&owner, &asset) in owners.iter().zip(&assets) {
+        service
+            .request_preview(owner, asset, Time::ZERO, SIZE)
+            .unwrap();
+        let pending = service
+            .shared
+            .queue
+            .lock()
+            .unwrap()
+            .take_pending_frame()
+            .unwrap();
+        finish(pending, &mut pool);
+    }
+    assert_eq!(service.processes.started_tools(), 2);
+    for (index, first_playing, expected_starts) in [(36, true, 3), (72, false, 4)] {
+        for (owner_index, (&owner, &asset)) in owners.iter().zip(&assets).enumerate() {
+            let playing = if owner_index == 0 {
+                first_playing
+            } else {
+                !first_playing
+            };
+            if playing {
+                service.request_playback_preview(owner, asset, rate.frame_time(index), SIZE)
+            } else {
+                service.request_preview(owner, asset, rate.frame_time(index), SIZE)
+            }
+            .unwrap();
+        }
+        let pending = service
+            .shared
+            .queue
+            .lock()
+            .unwrap()
+            .take_pending_frame()
+            .unwrap();
+        prepare_video_cohort(&service.shared, &mut pool, &pending.job, pending.purpose, 0).unwrap();
+        assert_eq!(
+            service.processes.started_tools(),
+            expected_starts,
+            "warmup must apply the purpose of each pending owner independently"
+        );
+        finish(pending, &mut pool);
+        let pending = service
+            .shared
+            .queue
+            .lock()
+            .unwrap()
+            .take_pending_frame()
+            .unwrap();
+        finish(pending, &mut pool);
+        assert_eq!(service.processes.started_tools(), expected_starts);
+    }
+    // Superseding a request while it drains the enlarged forward interval
+    // stops between frames, and the new explicit seek keeps its own identity.
+    service
+        .request_playback_preview(owners[0], &asset, rate.frame_time(100), SIZE)
+        .unwrap();
+    let pending = service
+        .shared
+        .queue
+        .lock()
+        .unwrap()
+        .take_pending_frame()
+        .unwrap();
+    let checks = std::cell::Cell::new(0);
+    let result = pool.playback_frame(&pending.job, || {
+        checks.set(checks.get() + 1);
+        if checks.get() == 5 {
+            service
+                .request_preview(owners[0], &asset, rate.frame_time(110), SIZE)
+                .unwrap();
+        }
+        service
+            .shared
+            .queue
+            .lock()
+            .unwrap()
+            .frame_current(&pending.job)
+    });
+    assert!(matches!(result, Err(MediaError::Cancelled)));
+    assert_eq!(checks.get(), 5);
+    assert!(!publish_result(&service.shared, &pending.job, result).unwrap());
+    assert!(service.poll().is_none());
+    let seek = service
+        .shared
+        .queue
+        .lock()
+        .unwrap()
+        .take_pending_frame()
+        .unwrap();
+    assert_eq!(seek.job.time, rate.frame_time(110));
+    assert!(seek.purpose == FramePurpose::Interactive);
+    finish(seek, &mut pool);
+    assert_eq!(service.processes.started_tools(), 5);
+    pool.clear();
+}

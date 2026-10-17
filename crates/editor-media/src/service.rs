@@ -81,6 +81,7 @@ enum FramePurpose {
     Poster,
 }
 
+#[derive(Clone)]
 struct PendingFrame {
     job: FrameJob,
     purpose: FramePurpose,
@@ -176,7 +177,7 @@ impl Queue {
             && self.latest.get(&job.lane) == Some(&job.sequence)
     }
 
-    fn video_warmup_jobs(&self, job: &FrameJob) -> Vec<FrameJob> {
+    fn video_warmup_jobs(&self, job: &FrameJob) -> Vec<PendingFrame> {
         if !self.frame_current(job) {
             return Vec::new();
         }
@@ -188,7 +189,7 @@ impl Queue {
                     && pending.job.asset.kind == MediaKind::Video
             })
             .take(4)
-            .map(|pending| pending.job.clone())
+            .cloned()
             .collect()
     }
 
@@ -770,12 +771,17 @@ fn preview_worker(shared: Arc<Shared>, processes: Processes, wake: Wake) {
         };
         let result = prepare_video_cohort(&shared, &mut decoders, &job, purpose, maintenance)
             .and_then(|()| {
-                decoders.frame(&job, || {
+                let current = || {
                     shared
                         .queue
                         .lock()
                         .is_ok_and(|queue| queue.frame_current(&job))
-                })
+                };
+                if purpose == FramePurpose::Playback {
+                    decoders.playback_frame(&job, current)
+                } else {
+                    decoders.frame(&job, current)
+                }
             });
         let read_ahead =
             purpose == FramePurpose::Playback && result.is_ok() && decoders.has_read_ahead(&job);
@@ -837,7 +843,12 @@ fn prepare_video_cohort(
             .lock()
             .is_ok_and(|queue| queue.frame_current(job) && queue.maintenance == maintenance)
     };
-    match decoders.prepare_video(job, current) {
+    let prepared = if purpose == FramePurpose::Playback {
+        decoders.prepare_playback_video(job, current)
+    } else {
+        decoders.prepare_video(job, current)
+    };
+    match prepared {
         Ok(_) => {}
         // Preparation is optional. An unrelated maintenance change must not
         // discard a still-current finite paused request; ordinary decode below
@@ -857,7 +868,12 @@ fn prepare_video_cohort(
     };
     for pending in &jobs {
         let current = || video_warmup_current(shared, job, &jobs, sequence, maintenance);
-        if decoders.prepare_video(pending, current).is_err() {
+        let prepared = if pending.purpose == FramePurpose::Playback {
+            decoders.prepare_playback_video(&pending.job, current)
+        } else {
+            decoders.prepare_video(&pending.job, current)
+        };
+        if prepared.is_err() {
             // The pending request remains admitted and will receive its own
             // ordinary result. Preparation neither dispatches nor publishes it.
             break;
@@ -869,7 +885,7 @@ fn prepare_video_cohort(
 fn video_warmup_current(
     shared: &Shared,
     job: &FrameJob,
-    pending: &[FrameJob],
+    pending: &[PendingFrame],
     sequence: u64,
     maintenance: u64,
 ) -> bool {
@@ -877,7 +893,9 @@ fn video_warmup_current(
         queue.sequence == sequence
             && queue.maintenance == maintenance
             && queue.frame_current(job)
-            && pending.iter().all(|pending| queue.frame_current(pending))
+            && pending
+                .iter()
+                .all(|pending| queue.frame_current(&pending.job))
     })
 }
 

@@ -239,10 +239,14 @@ project + playhead + drafts → resolve → render plan (layers, bottom first)
        → egui/wgpu → native window
 ```
 
-`editor_core::resolve` is the one evaluator: it samples animation tracks,
-applies follow, pairs transitions and drops disabled effects, and it reads no
-clock. The viewer calls it once a painted frame and requests media from the
-plan's layers. See [advanced editing](#advanced-editing).
+`editor_core::resolve` and `ProjectQuery::resolve` share one layer evaluator:
+animation, follow, transition pairing and effect rules remain identical, and
+neither reads a clock. The viewer uses the query for its exact immutable
+project root, with direct evaluation as a fallback, and requests media from
+the plan's layers. Stabilized followers can require a second evaluation.
+Interval bounds skip expired clip prefixes during initial layer enumeration;
+follower target lookup and timeline painting keep their separate searches.
+See [advanced editing](#advanced-editing).
 
 The media runtime exposes an optional audio-device clock after initial buffering.
 Desktop playback follows it when audio output is available, with a monotonic
@@ -780,11 +784,20 @@ checks. These are runtime bounds, not maximum editable track counts.
 The preview worker may prepare the current admitted video and at most four
 admitted pending videos before reading requested pixels. Preparation retains
 request identity, does not publish or evict another lane, and runs outside the
-queue mutex. Each FFmpeg pipe uses two input decode threads, one raw-video
+queue mutex. Each FFmpeg pipe uses four input decode threads, one raw-video
 output thread and a one-packet output queue. Requested pictures outrank
 speculative reads; frames above 1 MiB stay demand-driven. The four-millisecond
 speculative deadline and decoded cache/result budgets remain independent of
 external codec working memory.
+
+Continuous playback can reuse a compatible forward pipe across the larger of
+twelve source frames or two source seconds, capped at 240 frames. This lets a
+slow cold start catch up without repeatedly paying the same seek. Explicit
+seeks and posters keep the twelve-frame reuse window. Preparation carries each
+request's own purpose, including other admitted videos prepared in its cohort.
+Skipped pictures are read into the same scratch buffer with cancellation
+checked between reads; only the requested picture is published. This bounds
+source distance, not elapsed decoding time.
 
 GIF playback retains sequential decoder state and reuses pixels throughout a
 native display interval rather than reopening and decoding from frame zero for

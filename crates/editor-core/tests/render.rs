@@ -1,14 +1,23 @@
 use editor_core::{
     AnimTrack, Asset, AssetId, BlendMode, Clip, ClipId, ClipOverride, Ease, Effect, EffectKind,
     Follow, Keyframe, LayerSource, Mask, MaskShape, MediaKind, ParamKey, ParamValue, Project,
-    Reading, RenderPlan, Time, Track, TrackKey, TrackKind, Tracker, Transform, Transition,
-    TransitionKind, gain_at, render, resolve,
+    ProjectQuery, Reading, RenderPlan, Time, Track, TrackKey, TrackKind, Tracker, Transform,
+    Transition, TransitionKind, gain_at, render,
 };
 use std::{path::PathBuf, sync::Arc};
 use uuid::Uuid;
 
 fn seconds(value: f64) -> Time {
     Time::from_seconds(value)
+}
+
+/// Exercise every complete-plan assertion through both public evaluators,
+/// including transition partners, drafts, masks, effects and followed layers.
+fn resolve(project: &Project, at: Time, overrides: &[ClipOverride]) -> RenderPlan {
+    let direct = editor_core::resolve(project, at, overrides);
+    let indexed = ProjectQuery::new(Arc::new(project.clone())).resolve(at, overrides);
+    assert_eq!(indexed, direct, "indexed picture differs at {at:?}");
+    direct
 }
 
 fn asset(project: &mut Project, name: &str, duration: f64) -> Asset {
@@ -133,6 +142,39 @@ fn hidden_and_audio_tracks_produce_no_layer() {
     assert!(!clips(&plan(&project, 5.0)).contains(&ids[3]));
     Arc::make_mut(&mut project.tracks[1]).hidden = true;
     assert_eq!(clips(&plan(&project, 5.0)), [ids[0], ids[1], ids[4]]);
+}
+
+#[test]
+fn expired_clip_prefixes_leave_the_complete_visible_render_plan_unchanged() {
+    let (mut compact, _) = layered();
+    let offset = seconds(2_000.0);
+    for track in &mut compact.tracks {
+        for clip in &mut Arc::make_mut(track).clips {
+            clip.start = clip.start + offset;
+        }
+    }
+    let mut full = compact.clone();
+    for track in &mut full.tracks {
+        let track = Arc::make_mut(track);
+        let mut history: Vec<Clip> = (0..1_000)
+            .map(|index| {
+                if track.kind == TrackKind::Text {
+                    Clip::text("Expired title", seconds(index as f64), seconds(0.5))
+                } else {
+                    let asset = full.assets.values().next().unwrap();
+                    clip(asset, index as f64, 0.5)
+                }
+            })
+            .collect();
+        history.append(&mut track.clips);
+        track.clips = history;
+    }
+    compact.validate().unwrap();
+    full.validate().unwrap();
+    for at in [0.0, 1.5, 3.0, 5.0, 7.0, 9.5, 12.0] {
+        let at = offset + seconds(at);
+        assert_eq!(resolve(&full, at, &[]), resolve(&compact, at, &[]));
+    }
 }
 
 #[test]
