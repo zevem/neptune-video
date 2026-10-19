@@ -67,6 +67,9 @@ rmcp = { version = "=3.5.1", default-features = false, features = ["client", "tr
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "process", "time"] }
 tempfile = "3.27"
 
+[build-dependencies]
+winresource = { version = "0.1.31", default-features = false }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

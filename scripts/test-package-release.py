@@ -197,6 +197,11 @@ class PackageTests(unittest.TestCase):
         self.write_inputs()
         self.assert_failure("Dependency is not in")
 
+    def test_a_build_script_outside_the_record_is_refused(self):
+        (self.root / "build.rs").write_text("owned build script fixture\n")
+        self.write_inputs()
+        self.assert_failure("Build source inventory does not match")
+
     def test_private_frontend_file_is_refused(self):
         assets = self.root / "frontend"
         assets.mkdir()
@@ -208,13 +213,21 @@ class PackageTests(unittest.TestCase):
         (assets / "icons").mkdir(parents=True)
         (assets / "AppRun").write_text("owned launcher fixture; never executed")
         (assets / "neptune-video.desktop.in").write_text("owned desktop template fixture")
-        (assets / "neptune-video.svg").write_text("owned root icon fixture")
         (assets / "icons/neptune-video.svg").write_text("owned icon fixture")
+        (self.root / "assets/icons/neptune-video-256.png").write_bytes(b"exported icon fixture")
         result = self.run_package(assets=assets)
         stage = next(p for p in self.output.iterdir() if p.is_dir())
         self.assertEqual((stage / "AppRun").stat().st_mode & 0o777, 0o755)
         self.assertEqual((stage / "neptune-video.desktop.in").stat().st_mode & 0o777, 0o644)
-        self.assertEqual(set(result["frontend_assets"]), {"AppRun", "neptune-video.desktop.in", "neptune-video.svg", "icons/neptune-video.svg"})
+        self.assertEqual((stage / "neptune-video.png").read_bytes(), b"exported icon fixture")
+        self.assertEqual((stage / "neptune-video.png").stat().st_mode & 0o777, 0o644)
+        self.assertEqual(set(result["frontend_assets"]), {"AppRun", "neptune-video.desktop.in", "icons/neptune-video.svg", "neptune-video.png"})
+
+    def test_a_retired_svg_icon_is_refused(self):
+        assets = self.root / "frontend"
+        assets.mkdir()
+        (assets / "neptune-video.svg").write_text("retired icon fixture")
+        self.assert_failure("Unexpected frontend asset", assets)
 
     def test_mutation_during_archive_retains_failure_instead_of_success(self):
         original = PACKAGER.archive

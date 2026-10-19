@@ -8,9 +8,8 @@ the bundle root beside `bin/`, `licenses/`, `manifest.json` and
 license in `notices/ffmpeg/`, so the bundle needs no FFmpeg on the host.
 
 Status: prepared from source reading. The launcher has not been run, the desktop
-entry has not been validated or installed, and the icon has not been rasterized
-or viewed in a desktop shell. Bundles remain local-trial and unpublished while
-the project has no license.
+entry has not been validated or installed, and the icon has not been viewed in
+a desktop shell. Bundles remain unpublished local trials.
 
 ## `linux/AppRun`
 
@@ -47,10 +46,10 @@ A later local install step generates the entry by replacing three tokens:
 | --- | --- | --- |
 | `@NEPTUNE_VIDEO_APP_RUN@` | Absolute path of `AppRun` | Sits inside the template's double quotes. Apply in order: `\` → `\\\\`, `"` → `\\"`, `` ` `` → ``\\` ``, `$` → `\\$`, `%` → `%%` |
 | `@NEPTUNE_VIDEO_APP_RUN_PATH@` | Same path, for `TryExec` | `\` → `\\` only |
-| `@NEPTUNE_VIDEO_ICON@` | Absolute path of `neptune-video.svg`, or `neptune-video` once the icon is installed in an icon theme | `\` → `\\` only |
+| `@NEPTUNE_VIDEO_ICON@` | Absolute path of the bundle's `neptune-video.png`, or `rs.neptune.video` once the icon is installed in an icon theme | `\` → `\\` only |
 
 Reject paths containing a newline rather than escaping them. Write the result as
-`neptune-video.desktop`: the window's Wayland app ID is `neptune-video` (`src/main.rs`), and
+`rs.neptune.video.desktop`: the window's Wayland app ID is `rs.neptune.video` (`src/main.rs`), and
 shells match windows to entries by that file name. `StartupWMClass=rs.neptune.video` covers
 X11. `TryExec` hides the entry if the bundle is moved or deleted.
 
@@ -61,19 +60,12 @@ registered, so file managers will not offer Neptune Video for project files yet.
 
 `desktop-file-validate` on the generated entry is a root check.
 
-## `linux/neptune-video.svg`
+## Icon
 
-Hand-authored application icon on a 256 grid: a rounded tile in the default
-accent blue (`0x0a84ff`, `src/theme.rs`), eight white ray florets and a play
-shape at the centre. No text, filters, `<use>` or external references, so
-simple SVG renderers can draw it.
-
-- The tile is inset 16 px with a 50 px corner radius; the corners are
-  transparent. Export square PNGs straight from the file with no extra mask or
-  padding.
-- Sizes to export if rasters are needed: 16, 24, 32, 48, 64, 128, 256, 512. At
-  16 px each ray is about one pixel wide; review that size by eye, and draw a
-  simplified small variant if it reads as noise.
-- The same file can seed the Windows `.ico` and macOS `.icns` after root
-  rasterizes it. macOS expects its own tile margins, so that export needs a
-  separate look.
+The packager puts `assets/icons/neptune-video-256.png`, exported from the
+supplied logo, at the bundle root as `neptune-video.png`. An icon theme install
+names the exported PNGs after the application ID, for example
+`assets/icons/neptune-video-256.png` as
+`~/.local/share/icons/hicolor/256x256/apps/rs.neptune.video.png`, with
+`Icon=rs.neptune.video` in the entry. The Windows `.ico` and macOS `.icns` sit
+beside the PNGs; see [assets](../assets/README.md).

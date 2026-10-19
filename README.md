@@ -1,5 +1,7 @@
 # Neptune Video
 
+<img src="assets/branding/neptune-video-icon.png" alt="Neptune Video logo" width="96" height="96">
+
 A free, open-source native video editor built in Rust for the Neptune
 ecosystem, with a shared editing command model for people and AI agents.
 

@@ -95,6 +95,9 @@ fn native_options(size: [f32; 2]) -> eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
+    if let Some(icon) = native_icon() {
+        options.viewport = options.viewport.with_icon(icon);
+    }
     // A blocking FIFO acquire can stall the interface thread for seconds on
     // Linux hybrid graphics after the window was covered. The automatic mode
     // takes Immediate or Mailbox where they exist and keeps FIFO as fallback.
@@ -109,6 +112,17 @@ fn native_options(size: [f32; 2]) -> eframe::NativeOptions {
         },
     );
     options
+}
+
+/// The window's icon. eframe also sets the macOS Dock icon from it, so macOS
+/// takes the padded artwork of its app icon and the Dock keeps its size.
+fn native_icon() -> Option<egui::IconData> {
+    let png: &[u8] = if cfg!(target_os = "macos") {
+        include_bytes!("../assets/branding/neptune-video-macos-logo.png")
+    } else {
+        include_bytes!("../assets/icons/neptune-video-256.png")
+    };
+    eframe::icon_data::from_png_bytes(png).ok()
 }
 
 fn main() -> std::process::ExitCode {
@@ -147,5 +161,14 @@ mod tests {
             options.viewport.transparent,
             Some(!cfg!(target_os = "windows"))
         );
+    }
+
+    #[test]
+    fn the_window_carries_the_application_icon() {
+        let options = native_options([1440.0, 900.0]);
+        let icon = options.viewport.icon.expect("the bundled icon decodes");
+        let side = if cfg!(target_os = "macos") { 1024 } else { 256 };
+        assert_eq!((icon.width, icon.height), (side, side));
+        assert_eq!(icon.rgba.len(), (side * side * 4) as usize);
     }
 }

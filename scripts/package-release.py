@@ -71,6 +71,8 @@ def source_snapshot(root: Path, record: dict) -> dict:
                  for p in parent.rglob("*.rs")}
     inventory.update(str(p.relative_to(root)) for p in (root / "crates").rglob("Cargo.toml"))
     inventory.update(("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml"))
+    if (root / "build.rs").exists():
+        inventory.add("build.rs")
     if set(expected) != inventory or record.get("source_files_count") != len(inventory):
         raise ValueError("Build source inventory does not match this checkout")
     result, aggregate = {}, hashlib.sha256()
@@ -349,12 +351,15 @@ def package(root: Path, build_record: Path, cargo_metadata: Path, target: str,
                 if path.is_dir():
                     continue
                 name = relative_name(str(path.relative_to(frontend_assets)))
-                allowed = name in {"AppRun", "neptune-video.desktop", "neptune-video.desktop.in", "neptune-video.svg", "README.md", "install-user.sh", "uninstall-user.sh"} \
+                allowed = name in {"AppRun", "neptune-video.desktop", "neptune-video.desktop.in", "README.md", "install-user.sh", "uninstall-user.sh"} \
                     or (name.startswith("icons/") and path.suffix in (".png", ".svg") and not any(part.startswith(".") for part in Path(name).parts))
                 if not allowed:
                     raise ValueError(f"Unexpected frontend asset path: {name}")
                 put(path, stage / name, inputs, executable=name in {"AppRun", "install-user.sh", "uninstall-user.sh"})
                 frontend_files.append(name)
+            # The desktop entry's icon is the exported application icon.
+            put(root / "assets/icons/neptune-video-256.png", stage / "neptune-video.png", inputs)
+            frontend_files.append("neptune-video.png")
         files = {str(p.relative_to(stage)): {"sha256": digest(p), "bytes": p.stat().st_size,
                  "mode": oct(stat.S_IMODE(p.stat().st_mode))} for p in sorted(stage.rglob("*")) if p.is_file()}
         manifest = {"schema": "neptune-video-portable-package-v1", "version": version, "target": target,

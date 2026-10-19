@@ -96,6 +96,33 @@ fn brief(label: &str) -> String {
     format!("{}…", cut.trim_end())
 }
 
+/// The application icon the mark shows, decoded the first time it is drawn.
+fn app_icon(ctx: &egui::Context) -> Option<egui::TextureId> {
+    let id = egui::Id::new("app-icon");
+    let known = ctx.data_mut(|data| {
+        let texture = data.get_temp_mut_or_default::<Option<egui::TextureHandle>>(id);
+        texture.as_ref().map(egui::TextureHandle::id)
+    });
+    if known.is_some() {
+        return known;
+    }
+    let png = include_bytes!("../../assets/icons/neptune-video-256.png");
+    let rgba = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .ok()?
+        .into_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    // Mipmaps keep the artwork smooth at the mark's small size.
+    let options = egui::TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
+    let texture = ctx.load_texture(
+        "app-icon",
+        egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
+        options,
+    );
+    let icon = texture.id();
+    ctx.data_mut(|data| data.insert_temp(id, Some(texture)));
+    Some(icon)
+}
+
 pub fn show(ui: &mut Ui, rect: Rect, input: &ToolbarInput, actions: &mut Vec<Action>) {
     let p = input.p;
     let mut bar = ui.new_child(
@@ -125,14 +152,17 @@ pub fn show(ui: &mut Ui, rect: Rect, input: &ToolbarInput, actions: &mut Vec<Act
         );
     }
     let tile = Rect::from_center_size(pos2(mark.left() + 16.0, mark.center().y), Vec2::splat(22.0));
-    ui.painter()
-        .rect_filled(tile, CornerRadius::same(7), p.accent);
-    icons::paint(
-        ui.painter(),
-        Rect::from_center_size(tile.center(), Vec2::splat(14.0)),
-        Icon::Sparkles,
-        p.on_accent,
-    );
+    match app_icon(ui.ctx()) {
+        Some(icon) => ui.painter().image(
+            icon,
+            tile,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        ),
+        None => ui
+            .painter()
+            .rect_filled(tile, CornerRadius::same(7), p.accent),
+    };
     icons::paint(
         ui.painter(),
         Rect::from_center_size(pos2(mark.right() - 9.0, mark.center().y), Vec2::splat(10.0)),
