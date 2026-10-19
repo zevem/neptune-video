@@ -938,11 +938,14 @@ async fn files_outside_the_roots_are_refused_and_nothing_is_replaced_unasked() {
         "outside_roots"
     );
     // Out of the root and into the folder beside it, which holds the secret.
-    // Joined, not written out: in a canonical Windows path only `\` parts it.
-    let climbing = dir
-        .join("..")
-        .join(outside.path().file_name().unwrap())
-        .join("secret.mp4");
+    // Written out with the system's separator: in a canonical Windows path
+    // only `\` parts it, and joining `..` there would resolve it.
+    let climbing = format!(
+        "{}{sep}..{sep}{}{sep}secret.mp4",
+        dir.display(),
+        outside.path().file_name().unwrap().to_string_lossy(),
+        sep = std::path::MAIN_SEPARATOR,
+    );
     assert_eq!(
         refused(&client, "media_import", json!({"paths": [climbing]})).await,
         "invalid",
