@@ -14,6 +14,8 @@ The builds are static GPL builds: export needs libx264 and libx265.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+import contextlib
 import hashlib
 import io
 import json
@@ -106,19 +108,26 @@ def download(url: str, expected: str, destination: Path) -> None:
         raise ValueError(f"{url} has SHA-256 {hasher.hexdigest()}, expected {expected}")
 
 
-def take(archive: Path, member: str) -> io.BufferedIOBase:
-    """Open one regular file, by its exact name, inside a verified archive."""
+@contextlib.contextmanager
+def take(archive: Path, member: str) -> Iterator[io.BufferedIOBase]:
+    """Open one regular file, by its exact name, inside a verified archive.
+
+    The archive closes with the file, so Windows can delete it afterwards.
+    """
     if archive.name.endswith(".zip"):
-        bundle = zipfile.ZipFile(archive)
-        info = bundle.getinfo(member)
-        if info.is_dir():
-            raise ValueError(f"{member} is not a file in {archive.name}")
-        return bundle.open(info)
-    bundle = tarfile.open(archive, "r:*")
-    info = bundle.getmember(member)
-    if not info.isfile():
-        raise ValueError(f"{member} is not a regular file in {archive.name}")
-    return bundle.extractfile(info)
+        with zipfile.ZipFile(archive) as bundle:
+            info = bundle.getinfo(member)
+            if info.is_dir():
+                raise ValueError(f"{member} is not a file in {archive.name}")
+            with bundle.open(info) as source:
+                yield source
+        return
+    with tarfile.open(archive, "r:*") as bundle:
+        info = bundle.getmember(member)
+        if not info.isfile():
+            raise ValueError(f"{member} is not a regular file in {archive.name}")
+        with bundle.extractfile(info) as source:
+            yield source
 
 
 def fetch(key: str, output: Path) -> dict:
