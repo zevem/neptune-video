@@ -85,9 +85,11 @@ keep headless correctness checks on the reusable CI profile.
 
 ## Continuous integration
 
-CI is paused: branches, pull requests and pushes to `main` start no runs. Start
-the workflow by hand from the Actions tab (`workflow_dispatch`) when a hosted
-run is wanted; until then, run the workspace checks above locally.
+CI runs on every pull request and on pushes to `main`. A preflight job
+classifies the change: documentation, `.scratch/` and `artifacts/` changes skip
+compilation but still report every job. The `main` ruleset requires a pull
+request and the aggregate `Check` status, which passes only when every job
+passed.
 
 [CI](../.github/workflows/ci.yml) declares explicit Linux x86-64, macOS ARM64,
 macOS Intel and Windows x86-64 MSVC Rust build/test/lint jobs plus formatting
@@ -131,8 +133,7 @@ logs, the source digest before and after, test counts, and application paths and
 hashes from Cargo's artifact events. A failed check stops later checks and
 retains its evidence. These use the CI profile, not a performance build.
 
-The workflow includes a manual trigger and uploads the native backend reports
-for 14 days. [test-native-test-runner.py](../scripts/test-native-test-runner.py)
+The workflow uploads the native backend reports for 14 days. [test-native-test-runner.py](../scripts/test-native-test-runner.py)
 checks reporting and refusal with fake tools and temporary files; it never
 launches Rust, media, devices or the editor. Its checks do not establish native
 acceptance.
