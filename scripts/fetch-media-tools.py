@@ -2,7 +2,9 @@
 """Fetch the pinned FFmpeg build Neptune Video ships for one platform.
 
 Every download is checked against a pinned SHA-256 digest before anything is
-read from it, and only the named files are taken out. The result -- `ffmpeg`,
+read from it, and only the named files are taken out. A download that times
+out or loses its connection is tried again, up to three times; one that
+arrives with another digest is not. The result -- `ffmpeg`,
 `ffprobe`, the build's license and `media-tools.json` recording where they
 came from -- goes to `.tools/media/<os>-<arch>`, where a Neptune Video built in this
 checkout finds it, or to `--output`. `package-release.py --media-tools` copies
@@ -17,6 +19,7 @@ import argparse
 from collections.abc import Iterator
 import contextlib
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -27,6 +30,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -97,13 +102,24 @@ def digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def download(url: str, expected: str, destination: Path) -> None:
+def download(url: str, expected: str, destination: Path, attempts: int = 3, pause: float = 10) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "neptune-video-fetch-media-tools"})
-    hasher = hashlib.sha256()
-    with urllib.request.urlopen(request, timeout=60) as response, destination.open("xb") as output:
-        while chunk := response.read(CHUNK):
-            hasher.update(chunk)
-            output.write(chunk)
+    for attempt in range(1, attempts + 1):
+        hasher = hashlib.sha256()
+        try:
+            # The file is made before connecting, so what an attempt leaves
+            # is its own, and something already there is never replaced.
+            with destination.open("xb") as output, urllib.request.urlopen(request, timeout=60) as response:
+                while chunk := response.read(CHUNK):
+                    hasher.update(chunk)
+                    output.write(chunk)
+            break
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as error:
+            destination.unlink()
+            if attempt == attempts:
+                raise
+            print(f"{url}: {error}; trying again", file=sys.stderr)
+            time.sleep(pause * attempt)
     if hasher.hexdigest() != expected:
         raise ValueError(f"{url} has SHA-256 {hasher.hexdigest()}, expected {expected}")
 

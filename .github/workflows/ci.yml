@@ -73,6 +73,8 @@ jobs:
           python3 scripts/check-architecture.py --self-test
       - name: Check the native test runner
         run: python3 scripts/test-native-test-runner.py
+      - name: Check the media tool fetcher
+        run: python3 scripts/test-fetch-media-tools.py
 
   native:
     name: Rust 1.97.1 (${{ matrix.check-name }})
