@@ -18,7 +18,7 @@ whisper.cpp through whisper-rs; model catalog with sizes and SHA-256; verified c
   - WhisperX was not used. Its word times come from a second wav2vec2 alignment model run in Python and PyTorch, which cannot ship inside a native editor without a large runtime.
 - Models:
   - The panel offers Tiny (32 MB), Base (60 MB), Small (191 MB), Medium (540 MB) and Large v3 Turbo (575 MB), all multilingual and quantized. "Model file…" takes any whisper.cpp `.bin`.
-  - A catalog model is downloaded once on request with the system `curl` (`ASTER_CURL` overrides it). It is resumed from `<file>.part` and kept only when its size and SHA-256 match. A damaged file is removed and the notice says so.
+  - A catalog model is downloaded once on request with the system `curl` (`NEPTUNE_VIDEO_CURL` overrides it). It is resumed from `<file>.part` and kept only when its size and SHA-256 match. A damaged file is removed and the notice says so.
   - Models live in `models/` next to the settings file when `--settings` is given, otherwise in the platform's local data directory.
 - Build: whisper.cpp needs CMake, a C and C++ compiler and libclang at build time. `.cargo/config.toml` builds it for a CPU family, not for the build machine: AVX2, FMA, F16C and BMI2 on x86-64, NEON on 64-bit ARM. An x86-64 processor without AVX2 cannot run the binary. GPU back-ends are not enabled.
 - Measurements on this host (4 vCPU Xeon 2.8 GHz VM, dev profile with dependencies at opt-level 2, Tiny q5_1, 7 s of speech in an 11.55 s timeline):
@@ -53,8 +53,8 @@ whisper.cpp through whisper-rs; model catalog with sizes and SHA-256; verified c
   - The shared switch blended the translucent `pressed` colour as if it were opaque. An off switch was near-invisible in dark mode on a panel and solid black in light mode. Its track is now drawn translucent, with the accent over it as it slides on.
 - Tests:
   - `crates/editor-media/src/speech/tests.rs`, 23 tests. They cover the catalog, header shapes, languages, condensed timing and quiet cuts, word times, the one-job lane with cancel and drop, and downloads through a fake curl (checked, resumed, damaged, curl's error, curl missing, cancel, only what is missing). There is also an offline-mix level test.
-  - One test runs only when `ASTER_WHISPER_MODEL` and `ASTER_SPEECH_SAMPLE` are set. It passed with Tiny, and checks the words, their timeline times and a cancel during recognition.
-  - Desktop: 666 passed. Of these, 5 are speech-panel benches, 6 are unit tests in `src/speech.rs`, and 1 app test covers when captions wait. `cargo clippy --bin aster --tests` and `cargo fmt --check` are clean.
+  - One test runs only when `NEPTUNE_VIDEO_WHISPER_MODEL` and `NEPTUNE_VIDEO_SPEECH_SAMPLE` are set. It passed with Tiny, and checks the words, their timeline times and a cancel during recognition.
+  - Desktop: 666 passed. Of these, 5 are speech-panel benches, 6 are unit tests in `src/speech.rs`, and 1 app test covers when captions wait. `cargo clippy --bin neptune-video --tests` and `cargo fmt --check` are clean.
   - editor-media: 247 passed, 1 ignored, and 1 failed. The failing test, `decode::tests::a_paced_walk_backwards_at_preview_size_is_measured`, fails the same way on the base commit on this host, with decode steps of 600 to 700 ms. It is unrelated to this change and was not skipped.
 - Not verified:
   - Building or running on Windows or macOS, and `curl` being there. Windows 10 1803 and later and macOS ship one, but this was not checked.

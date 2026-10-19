@@ -2,7 +2,7 @@
 //!
 //! The device's callback does one thing: it copies what it is handed into a
 //! bounded lock-free ring, or counts the frames it had no room for. One
-//! thread (`aster-record`) opens the input and the file, drains the ring to
+//! thread (`neptune-video-record`) opens the input and the file, drains the ring to
 //! the file every 20 ms, and rewrites the header's two sizes and syncs once a
 //! second, so a crash leaves a file that plays up to the last second.
 //! Opening the device, making the file and closing it are all the thread's;
@@ -431,7 +431,7 @@ impl RecordService {
         let shared = Arc::new(Shared::default());
         let thread_shared = Arc::clone(&shared);
         let thread = thread::Builder::new()
-            .name("aster-record".into())
+            .name("neptune-video-record".into())
             .spawn(move || {
                 let _ = thread_shared.writer.set(thread::current());
                 match record(&thread_shared, &path, open, longest, &wake) {
@@ -675,7 +675,8 @@ fn opening(error: &cpal::Error) -> MediaError {
             MediaError::NoMicrophone
         }
         cpal::ErrorKind::PermissionDenied => MediaError::Invalid(
-            "Aster may not use the microphone. Allow it in the system's privacy settings".into(),
+            "Neptune Video may not use the microphone. Allow it in the system's privacy settings"
+                .into(),
         ),
         _ => MediaError::Decode(format!("Cannot open the microphone: {error}")),
     }

@@ -16,7 +16,7 @@ The host has `/usr/bin/Xvfb`, `dbus-daemon`, `dbus-run-session`, `gdbus`,
 `/usr/share/xdg-desktop-portal/portals/gtk.portal` and
 `/usr/share/dbus-1/services/`.
 
-Current `rfd` 0.17.2 defaults to `xdg-portal`/Wayland; Aster does not enable the
+Current `rfd` 0.17.2 defaults to `xdg-portal`/Wayland; Neptune Video does not enable the
 optional `gtk3` build feature. The installed rfd source explicitly falls back
 to Zenity for Open/Save/folder dialogs when portal calls fail. Therefore both a
 real GTK portal and a real Zenity fallback are available without changing Rust
@@ -31,7 +31,7 @@ directory, and explicit GTK/frontend/permission/document portal children. It
 keeps HOME intact while isolating XDG config/data/cache/state/runtime and GTK
 settings. Its private `portals.conf` selects GTK FileChooser/Settings and leaves
 other portal backends disabled. Service environments copy only public session
-variables, and the harness never launches Aster.
+variables, and the harness never launches Neptune Video.
 
 The [two-second readiness probe](../../artifacts/production-readiness/portal/probe/report.json)
 passed: the private frontend exported `org.freedesktop.portal.FileChooser`
@@ -45,7 +45,7 @@ removed; its session descriptor is historical and must not be reused.
 The private backend logged missing access implementations for unused
 web-extension/location/camera interfaces, and no AT-SPI bus service. Those did
 not prevent FileChooser export; this probe provides no accessibility acceptance.
-No file selection, cancellation, parent-window behavior or Aster save/open
+No file selection, cancellation, parent-window behavior or Neptune Video save/open
 behavior is established by service introspection.
 
 ## Handoff to the frontend owner
@@ -57,10 +57,10 @@ python3 artifacts/production-readiness/portal/run-private.py --output artifacts/
 ```
 
 Keep that command running, read its `session.json` only after `status: ready`,
-and use the recorded `environment` plus `unset` names when launching Aster and
+and use the recorded `environment` plus `unset` names when launching Neptune Video and
 the OS-input driver. Readiness is announced on stdout. Both must use this same
 DISPLAY and DBUS session; inheriting the user's WAYLAND_DISPLAY would select
-the wrong desktop. Use fresh task-owned Aster settings, agent descriptors,
+the wrong desktop. Use fresh task-owned Neptune Video settings, agent descriptors,
 projects and fixture paths. The harness refuses output directories from prior
 sessions, so choose a new output path for each attempt.
 

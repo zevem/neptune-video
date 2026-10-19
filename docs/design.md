@@ -1,7 +1,7 @@
 # Interface direction
 
 The editor should feel like a focused native creative tool: picture and
-timeline dominate, with restrained chrome and one distinctive accent. Neptune
+timeline dominate, with restrained chrome and one distinctive accent. Neptune Terminal
 is a reference for spacing, native rendering and attention to state, rather
 than an interface to copy.
 

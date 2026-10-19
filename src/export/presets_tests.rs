@@ -10,7 +10,8 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("aster-export-presets-{}", Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("neptune-video-export-presets-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&path).expect("FIXTURE: the scratch folder is made");
         Self(path)
     }
@@ -33,7 +34,7 @@ fn read(path: &Path) -> ExportPresets {
     }
 }
 
-/// An entry a newer Aster might write: a container this build has never
+/// An entry a newer Neptune Video might write: a container this build has never
 /// heard of.
 fn from_the_future() -> serde_json::Value {
     serde_json::json!({

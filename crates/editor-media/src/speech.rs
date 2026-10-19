@@ -454,7 +454,7 @@ impl SpeechService {
         });
         let state = Arc::clone(&shared);
         thread::Builder::new()
-            .name("aster-speech".into())
+            .name("neptune-video-speech".into())
             .spawn(move || worker(state, run))
             .map_err(|error| io("Cannot start the speech worker", error))?;
         Ok(Self { shared, processes })
@@ -587,9 +587,9 @@ fn worker(shared: Arc<Shared>, run: Runner) {
 
 // ---- Downloads -------------------------------------------------------------
 
-/// The curl program: `ASTER_CURL`, or the one on the path.
+/// The curl program: `NEPTUNE_VIDEO_CURL`, or the one on the path.
 fn curl() -> PathBuf {
-    std::env::var_os("ASTER_CURL").map_or_else(|| PathBuf::from("curl"), PathBuf::from)
+    std::env::var_os("NEPTUNE_VIDEO_CURL").map_or_else(|| PathBuf::from("curl"), PathBuf::from)
 }
 
 /// Downloads `model` and the speech detector into `dir`, each unless it is

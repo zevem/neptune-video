@@ -15,7 +15,7 @@ use std::{
 /// Names tried for takes started in one second before giving up.
 const MAX_SAME_SECOND: u32 = 999;
 
-/// The media folder of the document at `document`: `film.aster` keeps its
+/// The media folder of the document at `document`: `film.nvp` keeps its
 /// recordings in `film media/` in the same folder. Nothing is created.
 pub fn media_folder(document: &Path) -> Result<PathBuf, StoreError> {
     let stem = document

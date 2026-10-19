@@ -54,7 +54,7 @@ Compile-following changes in the same ticket:
   fields bound and ignored here; ticket 05c projects them.
 - `src/clipboard.rs`: `VERSION` goes from 2 to 3; versions 1, 2 and 3 are
   read. The test `older_text_is_read_and_newer_text_is_left_alone`
-  (`:198-210`) expects `"aster_clips":3`, reads 1 and 2, and refuses 0 and
+  (`:198-210`) expects `"neptune_video_clips":3`, reads 1 and 2, and refuses 0 and
   4. The round-trip test gains a clip with fades. (An audio effect joins it
   in ticket 10.)
 
@@ -112,7 +112,7 @@ On macOS 26.5.2 (arm64), Rust 1.97.1, 2026-10-13, `dev` profile unless said:
   of a linked pair with fades. Fades are integer microseconds, so NaN and infinity are
   tried on track volume only; fades are tried negative, past the clip and at
   `i64::MAX`.
-- `cargo test --locked -p aster-editor`: 623 and 12 passed; the six
+- `cargo test --locked -p neptune-video`: 623 and 12 passed; the six
   `clipboard::tests` among them, with the new
   `copied_fades_survive_the_system_clipboard`.
 - `cargo test -p editor-store --locked` (76 passed) and

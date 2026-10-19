@@ -91,8 +91,8 @@ Settled while building, beyond what the scope says:
 On macOS 26.5.2 (arm64), Rust 1.97.1, Homebrew FFmpeg and ffprobe 8.1.2
 (`scripts/check-media-tools.py` passed), 2026-10-13. No test was skipped.
 
-- `cargo test --locked --bin aster`: 658 passed. `cargo test --locked --bin
-  aster -- heads:: tracks:: agent::tests`: 34 passed, three runs.
+- `cargo test --locked --bin neptune-video`: 658 passed. `cargo test --locked --bin
+  neptune-video -- heads:: tracks:: agent::tests`: 34 passed, three runs.
   `cargo test -p editor-core --locked`: passed, with one new test.
   `cargo clippy --locked --all-targets -- -D warnings` on the desktop crate
   and on `editor-core`, and `cargo fmt --all -- --check`, are clean;
@@ -119,7 +119,7 @@ On macOS 26.5.2 (arm64), Rust 1.97.1, Homebrew FFmpeg and ffprobe 8.1.2
 - `crates/editor-core/tests/sound.rs`: `soloed_out` over the same 32.
 - `src/agent.rs`: `a_track_is_soloed_and_given_a_volume_by_name`;
   `every_listed_example_is_understood` covers the new row.
-- Native captures of the release build (`target/release/aster`, sha256
+- Native captures of the release build (`target/release/neptune-video`, sha256
   `2db5451402cb84c1…`, built from the final source), each run with its own
   settings, session and project under
   `artifacts/audio-editing/08a-track-heads/<run>/`, on owned fixtures made
@@ -188,7 +188,7 @@ it was entered as an edit. Three head tests and two in `tracks.rs` are new;
 the head test that held a typed 12 over 12.4 to be no entry was wrong and is
 replaced. No native capture or pointer run of the menu was made.
 
-2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/aster` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `aster-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
+2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/neptune-video` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `neptune-video-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
 
 `normal-01`/`narrow-01` audio heads with three cells and the video head with four; `normal-13`/`narrow-13` Audio 1 soloed and the others dimmed; `normal-14`/`narrow-14` an audio head's menu with Volume 100 % and Reset volume disabled; `normal-43`/`narrow-40` a video head's menu; `normal-15`/`narrow-15` the field clicked, menu kept; `normal-16`/`narrow-16` 70 typed; `normal-17`/`narrow-17` the head reading 70% under its name.
 

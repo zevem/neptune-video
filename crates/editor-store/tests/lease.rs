@@ -4,7 +4,7 @@ use std::{fs, path::Path};
 #[test]
 fn independent_handles_cannot_own_the_same_recovery() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("untitled.aster");
+    let path = temp.path().join("untitled.nvp");
     let lease = RecoveryLease::acquire(&path).unwrap();
     assert!(RecoveryLease::is_active(&path).unwrap());
     assert!(matches!(
@@ -25,7 +25,7 @@ fn independent_handles_cannot_own_the_same_recovery() {
 #[test]
 fn missing_probe_does_not_create_a_sidecar_or_parent_directory() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("missing").join("untitled.aster");
+    let path = temp.path().join("missing").join("untitled.nvp");
     assert!(!RecoveryLease::is_active(&path).unwrap());
     assert!(!temp.path().join("missing").exists());
     assert!(fs::read_dir(temp.path()).unwrap().next().is_none());
@@ -34,8 +34,8 @@ fn missing_probe_does_not_create_a_sidecar_or_parent_directory() {
 #[test]
 fn probes_ignore_invalid_contents_and_acquire_never_truncates_the_sidecar() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("broken.aster.recovery");
-    let sidecar = temp.path().join("broken.aster.recovery.lock");
+    let path = temp.path().join("broken.nvp.recovery");
+    let sidecar = temp.path().join("broken.nvp.recovery.lock");
     let invalid_document = b"not JSON or a project";
     let invalid_owner = b"not a PID or owner record\0\xff";
     fs::write(&path, invalid_document).unwrap();

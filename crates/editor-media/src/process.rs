@@ -201,7 +201,7 @@ impl Process {
         if let Some(mut pipe) = error_pipe {
             let tail = Arc::clone(&instance.stderr);
             thread::Builder::new()
-                .name("aster-media-stderr".into())
+                .name("neptune-video-media-stderr".into())
                 .spawn(move || {
                     let (lock, read) = &*tail;
                     let mut bytes = [0; 1024];
@@ -228,7 +228,7 @@ impl Process {
         let monitor_child = Arc::clone(&instance.child);
         let monitor = Arc::clone(&instance.monitor);
         thread::Builder::new()
-            .name("aster-media-deadline".into())
+            .name("neptune-video-media-deadline".into())
             .spawn(move || {
                 let (lock, ready) = &*monitor;
                 let Ok(mut deadline) = lock.lock() else {
@@ -438,16 +438,16 @@ pub(crate) fn tool_command(tool: &str) -> Command {
 }
 
 /// The executable run for `tool`: the one its variable names; else the copy
-/// shipped with Aster (see `shipped_tool`); else the tool's name, looked for
-/// on `PATH`. The stem separator, `demucs`, is named by `ASTER_SEPARATOR` and
+/// shipped with Neptune Video (see `shipped_tool`); else the tool's name, looked for
+/// on `PATH`. The stem separator, `demucs`, is named by `NEPTUNE_VIDEO_SEPARATOR` and
 /// is never shipped.
 pub(crate) fn tool_program(tool: &str) -> std::ffi::OsString {
     static SHIPPED_FFMPEG: OnceLock<Option<PathBuf>> = OnceLock::new();
     static SHIPPED_FFPROBE: OnceLock<Option<PathBuf>> = OnceLock::new();
     let (variable, shipped) = match tool {
-        "ffmpeg" => ("ASTER_FFMPEG", Some(&SHIPPED_FFMPEG)),
-        "demucs" => ("ASTER_SEPARATOR", None),
-        _ => ("ASTER_FFPROBE", Some(&SHIPPED_FFPROBE)),
+        "ffmpeg" => ("NEPTUNE_VIDEO_FFMPEG", Some(&SHIPPED_FFMPEG)),
+        "demucs" => ("NEPTUNE_VIDEO_SEPARATOR", None),
+        _ => ("NEPTUNE_VIDEO_FFPROBE", Some(&SHIPPED_FFPROBE)),
     };
     if let Some(program) = std::env::var_os(variable) {
         return program;
@@ -456,7 +456,7 @@ pub(crate) fn tool_program(tool: &str) -> std::ffi::OsString {
         found
             .get_or_init(|| {
                 let executable = std::env::current_exe().ok()?;
-                // A symlink to Aster (`/usr/bin/aster`) leads to its install.
+                // A symlink to Neptune Video (`/usr/bin/neptune-video`) leads to its install.
                 let executable = executable.canonicalize().unwrap_or(executable);
                 shipped_tool(&executable, tool)
             })
@@ -472,9 +472,9 @@ fn fetched_tools() -> PathBuf {
     Path::new(".tools").join("media").join(platform)
 }
 
-/// The copy of `tool` that comes with the Aster at `executable`: the one in
+/// The copy of `tool` that comes with the Neptune Video at `executable`: the one in
 /// the same folder, where a package puts it; else, for a build in a source
-/// checkout (`<checkout>/target/…/aster`), the one fetched into
+/// checkout (`<checkout>/target/…/neptune-video`), the one fetched into
 /// `<checkout>/.tools/media/<os>-<arch>`.
 fn shipped_tool(executable: &Path, tool: &str) -> Option<PathBuf> {
     let name = format!("{tool}{}", std::env::consts::EXE_SUFFIX);
@@ -543,12 +543,12 @@ mod tests {
     #[test]
     fn shipped_tools_are_found_beside_the_executable_first() {
         let root = tempfile::tempdir().unwrap();
-        let executable = root.path().join("Aster/bin/aster");
+        let executable = root.path().join("Neptune Video/bin/neptune-video");
         place(&executable);
         assert_eq!(shipped_tool(&executable, "ffmpeg"), None);
 
         let ffprobe = format!("ffprobe{}", std::env::consts::EXE_SUFFIX);
-        let beside = root.path().join("Aster/bin").join(&ffprobe);
+        let beside = root.path().join("Neptune Video/bin").join(&ffprobe);
         place(&beside);
         assert_eq!(shipped_tool(&executable, "ffprobe"), Some(beside));
         // Each tool is looked for by its own name.
@@ -562,8 +562,8 @@ mod tests {
         let fetched = root.path().join(fetched_tools()).join(&ffmpeg);
         place(&fetched);
         for executable in [
-            "target/release/aster",
-            "target/x86_64-unknown-linux-gnu/release/aster",
+            "target/release/neptune-video",
+            "target/x86_64-unknown-linux-gnu/release/neptune-video",
             "target/debug/deps/editor_media-0123",
         ] {
             let executable = root.path().join(executable);
@@ -572,12 +572,12 @@ mod tests {
         }
 
         // An install outside a `target` folder never looks above itself.
-        let installed = root.path().join("opt/aster/bin/aster");
+        let installed = root.path().join("opt/neptune-video/bin/neptune-video");
         place(&installed);
         assert_eq!(shipped_tool(&installed, "ffmpeg"), None);
 
         // A copy beside the executable wins over the fetched one.
-        let release = root.path().join("target/release/aster");
+        let release = root.path().join("target/release/neptune-video");
         let beside = root.path().join("target/release").join(&ffmpeg);
         place(&beside);
         assert_eq!(shipped_tool(&release, "ffmpeg"), Some(beside));

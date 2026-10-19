@@ -2,7 +2,7 @@
 //! rules. A clip never lands on another one unless the agent asks.
 use super::{Guard, batch, clip, refused, track};
 use crate::{
-    mcp::{errors::ToolError, server::AsterServer, time::TimeSpec, workspace::Edited},
+    mcp::{errors::ToolError, server::NeptuneVideoServer, time::TimeSpec, workspace::Edited},
     rules::{self, Edge},
 };
 use editor_core::{Command, Editor, Marker, Time, Track, TrackKind, Transform};
@@ -177,7 +177,7 @@ fn need_clips(ids: &[Uuid]) -> Result<(), ToolError> {
 }
 
 #[tool_router(router = timeline_tools, vis = "pub(crate)")]
-impl AsterServer {
+impl NeptuneVideoServer {
     #[tool(
         description = "Tracks: add one (video, audio or text), remove an empty or unlocked \
                           one, reorder, or set its name, lock, hide, mute, solo, volume or \

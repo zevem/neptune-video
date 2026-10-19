@@ -281,7 +281,10 @@ impl MediaService {
         let shared = Arc::new(Shared::default());
         let processes = Processes::default();
         let wake: Wake = Arc::new(wake);
-        for (name, imports) in [("aster-import", true), ("aster-preview", false)] {
+        for (name, imports) in [
+            ("neptune-video-import", true),
+            ("neptune-video-preview", false),
+        ] {
             let (state, children, callback) =
                 (Arc::clone(&shared), processes.clone(), Arc::clone(&wake));
             if let Err(error) = thread::Builder::new().name(name.into()).spawn(move || {

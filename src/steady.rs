@@ -24,8 +24,8 @@ pub const MAX_STEADY_HELD_FRAMES: usize = 2 << 20;
 /// Where camera paths are kept between sessions: the user's cache
 /// directory, or the system's temporary one on a system without a home.
 pub fn cache_dir() -> PathBuf {
-    directories::ProjectDirs::from("app", "Aster", "Aster").map_or_else(
-        || std::env::temp_dir().join("aster-stabilization"),
+    directories::ProjectDirs::from("rs", "Neptune", "NeptuneVideo").map_or_else(
+        || std::env::temp_dir().join("neptune-video-stabilization"),
         |dirs| dirs.cache_dir().join("stabilization"),
     )
 }

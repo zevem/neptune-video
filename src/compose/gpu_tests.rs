@@ -6,7 +6,7 @@
 //! operation, and back. Two code values of slack cover a device's rounding.
 //!
 //! With no adapter a test prints a line beginning `SKIP:` and passes. Set
-//! `ASTER_TEST_FALLBACK_ADAPTER` to run on the software adapter alone.
+//! `NEPTUNE_VIDEO_TEST_FALLBACK_ADAPTER` to run on the software adapter alone.
 use super::{
     ComposeBudget, Composer, Draw, Job, MAX_CANVASES, Placement, gpu::Gpu, lut::Lut, target_size,
 };
@@ -47,7 +47,7 @@ struct Rig {
 /// A device to draw on: the adapter the host prefers, else its software one.
 fn open() -> Option<Rig> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let software_only = std::env::var_os("ASTER_TEST_FALLBACK_ADAPTER").is_some();
+    let software_only = std::env::var_os("NEPTUNE_VIDEO_TEST_FALLBACK_ADAPTER").is_some();
     let mut why = String::from("no adapter was asked for");
     for force_fallback_adapter in [false, true] {
         if software_only && !force_fallback_adapter {

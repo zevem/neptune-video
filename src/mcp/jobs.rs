@@ -207,7 +207,7 @@ impl Jobs {
             cancel: cancel.clone(),
         };
         let spawned = thread::Builder::new()
-            .name(format!("aster-mcp-{kind}"))
+            .name(format!("neptune-video-mcp-{kind}"))
             .spawn(move || {
                 let outcome =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&progress)))

@@ -788,19 +788,19 @@ fn the_timeline_is_heard_mono_at_sixteen_kilohertz_from_where_it_starts() {
 }
 
 /// Transcribes a recording put two seconds into a timeline with the model
-/// at `ASTER_WHISPER_MODEL`, and the speech detector at
-/// `ASTER_WHISPER_DETECTOR` when it is set. The recording is
-/// `ASTER_SPEECH_SAMPLE`, a WAV of someone speaking.
+/// at `NEPTUNE_VIDEO_WHISPER_MODEL`, and the speech detector at
+/// `NEPTUNE_VIDEO_WHISPER_DETECTOR` when it is set. The recording is
+/// `NEPTUNE_VIDEO_SPEECH_SAMPLE`, a WAV of someone speaking.
 #[test]
 fn a_real_model_writes_timed_words_for_speech_on_the_timeline() {
     let (Some(model), Some(sample)) = (
-        std::env::var_os("ASTER_WHISPER_MODEL"),
-        std::env::var_os("ASTER_SPEECH_SAMPLE"),
+        std::env::var_os("NEPTUNE_VIDEO_WHISPER_MODEL"),
+        std::env::var_os("NEPTUNE_VIDEO_SPEECH_SAMPLE"),
     ) else {
-        eprintln!("SKIP: set ASTER_WHISPER_MODEL and ASTER_SPEECH_SAMPLE");
+        eprintln!("SKIP: set NEPTUNE_VIDEO_WHISPER_MODEL and NEPTUNE_VIDEO_SPEECH_SAMPLE");
         return;
     };
-    let detector = std::env::var_os("ASTER_WHISPER_DETECTOR").map(PathBuf::from);
+    let detector = std::env::var_os("NEPTUNE_VIDEO_WHISPER_DETECTOR").map(PathBuf::from);
     let sample = PathBuf::from(sample);
     // A plain WAV's length from its header's byte rate.
     let header = fs::read(&sample).unwrap();
@@ -816,7 +816,7 @@ fn a_real_model_writes_timed_words_for_speech_on_the_timeline() {
         end,
         model: PathBuf::from(model),
         detector,
-        language: std::env::var("ASTER_SPEECH_LANGUAGE").ok(),
+        language: std::env::var("NEPTUNE_VIDEO_SPEECH_LANGUAGE").ok(),
         translate: false,
     };
     let control = control();
@@ -847,7 +847,7 @@ fn a_real_model_writes_timed_words_for_speech_on_the_timeline() {
         assert!(word.at >= start - Time::from_seconds(0.3), "{word:?}");
         assert!(word.at <= word.end && word.end <= end, "{word:?}");
     }
-    if let Ok(expected) = std::env::var("ASTER_SPEECH_EXPECT") {
+    if let Ok(expected) = std::env::var("NEPTUNE_VIDEO_SPEECH_EXPECT") {
         let heard = text.to_lowercase();
         for word in expected.split(',') {
             assert!(heard.contains(word), "{word} not in{text}");

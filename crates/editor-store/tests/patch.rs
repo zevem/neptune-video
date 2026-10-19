@@ -6,7 +6,7 @@ use tempfile::TempDir;
 #[test]
 fn patched_clip_style_and_identity_survive_project_and_recovery_round_trips() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("patch.aster");
+    let path = directory.path().join("patch.nvp");
     let mut editor = Editor::default();
     let title = Clip::text("Hello", Time::ZERO, Time(4_000_000));
     let id = title.id;

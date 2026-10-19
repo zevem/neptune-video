@@ -87,7 +87,7 @@ impl TextService {
         let shared = Arc::new(Shared::default());
         let state = Arc::clone(&shared);
         thread::Builder::new()
-            .name("aster-titles".into())
+            .name("neptune-video-titles".into())
             .spawn(move || worker(state, book, wake))
             .map_err(|error| io("Cannot start the title worker", error))?;
         Ok(Self { shared })

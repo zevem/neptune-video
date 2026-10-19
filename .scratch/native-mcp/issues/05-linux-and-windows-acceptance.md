@@ -7,7 +7,7 @@ Blocked by: 01, 02, 03, 04
 
 ## Scope
 
-Run `tests/mcp.rs` (with `ASTER_TEST_DESKTOP=1` under a display), a real
+Run `tests/mcp.rs` (with `NEPTUNE_VIDEO_TEST_DESKTOP=1` under a display), a real
 Claude Code or Codex session and the hand-over script on Linux (X11 and
 Wayland) and Windows. On Windows check stdio without the descriptor move
 (`protocol_output` is Unix-only), the connection file's permissions (no

@@ -13,7 +13,7 @@ use std::{
 ///
 /// These methods perform filesystem I/O and belong on a storage/startup worker.
 /// Use the same identity path for acquisition and probing: a document or recovery
-/// path `example.aster` has the sidecar `example.aster.lock`. No recovery suffix
+/// path `example.nvp` has the sidecar `example.nvp.lock`. No recovery suffix
 /// is automatically added. The document itself is never read or modified.
 #[derive(Debug)]
 pub struct RecoveryLease {

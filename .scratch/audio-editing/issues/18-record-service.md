@@ -35,7 +35,7 @@ not.
   at the device's rate and channel count, mono or stereo kept as delivered,
   more channels refused). No lock, allocation or file work. When the ring
   is full the frames are counted in an atomic and dropped.
-- A writer thread (`aster-record`) drains the ring every 20 ms to a 32-bit
+- A writer thread (`neptune-video-record`) drains the ring every 20 ms to a 32-bit
   float WAV with a hand-written 44-byte header, and rewrites the two size
   fields and syncs once a second, so a crash leaves a file that plays up to
   the last second. On `stop` the stream is dropped and the writer drains,
@@ -73,7 +73,7 @@ until `play`), `ErrorKind`.
   `Take { path, frames, rate, channels, bytes, dropped, ended }`;
   `MAX_TAKE_SECONDS` (7,200), `RECORD_RING_SECONDS` (2),
   `WAV_HEADER_BYTES` (44), all exported from `lib.rs`.
-- `start` returns at once. The thread `aster-record` finds the device and
+- `start` returns at once. The thread `neptune-video-record` finds the device and
   its default config, refuses more than two channels ("The microphone
   delivers N channels; only one or two can be recorded") or a rate outside
   1..=384,000 Hz, builds the stream and plays it, and only then makes the
@@ -89,7 +89,7 @@ until `play`), `ErrorKind`.
 - No input device is `Failed(MediaError::NoMicrophone)`, a new variant
   whose words are "No microphone"; `DeviceNotAvailable` and
   `HostUnavailable` at opening say the same. `PermissionDenied` says
-  "Aster may not use the microphone. Allow it in the system's privacy
+  "Neptune Video may not use the microphone. Allow it in the system's privacy
   settings"; anything else "Cannot open the microphone: …".
 - The callback (`Feed::capture`, generic over cpal's ten sample formats,
   converted to `f32`) copies whole frames into the ring with atomics and
@@ -132,7 +132,7 @@ test profile. No test was skipped: ffprobe ran in both fixtures that use it.
   visibility and printing. `cargo test -p editor-media --locked`: 309
   passed, two runs, the second on the final code.
   `cargo clippy -p editor-media --all-targets --locked -- -D warnings`,
-  `cargo fmt -p editor-media -- --check`, `cargo check -p aster-editor
+  `cargo fmt -p editor-media -- --check`, `cargo check -p neptune-video
   --locked --all-targets` and `scripts/check-architecture.py` pass.
 - Printed as `MEASURE:` under `--nocapture`, three runs: the longest of 300
   callbacks of 80 mono frames into a stalled writer took 0.3 to 12.2 us (the

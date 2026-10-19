@@ -60,9 +60,9 @@ menu item, which needs a pointer and is a person's to take.
 On macOS 26.5.2 (arm64), Rust 1.97.1, Homebrew FFmpeg and ffprobe 8.1.2
 (`scripts/check-media-tools.py` passed), 2026-10-13. No test was skipped.
 
-- `cargo test --locked --bin aster`: 689 passed (after review). `cargo test --locked --bin
-  aster -- rules:: agent::tests library::`: 51 passed (after review).
-  `cargo clippy --locked --bin aster --bin aster-agent --all-targets -- -D
+- `cargo test --locked --bin neptune-video`: 689 passed (after review). `cargo test --locked --bin
+  neptune-video -- rules:: agent::tests library::`: 51 passed (after review).
+  `cargo clippy --locked --bin neptune-video --bin neptune-video-agent --all-targets -- -D
   warnings` and `cargo fmt --all -- --check` are clean;
   `scripts/check-architecture.py` passes. Only the desktop crate changed, so
   no other crate was tested.
@@ -104,12 +104,12 @@ On macOS 26.5.2 (arm64), Rust 1.97.1, Homebrew FFmpeg and ffprobe 8.1.2
 - Not tested: the `Action::AddBackgroundMusic` arm of `App::perform` with
   its draft commit and toast, and the kind kept across a project replace.
   `App` is not built in a unit test.
-- `target/debug/aster-agent --project … --create` took the bed as an agent
+- `target/debug/neptune-video-agent --project … --create` took the bed as an agent
   writes it, one batch of `add_track` and three `add_clip`, over generated
   fixtures (25 s video with sound, 10 s and 0.6 s WAV, a PNG): applied as
   "Add background music", undone to one track fewer, redone to the same bed
   (`artifacts/audio-editing/09-background-music/headless-agent.jsonl`).
-- Native captures of the release build (`target/release/aster`, sha256
+- Native captures of the release build (`target/release/neptune-video`, sha256
   `c4ad00dcd1bbffd2…`, built from the final source), each run with its own
   settings, session and copy of that project under
   `artifacts/audio-editing/09-background-music/<run>/capture.png`:
@@ -191,12 +191,12 @@ and undone in its test, and the disabled row's hover reason is drawn in the
 menu test; removing either the hover text or the new choice fails a test.
 The fourth stands as it was: the menu, the disabled row and a chosen filter
 are not captured natively, so the status stays `ready-for-human` /
-`claimed`. After the review `cargo test --locked --bin aster` is 689 passed
+`claimed`. After the review `cargo test --locked --bin neptune-video` is 689 passed
 on the same host, with clippy (`-D warnings`), `cargo fmt --check` and
 `scripts/check-architecture.py` clean; the release build and its captures
 are from before these changes and were not remade.
 
-2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/aster` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `aster-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
+2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/neptune-video` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `neptune-video-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
 
 `normal-01`/`narrow-33` the kind filter on All; `normal-36`/`narrow-36` Sound chosen; `normal-37`/`narrow-37` Images chosen with "No images / Nothing of that kind is in this project."; `normal-34`/`narrow-34` a sound's menu with Add as background music enabled; `normal-35`/`narrow-35` the bed it made on a Music track, fading out at the end; `normal-39`/`narrow-43` the row disabled on an emptied timeline with its reason. Seen and left: a right-click on the centre play button of a sound tile opens no menu; elsewhere on the tile it does.
 

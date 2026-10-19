@@ -21,8 +21,8 @@ Check on Windows:
   puts no schema there, but it resolves the executable the same way, so the
   code refuses a shim for it too, with the planner's message; `INSTRUCTIONS`
   is a multi-line system-prompt argument;
-- `aster-tools.json`, which is created owner-only (0600) on Unix only;
-- that `aster-mcp.exe` is found beside `aster.exe`, and the roots from
+- `neptune-video-tools.json`, which is created owner-only (0600) on Unix only;
+- that `neptune-video-mcp.exe` is found beside `neptune-video.exe`, and the roots from
   `directories::UserDirs`;
 - the roots file (2026-10-15, [issue 06](06-same-reach-as-an-outside-agent.md)),
   which is owner-only on Unix only and which the server tells apart by

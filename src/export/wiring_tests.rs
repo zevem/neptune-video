@@ -30,7 +30,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("aster-wiring-{}", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("neptune-video-wiring-{}", Uuid::new_v4()));
         fs::create_dir_all(&path).expect("FIXTURE: the scratch folder is made");
         Self(path.canonicalize().expect("FIXTURE: the folder resolves"))
     }
@@ -240,7 +240,7 @@ fn the_file_is_named_after_the_project_in_a_folder_that_is_there() {
         move |folder: &Path| folders.iter().any(|f| Path::new(f) == folder)
     };
     let last = Path::new("/films/out");
-    let project = Path::new("/work/Film.aster");
+    let project = Path::new("/work/Film.nvp");
     let videos = Some(PathBuf::from("/home/me/Videos"));
     let home = Some(PathBuf::from("/home/me"));
     let all = there(&["/films/out", "/work", "/home/me/Videos", "/home/me"]);
@@ -325,7 +325,7 @@ fn export_and_add_to_queue_make_the_job_asked_for() {
     let project = Arc::new(Project::new("A"));
     let context = Uuid::new_v4();
     let destination = PathBuf::from("/films/A.mp4");
-    let file = Some(PathBuf::from("/work/A.aster"));
+    let file = Some(PathBuf::from("/work/A.nvp"));
     let now = new_job(
         Arc::clone(&project),
         context,

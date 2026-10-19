@@ -131,7 +131,7 @@ changed. Run for this ticket:
   `MAX_SYSTEM_BYTES`, `MAX_SCHEMA_BYTES`, `MASTER_CEILING`,
   `LIMITER_RELEASE_SECONDS`, `Mixer.limit`, `Sounding`, `soloed_out`,
   `PITCH_KEPT`, `missing_audio_filters`, `media_folder`, `new_take`,
-  `HeldBeats`, `aster-audio`, `aster-take`, "Save the project to record",
+  `HeldBeats`, `neptune-video-audio`, `neptune-video-take`, "Save the project to record",
   "Replace this clip's volume keyframes?", "Not available in this FFmpeg
   build", "Reduce centre", "Stop ducking", "Key volume", and the commands
   each batch builder in `src/rules.rs`, `src/record.rs` and `src/stems.rs`

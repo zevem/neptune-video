@@ -50,7 +50,8 @@ struct Library {
 }
 
 fn imported() -> Library {
-    let folder = Scratch(std::env::temp_dir().join(format!("aster-test-{}", uuid::Uuid::new_v4())));
+    let folder =
+        Scratch(std::env::temp_dir().join(format!("neptune-video-test-{}", uuid::Uuid::new_v4())));
     std::fs::create_dir_all(&folder.0).expect("FIXTURE: a folder for the test's files");
     let shot = folder.0.join("shot.png");
     image::RgbaImage::from_fn(64, 36, |x, _| image::Rgba(if x < 32 { GREEN } else { RED }))

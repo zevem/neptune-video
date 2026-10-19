@@ -52,7 +52,7 @@ impl SaveWorker {
         });
         let worker_shared = shared.clone();
         let worker = thread::Builder::new()
-            .name("aster-save".into())
+            .name("neptune-video-save".into())
             .spawn(move || run(worker_shared, wake))
             .ok();
         Self { shared, worker }

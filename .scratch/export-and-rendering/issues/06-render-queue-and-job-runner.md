@@ -7,7 +7,7 @@ Blocked by: 02, 03, 05
 
 ## Scope
 
-`RenderQueue` on `aster-render`: probe, enqueue checks, order, pause,
+`RenderQueue` on `neptune-video-render`: probe, enqueue checks, order, pause,
 resume, cancel, retry, remove, reorder, events, shutdown; the job runner:
 re-plan, sound, captions, encoder, writer thread, verify, rename, cleanup,
 hardware-to-software fallback.

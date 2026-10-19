@@ -1,11 +1,11 @@
 //! Claude Code's print mode as a conversation: requests in and steps out as
-//! stream JSON, one line each, with the Aster tool server as its only tools.
+//! stream JSON, one line each, with the Neptune Video tool server as its only tools.
 use super::{Heard, summary};
 use crate::AiError;
 use serde_json::{Value, json};
 
-/// The prefix Claude gives the tools of the server named `aster`.
-const PREFIX: &str = "mcp__aster__";
+/// The prefix Claude gives the tools of the server named `neptune-video`.
+const PREFIX: &str = "mcp__neptune-video__";
 
 #[derive(Default)]
 pub(super) struct ClaudeAgent {
@@ -22,12 +22,12 @@ impl ClaudeAgent {
         match frame["type"].as_str() {
             Some("system") if frame["subtype"] == "init" => {
                 let status = (frame["mcp_servers"].as_array().into_iter().flatten())
-                    .find(|server| server["name"] == "aster")
+                    .find(|server| server["name"] == "neptune-video")
                     .and_then(|server| server["status"].as_str())
                     .unwrap_or("missing");
                 if status != "connected" {
                     return Err(AiError::Provider(format!(
-                        "Aster's editing tools did not start for Claude ({status})"
+                        "Neptune Video's editing tools did not start for Claude ({status})"
                     )));
                 }
                 self.model = frame["model"]
@@ -103,10 +103,10 @@ mod tests {
         let mut agent = ClaudeAgent::default();
         let lines = [
             json!({"type":"system","subtype":"init","model":"claude-opus-5-5",
-                   "mcp_servers":[{"name":"aster","status":"connected"}]}),
+                   "mcp_servers":[{"name":"neptune-video","status":"connected"}]}),
             json!({"type":"assistant","message":{"content":[
                 {"type":"text","text":"Trimming the opening."},
-                {"type":"tool_use","id":"t1","name":"mcp__aster__clip_edit","input":{"op":"trim"}}]}}),
+                {"type":"tool_use","id":"t1","name":"mcp__neptune-video__clip_edit","input":{"op":"trim"}}]}}),
             json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1",
                 "content":[{"type":"text","text":"{\"label\":\"Trim clip\",\"changed\":true,\"revision\":4}"}]}]}}),
             json!({"type":"result","subtype":"success","is_error":false,"result":"Done.",
@@ -143,7 +143,7 @@ mod tests {
         assert!(
             agent
                 .receive(&json!({"type":"system","subtype":"init",
-                    "mcp_servers":[{"name":"aster","status":"failed"}]}))
+                    "mcp_servers":[{"name":"neptune-video","status":"failed"}]}))
                 .is_err()
         );
         assert!(

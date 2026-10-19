@@ -889,7 +889,7 @@ impl DecoderPool {
         let (processes, staged) = (self.processes.clone(), Arc::clone(&shared));
         let dimensions = stream.dimensions;
         let started = thread::Builder::new()
-            .name("aster-look-behind".into())
+            .name("neptune-video-look-behind".into())
             .spawn(move || {
                 run_behind(command, processes, staged, dimensions, bytes, from, until);
             });

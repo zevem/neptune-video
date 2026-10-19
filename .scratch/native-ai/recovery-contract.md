@@ -46,7 +46,7 @@ the session's named sidecar. Existing `save_recovery`, `load_recovery`,
 compatibility/history-only APIs; they write unbound recovery and convey no
 ordinary save authority.
 
-The ordinary `.aster` format remains version 1. Recovery adds the optional
+The ordinary `.nvp` format remains version 1. Recovery adds the optional
 `document_binding` field, with its own version 1, canonical destination and
 missing/present byte+SHA-256 baseline. Existing archives decode without it.
 Unsupported binding versions and malformed fingerprints are rejected so their

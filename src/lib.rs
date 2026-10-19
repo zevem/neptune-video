@@ -1,5 +1,5 @@
-//! Aster's desktop, shared by the `aster` window, the `aster-agent` command
-//! line and the `aster-mcp` server. The domain lives in the workspace crates;
+//! Neptune Video's desktop, shared by the `neptune-video` window, the `neptune-video-agent` command
+//! line and the `neptune-video-mcp` server. The domain lives in the workspace crates;
 //! this library composes them.
 
 mod agent;

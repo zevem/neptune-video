@@ -356,8 +356,8 @@ fn budget_of(value: &serde_json::Value) -> Option<u32> {
 pub fn proxy_dir(told_settings: Option<&Path>) -> PathBuf {
     match told_settings.and_then(Path::parent) {
         Some(beside) => beside.join("proxies"),
-        None => directories::ProjectDirs::from("app", "Aster", "Aster").map_or_else(
-            || std::env::temp_dir().join("aster-proxies"),
+        None => directories::ProjectDirs::from("rs", "Neptune", "NeptuneVideo").map_or_else(
+            || std::env::temp_dir().join("neptune-video-proxies"),
             |dirs| dirs.cache_dir().join("proxies"),
         ),
     }
@@ -395,7 +395,7 @@ impl Default for Settings {
 impl Settings {
     /// Where the settings file lives, or `None` on a system without a home.
     pub fn default_path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("app", "Aster", "Aster")
+        directories::ProjectDirs::from("rs", "Neptune", "NeptuneVideo")
             .map(|dirs| dirs.config_dir().join("settings.json"))
     }
 
@@ -454,12 +454,12 @@ mod tests {
     #[test]
     fn recent_projects_keep_the_newest_first_without_duplicates() {
         let mut settings = Settings::default();
-        settings.remember(Path::new("/a.aster"));
-        settings.remember(Path::new("/b.aster"));
-        settings.remember(Path::new("/a.aster"));
+        settings.remember(Path::new("/a.nvp"));
+        settings.remember(Path::new("/b.nvp"));
+        settings.remember(Path::new("/a.nvp"));
         assert_eq!(
             settings.recent,
-            [PathBuf::from("/a.aster"), PathBuf::from("/b.aster")]
+            [PathBuf::from("/a.nvp"), PathBuf::from("/b.nvp")]
         );
     }
 
@@ -531,7 +531,8 @@ mod tests {
 
     #[test]
     fn the_interface_scale_survives_a_round_trip() {
-        let dir = std::env::temp_dir().join(format!("aster-settings-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("neptune-video-settings-{}", uuid::Uuid::new_v4()));
         let path = dir.join("settings.json");
         let settings = Settings {
             interface_scale: 1.3,
@@ -554,7 +555,8 @@ mod tests {
     #[test]
     fn a_kept_transition_default_survives_a_round_trip_and_a_broken_one_does_not() {
         use editor_core::{Ease, Time, Transition, TransitionKind};
-        let dir = std::env::temp_dir().join(format!("aster-settings-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("neptune-video-settings-{}", uuid::Uuid::new_v4()));
         let path = dir.join("settings.json");
         let wipe = Transition {
             kind: TransitionKind::WipeLeft,
@@ -579,7 +581,8 @@ mod tests {
 
     #[test]
     fn preview_choices_survive_a_round_trip() {
-        let dir = std::env::temp_dir().join(format!("aster-settings-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("neptune-video-settings-{}", uuid::Uuid::new_v4()));
         let path = dir.join("settings.json");
         for quality in PreviewQuality::ALL {
             for proxies in ProxyMode::ALL {
@@ -622,7 +625,8 @@ mod tests {
 
     #[test]
     fn an_unknown_preview_value_is_saved_back_until_the_person_chooses() {
-        let dir = std::env::temp_dir().join(format!("aster-settings-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("neptune-video-settings-{}", uuid::Uuid::new_v4()));
         let path = dir.join("settings.json");
         std::fs::create_dir_all(&dir).unwrap();
         let stored = |path: &Path| -> serde_json::Value {

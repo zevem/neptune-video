@@ -3,7 +3,7 @@ use super::{analysis::LoudnessParams, stamp, track};
 use crate::mcp::{
     errors::{ToolError, codes},
     jobs::{JobInfo, Progress},
-    server::AsterServer,
+    server::NeptuneVideoServer,
 };
 use editor_core::{
     Project, Time, TrackKind,
@@ -142,7 +142,7 @@ fn measure(
 }
 
 pub(super) async fn start(
-    server: &AsterServer,
+    server: &NeptuneVideoServer,
     params: LoudnessParams,
 ) -> Result<JobInfo, ToolError> {
     if !params.clip_ids.is_empty() {

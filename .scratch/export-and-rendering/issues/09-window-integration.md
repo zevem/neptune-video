@@ -35,7 +35,7 @@ while a job renders or waits). The Project menu has "Export…" (Cmd+E) and
 "Render queue" (Shift+Cmd+E) after Checkpoints; each chord also opens its
 sheet over the other, and the command panel takes "export" and "render
 queue". The export sheet draws a poster from the originals on
-`aster-poster`, keeps its state when closed unqueued, and remembers the last
+`neptune-video-poster`, keeps its state when closed unqueued, and remembers the last
 settings, folder and preset (`export_last`, `export_folder`,
 `export_preset`) on a successful queue. Replacing the file, or the file and
 its caption file, is asked first. Closing the window while jobs render, wait

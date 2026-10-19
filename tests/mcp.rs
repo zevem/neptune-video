@@ -1,6 +1,6 @@
-//! `aster-mcp` end to end: the real server binary, driven by the official
+//! `neptune-video-mcp` end to end: the real server binary, driven by the official
 //! Rust MCP client over stdio and Streamable HTTP, on media FFmpeg makes in
-//! a task-owned folder. The window test runs with ASTER_TEST_DESKTOP=1 on a
+//! a task-owned folder. The window test runs with NEPTUNE_VIDEO_TEST_DESKTOP=1 on a
 //! computer with a display.
 use rmcp::{
     RoleClient, ServiceExt,
@@ -21,10 +21,10 @@ use std::{
 
 type Client = RunningService<RoleClient, ()>;
 
-/// The FFmpeg the editor would run: ASTER_FFMPEG, the copy fetched into
+/// The FFmpeg the editor would run: NEPTUNE_VIDEO_FFMPEG, the copy fetched into
 /// the checkout, or the one on PATH.
 fn ffmpeg() -> PathBuf {
-    if let Some(program) = std::env::var_os("ASTER_FFMPEG") {
+    if let Some(program) = std::env::var_os("NEPTUNE_VIDEO_FFMPEG") {
         return program.into();
     }
     let fetched = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -147,12 +147,12 @@ fn server_args(dir: &Path) -> Vec<String> {
 }
 
 async fn stdio(dir: &Path) -> (Client, u32) {
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_aster-mcp"));
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_neptune-video-mcp"));
     command
         .args(server_args(dir))
         .current_dir(dir)
         .stderr(Stdio::null());
-    let transport = TokioChildProcess::new(command).expect("aster-mcp starts");
+    let transport = TokioChildProcess::new(command).expect("neptune-video-mcp starts");
     let pid = transport.id().expect("a process id");
     let client = ().serve(transport).await.expect("an MCP session starts");
     (client, pid)
@@ -257,7 +257,7 @@ async fn an_mcp_server_closes_its_render_workers_before_process_exit() {
             ],
         );
         let stderr = dir.join("server.stderr");
-        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_aster-mcp"))
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_neptune-video-mcp"))
             .args(server_args(&dir))
             .current_dir(&dir)
             .stdin(Stdio::piped())
@@ -273,7 +273,7 @@ async fn an_mcp_server_closes_its_render_workers_before_process_exit() {
         call(
             &client,
             "project_create",
-            json!({"path": dir.join("shutdown.aster"), "width": 160, "height": 90}),
+            json!({"path": dir.join("shutdown.nvp"), "width": 160, "height": 90}),
         )
         .await;
         let imported = call(&client, "media_import", json!({"paths": [source]})).await;
@@ -334,7 +334,7 @@ async fn mix_loudness_measures_the_export_mix_without_editing_the_project() {
     call(
         &client,
         "project_create",
-        json!({"path": dir.join("mix.aster")}),
+        json!({"path": dir.join("mix.nvp")}),
     )
     .await;
     let imported = call(&client, "media_import", json!({"paths": [tone]})).await;
@@ -566,7 +566,7 @@ async fn an_agent_makes_edits_looks_at_and_exports_a_video_that_a_person_can_ope
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path().canonicalize().unwrap();
     let media = media(&dir);
-    let project = dir.join("film.aster");
+    let project = dir.join("film.nvp");
     let (client, _) = stdio(&dir).await;
 
     let made = call(
@@ -829,7 +829,7 @@ async fn an_agent_makes_edits_looks_at_and_exports_a_video_that_a_person_can_ope
 
     // The resource is the same project.
     let resource = client
-        .read_resource(ReadResourceRequestParams::new("aster://project"))
+        .read_resource(ReadResourceRequestParams::new("neptune-video://project"))
         .await
         .expect("the project resource reads");
     assert!(
@@ -922,7 +922,7 @@ async fn files_outside_the_roots_are_refused_and_nothing_is_replaced_unasked() {
         refused(
             &client,
             "project_create",
-            json!({"path": outside.path().join("x.aster")})
+            json!({"path": outside.path().join("x.nvp")})
         )
         .await,
         "outside_roots"
@@ -930,7 +930,7 @@ async fn files_outside_the_roots_are_refused_and_nothing_is_replaced_unasked() {
     call(
         &client,
         "project_create",
-        json!({"path": dir.join("p.aster")}),
+        json!({"path": dir.join("p.nvp")}),
     )
     .await;
     assert_eq!(
@@ -964,7 +964,7 @@ async fn files_outside_the_roots_are_refused_and_nothing_is_replaced_unasked() {
         refused(
             &client,
             "project_create",
-            json!({"path": dir.join("p.aster")})
+            json!({"path": dir.join("p.nvp")})
         )
         .await,
         "destination_exists"
@@ -973,7 +973,7 @@ async fn files_outside_the_roots_are_refused_and_nothing_is_replaced_unasked() {
         refused(
             &client,
             "project_save",
-            json!({"destination": outside.path().join("copy.aster")})
+            json!({"destination": outside.path().join("copy.nvp")})
         )
         .await,
         "outside_roots"
@@ -989,7 +989,7 @@ async fn work_survives_a_server_that_is_killed() {
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path().canonicalize().unwrap();
     let media = media(&dir);
-    let project = dir.join("p.aster");
+    let project = dir.join("p.nvp");
     let (client, pid) = stdio(&dir).await;
     call(&client, "project_create", json!({"path": project})).await;
     let imported = call(&client, "media_import", json!({"paths": [media.a]})).await;
@@ -1030,7 +1030,7 @@ async fn work_survives_a_server_that_is_killed() {
 async fn unsaved_work_a_stopped_editor_left_is_opened_only_when_asked_for() {
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path().canonicalize().unwrap();
-    let project = dir.join("p.aster");
+    let project = dir.join("p.nvp");
     let (client, _) = stdio(&dir).await;
     call(
         &client,
@@ -1074,12 +1074,12 @@ async fn unsaved_work_a_stopped_editor_left_is_opened_only_when_asked_for() {
         refused(
             &client,
             "project_create",
-            json!({"path": dir.join("other.aster")})
+            json!({"path": dir.join("other.nvp")})
         )
         .await,
         "invalid"
     );
-    assert!(!dir.join("other.aster").exists());
+    assert!(!dir.join("other.nvp").exists());
     // A server stopped while holding it leaves it in the recovery copy.
     client.cancel().await.unwrap();
     let (client, _) = stdio(&dir).await;
@@ -1111,7 +1111,7 @@ async fn an_agent_takes_back_and_redoes_its_own_edits_one_after_another() {
     call(
         &client,
         "project_create",
-        json!({"path": dir.join("p.aster"), "name": "A"}),
+        json!({"path": dir.join("p.nvp"), "name": "A"}),
     )
     .await;
     for name in ["B", "C", "D"] {
@@ -1148,7 +1148,7 @@ async fn links_and_lists_inside_the_roots_cannot_reach_outside_them() {
     let dir = dir.path().canonicalize().unwrap();
     let outside = tempfile::tempdir().unwrap();
     let media = media(&dir);
-    let project = dir.join("p.aster");
+    let project = dir.join("p.nvp");
     let (client, _) = stdio(&dir).await;
     call(&client, "project_create", json!({"path": project})).await;
     let imported = call(&client, "media_import", json!({"paths": [media.a]})).await;
@@ -1264,10 +1264,10 @@ async fn http_answers_only_its_token_on_the_loopback_and_works_for_a_client() {
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path().canonicalize().unwrap();
     let token = "a-test-token-that-is-long-enough-0123456789";
-    let mut server = std::process::Command::new(env!("CARGO_BIN_EXE_aster-mcp"))
+    let mut server = std::process::Command::new(env!("CARGO_BIN_EXE_neptune-video-mcp"))
         .args(server_args(&dir))
         .args(["--http", "127.0.0.1:0"])
-        .env("ASTER_MCP_TOKEN", token)
+        .env("NEPTUNE_VIDEO_MCP_TOKEN", token)
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
@@ -1328,7 +1328,7 @@ async fn http_answers_only_its_token_on_the_loopback_and_works_for_a_client() {
     call(
         &client,
         "project_create",
-        json!({"path": dir.join("h.aster"), "name": "Over HTTP"}),
+        json!({"path": dir.join("h.nvp"), "name": "Over HTTP"}),
     )
     .await;
     let status = call(&client, "project_status", json!({})).await;
@@ -1349,10 +1349,10 @@ async fn http_answers_only_its_token_on_the_loopback_and_works_for_a_client() {
         let _ = server.kill();
         let _ = server.wait();
     }
-    assert!(editor_store::load_project(&dir.join("h.aster")).is_ok());
+    assert!(editor_store::load_project(&dir.join("h.nvp")).is_ok());
 }
 
-/// The same project in an Aster window and over MCP: the agent's edits
+/// The same project in a Neptune Video window and over MCP: the agent's edits
 /// appear in the window, and the window's own edits in what the agent reads.
 /// A window saves on its own time: waits until `project_status` says its
 /// save to `path` is over, and gives that status.
@@ -1381,14 +1381,14 @@ impl Drop for Window {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_edits_the_project_open_in_a_window() {
-    if std::env::var_os("ASTER_TEST_DESKTOP").is_none() {
-        eprintln!("skipped: set ASTER_TEST_DESKTOP=1 on a computer with a display");
+    if std::env::var_os("NEPTUNE_VIDEO_TEST_DESKTOP").is_none() {
+        eprintln!("skipped: set NEPTUNE_VIDEO_TEST_DESKTOP=1 on a computer with a display");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path().canonicalize().unwrap();
     let media = media(&dir);
-    let project = dir.join("shared.aster");
+    let project = dir.join("shared.nvp");
     // The agent makes the project; a person opens it in a window.
     let (client, _) = stdio(&dir).await;
     call(&client, "project_create", json!({"path": project})).await;
@@ -1408,7 +1408,7 @@ async fn an_agent_edits_the_project_open_in_a_window() {
 
     let settings = dir.join("settings/settings.json");
     let _window = Window(
-        std::process::Command::new(env!("CARGO_BIN_EXE_aster"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_neptune-video"))
             .arg("--settings")
             .arg(&settings)
             .arg(&project)
@@ -1476,18 +1476,18 @@ async fn an_agent_edits_the_project_open_in_a_window() {
     );
 }
 
-/// The server Aster's own Agent tab starts: pinned to one window's session
+/// The server Neptune Video's own Agent tab starts: pinned to one window's session
 /// and naming its requests with the tab's tag.
 async fn pinned(dir: &Path, session: &Path) -> Client {
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_aster-mcp"));
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_neptune-video-mcp"));
     command
         .args(server_args(dir))
         .arg("--window")
         .arg(session)
-        .args(["--tag", "aster-tab"])
+        .args(["--tag", "neptune-video-tab"])
         .current_dir(dir)
         .stderr(Stdio::null());
-    let transport = TokioChildProcess::new(command).expect("aster-mcp starts");
+    let transport = TokioChildProcess::new(command).expect("neptune-video-mcp starts");
     ().serve(transport).await.expect("an MCP session starts")
 }
 
@@ -1508,7 +1508,7 @@ async fn a_server_started_for_a_closed_window_still_makes_projects_of_its_own() 
         "desktop_closed"
     );
     // Like any server, it makes a project of its own and stays with it.
-    let other = dir.join("other.aster");
+    let other = dir.join("other.nvp");
     let made = call(&client, "project_create", json!({"path": other})).await;
     assert_eq!(made["authority"], "local", "{made}");
     call(&client, "track_edit", json!({"op": "add", "kind": "video"})).await;
@@ -1542,7 +1542,7 @@ async fn the_folders_in_a_roots_file_are_read_again_when_it_changes() {
         std::fs::write(&part, serde_json::to_vec(&json!({"roots": roots})).unwrap()).unwrap();
         std::fs::rename(&part, &file).unwrap();
     };
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_aster-mcp"));
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_neptune-video-mcp"));
     command
         .arg("--roots-file")
         .arg(&file)
@@ -1553,11 +1553,11 @@ async fn the_folders_in_a_roots_file_are_read_again_when_it_changes() {
         .current_dir(&dir)
         .stderr(Stdio::null());
     let client =
-        ().serve(TokioChildProcess::new(command).expect("aster-mcp starts"))
+        ().serve(TokioChildProcess::new(command).expect("neptune-video-mcp starts"))
             .await
             .expect("an MCP session starts");
     // No file yet: no folder, not even the one it was started in.
-    let project = work.join("roots.aster");
+    let project = work.join("roots.nvp");
     assert_eq!(
         refused(&client, "project_create", json!({"path": project})).await,
         "outside_roots"
@@ -1586,21 +1586,21 @@ async fn the_folders_in_a_roots_file_are_read_again_when_it_changes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_agent_tab_server_starts_in_its_window_and_may_leave_and_come_back() {
-    if std::env::var_os("ASTER_TEST_DESKTOP").is_none() {
-        eprintln!("skipped: set ASTER_TEST_DESKTOP=1 on a computer with a display");
+    if std::env::var_os("NEPTUNE_VIDEO_TEST_DESKTOP").is_none() {
+        eprintln!("skipped: set NEPTUNE_VIDEO_TEST_DESKTOP=1 on a computer with a display");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path().canonicalize().unwrap();
     let media = media(&dir);
-    let project = dir.join("tab.aster");
+    let project = dir.join("tab.nvp");
     let (client, _) = stdio(&dir).await;
     call(&client, "project_create", json!({"path": project})).await;
     let imported = call(&client, "media_import", json!({"paths": [media.a]})).await;
     client.cancel().await.unwrap();
 
     let _window = Window(
-        std::process::Command::new(env!("CARGO_BIN_EXE_aster"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_neptune-video"))
             .arg("--settings")
             .arg(dir.join("settings/settings.json"))
             .arg(&project)
@@ -1639,14 +1639,14 @@ async fn the_agent_tab_server_starts_in_its_window_and_may_leave_and_come_back()
         0
     );
     call(&client, "history", json!({"op": "redo"})).await;
-    let copy = dir.join("copy.aster");
+    let copy = dir.join("copy.nvp");
     call(&client, "project_save", json!({"destination": copy})).await;
     window_saved(&client, &copy).await;
     let saved = editor_store::load_project(&copy).unwrap();
     assert_eq!(saved.tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 1);
 
     // It may leave the window for a project of its own, as any agent may…
-    let other = dir.join("other.aster");
+    let other = dir.join("other.nvp");
     let made = call(&client, "project_create", json!({"path": other})).await;
     assert_eq!(made["authority"], "local", "{made}");
     let theirs = call(&client, "media_import", json!({"paths": [media.a]})).await;
@@ -1712,7 +1712,7 @@ async fn exact_source_times_isolated_layers_and_streaming_dumps_preserve_the_pro
         ],
     );
     let (client, _) = stdio(&dir).await;
-    let path = dir.join("layers.aster");
+    let path = dir.join("layers.nvp");
     call(
         &client,
         "project_create",

@@ -62,7 +62,7 @@ Decided on the owner's behalf on 2026-10-14: the owner delegated every open
 decision of the epic. Option 1, without move-with-project.
 
 - **Where.** `<document stem> media/` in the document's own folder:
-  `film.aster` keeps its takes in `film media/`. The name is fixed, not a
+  `film.nvp` keeps its takes in `film media/`. The name is fixed, not a
   setting. `editor_store::media_folder(document)` names the folder and
   creates nothing; `editor_store::new_take(document, now)` makes the folder
   on the first take and returns a path for the take that does not exist yet,

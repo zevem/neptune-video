@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise a task-owned Linux X11 window through OS input and the live API.
 
-Requires an existing isolated Xvfb display, a generated .aster project, FFmpeg
+Requires an existing isolated Xvfb display, a generated .nvp project, FFmpeg
 and a built native binary. It never touches the person's desktop or projects.
 """
 from __future__ import annotations
@@ -50,9 +50,9 @@ class Input:
         if not self.display:
             raise RuntimeError("Isolated X11 display is unavailable")
         # Xvfb has no window manager to focus a newly mapped window. Locate the
-        # observed task-owned Aster surface, then route real OS key events to it.
+        # observed task-owned Neptune Video surface, then route real OS key events to it.
         tree=subprocess.check_output(["xwininfo","-root","-tree"],env=dict(os.environ,DISPLAY=display),text=True)
-        candidates=re.findall(r'(0x[0-9a-f]+) "[^"\n]*Aster[^"\n]*"',tree)
+        candidates=re.findall(r'(0x[0-9a-f]+) "[^"\n]*Neptune Video[^"\n]*"',tree)
         if not candidates:
             raise RuntimeError(f"Task window was not found in isolated display: {tree}")
         self.x.XSetInputFocus(self.display,int(candidates[0],16),2,0)
@@ -118,7 +118,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     source = json.loads(args.project.read_text())["project"]
     hashes = {str(asset["path"]): hashlib.sha256(Path(asset["path"]).read_bytes()).hexdigest() for asset in source["assets"].values()}
-    project = args.output / "smoke.aster"
+    project = args.output / "smoke.nvp"
     project.write_bytes(args.project.read_bytes())
     session = args.output / "session.json"
     env = dict(os.environ, DISPLAY=args.display, WAYLAND_DISPLAY="", WINIT_UNIX_BACKEND="x11")

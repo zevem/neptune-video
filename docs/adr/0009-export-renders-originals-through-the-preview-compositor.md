@@ -65,7 +65,7 @@ rates sound as they do in playback. It goes to a raw `f32le` file owned by
 the job, then into the file beside the picture, both starting at zero.
 
 **The person's FFmpeg, probed per host.** Encoding is the external FFmpeg the
-preview already uses. At start, every encoder Aster knows how to drive that
+preview already uses. At start, every encoder Neptune Video knows how to drive that
 FFmpeg lists is asked to encode a test picture or a moment of silence through
 the same argument builder an export uses. Only encoders that succeeded, and
 containers whose muxer exists, are offered. The others are shown with the
@@ -87,7 +87,7 @@ and the job's working folder, which is hidden beside the destination rather
 than in a temporary folder that may be held in memory.
 
 **One render at a time.** The render queue runs jobs in list order on one
-`aster-render` thread. Pause stops feeding frames, so FFmpeg waits on its
+`neptune-video-render` thread. Pause stops feeding frames, so FFmpeg waits on its
 pipe and no signal is sent; resume continues the same encode. Cancel kills
 the job's own processes. Running jobs side by side was set aside: they would
 share one GPU and disk, FFmpeg already uses several threads for one encode,
@@ -128,9 +128,9 @@ stops.
   clips, pitch that changes with speed, silence on frozen, reversed and ramped
   stretches, and sound from hidden video tracks.
 - Which codecs and hardware encoders a person gets depends on their FFmpeg
-  build and drivers. H.264 and H.265 are patent-encumbered formats; Aster
+  build and drivers. H.264 and H.265 are patent-encumbered formats; Neptune Video
   bundles no encoder.
-- The headless `aster-agent` binary answers render operations `unsupported`.
+- The headless `neptune-video-agent` binary answers render operations `unsupported`.
   Render jobs run in the desktop window.
 - This supersedes the statements in
   [ADR 0006](0006-advanced-editing-is-generic-data-resolved-once.md) that no

@@ -397,7 +397,7 @@ fn auto_quality_halves_only_after_late_frames_and_until_playback_stops() {
         return;
     };
     let mut asset = uhd("/nowhere/never-decoded.mov");
-    asset.path = std::env::temp_dir().join(format!("aster-absent-{}.mov", asset.id));
+    asset.path = std::env::temp_dir().join(format!("neptune-video-absent-{}.mov", asset.id));
     let mut textures = Textures::default();
     textures.set_quality(PreviewQuality::Auto);
     // Paused, and then playing: starting playback changes nothing.

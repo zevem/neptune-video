@@ -896,7 +896,7 @@ pub fn headless_device() -> Result<Headless, String> {
         ];
         for required_limits in limits {
             let descriptor = wgpu::DeviceDescriptor {
-                label: Some("aster export"),
+                label: Some("neptune-video export"),
                 required_limits,
                 ..Default::default()
             };

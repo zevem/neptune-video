@@ -10,7 +10,7 @@ Root passed 397 tests, format, Linux denied-warning workspace Clippy,
 Windows MSVC/GNU and macOS ARM64 source checks, actual FFmpeg preflight and
 optimized bins. Source
 `f74d6560b7e049856ff6f7fee81f8a80aa28c2d4e93bd68a3775b17c0fa21106`;
-Aster `8b446ccacf38ef883fa01f54e65bec852a6c74f8fa9a016ca4c02b4408c7ba6b`;
+Neptune Video `8b446ccacf38ef883fa01f54e65bec852a6c74f8fa9a016ca4c02b4408c7ba6b`;
 agent `57c9aff5e138d9b68d2cda70851e43c6f27ade8b7365882ce63d77c93d5bb037`.
 See `artifacts/production-readiness/final/round14-build-record.json` and
 `round14-backend-root-verification.json`. No source/Cargo/binary replacement
@@ -20,7 +20,7 @@ plans under `artifacts/native/backend-preparation/round14/` are `not_run`.
 
 The interfaces below are implemented. Root owns Cargo and backend source.
 The earlier audio checkpoint is `artifacts/production-readiness/final/round12-build-record.json`
-(354 tests, source `2b43797d`, optimized Aster `ec99d455`). Linux formatting,
+(354 tests, source `2b43797d`, optimized Neptune Video `ec99d455`). Linux formatting,
 workspace tests/Clippy and optimized builds pass; three cross-target checks
 establish source validity only. Nine callback-liveness regressions, an
 independent buffer-publication review and the fresh private native silent-stall
@@ -42,8 +42,8 @@ Root retains Cargo. The current accepted core checkpoint is
 `artifacts/production-readiness/final/round13-build-record.json`: 365 passing
 tests, 74 source files, source
 `5cc2068039f6a8e08e24b6b43114fd840e8f01c2ed3658a40f579d199675014a`,
-optimized Aster `6496d42f40d225756796af8908a30fed085ac7fd64761f2055de0eaac94a51fd`
-(27,212,040 bytes), and unchanged Aster Agent
+optimized Neptune Video `6496d42f40d225756796af8908a30fed085ac7fd64761f2055de0eaac94a51fd`
+(27,212,040 bytes), and unchanged Neptune Video Agent
 `b0ce17857db3a77f503feed5baf832cd551ca720f783e653a940c44a4e300b56`.
 Only media `service.rs` and its new private delivery-test module differ from
 R12. Eleven delivery regressions pass after eight reproduced failures;
@@ -262,7 +262,7 @@ then grants a fresh native acceptance round. Persistent empty lock files
 are intentional lock anchors; do not remove them based on existence or a PID.
 
 FINAL BACKEND BUILD READY FOR NATIVE ROUND5: source db30b8bdb7018890e7b692d7152b1672c0b9d92fff740aea80fe97023b373016;
-release aster 9f721c8b97b6f3500e283544afd89bfd0122653753240560354b62065f17131c;
+release neptune-video 9f721c8b97b6f3500e283544afd89bfd0122653753240560354b62065f17131c;
 305 workspace tests, fmt, all-target denied-warning Clippy, optimized bins and
 fresh core/agent/store WindowsGNU/macOSARM64 lib typechecks pass. Build record:
 artifacts/production-readiness/final/db30-native-round5-build-record.json. Desktop Origin policy
@@ -270,7 +270,7 @@ from round4 is compiled, with86 desktop tests passing. Native acceptance now
 uses these existing binaries, NO Cargo or source edits unless an actual defect
 is reported and compilation coordinated with root.
 
-Codex instruction override is a private0600 file containing only Aster's SYSTEM
+Codex instruction override is a private0600 file containing only Neptune Video's SYSTEM
 before launch, plus explicit base/developer prompts. An empty file was rejected
 by the actual CLI; that regression is fixed. Two subsequent split proposals
 were no-op transformations despite their summary; explicit split semantics in

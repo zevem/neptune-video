@@ -3,7 +3,7 @@
 //!
 //! The editor ships no separator, no model and no runtime, and fetches none:
 //! the tool is Demucs's command line, `demucs`, or the executable that
-//! `ASTER_SEPARATOR` names, and whatever it fetches to run is its own doing.
+//! `NEPTUNE_VIDEO_SEPARATOR` names, and whatever it fetches to run is its own doing.
 //! It is probed once a session by `--help`, which must end well and name
 //! `--two-stems`; a job is made only with a separator so found.
 //!
@@ -40,7 +40,7 @@ use uuid::Uuid;
 
 /// The variable that names a separator executable, in place of `demucs` on
 /// `PATH`.
-pub const SEPARATOR_VARIABLE: &str = "ASTER_SEPARATOR";
+pub const SEPARATOR_VARIABLE: &str = "NEPTUNE_VIDEO_SEPARATOR";
 /// The separator looked for on `PATH`.
 pub const SEPARATOR: &str = "demucs";
 /// The stems asked of the tool, as it names its files, and as the editor
@@ -149,7 +149,7 @@ fn missing(program: &OsStr) -> MediaError {
     ))
 }
 
-/// The separator this session looks for: what `ASTER_SEPARATOR` names, or
+/// The separator this session looks for: what `NEPTUNE_VIDEO_SEPARATOR` names, or
 /// `demucs` on `PATH`.
 pub fn separator_program() -> OsString {
     tool_program(SEPARATOR)
@@ -165,7 +165,7 @@ pub fn look_for_separator(wake: impl Fn() + Send + Sync + 'static) {
     let wake: Wake = Arc::new(wake);
     LOOKING.get_or_init(|| {
         let started = thread::Builder::new()
-            .name("aster-separator-probe".into())
+            .name("neptune-video-separator-probe".into())
             .spawn(move || {
                 let found =
                     Separator::probe(separator_program()).map_err(|error| error.to_string());
@@ -310,7 +310,7 @@ fn drain(stdout: &ChildStdout) -> std::io::Result<()> {
     };
     let mut pipe = fs::File::from(pipe);
     thread::Builder::new()
-        .name("aster-separator-output".into())
+        .name("neptune-video-separator-output".into())
         .spawn(move || {
             let _ = std::io::copy(&mut pipe, &mut std::io::sink());
         })?;

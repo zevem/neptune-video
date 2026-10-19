@@ -1,4 +1,4 @@
-//! The looks Aster comes with: title and caption styles, graphic templates,
+//! The looks Neptune Video comes with: title and caption styles, graphic templates,
 //! stickers and emoji. Each is plain title or graphic data, made once.
 //!
 //! Sizes are canvas pixels on a canvas 1080 pixels on its short side; a
@@ -1102,7 +1102,7 @@ fn emoji() -> Vec<Look> {
         .collect()
 }
 
-/// Every look Aster comes with, in the order the tab lists them.
+/// Every look Neptune Video comes with, in the order the tab lists them.
 pub fn builtin() -> &'static [Arc<Look>] {
     static LOOKS: LazyLock<Vec<Arc<Look>>> = LazyLock::new(|| {
         [

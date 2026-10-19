@@ -1,9 +1,9 @@
 # Verification and release readiness
 
-Aster's requested core features now have Rust implementations and native Linux
+Neptune Video's requested core features now have Rust implementations and native Linux
 editing evidence. Production readiness, CapCut/Palmier Pro parity and extreme
 performance remain goals requiring the gates below.
-Neptune was inspected read-only as the stack and engineering reference.
+Neptune Terminal was inspected read-only as the stack and engineering reference.
 
 ## LeyFind preview follow-up (2026-10-16)
 
@@ -16,7 +16,7 @@ thread settings, including alpha. No project or source media is replaced.
 
 The pinned Linux build passes **954 focused tests** (262 core, 67 media service,
 43 decoder, 582 UI), formatting, architecture validation and denied-warning
-all-target Clippy for the three affected packages. A locked optimized `aster`
+all-target Clippy for the three affected packages. A locked optimized `neptune-video`
 is rebuilt; [the build record](../artifacts/preview-performance-2026-10-16/build-record.json)
 identifies its exact source and binary. Whole-workspace tests were not rerun.
 
@@ -39,7 +39,7 @@ records the resource tradeoff and measurement limits.
 
 The [performance acceptance handover](../artifacts/performance-acceptance/round1/REPORT.md)
 records the current Linux source `b09ea17e` (96 source/build files), optimized
-`aster` `9b9ff3f0` and `aster-agent` `cace9ba5`. The
+`neptune-video` `9b9ff3f0` and `neptune-video-agent` `cace9ba5`. The
 [exact build record](../artifacts/performance-acceptance/round1/final-build.json)
 passes **310 focused tests** (57 core, 253 desktop), zero failures/ignored,
 formatting, architecture, denied-warning core/desktop all-target Clippy,
@@ -60,7 +60,7 @@ the large-input control use task-owned affinity to logical CPUs 0–15 on this
 i9-13900HX/NVIDIA Linux host. **Unpinned shared-host playback remains below
 budget**, including a slower seek/loop trial; one unpinned large zoom tail is
 211.809 ms. Controlled passing evidence is qualified by that affinity and does
-not establish default-host acceptance. No affinity feature ships in Aster.
+not establish default-host acceptance. No affinity feature ships in Neptune Video.
 
 This performance task does not update platform packs or portable archives.
 Framebuffer sampling does not prove physical presentation or zero dropped
@@ -72,8 +72,8 @@ or agent pressure and hours-long memory behavior retain their separate gates.
 The [playback performance build record](../artifacts/production-readiness/playback-performance-round1/final-build-attempt-03/build-record.json)
 is the preceding Linux checkpoint (2026-10-13 UTC): **610 workspace tests passed,
 zero failures or ignored**, including 252 desktop and 147 media tests.
-Source is `ebc9da4c…6375` (93 files); optimized `aster` is
-`4b3128d8…70b0`, and `aster-agent` remains `00906bba…fc76a`.
+Source is `ebc9da4c…6375` (93 files); optimized `neptune-video` is
+`4b3128d8…70b0`, and `neptune-video-agent` remains `00906bba…fc76a`.
 Formatting, architecture validation, warning-denied workspace/all-target
 Clippy, explicit FFmpeg/ffprobe 8.0.1 preflight and locked release linking pass.
 
@@ -106,8 +106,8 @@ native macOS/Windows acceptance remain unverified here.
 The [published-first read-ahead build record](../artifacts/production-readiness/publish-first-read-ahead-round1/build-record.json)
 is the preceding R17 Linux checkpoint (2026-10-13 UTC): **549 workspace tests passed,
 zero failures or ignored**, including 206 desktop and 132 media tests.
-Source is `89aa6908…1673` (87 files); optimized `aster` is
-`61dc6abd…09c5`, and `aster-agent` remains `00906bba…fc76a`.
+Source is `89aa6908…1673` (87 files); optimized `neptune-video` is
+`61dc6abd…09c5`, and `neptune-video-agent` remains `00906bba…fc76a`.
 Formatting, warning-denied all-target media Clippy and release linking pass.
 Only five backend source files changed; UI source is unchanged from R16.
 The [final root verification](../artifacts/production-readiness/publish-first-read-ahead-round1/root-final-verification.json)
@@ -149,8 +149,8 @@ acceptance, missing dependency notice texts and public release remain unfinished
 The [playback-admission build record](../artifacts/production-readiness/playback-admission-round1/build-record.json)
 is the earlier R16 Linux checkpoint (2026-10-13 UTC): **538 workspace tests passed,
 zero failures or ignored**, including 206 desktop and 121 media tests.
-Source is `b7fc3308…f87d` (85 files); optimized `aster` is
-`160efa02…1da5`, and `aster-agent` remains `00906bba…fc76a`.
+Source is `b7fc3308…f87d` (85 files); optimized `neptune-video` is
+`160efa02…1da5`, and `neptune-video-agent` remains `00906bba…fc76a`.
 Affected-package/all-target Clippy with warnings denied and the optimized
 Linux build passed. These checks do not refresh the older cross-target checks.
 
@@ -177,8 +177,8 @@ On 2026-10-12, the immutable
 [round-fifteen build record](../artifacts/production-readiness/final/round15-build-record.json)
 passed **521 tests, zero failures and zero ignored**: 198 desktop logic tests,
 12 headless CLI tests and 311 library tests (52 core, 81 agent, 112 media,
-66 storage). Source is `dfbb53e9…af6c2` (83 files), and its optimized Linux `aster` binary is
-`362ba180…3f364` (27,290,168 bytes); `aster-agent` is `00906bba…fc76a`.
+66 storage). Source is `dfbb53e9…af6c2` (83 files), and its optimized Linux `neptune-video` binary is
+`362ba180…3f364` (27,290,168 bytes); `neptune-video-agent` is `00906bba…fc76a`.
 Real FFmpeg/ffprobe 8.0.1 availability is recorded in
 [the media preflight](../artifacts/production-readiness/final/round15-media-tools.log).
 [Architecture](../artifacts/production-readiness/final/round15-architecture.log),
@@ -308,10 +308,10 @@ establish native platform acceptance.
 | Playback | Real software media decoding/composition, scrubbing, rational frame steps, speed/loop controls and optional audio-device clock | Native transport/decode evidence, scheduled-PCM regressions and current physical default-output silence clock; audible quality, underrun-free output, A/V drift and display latency unverified |
 | Transform | Position/scale/rotation/opacity, horizontal/vertical reflection, source crop | Core validation/reversal, real decoded composition and X11 canvas-position gesture with one exact undo; complete inspector input acceptance on each OS remains open |
 | Canvas | 16:9, 9:16, 1:1, custom dimensions, rational frame rate and background | Typed settings/save tests and native project settings; clean-machine/DPI/driver behavior remains open |
-| History | Undo/redo, named checkpoints, reversible checkpoint restore, crash recovery and recovery leases | XTest checkpoint restore/undo/redo, crash recovery offer and optimized exit/relaunch retaining the full undo/redo chain; store shared-root/corruption/lease tests. Ordinary `.aster` open starts fresh history; recovery sidecar retains it |
+| History | Undo/redo, named checkpoints, reversible checkpoint restore, crash recovery and recovery leases | XTest checkpoint restore/undo/redo, crash recovery offer and optimized exit/relaunch retaining the full undo/redo chain; store shared-root/corruption/lease tests. Ordinary `.nvp` open starts fresh history; recovery sidecar retains it |
 | Looks, animation and motion | Keyframes, transitions, effects, looks, speed, masks, blend, colour, keying, tracking, stabilization as preview | See [advanced editing](#advanced-editing): Linux headless tests, device readback on two adapters and native captures on virtual displays; no playback rate or other platform, and no effect was checked in an [export](#export-and-rendering) |
 | Audio editing | Waveforms, fades, track volume and solo, detached audio, background music, voiceover recording, audio effects, keep pitch, loudness normalization, ducking, beats, Save audio as and stem separation, as preview | See [audio editing](#audio-editing): macOS headless tests, mixer and lane readback, launch captures and native acceptance captures of the driven release build on one host; nothing listened to, no device opened, no Linux or Windows run |
-| Native AI | Agent tab conversation with the Claude Code or Codex CLI through `aster-mcp` started in the window, each edit one undo step, with the reach of an outside agent (other projects, person-added folders) ("Made as it works", the default); Claude/Codex CLI planning, captured/focused metadata, review/apply/discard/cancel and exact prepared-state commits ("Proposed for review" and caption translation) | See [in-app agent](#in-app-agent): real Claude Code 2.1.300 and Codex 0.162.1 conversations on one macOS host, debug and release builds, with captures; no Linux or Windows window. Planning: exact reviewed split IDs verified through the public runtime; `2c596cb0` both real-provider split/undo/redo and owned no-op/stale fixtures passed. Prior db30 cancel/reopen evidence stays scoped. Planning sends metadata only; the live agent sends rendered frames, contact sheets and transcripts to the provider and cannot listen to sound |
+| Native AI | Agent tab conversation with the Claude Code or Codex CLI through `neptune-video-mcp` started in the window, each edit one undo step, with the reach of an outside agent (other projects, person-added folders) ("Made as it works", the default); Claude/Codex CLI planning, captured/focused metadata, review/apply/discard/cancel and exact prepared-state commits ("Proposed for review" and caption translation) | See [in-app agent](#in-app-agent): real Claude Code 2.1.300 and Codex 0.162.1 conversations on one macOS host, debug and release builds, with captures; no Linux or Windows window. Planning: exact reviewed split IDs verified through the public runtime; `2c596cb0` both real-provider split/undo/redo and owned no-op/stale fixtures passed. Prior db30 cancel/reopen evidence stays scoped. Planning sends metadata only; the live agent sends rendered frames, contact sheets and transcripts to the provider and cannot listen to sound |
 | Titles, captions and graphics | Styled titles, text animation, captions from speech with word times, karaoke, caption editing, SRT/VTT, caption languages and AI translation, lower thirds, title cards, callouts, stickers, emoji, editable templates, kept looks and brand colours, as preview | See [titles, captions and motion graphics](#titles-captions-and-motion-graphics): Linux headless tests, a real Whisper model on synthetic English speech and native captures on a virtual display; one title and two captions, burned in and embedded, in [Linux exports](#export-and-rendering); no playback rate, real provider translation or other platform |
 | Export and rendering | Export dialog with poster and saved presets; render queue with pause, resume, cancel, retry and part files; MP4, MOV, WebM and sound-only files; software and hardware encoders; caption sidecars, embedding and burn-in; proxies and preview quality | See [export and rendering](#export-and-rendering): one Linux host, release build, every matrix export matched its expected values and sound was within 0.1 ms of the picture; NVENC only among hardware encoders; no macOS, Windows or long render |
 
@@ -319,7 +319,7 @@ The [user guide](usage.md) explains controls and current limits. Local agent
 commands and the authenticated live/headless protocol use the same reducer;
 mutation requests require project, live-context and revision identities.
 [Native AI](native-ai.md) uses separately installed and signed-in CLIs;
-credentials are not bundled or stored in Aster project/preferences files.
+credentials are not bundled or stored in Neptune Video project/preferences files.
 
 ## Advanced editing
 
@@ -338,8 +338,8 @@ mask, transition, speed change, tracking or stabilization.
 
 | Kind | What it is | Host and build |
 | --- | --- | --- |
-| Headless tests | Core, store, media, agent and desktop unit tests at the owning seam. Desktop tests drive the inspector, timeline and viewer through a test bench that mirrors `App`; `App` itself cannot be built in a test | One Linux host (i9-13900HX, Ubuntu 26.04.1), unoptimized `ci` profile. The last whole-workspace run before the final wave reported 545 `aster-editor` tests passing; the final wave's tasks report their packages and workspace Clippy passing. This documentation task ran no build |
-| Device readback | `src/compose/*_tests.rs` render through a real wgpu device and read pixels back. A test without an adapter prints `SKIP:` and passes, so a green run on a host without one proves nothing | Ran on NVIDIA GeForce RTX 4060 Laptop (Vulkan) and, with `ASTER_TEST_FALLBACK_ADAPTER=1`, on llvmpipe (Vulkan, CPU). Not run on Metal, Direct3D, Intel or AMD. The GL backend was not reached by the test harness |
+| Headless tests | Core, store, media, agent and desktop unit tests at the owning seam. Desktop tests drive the inspector, timeline and viewer through a test bench that mirrors `App`; `App` itself cannot be built in a test | One Linux host (i9-13900HX, Ubuntu 26.04.1), unoptimized `ci` profile. The last whole-workspace run before the final wave reported 545 `neptune-video` tests passing; the final wave's tasks report their packages and workspace Clippy passing. This documentation task ran no build |
+| Device readback | `src/compose/*_tests.rs` render through a real wgpu device and read pixels back. A test without an adapter prints `SKIP:` and passes, so a green run on a host without one proves nothing | Ran on NVIDIA GeForce RTX 4060 Laptop (Vulkan) and, with `NEPTUNE_VIDEO_TEST_FALLBACK_ADAPTER=1`, on llvmpipe (Vulkan, CPU). Not run on Metal, Direct3D, Intel or AMD. The GL backend was not reached by the test harness |
 | [Wave 2 captures](../artifacts/advanced-editing/wave2/README.md) | Paused compositor output of a project built over the agent protocol, parked by key presses | Xvfb + lavapipe at 1440x900 and 760x560; headless Weston + Xwayland on the RTX 4060 (Vulkan) at both sizes; wgpu GL on llvmpipe at 1440x900. Canvas differs by at most 4/255 between lavapipe and NVIDIA |
 | [Wave 3 captures](../artifacts/advanced-editing/wave3/README.md) | The editing interface driven by XTest pointer and keyboard, each gesture read back over the agent protocol and undone | Xvfb + lavapipe only, no window manager, 1440x900; at 760x560 mostly states made at the larger size |
 | Wave 4 captures | Defect fixes, tracking and stabilization driven the same way | Xvfb + lavapipe, both sizes. Kept in the session's scratch directory, not under `artifacts/`; several were taken one build before the final binary, as each task reported |
@@ -454,12 +454,12 @@ list every capture and test by name.
 
 | Kind | What it is | Host and build |
 | --- | --- | --- |
-| Headless tests | Core, store, media, agent and desktop tests at the owning seam. Desktop tests drive the timeline, inspector, library, sheets and transport through real egui passes and a bench that mirrors `App`; `App` itself cannot be built in a test, so its wiring (`perform`, `logic`, the jobs, `on_exit`) was read, not run | One macOS host: macOS 26.5.2, Apple M1 (arm64), Rust 1.97.1, Homebrew FFmpeg and ffprobe 8.1.2 (`scripts/check-media-tools.py` passed). The `dev` test profile (opt-level 1, dependencies at 2), and the unoptimized `ci` profile for ticket 10. Each ticket ran its own packages; the last whole-crate counts reported are `editor-media` 327 and `aster-editor` 827 and 12 (ticket 21a). No whole-workspace run on one source was recorded for the epic, and no Linux or Windows run |
+| Headless tests | Core, store, media, agent and desktop tests at the owning seam. Desktop tests drive the timeline, inspector, library, sheets and transport through real egui passes and a bench that mirrors `App`; `App` itself cannot be built in a test, so its wiring (`perform`, `logic`, the jobs, `on_exit`) was read, not run | One macOS host: macOS 26.5.2, Apple M1 (arm64), Rust 1.97.1, Homebrew FFmpeg and ffprobe 8.1.2 (`scripts/check-media-tools.py` passed). The `dev` test profile (opt-level 1, dependencies at 2), and the unoptimized `ci` profile for ticket 10. Each ticket ran its own packages; the last whole-crate counts reported are `editor-media` 327 and `neptune-video` 827 and 12 (ticket 21a). No whole-workspace run on one source was recorded for the epic, and no Linux or Windows run |
 | Mixer readback | `Mixer::chunk` returns the samples a device would get, so fades, track volume, solo, the limiter, every filter, its delay and pitch are read back from WAV files the tests write sample by sample and FFmpeg decodes ([level_tests](../crates/editor-media/src/audio/level_tests.rs), [chain_tests](../crates/editor-media/src/audio/chain_tests.rs)). The source monitor shares the mixer | The same host; no device |
 | Lane fixtures | The sound lane run against the host's FFmpeg on files FFmpeg or the test made: tones, clicks, silence, white noise, a late-starting stream, a FIFO ([sound tests](../crates/editor-media/src/sound/tests.rs), [separate_tests](../crates/editor-media/src/sound/separate_tests.rs)); the stem separator as a `sh` stand-in, and once as Demucs 4.1.0 | The same host. No real speech or music |
 | Launch captures | The release build launched with `--screenshot` on its own fresh settings, session, cache and project, nothing clicked or typed, under [artifacts/audio-editing/](../artifacts/audio-editing/) | The macOS host's display, scale as the system set it: asked for at 1440x900, the window came up at about 1280x678 points; narrow 760x620. Only states a project file can hold at launch |
-| Native acceptance (2026-10-14) | 94 captures of the running release build driven by real pointer and key events (menus, held gestures, hovers, the Audio section, library tabs and filters, the heads' menus), under [artifacts/audio-editing/captures/](../artifacts/audio-editing/captures/), each looked at against [design](design.md); then 12 more (`fix-*`) of the two defects it found, after they were fixed | macOS 26.5.2 (25F84), Apple M1, built-in Retina display at scale 2, Rust 1.97.1, Homebrew FFmpeg 8.1.2. `cargo build --release --locked`: the 94 from `target/release/aster` sha256 `fadbe5aa…5e763`, the 12 from sha256 `64a03608…6c038` with both fixes. Fresh task-owned projects built over `aster-agent` from FFmpeg-made media (a 12 s testsrc2 interview with a tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Normal window asked 1440x900, came up at 1280x709 points; narrow 760x620, and 760x560 for the Audio section. Dark theme only |
-| Headless agent runs | `aster-agent --project … --create` sending the batches a person's action makes, over generated fixtures | The same host, `dev` build; the transcripts are in the ticket folders under `artifacts/audio-editing/` |
+| Native acceptance (2026-10-14) | 94 captures of the running release build driven by real pointer and key events (menus, held gestures, hovers, the Audio section, library tabs and filters, the heads' menus), under [artifacts/audio-editing/captures/](../artifacts/audio-editing/captures/), each looked at against [design](design.md); then 12 more (`fix-*`) of the two defects it found, after they were fixed | macOS 26.5.2 (25F84), Apple M1, built-in Retina display at scale 2, Rust 1.97.1, Homebrew FFmpeg 8.1.2. `cargo build --release --locked`: the 94 from `target/release/neptune-video` sha256 `fadbe5aa…5e763`, the 12 from sha256 `64a03608…6c038` with both fixes. Fresh task-owned projects built over `neptune-video-agent` from FFmpeg-made media (a 12 s testsrc2 interview with a tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Normal window asked 1440x900, came up at 1280x709 points; narrow 760x620, and 760x560 for the Audio section. Dark theme only |
+| Headless agent runs | `neptune-video-agent --project … --create` sending the batches a person's action makes, over generated fixtures | The same host, `dev` build; the transcripts are in the ticket folders under `artifacts/audio-editing/` |
 
 ### Feature matrix
 
@@ -525,10 +525,10 @@ that column is unmeasured.
   from the `dev` test profile, which is partly optimized (opt-level 1,
   dependencies at 2) and not a release build, or from the unoptimized `ci`.
 
-| Headless tests | Core, store, media, agent and desktop tests at the owning seam. Desktop benches run real egui passes over the inspector, library tabs and speech panel and find controls through AccessKit | One Linux container: 4 vCPU Intel Xeon at 2.8 GHz, 15 GiB, Ubuntu 24.04.5, Rust 1.97.1, `dev` profile with dependencies at `opt-level` 2. Final runs: editor-core 165, editor-store 78, editor-agent 86 with the provider fixture, desktop 672 and `aster-agent` 12 passed; editor-media 247 of 248, the one failure being `decode::tests::a_paced_walk_backwards_at_preview_size_is_measured`, which fails the same way on the base commit and is outside this work |
-| Real speech model | A test that runs only when `ASTER_WHISPER_MODEL` and `ASTER_SPEECH_SAMPLE` are set: words, their timeline times and a cancel during recognition | Same host, Tiny q5_1, `talk.wav` (8.5 s of English synthesized by Flite) |
+| Headless tests | Core, store, media, agent and desktop tests at the owning seam. Desktop benches run real egui passes over the inspector, library tabs and speech panel and find controls through AccessKit | One Linux container: 4 vCPU Intel Xeon at 2.8 GHz, 15 GiB, Ubuntu 24.04.5, Rust 1.97.1, `dev` profile with dependencies at `opt-level` 2. Final runs: editor-core 165, editor-store 78, editor-agent 86 with the provider fixture, desktop 672 and `neptune-video-agent` 12 passed; editor-media 247 of 248, the one failure being `decode::tests::a_paced_walk_backwards_at_preview_size_is_measured`, which fails the same way on the base commit and is outside this work |
+| Real speech model | A test that runs only when `NEPTUNE_VIDEO_WHISPER_MODEL` and `NEPTUNE_VIDEO_SPEECH_SAMPLE` are set: words, their timeline times and a cancel during recognition | Same host, Tiny q5_1, `talk.wav` (8.5 s of English synthesized by Flite) |
 | Native captures | The running debug build driven by XTest pointer and keyboard and looked at, with task-owned settings, presets, models and projects | Xvfb with lavapipe (software Vulkan), no window manager, at 1440x900 and at 760x560 or 760x700. Kept in the session's scratch directory, not in the repository |
-| Optimized build | `cargo build --release --locked --bin aster` of the final source | Built on the same host in 7 min 44 s from clean. The `aster` binary is 34,147,232 bytes, about 1.7 MB of it whisper.cpp and ggml. Run under the same Xvfb: the Karaoke box look drawn, and captions from speech with Tiny and the language detected appeared between 4.2 and 4.9 s after the click. That run found two caption tracks with one name. After the fix, the rebuilt binary (34,148,904 bytes, 3 min 9 s incremental) named the second "English captions 2" in the track chooser at 1440x900 and at 760x700 |
+| Optimized build | `cargo build --release --locked --bin neptune-video` of the final source | Built on the same host in 7 min 44 s from clean. The `neptune-video` binary is 34,147,232 bytes, about 1.7 MB of it whisper.cpp and ggml. Run under the same Xvfb: the Karaoke box look drawn, and captions from speech with Tiny and the language detected appeared between 4.2 and 4.9 s after the click. That run found two caption tracks with one name. After the fix, the rebuilt binary (34,148,904 bytes, 3 min 9 s incremental) named the second "English captions 2" in the track chooser at 1440x900 and at 760x700 |
 
 ### Feature matrix
 
@@ -593,37 +593,37 @@ editor.
 | Item | Value |
 | --- | --- |
 | Host | Dell G15 5530, i9-13900HX (32 threads), 30 GiB RAM, Ubuntu 26.04.1, Linux 7.0.0-38-generic |
-| GPU | NVIDIA GeForce RTX 4060 Laptop, driver 595.99.02. The window ran on the NVIDIA GPU through Vulkan: `nvidia-smi` listed `aster` as a client. Xvfb has no DRI3, so Mesa could not present there |
-| FFmpeg | 8.0.1-3ubuntu2 from `.tools`, named by `ASTER_FFMPEG` and `ASTER_FFPROBE` |
+| GPU | NVIDIA GeForce RTX 4060 Laptop, driver 595.99.02. The window ran on the NVIDIA GPU through Vulkan: `nvidia-smi` listed `neptune-video` as a client. Xvfb has no DRI3, so Mesa could not present there |
+| FFmpeg | 8.0.1-3ubuntu2 from `.tools`, named by `NEPTUNE_VIDEO_FFMPEG` and `NEPTUNE_VIDEO_FFPROBE` |
 | Build | `cargo build --release --locked --bins`, pinned toolchain 1.97.1 |
-| Final binaries (SHA-256) | `target/release/aster` `3452f930b345c90bf9e659c3f7683ab5564478da649b0123665c03d596f2e572`; `target/release/aster-agent` `0a75889e28ab0a4a070766a0d4006ae22158cba30014b53d73621cadfeeb4048`. The build before the speed fix below was `aster` `be85dfc5d54c269e52c85f9f80e523f6846bde07dfb6901ff0346e508f479a84`; output files from both builds were byte-identical |
+| Final binaries (SHA-256) | `target/release/neptune-video` `3452f930b345c90bf9e659c3f7683ab5564478da649b0123665c03d596f2e572`; `target/release/neptune-video-agent` `0a75889e28ab0a4a070766a0d4006ae22158cba30014b53d73621cadfeeb4048`. The build before the speed fix below was `neptune-video` `be85dfc5d54c269e52c85f9f80e523f6846bde07dfb6901ff0346e508f479a84`; output files from both builds were byte-identical |
 | Isolation | Private Xvfb displays `:147` (1440x900) and `:148` (760x560), no window manager, `dbus-run-session`, and a fresh HOME, XDG folders, `--settings` and `--agent-session` for each window |
-| Follow-up build (defects 4 to 8) | `target/release/aster` `07b644ca2a25918deb075899ed25d19bad3ad5cc06629ca5b9cf42a8eef9ad1b`; `aster-agent` unchanged. Private Xvfb displays `:151` (1440x900) and `:152` (760x560), isolated in the same way. The record does not say whether this build already had the thread caps of defect 3 |
-| Thread-cap measurements (defect 3) | Same host, FFmpeg 8.0.1 from `.tools`, SVT-AV1 2.3.0. Another task's `aster` kept the load average between 2 and 21, so each figure is the median of 3 interleaved runs |
+| Follow-up build (defects 4 to 8) | `target/release/neptune-video` `07b644ca2a25918deb075899ed25d19bad3ad5cc06629ca5b9cf42a8eef9ad1b`; `neptune-video-agent` unchanged. Private Xvfb displays `:151` (1440x900) and `:152` (760x560), isolated in the same way. The record does not say whether this build already had the thread caps of defect 3 |
+| Thread-cap measurements (defect 3) | Same host, FFmpeg 8.0.1 from `.tools`, SVT-AV1 2.3.0. Another task's `neptune-video` kept the load average between 2 and 21, so each figure is the median of 3 interleaved runs |
 
 ### Checks
 
-Each suite ran once, `aster-editor` twice; no test failed or behaved
+Each suite ran once, `neptune-video` twice; no test failed or behaved
 inconsistently.
 
 | Command | Result |
 | --- | --- |
 | `cargo test -p editor-core --locked` | 192 passed, 0 failed |
-| `cargo test -p editor-media --locked`, with `ASTER_FFMPEG` set | 316 passed, 0 failed |
-| `cargo test -p aster-editor --locked` | 871 passed before the speed fix, 872 after (its regression test) |
+| `cargo test -p editor-media --locked`, with `NEPTUNE_VIDEO_FFMPEG` set | 316 passed, 0 failed |
+| `cargo test -p neptune-video --locked` | 871 passed before the speed fix, 872 after (its regression test) |
 | `python3 scripts/test-workspace.py --package editor-agent` | 97 passed, 0 failed |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Clean, last run after both fixes |
 | `python3 scripts/check-architecture.py` | Passed |
-| `rustfmt --edition 2024 --check` on `src/main.rs`, `src/bin/aster-agent.rs` and `crates/*/src/lib.rs` | Failed at first on module order in `crates/editor-core/src/lib.rs`; clean after the fix |
+| `rustfmt --edition 2024 --check` on `src/main.rs`, `src/bin/neptune-video-agent.rs` and `crates/*/src/lib.rs` | Failed at first on module order in `crates/editor-core/src/lib.rs`; clean after the fix |
 | `cargo build --release --locked --bins` | Built |
 
 After the fixes for defects 3 to 8:
 
 | Command | Result |
 | --- | --- |
-| `cargo test -p aster-editor --locked` | 868 passed, 0 failed |
-| `cargo test -p editor-media --locked --lib -- export::`, with `ASTER_FFMPEG` and `ASTER_FFPROBE` set | 50 passed, 0 failed. The capability probe test among them makes every software encoder encode, so FFmpeg accepts `-threads:v 24` and `lp=4` |
-| `cargo clippy -p aster-editor --all-targets --locked -- -D warnings` and the same for `editor-media` | Clean |
+| `cargo test -p neptune-video --locked` | 868 passed, 0 failed |
+| `cargo test -p editor-media --locked --lib -- export::`, with `NEPTUNE_VIDEO_FFMPEG` and `NEPTUNE_VIDEO_FFPROBE` set | 50 passed, 0 failed. The capability probe test among them makes every software encoder encode, so FFmpeg accepts `-threads:v 24` and `lp=4` |
+| `cargo clippy -p neptune-video --all-targets --locked -- -D warnings` and the same for `editor-media` | Clean |
 | `rustfmt --edition 2024 --check` on the changed files | Clean |
 
 ### Export matrix
@@ -631,7 +631,7 @@ After the fixes for defects 3 to 8:
 Three fixtures were made with FFmpeg `lavfi`: a 1920x1080 29.97 fps clip of
 240 frames with one white frame (90, at 3.003 s) and a click in the sound at
 the same time; a 3840x2160 25 fps clip and a 1080x1920 30 fps clip, 4 s each.
-The project was built over `aster-agent --connect`: the first fixture on
+The project was built over `neptune-video-agent --connect`: the first fixture on
 linked video and audio tracks, a title from 0.5 to 2.5 s, and an `en` caption
 track with two cues from 4.0 to 7.0 s. Each export was queued with
 `queue_export` and checked with `ffprobe -count_frames`. Every job ended
@@ -689,7 +689,7 @@ The white frame and the click were found in each file and compared.
 Driven through the agent operations of the final build unless noted.
 
 - **Cancel**: the job reached `cancelled` 0.24 s after the request; its part
-  file and `.aster-render-<job>` folder were removed and its two FFmpeg
+  file and `.neptune-video-render-<job>` folder were removed and its two FFmpeg
   processes ended. Retry ran it again (attempt 2); a second cancel cleaned up
   the same way.
 - **Pause and resume**: no frame advanced in 5 s and the job's FFmpeg
@@ -922,7 +922,7 @@ findings were confirmed, and each was fixed in the build above:
 
 ## Bundled media tools
 
-Aster now runs the `ffmpeg` and `ffprobe` beside its executable, or in a checkout
+Neptune Video now runs the `ffmpeg` and `ffprobe` beside its executable, or in a checkout
 build the ones `scripts/fetch-media-tools.py` placed in `.tools/media/<os>-<arch>`,
 before `PATH` ([media executables](installation.md#media-executables)). Measured
 on 2026-10-14 on the export host above (Ubuntu 26.04.1, Linux 7.0.0-38-generic,
@@ -930,12 +930,12 @@ no FFmpeg on `PATH`):
 
 | Check | Result |
 | --- | --- |
-| `python3 scripts/fetch-media-tools.py` | Downloaded and digest-checked the `linux-x86_64` pin in 22 s; both tools report `n8.1.3-9-g29e619e767`. Linked: glibc libraries and `libgcc_s` only. Every encoder and audio filter Aster names is listed by `-encoders` / `-filters` |
+| `python3 scripts/fetch-media-tools.py` | Downloaded and digest-checked the `linux-x86_64` pin in 22 s; both tools report `n8.1.3-9-g29e619e767`. Linked: glibc libraries and `libgcc_s` only. Every encoder and audio filter Neptune Video names is listed by `-encoders` / `-filters` |
 | `cargo test -p editor-media --locked`, no override | 446 passed after one fixture fix: FFmpeg 8.1's ffprobe reports a WebM Opus file's start as 0 where 8.0.1 reported -0.007 s, so `opus_with_its_lead_in_keeps_the_files_time_from_any_point` now accepts both; its timing checks pass with 8.0.1 and 8.1.3 |
-| `cargo test -p aster-editor --locked`, `ASTER_FFMPEG` / `ASTER_FFPROBE` naming the fetched tools | 1104 + 13 passed, 0 failed |
+| `cargo test -p neptune-video --locked`, `NEPTUNE_VIDEO_FFMPEG` / `NEPTUNE_VIDEO_FFPROBE` naming the fetched tools | 1104 + 13 passed, 0 failed |
 | `python3 scripts/test-package-release.py` | 18 passed, including the bundled-tools cases |
 | `cargo clippy -p editor-media --all-targets --locked -- -D warnings`, `check-architecture.py` | Clean, passed |
-| Release `aster` `c21e8a531b607a3c93ac557c036a16736e724ac643bf4e27e49d81f570a05d13` on private Xvfb displays, fresh HOME/XDG and `--settings`, `PATH=/usr/bin:/bin` | From `target/release`, and copied into a `bin/` with only the two tools beside it: `clip.mp4` imported with its poster at 1440x900 and 760x560; dragged to the timeline by XTest and played with Space, frames decoded and no FFmpeg error showed. Copied alone into a `bin/`, the same import found no tool and the library stayed empty |
+| Release `neptune-video` `c21e8a531b607a3c93ac557c036a16736e724ac643bf4e27e49d81f570a05d13` on private Xvfb displays, fresh HOME/XDG and `--settings`, `PATH=/usr/bin:/bin` | From `target/release`, and copied into a `bin/` with only the two tools beside it: `clip.mp4` imported with its poster at 1440x900 and 760x560; dragged to the timeline by XTest and played with Space, frames decoded and no FFmpeg error showed. Copied alone into a `bin/`, the same import found no tool and the library stayed empty |
 
 Not verified: the other five pins beyond their published digests, any package
 built with `--media-tools` (no build record was made), audible sound (the
@@ -1034,7 +1034,7 @@ the 5,000-clip timeline, seeks and 30-second playback observations are summarize
 in [performance](performance.md#native-paused-window-observations). Xvfb and
 headless Weston/Xwayland were task-owned; audio was disabled and no provider
 requests ran. Forced-loader comparison, per-PID GPU memory and driver threads
-strongly support NVIDIA Vulkan rendering, but Aster emitted no adapter log.
+strongly support NVIDIA Vulkan rendering, but Neptune Video emitted no adapter log.
 There was no physical output/vblank observation or A/V measurement.
 
 The report retains a missing creation-time digest for generated media, a narrow
@@ -1124,7 +1124,7 @@ Forced interruption and stalled/full filesystems were outside that check.
 
 The final optimized [Wayland report](../artifacts/native/final-wayland/report.json)
 passed actual GTK3 OS drag under a fresh task-owned Weston 14.0.2/pixman
-compositor on Xvfb, with Aster using lavapipe. Three local PNG/MP4 fixtures
+compositor on Xvfb, with Neptune Video using lavapipe. Three local PNG/MP4 fixtures
 containing space, `é` and literal `%` names imported; remote URIs were refused
 and a repeated URI deduplicated. Library import left the timeline unchanged.
 Its [before](../artifacts/native/final-wayland/before.png) and
@@ -1180,7 +1180,7 @@ and these captures precede the final cadence/drop/shutdown follow-ups.
 
 The [fourth round](../artifacts/native/ui-round4/) added actual native Wayland
 file drop under Weston 14, running nested on the owned Xvfb display with pixman
-and Aster/lavapipe. A GTK3 source offered six URIs; three distinct local files
+and Neptune Video/lavapipe. A GTK3 source offered six URIs; three distinct local files
 (including spaces, `é` and `%`) imported, duplicate paths were deduplicated,
 and remote/HTTPS entries were rejected with a visible notice. The protocol
 trace records accept/action/receive/finish/destroy. A stalled sender timed out
@@ -1324,13 +1324,13 @@ The host was Linux x86-64, Ubuntu 26.04.1 LTS, Rust 1.97.1, locked dependencies,
 CI profile, and the checkout's FFmpeg/ffprobe
 `n8.1.3-9-g29e619e767-20260930`. Mandatory media preflight passed. The
 [build/source record](../artifacts/mcp-productivity/verification.json) contains
-the source digest and final `aster`/`aster-mcp` binary SHA-256 values. These
+the source digest and final `neptune-video`/`neptune-video-mcp` binary SHA-256 values. These
 are unoptimized CI builds, not release performance evidence.
 
 **580 focused tests passed, zero failed/ignored:** 261 core, 100 store,
 115 agent (with the owned provider fixture), 29 desktop MCP units,
 23 export-queue units, 20 media audio, 16 media export, and 16 real MCP integration tests. The
-integration run used `ASTER_TEST_DESKTOP=1` on a private Xvfb display, so both
+integration run used `NEPTUNE_VIDEO_TEST_DESKTOP=1` on a private Xvfb display, so both
 window/agent-tab protocol tests executed; none returned through a missing-display
 skip. Projects, settings, models, media and sessions were task-owned temporary
 storage. The graphics adapter was not recorded; this establishes finite native
@@ -1341,13 +1341,13 @@ Commands and logs:
 - `cargo test --profile ci -p editor-core --locked` — [core](../artifacts/mcp-productivity/core-tests.log).
 - `cargo test --profile ci -p editor-store --locked` — [store](../artifacts/mcp-productivity/store-tests.log).
 - `python3 scripts/test-workspace.py --profile ci --package editor-agent` — [agent](../artifacts/mcp-productivity/agent-tests.log).
-- `cargo test --profile ci -p aster-editor --lib --locked mcp::` — [MCP units](../artifacts/mcp-productivity/mcp-unit-tests.log).
-- `cargo test --profile ci -p aster-editor --lib --locked export::queue::tests`
+- `cargo test --profile ci -p neptune-video --lib --locked mcp::` — [MCP units](../artifacts/mcp-productivity/mcp-unit-tests.log).
+- `cargo test --profile ci -p neptune-video --lib --locked export::queue::tests`
   — [queue](../artifacts/mcp-productivity/queue-tests.log).
 - `cargo test --profile ci -p editor-media --lib --locked audio::tests` and
   `export::tests` — [audio](../artifacts/mcp-productivity/media-audio-tests.log),
   [export](../artifacts/mcp-productivity/media-export-tests.log).
-- `xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24' env -u WAYLAND_DISPLAY ASTER_TEST_DESKTOP=1 cargo test --profile ci -p aster-editor --test mcp --locked -- --nocapture --test-threads=1`
+- `xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24' env -u WAYLAND_DISPLAY NEPTUNE_VIDEO_TEST_DESKTOP=1 cargo test --profile ci -p neptune-video --test mcp --locked -- --nocapture --test-threads=1`
   — [native MCP](../artifacts/mcp-productivity/mcp-integration-tests.log).
 - Denied-warning all-target Clippy passed for the five affected packages;
   [all-package log](../artifacts/mcp-productivity/clippy.log) and
@@ -1388,7 +1388,7 @@ this follow-up. It does not replace the existing platform/UI acceptance gates.
 
 ## Native MCP
 
-[`aster-mcp`](mcp.md) ([ADR 0010](adr/0010-mcp-reaches-the-editor-through-the-agent-protocol.md),
+[`neptune-video-mcp`](mcp.md) ([ADR 0010](adr/0010-mcp-reaches-the-editor-through-the-agent-protocol.md),
 [spec](../.scratch/native-mcp/spec.md)) was driven on 2026-10-14 on one
 macOS host with a debug build. Nothing here covers Linux, Windows, a release
 build or an Intel Mac ([ticket 05](../.scratch/native-mcp/issues/05-linux-and-windows-acceptance.md)).
@@ -1398,7 +1398,7 @@ build or an Intel Mac ([ticket 05](../.scratch/native-mcp/issues/05-linux-and-wi
 | Item | Value |
 | --- | --- |
 | Host | Apple Silicon Mac, 8 CPUs, 8 GB RAM, macOS 26.5.2 (Darwin 25.5.0), Retina display |
-| Build | `cargo build --locked --bins` (dev profile), pinned toolchain 1.97.1. Final binaries (SHA-256): `target/debug/aster` `fbe83a90cd092ffcbea95e0c5eb1f770abf18fe08793d27f1c398a5ec3137fae`; `target/debug/aster-mcp` `1aa890ddd3fbdbb0d7e4cf1a128b774e04407434b5371fdf00fb0a16ad68f367` |
+| Build | `cargo build --locked --bins` (dev profile), pinned toolchain 1.97.1. Final binaries (SHA-256): `target/debug/neptune-video` `fbe83a90cd092ffcbea95e0c5eb1f770abf18fe08793d27f1c398a5ec3137fae`; `target/debug/neptune-video-mcp` `1aa890ddd3fbdbb0d7e4cf1a128b774e04407434b5371fdf00fb0a16ad68f367` |
 | FFmpeg | 9.0.2 from `.tools/media/macos-aarch64`, found beside the checkout |
 | Clients | the rmcp 3.5.1 client (tests), Claude Code 2.1.300, Codex CLI 0.162.1, a JSON-RPC script over stdio, curl over HTTP |
 | Isolation | a fresh temporary folder per test or run as the only root, with its own `--desktop-settings`, `--models`, sessions and connection files; windows started with `--settings` inside it |
@@ -1408,12 +1408,12 @@ build or an Intel Mac ([ticket 05](../.scratch/native-mcp/issues/05-linux-and-wi
 | Check | Result |
 | --- | --- |
 | `cargo test --locked --test mcp` (9 end-to-end tests: create, import, timeline edits, effects, transitions, keyframes, titles, music, batches, dry runs, stale revisions, frames, contact sheet, scene and loudness jobs, preview and export, undo, checkpoints, resources, reopening in a second server and with the editor's loader, roots and overwrites, a killed server, a stopped editor's recovery copy kept through close, create and a stopped server, the agent's undo and redo over several entries, dangling links, playlists passed off as media, links in imported folders, HTTP auth and a session) | passed |
-| The same with `ASTER_TEST_DESKTOP=1`: a real `aster` window, `project_open` routed to it, an edit, a frame, undo, redo and save through it | passed |
+| The same with `NEPTUNE_VIDEO_TEST_DESKTOP=1`: a real `neptune-video` window, `project_open` routed to it, an edit, a frame, undo, redo and save through it | passed |
 | `cargo test --locked --lib` (with the `mcp::` unit tests for paths, times, jobs, the contact-sheet layout and the command schema) | 1122 passed |
 | `cargo test --locked -p editor-media` (with the new scene, details, playlist and import-predicate tests) | 451 passed |
 | `cargo test --locked -p editor-agent` with the provider fixture | 75 passed, 1 failed: `provider::tests::an_unrepresentable_native_path_is_refused_before_creating_an_instruction_file` (`Illegal byte sequence`, os error 92), which fails the same way without this work on this host |
-| `cargo clippy --locked -p aster-editor -p editor-media --lib --bins --tests`, `cargo fmt --check` for the touched packages, `scripts/check-architecture.py` | clean |
-| `scripts/test-package-release.py`, `scripts/test-native-test-runner.py` with `aster-mcp` among the binaries | passed with `TMPDIR` outside `/var`; with the default `TMPDIR` they fail on this host before and after this work, because `/var` is a symbolic link |
+| `cargo clippy --locked -p neptune-video -p editor-media --lib --bins --tests`, `cargo fmt --check` for the touched packages, `scripts/check-architecture.py` | clean |
+| `scripts/test-package-release.py`, `scripts/test-native-test-runner.py` with `neptune-video-mcp` among the binaries | passed with `TMPDIR` outside `/var`; with the default `TMPDIR` they fail on this host before and after this work, because `/var` is a symbolic link |
 | HTTP with curl: no token, wrong token, `Host: evil.example`, `Origin: https://evil.example`, a 5 MB body | 401, 401, 403, 403, 413; a valid token opened a session. The connection file was mode 0600 and was removed on SIGTERM |
 | SIGTERM, SIGHUP and SIGINT to a stdio server with a project open | exit 0; lock released and recovery copy removed |
 | `tools/list` | 39 tools, 40,854 bytes on the wire: 106 bytes under the 40 KiB the test enforces, so a new tool needs room made for it |
@@ -1423,7 +1423,7 @@ build or an Intel Mac ([ticket 05](../.scratch/native-mcp/issues/05-linux-and-wi
 ### Real clients
 
 Claude Code and Codex each built an edited video from raw footage using
-only the Aster tools
+only the Neptune Video tools
 ([record](../.scratch/native-mcp/evidence/real-clients-2026-10-14.md)).
 Each run created the project, inspected the media, built and trimmed the
 timeline with a dissolve, transcribed and captioned the speech, added a
@@ -1437,7 +1437,7 @@ refused, saved at revision 12. Its `promo.mp4` is 1280x720, 30 fps,
 
 ### Window and person
 
-A debug `aster` window with a task-owned `--settings` was driven with key
+A debug `neptune-video` window with a task-owned `--settings` was driven with key
 presses sent through System Events:
 
 - The person's Cmd+Z and M (marker) reached the agent at once.
@@ -1503,8 +1503,8 @@ opened a dialog.
 ## In-app agent
 
 By default ("Made as it works"), the Agent tab's Ask mode edits through
-[`aster-mcp`](mcp.md) started in its own window
-([ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md),
+[`neptune-video-mcp`](mcp.md) started in its own window
+([ADR 0011](adr/0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md),
 [feature folder](../.scratch/in-app-agent/)). It is a conversation with the
 installed Claude Code or Codex CLI whose only tools are the same 39 tools
 outside MCP clients use. Every edit in the window goes through the window's
@@ -1522,7 +1522,7 @@ The planner sends project metadata only. The live agent's tools return the
 project's editing data, rendered frames, contact sheets, transcripts, level
 and loudness measurements, and file names and paths inside its roots, and all
 of that reaches the provider under the person's own sign-in and terms
-([what reaches the provider](native-ai.md#what-reaches-the-provider)). Aster
+([what reaches the provider](native-ai.md#what-reaches-the-provider)). Neptune Video
 uploads no source media file. The agent cannot read files outside its roots,
 run shell commands, browse the web or use other MCP servers.
 
@@ -1531,9 +1531,9 @@ run shell commands, browse the web or use other MCP servers.
 | Item | Value |
 | --- | --- |
 | Host | Apple Silicon Mac (arm64), 8 CPUs, 8 GB RAM, macOS 26.5.2 (Darwin 25.5.0) |
-| Release build | `cargo build --release --locked --bins`, pinned toolchain 1.97.1, run from `target/release` (2026-10-15). Final build G (SHA-256): `aster` `4ac9f25dd9c484a7b9c5ab9536d1af68773330aee0cdb94c4d98aadabf78d5e0`; `aster-mcp` `350d1ab77af9f7491869f9b372bbc0cbda20f9e1d20b8baa0c3dea1278d508b6`; `aster-agent` `6f7c7fb7a0af2620accb4ec21c7207281504ad11687cf203d5cb47f58dba614a`: run 20, capture 29. Build E (`aster` `6cbc3c01…`, `aster-mcp` `387e6d3d…`), before defect 12: runs 12–17, captures 16–25. Build F (`aster` `3c184d51…`, same `aster-mcp`): runs 18–19, captures 26–28. G changes only the folders file's wait (written and waited for only when the folders changed before a conversation starts), the window-project refusal's wording and comments |
-| Debug build | `cargo build --locked --bins` (dev profile), pinned toolchain 1.97.1. Debug build D (SHA-256): `target/debug/aster` `3ceedd91bc57ebb4ef33f315beea9e4d84cfb8eda9e4784d63c071457a489f87`; `target/debug/aster-mcp` `a8dea38a9f59f96cd6183c4ab833501eb2dd05020c163bb48b3e8df409658124`; `target/debug/aster-agent` `f1a4901ed32cce7acd2f6afc44ce0e62d970dbf1f070d6f268e4effd97ee0147` |
-| Builds per capture | Captures 01–05: builds before A. Build A (`aster` `94e5cee8…`, `aster-mcp` `03c65742…`): run 8 and the first two requests of run 9, captures 06–09. Build B (`aster` `cfb88ea4…`, `aster-mcp` `827ebb47…`), with the shorter working row and the "changes" wording: captures 10–11. Build C (`aster` `06af350d…`, `aster-mcp` `f0d5557b…`) adds the restart note: run 11, captures 12–13. Build D adds the panel introduction's full folder list and the Windows launcher message (defects 10 and 11): captures 14–15 |
+| Release build | `cargo build --release --locked --bins`, pinned toolchain 1.97.1, run from `target/release` (2026-10-15). Final build G (SHA-256): `neptune-video` `4ac9f25dd9c484a7b9c5ab9536d1af68773330aee0cdb94c4d98aadabf78d5e0`; `neptune-video-mcp` `350d1ab77af9f7491869f9b372bbc0cbda20f9e1d20b8baa0c3dea1278d508b6`; `neptune-video-agent` `6f7c7fb7a0af2620accb4ec21c7207281504ad11687cf203d5cb47f58dba614a`: run 20, capture 29. Build E (`neptune-video` `6cbc3c01…`, `neptune-video-mcp` `387e6d3d…`), before defect 12: runs 12–17, captures 16–25. Build F (`neptune-video` `3c184d51…`, same `neptune-video-mcp`): runs 18–19, captures 26–28. G changes only the folders file's wait (written and waited for only when the folders changed before a conversation starts), the window-project refusal's wording and comments |
+| Debug build | `cargo build --locked --bins` (dev profile), pinned toolchain 1.97.1. Debug build D (SHA-256): `target/debug/neptune-video` `3ceedd91bc57ebb4ef33f315beea9e4d84cfb8eda9e4784d63c071457a489f87`; `target/debug/neptune-video-mcp` `a8dea38a9f59f96cd6183c4ab833501eb2dd05020c163bb48b3e8df409658124`; `target/debug/neptune-video-agent` `f1a4901ed32cce7acd2f6afc44ce0e62d970dbf1f070d6f268e4effd97ee0147` |
+| Builds per capture | Captures 01–05: builds before A. Build A (`neptune-video` `94e5cee8…`, `neptune-video-mcp` `03c65742…`): run 8 and the first two requests of run 9, captures 06–09. Build B (`neptune-video` `cfb88ea4…`, `neptune-video-mcp` `827ebb47…`), with the shorter working row and the "changes" wording: captures 10–11. Build C (`neptune-video` `06af350d…`, `neptune-video-mcp` `f0d5557b…`) adds the restart note: run 11, captures 12–13. Build D adds the panel introduction's full folder list and the Windows launcher message (defects 10 and 11): captures 14–15 |
 | Providers | Claude Code 2.1.300 (`claude-opus-5-5`, effort Medium; Low, then Medium, in run 11) and Codex CLI 0.162.1 (`gpt-6.1-sol`), each under the host's existing sign-in |
 | Isolation | a fresh task-owned folder per run with `footage/` holding `interview.mp4`, `street.mp4`, `bars.mp4` and `music.m4a`, and the Whisper `tiny` model; for the release runs also an `extra/` folder outside the project's. Windows at 1280x800 points (wide) and 820x640 points (narrow) |
 
@@ -1542,34 +1542,34 @@ run shell commands, browse the web or use other MCP servers.
 | Check | Result |
 | --- | --- |
 | `cargo test --locked --lib` (with `markdown_marks_are_read_not_shown` and `a_step_ends_once_and_steps_left_running_stop_with_the_request` in `src/ui/agent.rs`; `the_agents_folders_are_written_whole_for_its_owner_only_and_replaced_when_they_change` and `a_window_knows_its_own_agents_requests_from_another_windows` in `src/ai.rs`) | 1126 passed |
-| `ASTER_TEST_DESKTOP=1 cargo test --locked --test mcp` (12 tests). `a_server_started_for_a_closed_window_still_makes_projects_of_its_own` runs without a display: a server started for a gone window answers `desktop_closed` while it follows it, then makes, edits, closes and opens a project of its own and does not look for the window again. `the_agent_tab_server_starts_in_its_window_and_may_leave_and_come_back` needs one: it edits the window's project with authority `desktop`, undoes and redoes, saves a copy and waits for `project_status.last_save`, makes and edits a project of its own while the window's file stays as it was, and comes back with `desktop {op: attach}` naming no window. `the_folders_in_a_roots_file_are_read_again_when_it_changes`: no file, no folder; a folder named later is usable in the same session, `/` is left out, a folder taken out is refused again. These replace the first round's pinned-server tests | passed, five runs in a row on the final code |
-| `cargo test --locked -p editor-agent --lib` with `ASTER_PROVIDER_TEST_FIXTURE`. New: three conversation tests against a fake `claude` script (several turns keep one process, ending starts afresh, Stop ends within 3 s, a missing provider fails), three Claude stream tests and three Codex tests, one of them checking that the shell stays off and `code_mode_host` stays on | 84 passed, 1 failed: `provider::tests::an_unrepresentable_native_path_is_refused_before_creating_an_instruction_file` (os error 92), the same host failure recorded under [native MCP](#native-mcp), not caused by this work |
-| `cargo clippy --locked -p aster-editor -p editor-agent --lib --bins --tests -- -D warnings`, `cargo fmt --check`, `scripts/check-architecture.py` | clean |
+| `NEPTUNE_VIDEO_TEST_DESKTOP=1 cargo test --locked --test mcp` (12 tests). `a_server_started_for_a_closed_window_still_makes_projects_of_its_own` runs without a display: a server started for a gone window answers `desktop_closed` while it follows it, then makes, edits, closes and opens a project of its own and does not look for the window again. `the_agent_tab_server_starts_in_its_window_and_may_leave_and_come_back` needs one: it edits the window's project with authority `desktop`, undoes and redoes, saves a copy and waits for `project_status.last_save`, makes and edits a project of its own while the window's file stays as it was, and comes back with `desktop {op: attach}` naming no window. `the_folders_in_a_roots_file_are_read_again_when_it_changes`: no file, no folder; a folder named later is usable in the same session, `/` is left out, a folder taken out is refused again. These replace the first round's pinned-server tests | passed, five runs in a row on the final code |
+| `cargo test --locked -p editor-agent --lib` with `NEPTUNE_VIDEO_PROVIDER_TEST_FIXTURE`. New: three conversation tests against a fake `claude` script (several turns keep one process, ending starts afresh, Stop ends within 3 s, a missing provider fails), three Claude stream tests and three Codex tests, one of them checking that the shell stays off and `code_mode_host` stays on | 84 passed, 1 failed: `provider::tests::an_unrepresentable_native_path_is_refused_before_creating_an_instruction_file` (os error 92), the same host failure recorded under [native MCP](#native-mcp), not caused by this work |
+| `cargo clippy --locked -p neptune-video -p editor-agent --lib --bins --tests -- -D warnings`, `cargo fmt --check`, `scripts/check-architecture.py` | clean |
 | `cargo check` and `cargo clippy -- -D warnings` of `editor-agent` (lib, bins, examples, tests) for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu`, from this Mac | clean. The root package could not be checked for Windows from here: `whisper-rs-sys` needs CMake and a Windows C toolchain |
-| Linux container (Colima, Debian bookworm, aarch64, `rust:1.97.1-bookworm`, the CI's packages plus `cmake` and `libclang-dev`): clippy of `aster-editor` and `editor-agent` with `-D warnings`, `cargo test --locked --test mcp` without a display, the `ai::` and `mcp::` unit tests, and `editor-agent`'s tests | Clippy clean. `--test mcp`: 12 passed with Aster's pinned FFmpeg 8.1 for linux-aarch64 and Mesa's software Vulkan (lavapipe); with Debian's FFmpeg 5.1 the export test fails because that FFmpeg refuses the decoder's `-thread_queue_size` placement, and without a Vulkan driver `frame_render` has no adapter. No display: the two window tests return early, so no Linux window was exercised. `ai::` and `mcp::` unit tests: 25 passed. `editor-agent`: 87 passed, including the test that fails with os error 92 on this Mac |
+| Linux container (Colima, Debian bookworm, aarch64, `rust:1.97.1-bookworm`, the CI's packages plus `cmake` and `libclang-dev`): clippy of `neptune-video` and `editor-agent` with `-D warnings`, `cargo test --locked --test mcp` without a display, the `ai::` and `mcp::` unit tests, and `editor-agent`'s tests | Clippy clean. `--test mcp`: 12 passed with Neptune Video's pinned FFmpeg 8.1 for linux-aarch64 and Mesa's software Vulkan (lavapipe); with Debian's FFmpeg 5.1 the export test fails because that FFmpeg refuses the decoder's `-thread_queue_size` placement, and without a Vulkan driver `frame_render` has no adapter. No display: the two window tests return early, so no Linux window was exercised. `ai::` and `mcp::` unit tests: 25 passed. `editor-agent`: 87 passed, including the test that fails with os error 92 on this Mac |
 
 ### Native runs
 
-Runs 1–11 were typed into the Agent tab of a debug `aster` window on
+Runs 1–11 were typed into the Agent tab of a debug `neptune-video` window on
 2026-10-14; runs 12–19 into a release window on 2026-10-15, with the full
 requests in [the release runs](../.scratch/in-app-agent/evidence/native-runs-2026-10-15.md).
 
 1. Claude, wide window, an earlier build: a full promo brief. In about 2
    minutes it imported the footage, built interview, street (2 s) and bars
    with a dissolve, ripple-trimmed the interview, transcribed it and made
-   5 captions, titled it "Aster Promo" and then enlarged the title with an
+   5 captions, titled it "Neptune Video Promo" and then enlarged the title with an
    outline, added the music in two pieces with a fade, exported
    `promo_preview.mp4` (960x540) and `promo.mp4` (1280x720, 30/1 fps,
    9.472 s, with sound) and saved. 11 edits.
-2. The same conversation: "Change the title text to Aster Promo 2026 and
+2. The same conversation: "Change the title text to Neptune Video Promo 2026 and
    make it yellow." (1 edit), then "Actually, undo the colour you just
    picked but keep the new words." It remembered the earlier turn, undid its
    own step and applied the words again (2 changes).
 3. Stop during "Waiting for a job" in a request for a contact sheet, a fade
    out and an export of `promo-v2.mp4`. The edit already made stayed, and
    the queued export finished in the window's render queue. No `claude` or
-   `aster-mcp` process was left.
-4. Codex: the first attempt answered "I couldn't access Aster's tools"
+   `neptune-video-mcp` process was left.
+4. Codex: the first attempt answered "I couldn't access Neptune Video's tools"
    (defect 1 below). After the fix it added a marker "Codex was here" at
    3 s and made the street clip black and white, then checked a frame.
    2 edits.
@@ -1590,7 +1590,7 @@ requests in [the release runs](../.scratch/in-app-agent/evidence/native-runs-202
    the move you just made, keep the bigger size." It undid only the move, in
    the same thread. Then a marker "Cut" at 4 s, bars faded in over 0.5 s and
    frames looked at, at 4 and 5 s.
-10. After the windows closed, no `claude`, `aster-mcp` or `ffmpeg` process
+10. After the windows closed, no `claude`, `neptune-video-mcp` or `ffmpeg` process
     of the task remained. Two Codex app-server processes started on
     September 27 and October 10 belong to the person and were left alone.
 11. Build C, Claude, effort Low: "How many clips are on the timeline? Do not
@@ -1598,7 +1598,7 @@ requests in [the release runs](../.scratch/in-app-agent/evidence/native-runs-202
     effort changed to Medium, "What did I ask you a moment ago?" showed the
     restart note, and the agent said it could not tell. No task process was
     left afterwards.
-12. Release build E, Claude, wide: asked to make a separate `teaser.aster`
+12. Release build E, Claude, wide: asked to make a separate `teaser.nvp`
     without changing the person's project, cut street then bars with a
     title, export `teaser.mp4`, then come back and add a marker. It made the
     project with local authority, exported `teaser.mp4` (1280x720, 30/1 fps,
@@ -1622,8 +1622,8 @@ requests in [the release runs](../.scratch/in-app-agent/evidence/native-runs-202
     them back."
 16. Build E, Codex, narrow: Stop 7 s into a contact sheet and export:
     "Stopped. Nothing was changed."; no export was written. After each Stop
-    no Codex or `aster-mcp` process of the task was left.
-17. Build E, Codex, narrow: open `teaser.aster` in a new window with
+    no Codex or `neptune-video-mcp` process of the task was left.
+17. Build E, Codex, narrow: open `teaser.nvp` in a new window with
     `desktop {op: open}`, retitle it "Teaser 2", save, come back and count the
     person's clips (8). Note: "no changes here · 1 change in another
     project". The second window hid the edit's row (defect 12).
@@ -1703,11 +1703,11 @@ drag, opened a dialog or connected a second client.
 1. Codex 0.162.1 calls MCP tools through its code-mode host. Conversations
    started with the planner's disabled features, which include
    `code_mode_host`, so the first Codex run answered "I couldn't access
-   Aster's tools". Conversations now keep `code_mode_host` on, with the shell
+   Neptune Video's tools". Conversations now keep `code_mode_host` on, with the shell
    tool still off; a test checks both.
 2. The window listed its own agent's exports as "Agent: Export …" rows, the
    rows it shows for outside MCP clients. Requests from this window's agent
-   (request IDs starting `aster-tab-`) now show only as the agent's steps;
+   (request IDs starting `neptune-video-tab-`) now show only as the agent's steps;
    outside clients keep their rows.
 3. The Stop note read "Stopped. The 1 edit already made stays; undo takes
    them back." One change and several changes now have their own wording.
@@ -1718,7 +1718,7 @@ drag, opened a dialog or connected a second client.
 6. A pinned server looked at the path given to `project_create` or
    `project_open` before refusing. Superseded on 2026-10-15: the server no
    longer refuses them at all.
-7. A failed run of a desktop test left its `aster` window open. Both
+7. A failed run of a desktop test left its `neptune-video` window open. Both
    desktop tests now close their window when they fail.
 8. When the provider, model, effort or roots changed, the next request
    started a new conversation without saying so. The panel now says so.
@@ -1741,17 +1741,17 @@ drag, opened a dialog or connected a second client.
     says "Claude needs the native Windows CLI…" for both. Not run on
     Windows.
 12. Every window started its agent's server with the same `--tag
-    aster-tab`, and took any `aster-tab-` request for its own agent's, whose
+    neptune-video-tab`, and took any `neptune-video-tab-` request for its own agent's, whose
     steps it shows in its own panel. When one window's agent edited a
     project in a second window, the second window hid that edit's row (run
     17). Each window now tags its agent with its own instance,
-    `aster-tab-<instance>`, and claims only those requests; a unit test
+    `neptune-video-tab-<instance>`, and claims only those requests; a unit test
     checks another window's tag, the bare prefix and an outside client's.
 
 ### Limits
 
 The in-app agent's limits are listed once, in
-[native AI](native-ai.md#limitations): Stop ends the conversation, Aster's
+[native AI](native-ai.md#limitations): Stop ends the conversation, Neptune Video's
 instructions are visible in the provider's arguments, the agent cannot
 listen, its undo after leaving and coming back reaches only its entries
 since it came back, and sign-in, model access and usage limits are the

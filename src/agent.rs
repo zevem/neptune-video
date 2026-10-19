@@ -138,7 +138,7 @@ pub const EXAMPLES: [(&str, &str); 34] = [
         "Keep a named checkpoint, or go back to one",
     ),
     (
-        "duplicate project /path/Film copy.aster",
+        "duplicate project /path/Film copy.nvp",
         "Carry on in a copy; this file stays as it is",
     ),
     (
@@ -1169,7 +1169,7 @@ pub fn interpret(line: &str, context: &Context) -> Result<Vec<Action>, String> {
                 let path = std::path::PathBuf::from(rest);
                 if !path.is_absolute() {
                     return Err(
-                        "Give the duplicate a full path, such as /films/Copy.aster.".to_owned()
+                        "Give the duplicate a full path, such as /films/Copy.nvp.".to_owned()
                     );
                 }
                 vec![Action::DuplicateTo(path)]
@@ -2479,10 +2479,10 @@ mod tests {
             [Action::RestoreCheckpoint(name)] if name == "Rough cut"
         ));
         assert!(matches!(
-            run("duplicate project /films/B.aster", &project, &none).unwrap().as_slice(),
-            [Action::DuplicateTo(path)] if path == std::path::Path::new("/films/B.aster")
+            run("duplicate project /films/B.nvp", &project, &none).unwrap().as_slice(),
+            [Action::DuplicateTo(path)] if path == std::path::Path::new("/films/B.nvp")
         ));
-        assert!(run("duplicate project B.aster", &project, &none).is_err());
+        assert!(run("duplicate project B.nvp", &project, &none).is_err());
         assert!(matches!(
             run("duplicate", &project, &none).unwrap().as_slice(),
             [Action::Duplicate]

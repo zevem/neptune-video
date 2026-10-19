@@ -1,7 +1,7 @@
 # In-app agent native runs, 2026-10-14
 
 Host: macOS 26.5.2 (Darwin 25.5.0), Apple Silicon, 8 CPUs, 8 GB, rustc
-1.97.1. Debug builds of `aster` and `aster-mcp` (`cargo build --locked
+1.97.1. Debug builds of `neptune-video` and `neptune-video-mcp` (`cargo build --locked
 --bins`), Whisper `tiny`. Each run used a task-owned folder with
 `footage/` (interview.mp4, street.mp4, bars.mp4, music.m4a). Requests were
 typed into the Agent tab of the running window, in Ask mode, Made as it
@@ -16,10 +16,10 @@ full wording was not kept.
 | Build | Hashes (SHA-256, debug) | Runs and captures |
 | --- | --- | --- |
 | Before A | not recorded | runs 1 to 7, captures 01 to 05 |
-| A | `aster` 94e5cee8…, `aster-mcp` 03c65742… | run 8 and the first two requests of run 9, captures 06 to 09 |
-| B | `aster` cfb88ea4…, `aster-mcp` 827ebb47… | the third request of run 9, captures 10 and 11; shorter working row and the "changes" wording |
-| C | `aster` 06af350d…, `aster-mcp` f0d5557b… | run 11, captures 12 and 13; adds the restart note |
-| D (final) | `aster` 3ceedd91bc57ebb4ef33f315beea9e4d84cfb8eda9e4784d63c071457a489f87, `aster-mcp` a8dea38a9f59f96cd6183c4ab833501eb2dd05020c163bb48b3e8df409658124, `aster-agent` f1a4901ed32cce7acd2f6afc44ce0e62d970dbf1f070d6f268e4effd97ee0147 | run 12, captures 14 and 15; the panel's introduction names every folder the agent may use, and the Windows launcher message no longer says "planning" |
+| A | `neptune-video` 94e5cee8…, `neptune-video-mcp` 03c65742… | run 8 and the first two requests of run 9, captures 06 to 09 |
+| B | `neptune-video` cfb88ea4…, `neptune-video-mcp` 827ebb47… | the third request of run 9, captures 10 and 11; shorter working row and the "changes" wording |
+| C | `neptune-video` 06af350d…, `neptune-video-mcp` f0d5557b… | run 11, captures 12 and 13; adds the restart note |
+| D (final) | `neptune-video` 3ceedd91bc57ebb4ef33f315beea9e4d84cfb8eda9e4784d63c071457a489f87, `neptune-video-mcp` a8dea38a9f59f96cd6183c4ab833501eb2dd05020c163bb48b3e8df409658124, `neptune-video-agent` f1a4901ed32cce7acd2f6afc44ce0e62d970dbf1f070d6f268e4effd97ee0147 | run 12, captures 14 and 15; the panel's introduction names every folder the agent may use, and the Windows launcher message no longer says "planning" |
 
 ## Claude Code, earlier builds
 
@@ -28,12 +28,12 @@ full wording was not kept.
    used, typed in the Agent tab; its exact wording was not kept. About 2
    minutes and 11 edits. It imported, built interview → street (2 s) → bars with a dissolve,
    ripple-trimmed the interview, transcribed and made 5
-   captions, titled "Aster Promo" and then enlarged it with an outline,
+   captions, titled "Neptune Video Promo" and then enlarged it with an outline,
    added music in two pieces with a fade, wrote `promo_preview.mp4`
    (960x540) and `promo.mp4` (1280x720, 30/1, 9.472 s, with audio) and
    saved. Steps appeared as they ran
    ([`01-claude-steps-live.png`](../captures/01-claude-steps-live.png)).
-2. The same conversation: "Change the title text to Aster Promo 2026 and
+2. The same conversation: "Change the title text to Neptune Video Promo 2026 and
    make it yellow." (1 edit), then "Actually, undo the colour you just
    picked but keep the new words." It remembered the previous turn, undid
    its own step and applied the words again (2 changes)
@@ -42,14 +42,14 @@ full wording was not kept.
    `promo-v2.mp4`. Stop during "Waiting for a job". The note read
    "Stopped. The 1 edit already made stays; undo takes them back.", wording
    fixed since. The export finished in the window's render queue. No
-   `claude` or `aster-mcp` process was left
+   `claude` or `neptune-video-mcp` process was left
    ([`03-stopped-mid-request.png`](../captures/03-stopped-mid-request.png)).
 
 ## Codex, earlier builds
 
-4. The first attempt answered "I couldn't access Aster's tools". The
+4. The first attempt answered "I couldn't access Neptune Video's tools". The
    cause was `code_mode_host` being disabled; with it off, a probe
-   answered "I couldn't call aster_window.project_status because the tool
+   answered "I couldn't call neptune_video_window.project_status because the tool
    host is disabled". Fixed by keeping it on. The rerun added a marker
    "Codex was here" at 3 s and made the street clip black and white, and
    checked a frame: 2 edits.
@@ -89,7 +89,7 @@ full wording was not kept.
      the note read "Codex · gpt-6.1-sol · 2 changes; undo and redo take
      them back"
      ([`11-final-codex-done-note.png`](../captures/11-final-codex-done-note.png)).
-10. After the windows were closed, no `claude`, `aster-mcp` or `ffmpeg`
+10. After the windows were closed, no `claude`, `neptune-video-mcp` or `ffmpeg`
     process of the task remained. Two Codex app-server daemons started on
     Sep 27 and Oct 10 belong to the person and were left alone.
 11. Build C, Claude, effort Low: "How many clips are on the timeline? Do

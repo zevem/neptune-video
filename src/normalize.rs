@@ -1343,9 +1343,9 @@ mod tests {
             said[0].0.contains("volume keys scaled so the loudest is"),
             "{said:?}"
         );
-        let dir = std::env::temp_dir().join(format!("aster-normalize-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-normalize-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("Normalized.aster");
+        let file = dir.join("Normalized.nvp");
         editor_store::save_project(&file, editor.project()).unwrap();
         let loaded = editor_store::load_project(&file);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1395,7 +1395,7 @@ mod tests {
     }
 
     fn ffmpeg_available() -> bool {
-        let tool = std::env::var_os("ASTER_FFMPEG").unwrap_or_else(|| "ffmpeg".into());
+        let tool = std::env::var_os("NEPTUNE_VIDEO_FFMPEG").unwrap_or_else(|| "ffmpeg".into());
         std::process::Command::new(tool)
             .arg("-version")
             .stdout(std::process::Stdio::null())
@@ -1410,7 +1410,7 @@ mod tests {
             eprintln!("SKIP: FFmpeg is unavailable; nothing was measured through the lane");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("aster-normalize-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-normalize-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let asset = tone(&dir);
         let mut editor = Editor::default();

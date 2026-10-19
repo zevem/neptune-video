@@ -137,11 +137,11 @@ ffprobe 8.1.2 on `PATH` (`scripts/check-media-tools.py` passed),
 listened to.
 
 - `cargo test --locked -p editor-media`: 296 passed; `sound::` 49, three
-  runs in a row. `cargo test --locked -p aster-editor`: 790 and 12 passed.
+  runs in a row. `cargo test --locked -p neptune-video`: 790 and 12 passed.
   After the review fixes: 297 passed (`sound::` 50, three runs), and 791
   and 12.
   `cargo clippy --locked -p editor-media --all-targets -- -D warnings`,
-  the same for `aster-editor`, `cargo fmt --all -- --check`, `cargo check
+  the same for `neptune-video`, `cargo fmt --all -- --check`, `cargo check
   --locked` and `scripts/check-architecture.py` pass.
 - Through FFmpeg (`crates/editor-media/src/sound/tests.rs`):
   `a_videos_tone_is_written_as_a_wav_of_its_length_and_its_tone` (3 s MP4,
@@ -269,6 +269,6 @@ any of them as the same file on disk, not only by the exact path. While
 checking this, macOS's `canonicalize` was found to fold case already; the
 identity is the file's device and inode on Unix all the same.
 
-2026-10-14 (native acceptance): Still `ready-for-human`. Release build `target/release/aster` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `aster-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
+2026-10-14 (native acceptance): Still `ready-for-human`. Release build `target/release/neptune-video` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `neptune-video-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
 
 Taken: `normal-08`/`narrow-08` Save audio as… in the clip menu; `normal-22`/`narrow-22` in the project menu; `narrow-34` in the library menu. Still missing: the save dialog and the progress card. Choosing the row opened the system save panel on the person's own desktop, listing their folders; it was cancelled at once, nothing was written, and its captures were deleted. This host has no private display, so the dialog route was not driven further.

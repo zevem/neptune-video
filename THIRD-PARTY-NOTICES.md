@@ -1,6 +1,6 @@
 # Third-party notices
 
-Aster's original material is private/proprietary under [its source notice](LICENSE).
+Neptune Video's original material is [MIT licensed](LICENSE).
 Third-party material retains its own licenses and attribution.
 
 ## Fonts and runtime dependencies
@@ -17,7 +17,7 @@ against the actual build and its dependencies before any bundled codec release.
 
 ## Development skills
 
-The `.agents/skills/` material was carried from the read-only Neptune reference.
+The `.agents/skills/` material was carried from the read-only Neptune Terminal reference.
 These development skills are not included in the application binary bundle.
 The upstream license notices below are retained verbatim from that reference.
 
@@ -31,4 +31,4 @@ The upstream license notices below are retained verbatim from that reference.
 | Rust handbook reference chapters 1–9 | [Apollo GraphQL's handbook](https://github.com/apollographql/rust-best-practices/blob/eb485a5ddb68e0ded3d79549e994f63ec0a6f6c0/LICENSE) | [Apache-2.0](licenses/skills/apollographql-rust-best-practices-Apache-2.0.txt) |
 
 Adapted material keeps its source, modification and copyright notices. The
-project's proprietary notice does not replace these licenses.
+project's MIT license does not replace these licenses.

@@ -4,7 +4,7 @@
 //! It is drawn by the export's own [`FrameRenderer`] from the original
 //! media, never a proxy, at the output's shape scaled down to fit
 //! [`POSTER_SIDE`]: the same fit, bars and crop as the file. The drawing
-//! happens on the `aster-poster` thread, which owns its renderer and its
+//! happens on the `neptune-video-poster` thread, which owns its renderer and its
 //! [`SourceReader`]; the interface only asks and uploads what comes back.
 //!
 //! A request is named by a [`PosterKey`]: the editing context, the project
@@ -201,7 +201,7 @@ type Canceller = Box<dyn Fn() + Send + Sync>;
 /// Makes the source a poster thread decodes with, on that thread.
 pub type SourceMaker = Arc<dyn Fn() -> Box<dyn PosterSource> + Send + Sync>;
 
-/// The `aster-poster` thread: a renderer and a source of its own.
+/// The `neptune-video-poster` thread: a renderer and a source of its own.
 pub struct PosterWorker {
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
@@ -228,7 +228,7 @@ impl PosterWorker {
         let stop = Arc::new(AtomicBool::new(false));
         let cancel: Arc<Mutex<Option<Canceller>>> = Arc::default();
         let thread = thread::Builder::new()
-            .name("aster-poster".to_owned())
+            .name("neptune-video-poster".to_owned())
             .spawn({
                 let shared = Arc::clone(&shared);
                 let stop = Arc::clone(&stop);

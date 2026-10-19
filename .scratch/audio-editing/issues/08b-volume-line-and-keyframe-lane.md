@@ -103,8 +103,8 @@ Settled while building, beyond what the scope says:
 On macOS 26.5.2 (arm64), Rust 1.97.1, Homebrew FFmpeg and ffprobe 8.1.2
 (`scripts/check-media-tools.py` passed), 2026-10-13. No test was skipped.
 
-- `cargo test --locked --bin aster`: 679 passed. `cargo test --locked --bin
-  aster -- volume:: keyframes::`: 53 passed. `cargo test -p editor-core
+- `cargo test --locked --bin neptune-video`: 679 passed. `cargo test --locked --bin
+  neptune-video -- volume:: keyframes::`: 53 passed. `cargo test -p editor-core
   --locked` passed, with `cargo clippy -p editor-core --all-targets`.
   `cargo clippy --locked --all-targets -- -D warnings` and `cargo fmt --all
   -- --check` are clean; `cargo check --locked --workspace` and
@@ -135,7 +135,7 @@ On macOS 26.5.2 (arm64), Rust 1.97.1, Homebrew FFmpeg and ffprobe 8.1.2
   clip does, and the picture does again once unlinked; `volume_key`'s value
   and its five refusals in words, and the project's own refusal on a locked
   track.
-- Native captures of the release build (`target/release/aster`, sha256
+- Native captures of the release build (`target/release/neptune-video`, sha256
   `1fbc4e6ca91456c1…`, built from the final source), each run with its own
   settings, session, cache and project under
   `artifacts/audio-editing/08b-volume-line/<run>/`, on ticket 04's owned
@@ -214,11 +214,11 @@ of the Alt-click and `volume_key` tests, and
 `a_line_left_where_it_was_taken_keeps_a_volume_it_cannot_show`. "Key volume"
 on a stretch that cannot be carried by keys is refused with "The volume's
 curve cannot take a key there."; no test reaches that refusal. On the same
-host: `cargo test --locked --bin aster` 679 passed, `-- volume::
+host: `cargo test --locked --bin neptune-video` 679 passed, `-- volume::
 keyframes::` 53 passed, `cargo test -p editor-core --locked` passed.
 Nothing native was captured or listened to for these fixes.
 
-2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/aster` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `aster-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
+2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/neptune-video` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `neptune-video-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
 
 `normal-02`/`narrow-02` the line without keys on a selected tile beside its fade handles; `normal-05`/`narrow-05` the line held mid-drag with its percent; `normal-06`/`narrow-06` U on a clip with no keys, the empty Volume row; `normal-07`/`narrow-07` Alt-click on the line, a key dot on it and a diamond in the lane; `normal-08`/`narrow-08` the Key volume row. Seen and left: the held line's percent is drawn at the tile's left start and overlaps a fade-in curve there (`paint_volume`, `first.x + 6`); it stays legible.
 

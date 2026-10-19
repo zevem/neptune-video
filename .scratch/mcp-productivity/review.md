@@ -1,4 +1,4 @@
-# Aster MCP productivity review
+# Neptune Video MCP productivity review
 
 Reviewed and implemented on 2026-10-15. The original session/project was not
 provided, so its exact payload sizes and HDR footage could not be replayed.
@@ -11,7 +11,7 @@ regressions, existing capabilities, and remaining limits.
    escape hatch.** Summary included every asset; timeline exposed abbreviated
    clips, lacked filters beyond one track and truncated without continuation.
    Whole-project `full` already read unsaved authority state, so saving and
-   reading `.aster` was unnecessary, but selective rich reads were missing.
+   reading `.nvp` was unnecessary, but selective rich reads were missing.
    Added slim summary/tracks, paged track/clip/media views, exact half-open
    time ranges, ID filters, top-level fields, and selected exact core Clip
    objects. Default pages contain 50 entries, maximum 500; responses remain
@@ -47,7 +47,7 @@ regressions, existing capabilities, and remaining limits.
    microseconds. They now retain exact microseconds and use the subject's rate
    for frame/timecode input. A generated 60 fps source in a 30 fps project
    verifies raw source pixels match an off-project-grid clip in-point. This
-   retains Aster's compositor/decoder/tone-mapping path, rather than substituting
+   retains Neptune Video's compositor/decoder/tone-mapping path, rather than substituting
    a separate FFmpeg image command. It does not establish arbitrary VFR PTS
    selection or HDR-footage pixel acceptance; the existing decoder still
    selects source-grid frames.

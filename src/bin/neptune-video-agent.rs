@@ -1,7 +1,7 @@
 //! Newline-delimited agent API for a headless project or a live desktop session.
-use aster_editor::headless::{configure_save_as, execute, open_headless};
 use editor_agent::{AgentRequest, AgentResponse, SessionDescriptor};
 use editor_core::Editor;
+use neptune_video::headless::{configure_save_as, execute, open_headless};
 use std::{
     io::{self, BufRead, Read, Write},
     path::PathBuf,
@@ -9,7 +9,7 @@ use std::{
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("aster-agent: {error}");
+        eprintln!("neptune-video-agent: {error}");
         std::process::exit(1);
     }
 }
@@ -38,7 +38,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "aster-agent [--project FILE [--create|--recover] [--save-as NEWPATH]] | [--connect SESSION.json]\nReads AgentRequest JSON lines on stdin and writes AgentResponse lines on stdout.\nMutations require expected_revision, expected_project_id and expected_context_id from inspect. With no arguments, use an ephemeral headless session.\n--create and --save-as refuse existing files. Legacy/unbound recovery is inspectable but requires --save-as before durable edits. A failed project save restores the prior editing state and renews context; inspect again before retrying.\nRender jobs (export_capabilities, queue_export, render_jobs and the job operations) run in the desktop editor; use --connect for them."
+                    "neptune-video-agent [--project FILE [--create|--recover] [--save-as NEWPATH]] | [--connect SESSION.json]\nReads AgentRequest JSON lines on stdin and writes AgentResponse lines on stdout.\nMutations require expected_revision, expected_project_id and expected_context_id from inspect. With no arguments, use an ephemeral headless session.\n--create and --save-as refuse existing files. Legacy/unbound recovery is inspectable but requires --save-as before durable edits. A failed project save restores the prior editing state and renews context; inspect again before retrying.\nRender jobs (export_capabilities, queue_export, render_jobs and the job operations) run in the desktop editor; use --connect for them."
                 );
                 return Ok(());
             }
@@ -70,7 +70,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let (Some(path), Some(document)) = (save_as, document.as_mut())
         && let Some(error) = configure_save_as(&mut editor, document, &path)?
     {
-        eprintln!("aster-agent: Project saved; session recovery failed: {error}");
+        eprintln!("neptune-video-agent: Project saved; session recovery failed: {error}");
     }
     let stdin = io::stdin();
     let mut input = stdin.lock();

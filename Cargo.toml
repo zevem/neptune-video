@@ -6,6 +6,7 @@ resolver = "3"
 edition = "2024"
 rust-version = "1.97.1"
 version = "0.1.0"
+license = "MIT"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive", "rc"] }
@@ -14,28 +15,29 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [package]
-name = "aster-editor"
+name = "neptune-video"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "A native, agent-driven desktop video editor"
-default-run = "aster"
+default-run = "neptune-video"
 
 [lib]
-name = "aster_editor"
+name = "neptune_video"
 path = "src/lib.rs"
 
 [[bin]]
-name = "aster"
+name = "neptune-video"
 path = "src/main.rs"
 
 [[bin]]
-name = "aster-agent"
-path = "src/bin/aster-agent.rs"
+name = "neptune-video-agent"
+path = "src/bin/neptune-video-agent.rs"
 
 [[bin]]
-name = "aster-mcp"
-path = "src/bin/aster-mcp.rs"
+name = "neptune-video-mcp"
+path = "src/bin/neptune-video-mcp.rs"
 
 [dependencies]
 editor-core = { path = "crates/editor-core" }
@@ -50,7 +52,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 directories = "6"
-# The MCP server (`aster-mcp`): the official Rust SDK over stdio and
+# The MCP server (`neptune-video-mcp`): the official Rust SDK over stdio and
 # Streamable HTTP on loopback.
 rmcp = { version = "=3.5.1", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "io-std", "net", "signal", "sync", "time", "fs"] }

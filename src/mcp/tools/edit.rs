@@ -2,7 +2,9 @@
 //! one history entry, checked before it is applied. New editor features are
 //! reachable here as soon as they are commands.
 use super::Guard;
-use crate::mcp::{errors::ToolError, server::AsterServer, time::TimeSpec, workspace::Edited};
+use crate::mcp::{
+    errors::ToolError, server::NeptuneVideoServer, time::TimeSpec, workspace::Edited,
+};
 use editor_core::{AnimationTrim, Command, FrameRate, Time};
 use rmcp::{Json, handler::server::wrapper::Parameters, tool, tool_router};
 use schemars::JsonSchema;
@@ -107,7 +109,7 @@ fn command_names(schema: &serde_json::Value) -> Vec<String> {
 }
 
 #[tool_router(router = edit_tools, vis = "pub(crate)")]
-impl AsterServer {
+impl NeptuneVideoServer {
     #[tool(
         description = "Patch one clip in place, retaining its ID. start/duration use project \
                        frames; source_in is exact. changes merges stored fields recursively \

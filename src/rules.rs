@@ -1237,9 +1237,9 @@ mod tests {
         let project = editor.project().clone();
         assert_eq!(sound_clips(&project).len(), 1);
         // And the pair is in the file as it is in the window.
-        let dir = std::env::temp_dir().join(format!("aster-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("detached.aster");
+        let path = dir.join("detached.nvp");
         editor_store::save_project(&path, &project).unwrap();
         let loaded = editor_store::load_project(&path).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1486,9 +1486,9 @@ mod tests {
         let project = editor.project().clone();
         assert_eq!(bed_of(&project).len(), 3);
         // And the bed is in the file as it is in the window.
-        let dir = std::env::temp_dir().join(format!("aster-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("bed.aster");
+        let path = dir.join("bed.nvp");
         editor_store::save_project(&path, &project).unwrap();
         let loaded = editor_store::load_project(&path).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();

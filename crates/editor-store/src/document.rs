@@ -120,7 +120,7 @@ impl RecoveryDocumentBinding {
 /// submission additionally captures its baseline in memory, without disk I/O.
 ///
 /// Changes observed before replacement are conflicts, including deletion and
-/// byte-preserving-length changes. Cooperating Aster writers additionally share
+/// byte-preserving-length changes. Cooperating Neptune Video writers additionally share
 /// an OS advisory lock across the check and replacement. External applications
 /// that ignore that lock can still race the final check and rename.
 #[derive(Debug)]
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn capturing_recovery_never_waits_for_the_lock_held_across_storage_work() {
         let dir = tempfile::tempdir().unwrap();
-        let session = DocumentSession::create(&dir.path().join("film.aster")).unwrap();
+        let session = DocumentSession::create(&dir.path().join("film.nvp")).unwrap();
         let storage_lock = session.saving.lock().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let snapshot_session = session.clone();
@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn atomic_replacement_during_open_cannot_pair_old_contents_with_a_new_baseline() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("film.aster");
+        let path = dir.path().join("film.nvp");
         let before = Project::new("Opened file handle");
         crate::save_project(&path, &before).unwrap();
         // The loader owns the old handle before another process atomically

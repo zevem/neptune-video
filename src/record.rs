@@ -653,7 +653,7 @@ mod tests {
 
     impl Desk {
         fn new(editor: Editor) -> Self {
-            let dir = std::env::temp_dir().join(format!("aster-record-{}", Uuid::new_v4()));
+            let dir = std::env::temp_dir().join(format!("neptune-video-record-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
             Self {
                 editor,
@@ -661,7 +661,7 @@ mod tests {
                 recording: Recording::default(),
                 device: Rc::default(),
                 now: Instant::now(),
-                document: dir.join("Film.aster"),
+                document: dir.join("Film.nvp"),
                 dir,
                 path: None,
                 opened: 0,

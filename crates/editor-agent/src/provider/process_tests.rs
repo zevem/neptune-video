@@ -9,12 +9,12 @@ const DROP_BOUND: Duration = Duration::from_secs(2);
 const OUTPUT_BUDGET_ERROR: &str = "AI provider exceeded its output budget";
 
 pub(super) fn fixture_command(mode: &str) -> Command {
-    let path = PathBuf::from(std::env::var_os("ASTER_PROVIDER_TEST_FIXTURE").expect(
-        "ASTER_PROVIDER_TEST_FIXTURE must name the absolute built provider-fault-fixture example; run scripts/test-workspace.py or build the example first",
+    let path = PathBuf::from(std::env::var_os("NEPTUNE_VIDEO_PROVIDER_TEST_FIXTURE").expect(
+        "NEPTUNE_VIDEO_PROVIDER_TEST_FIXTURE must name the absolute built provider-fault-fixture example; run scripts/test-workspace.py or build the example first",
     ));
     assert!(
         path.is_absolute() && path.is_file(),
-        "ASTER_PROVIDER_TEST_FIXTURE must be an existing absolute native executable: {}",
+        "NEPTUNE_VIDEO_PROVIDER_TEST_FIXTURE must be an existing absolute native executable: {}",
         path.display()
     );
     let mut command = Command::new(path);

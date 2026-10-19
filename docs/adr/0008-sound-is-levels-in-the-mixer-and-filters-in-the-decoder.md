@@ -13,7 +13,7 @@ or filesystem, workers are bounded and stale-safe, and the device callback
 only copies.
 
 **Two places shape sound.** Whatever is a level is arithmetic in the mixer's
-sum loop on the `aster-audio` worker: clip volume and its keyframes, the edge
+sum loop on the `neptune-video-audio` worker: clip volume and its keyframes, the edge
 fades, track volume, and the master limiter that replaces the hard clamp.
 Whatever is spectral or dynamic is an FFmpeg filter in the `-af` of the
 clip's own decoder process, which already existed: high-pass, equalizer

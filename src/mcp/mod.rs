@@ -1,9 +1,9 @@
-//! `aster-mcp`: Aster's editing engine for MCP clients (Claude Code, Codex
+//! `neptune-video-mcp`: Neptune Video's editing engine for MCP clients (Claude Code, Codex
 //! and others), over stdio or authenticated Streamable HTTP on loopback.
 //!
 //! The server edits one project with the editor's own commands: in an
 //! editor of its own that saves the file after every edit (Local), or in
-//! the Aster window that has the project open (Desktop), where every edit
+//! the Neptune Video window that has the project open (Desktop), where every edit
 //! appears at once and the person can undo it.
 mod errors;
 mod frames;
@@ -16,7 +16,7 @@ mod tools;
 mod workspace;
 
 use paths::Roots;
-use server::{AsterServer, Shared};
+use server::{NeptuneVideoServer, Shared};
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -24,35 +24,35 @@ use std::{
 use workspace::{Authority, Workspace};
 
 const USAGE: &str = "\
-aster-mcp: Aster's video editor as an MCP server
+neptune-video-mcp: Neptune Video's video editor as an MCP server
 
-Usage: aster-mcp [options]
+Usage: neptune-video-mcp [options]
 
 Options:
   --root DIR              A folder the server may read media from and write
                           projects, exports and pictures to; repeat for more.
-                          Also ASTER_MCP_ROOTS (separated as PATH is). By
+                          Also NEPTUNE_VIDEO_MCP_ROOTS (separated as PATH is). By
                           default the current folder, unless it is a home,
                           drive or system folder.
   --http [ADDR]           Serve Streamable HTTP on a loopback address
                           (127.0.0.1:47420 by default) instead of stdio. Every
                           request needs `Authorization: Bearer TOKEN`: the
-                          token is ASTER_MCP_TOKEN, or a random one; both
+                          token is NEPTUNE_VIDEO_MCP_TOKEN, or a random one; both
                           are written with the address to a private
                           connection file, mcp/PID.json beside the settings.
-  --desktop-settings PATH The settings file of the Aster windows to work
+  --desktop-settings PATH The settings file of the Neptune Video windows to work
                           with (sessions, presets and models beside it).
-  --sessions DIR          Where Aster windows publish their live sessions.
-  --models DIR            Where speech models are kept (ASTER_MODELS_DIR).
-  --aster PATH            The Aster program `desktop {op: open}` launches;
-                          the `aster` beside this program by default.
-  --window FILE           Start in the Aster window whose session file
+  --sessions DIR          Where Neptune Video windows publish their live sessions.
+  --models DIR            Where speech models are kept (NEPTUNE_VIDEO_MODELS_DIR).
+  --neptune-video PATH            The Neptune Video program `desktop {op: open}` launches;
+                          the `neptune-video` beside this program by default.
+  --window FILE           Start in the Neptune Video window whose session file
                           this is: attach to it at once, and go back to it
-                          when desktop {op: attach} names no window. Aster
+                          when desktop {op: attach} names no window. Neptune Video
                           starts its own agent this way.
   --roots-file FILE       A JSON file {\"roots\": [DIR, …]} naming more
                           folders the server may use, read again whenever
-                          it changes. Aster keeps one for its own agent.
+                          it changes. Neptune Video keeps one for its own agent.
   --tag TAG               Begin request ids with TAG (mcp by default), so a
                           window can tell this server's requests apart.
   --help, --version
@@ -87,7 +87,7 @@ struct Options {
     desktop_settings: Option<PathBuf>,
     sessions: Option<PathBuf>,
     models: Option<PathBuf>,
-    aster: Option<PathBuf>,
+    neptune_video: Option<PathBuf>,
     window: Option<PathBuf>,
     roots_file: Option<PathBuf>,
     tag: Option<String>,
@@ -104,7 +104,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Option<Options>, String> 
                 return Ok(None);
             }
             "--version" | "-V" => {
-                println!("aster-mcp {}", env!("CARGO_PKG_VERSION"));
+                println!("neptune-video-mcp {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);
             }
             "--root" => options.roots.push(PathBuf::from(value("--root")?)),
@@ -113,7 +113,9 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Option<Options>, String> 
             }
             "--sessions" => options.sessions = Some(PathBuf::from(value("--sessions")?)),
             "--models" => options.models = Some(PathBuf::from(value("--models")?)),
-            "--aster" => options.aster = Some(PathBuf::from(value("--aster")?)),
+            "--neptune-video" => {
+                options.neptune_video = Some(PathBuf::from(value("--neptune-video")?))
+            }
             "--window" => options.window = Some(PathBuf::from(value("--window")?)),
             "--roots-file" => {
                 options.roots_file = Some(PathBuf::from(value("--roots-file")?));
@@ -148,25 +150,25 @@ pub fn run() -> i32 {
         Ok(Some(options)) => options,
         Ok(None) => return 0,
         Err(message) => {
-            eprintln!("aster-mcp: {message}");
+            eprintln!("neptune-video-mcp: {message}");
             return 2;
         }
     };
-    // Children (FFmpeg, the Aster window) must not inherit the token.
-    let token = std::env::var("ASTER_MCP_TOKEN")
+    // Children (FFmpeg, the Neptune Video window) must not inherit the token.
+    let token = std::env::var("NEPTUNE_VIDEO_MCP_TOKEN")
         .ok()
         .filter(|token| !token.is_empty());
     // SAFETY: no other thread runs yet.
-    unsafe { std::env::remove_var("ASTER_MCP_TOKEN") };
+    unsafe { std::env::remove_var("NEPTUNE_VIDEO_MCP_TOKEN") };
     let mut named = options.roots.clone();
-    if let Some(list) = std::env::var_os("ASTER_MCP_ROOTS") {
+    if let Some(list) = std::env::var_os("NEPTUNE_VIDEO_MCP_ROOTS") {
         named.extend(std::env::split_paths(&list).filter(|path| !path.as_os_str().is_empty()));
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let roots = match Roots::new(named, &cwd, options.roots_file.clone()) {
         Ok(roots) => Arc::new(roots),
         Err(message) => {
-            eprintln!("aster-mcp: {message}");
+            eprintln!("neptune-video-mcp: {message}");
             return 2;
         }
     };
@@ -189,17 +191,17 @@ pub fn run() -> i32 {
     let models = options
         .models
         .clone()
-        .or_else(|| std::env::var_os("ASTER_MODELS_DIR").map(PathBuf::from))
+        .or_else(|| std::env::var_os("NEPTUNE_VIDEO_MODELS_DIR").map(PathBuf::from))
         .or_else(|| crate::speech::models_dir(options.desktop_settings.as_deref()));
-    let aster = options.aster.clone().or_else(|| {
+    let neptune_video = options.neptune_video.clone().or_else(|| {
         let beside = std::env::current_exe()
             .ok()?
-            .with_file_name(format!("aster{}", std::env::consts::EXE_SUFFIX));
+            .with_file_name(format!("neptune-video{}", std::env::consts::EXE_SUFFIX));
         beside.is_file().then_some(beside)
     });
 
     let mut workspace = Workspace::new(roots.clone(), sessions);
-    workspace.desktop_program = aster;
+    workspace.desktop_program = neptune_video;
     workspace.desktop_settings = options.desktop_settings.clone();
     if let Some(tag) = options.tag.clone() {
         workspace.set_tag(tag);
@@ -207,7 +209,7 @@ pub fn run() -> i32 {
     if let Some(window) = options.window.clone() {
         // A window that is not answering yet is attached at the first call.
         if let Err(error) = workspace.pin(window) {
-            eprintln!("aster-mcp: {error}");
+            eprintln!("neptune-video-mcp: {error}");
         }
     }
     let shared = Arc::new(Shared {
@@ -222,13 +224,13 @@ pub fn run() -> i32 {
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
-        .thread_name("aster-mcp")
+        .thread_name("neptune-video-mcp")
         .enable_all()
         .build()
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("aster-mcp: no runtime: {error}");
+            eprintln!("neptune-video-mcp: no runtime: {error}");
             return 1;
         }
     };
@@ -241,11 +243,11 @@ pub fn run() -> i32 {
         tokio::spawn(server::watch(shared.clone()));
         match &options.http {
             Some(address) => {
-                eprintln!("aster-mcp: roots {}", roots_list.join(", "));
+                eprintln!("neptune-video-mcp: roots {}", roots_list.join(", "));
                 match http::serve(shared.clone(), address, token, connections.clone()).await {
                     Ok(()) => 0,
                     Err(message) => {
-                        eprintln!("aster-mcp: {message}");
+                        eprintln!("neptune-video-mcp: {message}");
                         1
                     }
                 }
@@ -253,7 +255,7 @@ pub fn run() -> i32 {
             None => match stdio(shared.clone()).await {
                 Ok(()) => 0,
                 Err(message) => {
-                    eprintln!("aster-mcp: {message}");
+                    eprintln!("neptune-video-mcp: {message}");
                     1
                 }
             },
@@ -277,7 +279,7 @@ pub fn run() -> i32 {
 async fn stdio(shared: Arc<Shared>) -> Result<(), String> {
     use rmcp::ServiceExt;
     let out = protocol_output().map_err(|error| format!("standard output: {error}"))?;
-    let service = AsterServer::new(shared)
+    let service = NeptuneVideoServer::new(shared)
         .serve((tokio::io::stdin(), out))
         .await
         .map_err(|error| format!("the client did not start a session: {error}"))?;

@@ -1,5 +1,5 @@
 //! The render queue: exports waiting, rendering and finished, run one at a
-//! time on an `aster-render` thread of their own.
+//! time on an `neptune-video-render` thread of their own.
 //!
 //! A job is a snapshot: the project as it was when it was queued, its
 //! settings and its destination. Later edits never reach it. The queue keeps
@@ -215,7 +215,7 @@ pub struct RenderQueue {
 
 impl RenderQueue {
     /// Starts the queue: FFmpeg's encoders are probed at once on a thread of
-    /// their own, and jobs run on the `aster-render` thread. `gpu` is the
+    /// their own, and jobs run on the `neptune-video-render` thread. `gpu` is the
     /// device to draw on, the window's when there is one; without one a
     /// device of the export's own is opened when the first picture is
     /// drawn. `steady` is the folder stabilization paths are kept in.
@@ -278,7 +278,7 @@ impl RenderQueue {
         start_probe(&shared);
         let worker = Arc::clone(&shared);
         let worker = thread::Builder::new()
-            .name("aster-render".into())
+            .name("neptune-video-render".into())
             .spawn(move || {
                 if let Some(first) = first {
                     // Tidying is never worth a failed queue.
@@ -1051,7 +1051,7 @@ fn start_probe(shared: &Arc<Shared>) {
     };
     let probing = Arc::clone(shared);
     let spawned = thread::Builder::new()
-        .name("aster-render-probe".into())
+        .name("neptune-video-render-probe".into())
         .spawn(move || {
             let answer = catch_unwind(AssertUnwindSafe(|| (probing.probe)()))
                 .unwrap_or_else(|panic| Err(format!("Internal error: {}", panic_text(&*panic))));

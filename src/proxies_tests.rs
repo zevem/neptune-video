@@ -88,8 +88,8 @@ fn a_window_without_the_lane_reads_originals_and_asks_nothing() {
 
 /// FFmpeg as the media crate finds it, when there is one.
 fn ffmpeg() -> Option<PathBuf> {
-    let path =
-        std::env::var_os("ASTER_FFMPEG").map_or_else(|| PathBuf::from("ffmpeg"), PathBuf::from);
+    let path = std::env::var_os("NEPTUNE_VIDEO_FFMPEG")
+        .map_or_else(|| PathBuf::from("ffmpeg"), PathBuf::from);
     Process::new(&path)
         .arg("-version")
         .output()
@@ -187,8 +187,9 @@ fn source<'a>(asset: &'a Asset, size: [u32; 2]) -> Wanted<'a> {
 
 #[test]
 fn the_lane_makes_reads_keeps_open_removes_and_clears_proxies() {
-    let scratch =
-        Scratch(std::env::temp_dir().join(format!("aster-proxies-{}", uuid::Uuid::new_v4())));
+    let scratch = Scratch(
+        std::env::temp_dir().join(format!("neptune-video-proxies-{}", uuid::Uuid::new_v4())),
+    );
     std::fs::create_dir_all(&scratch.0).expect("FIXTURE: a folder for the test");
     let Some(asset) = imported(&scratch) else {
         println!("SKIP: no FFmpeg here to make a proxy with");
@@ -302,8 +303,9 @@ fn the_lane_makes_reads_keeps_open_removes_and_clears_proxies() {
 
 #[test]
 fn a_proxy_asked_for_by_hand_that_cannot_be_made_is_said() {
-    let scratch =
-        Scratch(std::env::temp_dir().join(format!("aster-proxies-{}", uuid::Uuid::new_v4())));
+    let scratch = Scratch(
+        std::env::temp_dir().join(format!("neptune-video-proxies-{}", uuid::Uuid::new_v4())),
+    );
     std::fs::create_dir_all(&scratch.0).expect("FIXTURE: a folder for the test");
     if ffmpeg().is_none() {
         println!("SKIP: no FFmpeg here");
@@ -399,8 +401,9 @@ fn an_export_reads_the_original_of_an_asset_whose_proxy_the_viewer_reads() {
     const BLUE: [u8; 3] = [0, 0, 255];
     let size = [640, 360];
 
-    let scratch =
-        Scratch(std::env::temp_dir().join(format!("aster-proxies-{}", uuid::Uuid::new_v4())));
+    let scratch = Scratch(
+        std::env::temp_dir().join(format!("neptune-video-proxies-{}", uuid::Uuid::new_v4())),
+    );
     std::fs::create_dir_all(&scratch.0).expect("FIXTURE: a folder for the test");
     let Some(asset) = imported_from(&scratch, "red.mp4", "color=red:size=640x360:rate=30") else {
         println!("SKIP: no FFmpeg here to make a proxy with");
@@ -511,8 +514,9 @@ fn an_export_reads_the_original_of_an_asset_whose_proxy_the_viewer_reads() {
 
 #[test]
 fn a_proxy_the_budget_removes_is_no_longer_said_ready_and_the_original_is_read() {
-    let scratch =
-        Scratch(std::env::temp_dir().join(format!("aster-proxies-{}", uuid::Uuid::new_v4())));
+    let scratch = Scratch(
+        std::env::temp_dir().join(format!("neptune-video-proxies-{}", uuid::Uuid::new_v4())),
+    );
     std::fs::create_dir_all(&scratch.0).expect("FIXTURE: a folder for the test");
     let Some(first) = imported_from(&scratch, "first.mp4", "testsrc2=size=640x360:rate=30") else {
         println!("SKIP: no FFmpeg here to make a proxy with");

@@ -5,7 +5,7 @@
 //! Giving a preset copies its values into a clip, so a project never
 //! depends on this file. The file is read once before the window exists and
 //! written on a worker when something changed. One this build cannot read,
-//! damaged or made by a newer Aster, is never written over: it is left as
+//! damaged or made by a newer Neptune Video, is never written over: it is left as
 //! it is until a preset is kept, and then moved aside first.
 use editor_core::{ClipContent, Time, title};
 use serde::{Deserialize, Serialize};
@@ -121,7 +121,7 @@ impl Presets {
         match serde_json::from_slice::<Version>(&bytes) {
             Ok(Version { version }) if version > VERSION => {
                 return Read::Unreadable(format!(
-                    "they were saved by a newer Aster (version {version})"
+                    "they were saved by a newer Neptune Video (version {version})"
                 ));
             }
             Ok(_) => {}
@@ -283,7 +283,7 @@ mod tests {
     use editor_core::{Element, ElementKind, TextStyle};
 
     fn dir() -> PathBuf {
-        std::env::temp_dir().join(format!("aster-presets-{}", Uuid::new_v4()))
+        std::env::temp_dir().join(format!("neptune-video-presets-{}", Uuid::new_v4()))
     }
 
     fn title(text: &str) -> ClipContent {

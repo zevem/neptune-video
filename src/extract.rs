@@ -583,7 +583,7 @@ mod tests {
             Err("take.wav is already there: choose it in the dialog to replace it.".to_owned())
         );
         assert_eq!(
-            target("/out/film.aster".into(), none),
+            target("/out/film.nvp".into(), none),
             Err("Audio is saved as WAV: give the file a name that ends in .wav.".to_owned())
         );
 
@@ -803,7 +803,7 @@ mod tests {
     }
 
     fn ffmpeg_available() -> bool {
-        let tool = std::env::var_os("ASTER_FFMPEG").unwrap_or_else(|| "ffmpeg".into());
+        let tool = std::env::var_os("NEPTUNE_VIDEO_FFMPEG").unwrap_or_else(|| "ffmpeg".into());
         std::process::Command::new(tool)
             .arg("-version")
             .stdout(std::process::Stdio::null())
@@ -867,7 +867,7 @@ mod tests {
             eprintln!("SKIP: FFmpeg is unavailable; nothing was written through the lane");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("aster-extract-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-extract-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let asset = tone(&dir);
         let mut editor = Editor::default();

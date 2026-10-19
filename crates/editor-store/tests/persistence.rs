@@ -51,7 +51,7 @@ fn write_json(path: &Path, value: &Value) {
 #[test]
 fn project_round_trip_preserves_offline_media_and_fractional_frame_settings() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let project = project_fixture(directory.path());
 
     save_project(&path, &project).unwrap();
@@ -62,7 +62,7 @@ fn project_round_trip_preserves_offline_media_and_fractional_frame_settings() {
 #[test]
 fn successful_replacement_contains_only_the_latest_complete_project() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut project = project_fixture(directory.path());
     save_project(&path, &project).unwrap();
     project.name = "Replacement".into();
@@ -78,7 +78,7 @@ fn successful_replacement_contains_only_the_latest_complete_project() {
 #[test]
 fn invalid_incoming_project_leaves_the_saved_project_unchanged() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut project = Project::default();
     save_project(&path, &project).unwrap();
     let original = fs::read(&path).unwrap();
@@ -91,7 +91,7 @@ fn invalid_incoming_project_leaves_the_saved_project_unchanged() {
 #[test]
 fn truncated_existing_project_is_preserved_byte_for_byte() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let original = b"{\"schema_version\":1,\"project\":";
     fs::write(&path, original).unwrap();
 
@@ -102,7 +102,7 @@ fn truncated_existing_project_is_preserved_byte_for_byte() {
 #[test]
 fn semantically_damaged_existing_project_is_preserved_byte_for_byte() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     save_project(&path, &Project::default()).unwrap();
     let mut document = read_json(&path);
     document["project"]["settings"]["width"] = json!(0);
@@ -116,7 +116,7 @@ fn semantically_damaged_existing_project_is_preserved_byte_for_byte() {
 #[test]
 fn header_without_a_valid_document_cannot_be_overwritten() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     fs::write(&path, b"{\"schema_version\":1}").unwrap();
     let original = fs::read(&path).unwrap();
 
@@ -127,7 +127,7 @@ fn header_without_a_valid_document_cannot_be_overwritten() {
 #[test]
 fn future_project_with_a_new_shape_cannot_be_overwritten() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let original = format!(
         "{{\"schema_version\":{},\"future_document\":{{\"valuable\":true}}}}",
         SCHEMA_VERSION + 1
@@ -144,7 +144,7 @@ fn future_project_with_a_new_shape_cannot_be_overwritten() {
 #[test]
 fn loading_a_future_project_rejects_its_schema() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     save_project(&path, &Project::default()).unwrap();
     let mut document = read_json(&path);
     document["schema_version"] = json!(SCHEMA_VERSION + 1);
@@ -159,7 +159,7 @@ fn loading_a_future_project_rejects_its_schema() {
 #[test]
 fn oversized_project_is_rejected_before_reading_its_body() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     fs::File::create(&path)
         .unwrap()
         .set_len(256 * 1024 * 1024 + 1)
@@ -171,7 +171,7 @@ fn oversized_project_is_rejected_before_reading_its_body() {
 #[test]
 fn relative_asset_paths_resolve_from_the_project_directory() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut project = project_fixture(directory.path());
     let asset_id = *project.assets.keys().next().unwrap();
     Arc::make_mut(&mut project.assets)
@@ -197,7 +197,7 @@ fn failure_to_create_a_destination_preserves_the_blocking_file() {
     let directory = TempDir::new().unwrap();
     let blocking_file = directory.path().join("file-instead-of-directory");
     fs::write(&blocking_file, b"Keep these bytes").unwrap();
-    let path = blocking_file.join("project.aster");
+    let path = blocking_file.join("project.nvp");
 
     assert!(save_project(&path, &Project::default()).is_err());
     assert_eq!(fs::read(blocking_file).unwrap(), b"Keep these bytes");
@@ -206,7 +206,7 @@ fn failure_to_create_a_destination_preserves_the_blocking_file() {
 #[test]
 fn checkpoints_keep_named_snapshots_without_changing_the_project_file() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut project = project_fixture(directory.path());
     save_project(&path, &project).unwrap();
     let original = fs::read(&path).unwrap();
@@ -244,7 +244,7 @@ fn duplicate_has_independent_identity_and_keeps_original_source_references() {
 #[test]
 fn recovery_restores_redo_chain_saved_identity_and_dirty_state() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut editor = Editor::new(project_fixture(directory.path())).unwrap();
     rename(&mut editor, "Saved edit");
     let saved_revision = editor.register_save();
@@ -272,7 +272,7 @@ fn recovery_restores_redo_chain_saved_identity_and_dirty_state() {
 #[test]
 fn recovery_rehydrates_shared_document_roots_tracks_and_asset_maps() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut editor = Editor::new(project_fixture(directory.path())).unwrap();
     rename(&mut editor, "First rename");
     rename(&mut editor, "Second rename");
@@ -296,7 +296,7 @@ fn recovery_rehydrates_shared_document_roots_tracks_and_asset_maps() {
 #[test]
 fn broken_recovery_reference_is_rejected_without_changing_the_archive() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     save_recovery(&path, &Editor::default()).unwrap();
     let archive_path = recovery_path(&path);
     let mut archive = read_json(&archive_path);
@@ -311,7 +311,7 @@ fn broken_recovery_reference_is_rejected_without_changing_the_archive() {
 #[test]
 fn recovery_with_an_incoherent_history_chain_is_rejected() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut editor = Editor::default();
     rename(&mut editor, "First rename");
     rename(&mut editor, "Second rename");
@@ -327,7 +327,7 @@ fn recovery_with_an_incoherent_history_chain_is_rejected() {
 #[test]
 fn recovery_history_cannot_undo_into_a_different_project_identity() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut editor = Editor::default();
     rename(&mut editor, "First edit");
     save_recovery(&path, &editor).unwrap();
@@ -343,7 +343,7 @@ fn recovery_history_cannot_undo_into_a_different_project_identity() {
 #[test]
 fn semantically_damaged_recovery_cannot_be_overwritten() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let editor = Editor::default();
     save_recovery(&path, &editor).unwrap();
     let archive_path = recovery_path(&path);
@@ -359,7 +359,7 @@ fn semantically_damaged_recovery_cannot_be_overwritten() {
 #[test]
 fn future_recovery_archive_is_preserved_on_save() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let archive_path = recovery_path(&path);
     write_json(
         &archive_path,
@@ -377,7 +377,7 @@ fn future_recovery_archive_is_preserved_on_save() {
 #[test]
 fn loading_a_future_shape_reports_schema_before_decoding_the_document() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     write_json(
         &path,
         &json!({"schema_version": SCHEMA_VERSION + 1, "future_shape": true}),
@@ -392,7 +392,7 @@ fn loading_a_future_shape_reports_schema_before_decoding_the_document() {
 #[test]
 fn unsupported_older_schema_is_preserved_instead_of_being_replaced() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     save_project(&path, &Project::default()).unwrap();
     let mut document = read_json(&path);
     document["schema_version"] = json!(0);
@@ -406,7 +406,7 @@ fn unsupported_older_schema_is_preserved_instead_of_being_replaced() {
 #[test]
 fn recovery_resolves_relative_media_once_and_preserves_history_sharing() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut project = project_fixture(directory.path());
     let asset_id = *project.assets.keys().next().unwrap();
     Arc::make_mut(&mut project.assets)
@@ -437,7 +437,7 @@ fn recovery_resolves_relative_media_once_and_preserves_history_sharing() {
 #[test]
 fn recovery_cleanup_is_idempotent_and_leaves_the_project_file_intact() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let editor = Editor::default();
     save_project(&path, editor.project()).unwrap();
     let original = fs::read(&path).unwrap();

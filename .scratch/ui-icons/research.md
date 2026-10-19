@@ -1,4 +1,4 @@
-# UI icon library research for Aster
+# UI icon library research for Neptune Video
 
 Researched 2026-10-14. Research and static asset comparison only; no icon
 replacement, dependency change, compilation or native acceptance run.
@@ -10,7 +10,7 @@ transport controls.** In the [comparison](comparison.png), its smooth curves,
 restrained detail and rounded player glyphs best fit the requested Apple-like
 feel. This is an aesthetic judgment, not a claim that Phosphor reproduces
 Apple's symbols. Light looks too delicate in the comparison's 14–16 px rows.
-Regular still needs review inside Aster at its actual sizes and display scales.
+Regular still needs review inside Neptune Video at its actual sizes and display scales.
 
 Lucide is a strong alternative if preserving the existing outline vocabulary
 and adjustable stroke widths is the priority. Phosphor wins this comparison
@@ -31,13 +31,13 @@ or icon dependency.
 
 Do not equate an SVG's nominal stroke with the current rendered weight. At
 16-point display size, Phosphor Regular is approximately 1 point, Lucide's
-default is 1.33 points and Iconoir's default is 1 point; Aster currently stays
+default is 1.33 points and Iconoir's default is 1 point; Neptune Video currently stays
 at 1.5 points. Font em size can add different margins again. The migration
 must choose visual weight at 14–16 points rather than copy a nominal number.
 
 ## Candidate facts and tradeoffs
 
-| Library | Verified design system | Fit for Aster |
+| Library | Verified design system | Fit for Neptune Video |
 | --- | --- | --- |
 | **Phosphor** | Six variants: Thin, Light, Regular, Bold, Fill, Duotone. SVG viewBox 256×256; inspected raw paths have round caps/joins and Regular stroke 16, Light 12, Bold 24. | Best visual candidate in the sample; official solid transport, captions, Bézier curve, film and audio icons. Separate weights offer controlled alternatives. |
 | **Lucide** | 24×24 canvas, 2 px strokes, round caps/joins; 1–2 px corner radii depending on element size. Stroke width is adjustable. Fills are not officially supported. | Good familiar outline system; nearest flexible replacement for handwritten outline geometry. Filled playback would require a deliberate custom treatment. |
@@ -60,9 +60,9 @@ Primary design sources:
 
 The following assets exist in the inspected official repositories. Mapping an
 available icon to an editing action still requires semantic review; this is
-not an exhaustive audit of Aster's entire `Icon` enum.
+not an exhaustive audit of Neptune Video's entire `Icon` enum.
 
-| Aster role | Phosphor | Lucide |
+| Neptune Video role | Phosphor | Lucide |
 | --- | --- | --- |
 | Playback | `play`, `pause`, `skip-back`, `skip-forward`, also Fill variants | `play`, `pause`, `skip-back`, `skip-forward`, outlines |
 | Split/delete | `scissors`, `trash` | `scissors`, `trash` |
@@ -75,7 +75,7 @@ not an exhaustive audit of Aster's entire `Icon` enum.
 
 Sources: [Phosphor inventory at inspected revision](https://github.com/phosphor-icons/core/tree/2b75f3ad12b420c9504ef05df8d2564a28f8500e/assets/regular),
 [Lucide inventory at inspected revision](https://github.com/lucide-icons/lucide/tree/dab294f313897bacaa968b725b3259fa37c17bd1/icons).
-Aster's specific `Transition`, `FitValues` and eased `Curve` metaphors should
+Neptune Video's specific `Transition`, `FitValues` and eased `Curve` metaphors should
 be reviewed individually; a small consistent custom exception may remain.
 
 ## Licensing and SF Symbols
@@ -92,7 +92,7 @@ preserve both notices when using that subset. Iconoir and Tabler are MIT.
 **SF Symbols is unsuitable as the shared Linux/macOS/Windows library.** Apple
 provides nine weights and three scales, but its Xcode agreement section 2.10
 licenses system-provided symbols for applications on Apple-branded products
-running the applicable system. This rules out bundling them as Aster's shared
+running the applicable system. This rules out bundling them as Neptune Video's shared
 cross-platform set. They remain a useful aesthetic reference.
 [Apple SF Symbols](https://developer.apple.com/sf-symbols/),
 [Apple Xcode agreement, section 2.10, pages 6–7](https://www.apple.com/legal/sla/docs/xcode.pdf).
@@ -102,7 +102,7 @@ cross-platform set. They remain a useful aesthetic reference.
 1. **First evaluate `egui-phosphor` 0.14.0 with a subset of required icons.**
    Its published release is not yanked, its manifest depends on egui 0.36,
    and its README documents startup font registration, separate variants and
-   compile-time font subsetting. That nominally matches Aster's egui family;
+   compile-time font subsetting. That nominally matches Neptune Video's egui family;
    compatibility and appearance have not been compiled or run here. Its Rust
    wrapper is MIT OR Apache-2.0, and the bundled icons are MIT. The actual
    bundled regular TTF and the official web regular TTF both identify MIT in
@@ -115,7 +115,7 @@ cross-platform set. They remain a useful aesthetic reference.
 2. **Alternative: vendor a pinned SVG subset behind the existing `Icon` seam.**
    egui_extras has an `svg` loader using resvg, and egui can display embedded
    bytes. `Image::tint` multiplies pixel color, so normalize monochrome assets
-   to white before applying Aster's state tint. `Image::paint_at` requests the
+   to white before applying Neptune Video's state tint. `Image::paint_at` requests the
    physical-pixel target size, which matters for crisp scaling. This pipeline
    rasterizes SVGs into cached images/textures; it is not native path rendering.
    The first SVG decode is synchronous in the inspected loader, so any adoption
@@ -125,7 +125,7 @@ cross-platform set. They remain a useful aesthetic reference.
    [egui_extras 0.36.2 SVG loader](https://github.com/emilk/egui/blob/0.36.2/crates/egui_extras/src/loaders/svg_loader.rs).
 
 Keep action names, accessible labels, tooltips, hit areas and state colors
-owned by Aster's widgets. Replacing glyphs should not expose font codepoints
+owned by Neptune Video's widgets. Replacing glyphs should not expose font codepoints
 as accessible names or change action targets. Check the final native build at
 14/16/24-point bounds, normal and narrow windows, 1× and higher display scales,
 and enabled/disabled/selected states. No native rendering, performance or
@@ -135,6 +135,6 @@ platform acceptance is established by this research.
 
 [comparison.png](comparison.png) uses actual upstream SVGs at 24 px and
 14/16 px, with two device pixels per logical pixel. It is a static design
-reference, not a capture of Aster or a font-wrapper acceptance result.
+reference, not a capture of Neptune Video or a font-wrapper acceptance result.
 [comparison-sources.json](comparison-sources.json) pins every sample asset and
 revision; [sample-licenses.md](sample-licenses.md) preserves their notices.

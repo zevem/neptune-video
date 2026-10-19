@@ -6,7 +6,7 @@ Type: task
 
 ## Scope
 
-`ProxyService` on an `aster-proxy` thread: queue, dedup, cancel, the H.264 or
+`ProxyService` on an `neptune-video-proxy` thread: queue, dedup, cancel, the H.264 or
 MJPEG recipe, manifests, keys, LRU budget, in-use protection, sweeping.
 
 ## Comments

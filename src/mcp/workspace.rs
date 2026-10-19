@@ -1,5 +1,5 @@
 //! The one project this server edits, and where it is edited: in the
-//! server's own editor (Local) or in a running Aster window (Desktop). One
+//! server's own editor (Local) or in a running Neptune Video window (Desktop). One
 //! thread owns the workspace; tools reach it through [`Authority`], so
 //! concurrent clients are served one at a time and a window is sent one
 //! request at a time.
@@ -161,7 +161,7 @@ pub struct Workspace {
     busy_deadline: Option<Instant>,
     /// The local render queue, made at the first export.
     pub renders: Option<crate::export::queue::RenderQueue>,
-    /// The `aster` program `desktop` `open` launches, and the settings it
+    /// The `neptune-video` program `desktop` `open` launches, and the settings it
     /// is given.
     pub desktop_program: Option<PathBuf>,
     pub desktop_settings: Option<PathBuf>,
@@ -418,7 +418,7 @@ impl Workspace {
                         ToolError::new(
                             codes::DESKTOP_CLOSED,
                             format!(
-                                "The Aster window this project was attached to does not answer \
+                                "The Neptune Video window this project was attached to does not answer \
                                  ({error}). Open the project again with project_open or \
                                  desktop {{op: attach}}."
                             ),
@@ -1059,7 +1059,7 @@ impl Workspace {
                     self.close(false)?;
                     self.become_desktop(holder);
                     self.notices.push(format!(
-                        "{} is open in an Aster window, so edits go to the window and appear \
+                        "{} is open in a Neptune Video window, so edits go to the window and appear \
                          there at once; they are saved when the window saves (project_save).",
                         path.display()
                     ));
@@ -1069,7 +1069,7 @@ impl Workspace {
                     return Err(ToolError::new(
                         codes::DESKTOP_CONFLICT,
                         format!(
-                            "{} is open in more than one Aster window; close all but one",
+                            "{} is open in more than one Neptune Video window; close all but one",
                             path.display()
                         ),
                     ));
@@ -1101,7 +1101,7 @@ impl Workspace {
                 editor_store::StoreError::RecoveryInUse(_) => ToolError::new(
                     codes::PROJECT_BUSY,
                     format!(
-                        "Another editor has {} open with unsaved work (an Aster window or \
+                        "Another editor has {} open with unsaved work (a Neptune Video window or \
                          another server). If it is a window, use desktop {{op: attach}}.",
                         path.display()
                     ),
@@ -1131,7 +1131,7 @@ impl Workspace {
             (None, Some(None)) => {
                 return Err(ToolError::new(
                     codes::DESKTOP_CLOSED,
-                    "The Aster window this agent was started in did not answer; it may have \
+                    "The Neptune Video window this agent was started in did not answer; it may have \
                      closed",
                 ));
             }
@@ -1157,14 +1157,14 @@ impl Workspace {
             [one] => (*one).clone(),
             [] => {
                 return Err(ToolError::not_found(
-                    "No Aster window answered. Open the project in Aster (or call desktop {op: \
+                    "No Neptune Video window answered. Open the project in Neptune Video (or call desktop {op: \
                      open}) and try again; desktop {op: list} shows the windows found.",
                 ));
             }
             _ => {
                 return Err(ToolError::new(
                     codes::DESKTOP_CONFLICT,
-                    "More than one Aster window is open; name one with instance_id from \
+                    "More than one Neptune Video window is open; name one with instance_id from \
                      desktop {op: list}",
                 ));
             }
@@ -1176,7 +1176,7 @@ impl Workspace {
             return Err(ToolError::new(
                 codes::OUTSIDE_ROOTS,
                 "The window's project is outside the folders this server may use; the person \
-                 can add one with --root, or for Aster's own agent in Settings \u{203a} Agent \u{203a} \
+                 can add one with --root, or for Neptune Video's own agent in Settings \u{203a} Agent \u{203a} \
                  Folders",
             ));
         }
@@ -1236,7 +1236,7 @@ impl Workspace {
             [_] if unsaved => Err(ToolError::new(
                 codes::DESKTOP_CONFLICT,
                 format!(
-                    "{} is open in an Aster window, and this server holds work for it that the \
+                    "{} is open in a Neptune Video window, and this server holds work for it that the \
                      file does not have. Keep that work in a new file with project_save \
                      {{destination}}.",
                     path.display()
@@ -1245,7 +1245,7 @@ impl Workspace {
             [holder] if holder.document.file_version == ours && ours.is_some() => {
                 self.become_desktop(holder);
                 self.notices.push(format!(
-                    "{} is open in an Aster window, so edits now go to the window and appear \
+                    "{} is open in a Neptune Video window, so edits now go to the window and appear \
                      there at once; they are saved when the window saves (project_save). The \
                      server's own undo history for this project ended here.",
                     path.display()
@@ -1255,7 +1255,7 @@ impl Workspace {
             [holder] if !holder.document.dirty => Err(ToolError::new(
                 codes::DESKTOP_STALE,
                 format!(
-                    "{} is open in an Aster window that shows an older version of it. Reopen \
+                    "{} is open in a Neptune Video window that shows an older version of it. Reopen \
                      it in the window, or close it there, then retry.",
                     path.display()
                 ),
@@ -1263,7 +1263,7 @@ impl Workspace {
             [_] => Err(ToolError::new(
                 codes::DESKTOP_CONFLICT,
                 format!(
-                    "{} is open in an Aster window with unsaved changes made from a different \
+                    "{} is open in a Neptune Video window with unsaved changes made from a different \
                      version. Ask the person to save or close it, or call desktop {{op: \
                      attach}} to continue with what the window shows.",
                     path.display()
@@ -1272,7 +1272,7 @@ impl Workspace {
             _ => Err(ToolError::new(
                 codes::DESKTOP_CONFLICT,
                 format!(
-                    "{} is open in more than one Aster window; close all but one",
+                    "{} is open in more than one Neptune Video window; close all but one",
                     path.display()
                 ),
             )),
@@ -1340,7 +1340,7 @@ impl Workspace {
         sessions
     }
 
-    /// Launches the `aster` window beside this server on the project's
+    /// Launches the `neptune-video` window beside this server on the project's
     /// file and edits it there once it answers.
     pub fn launch_desktop(&mut self, path: Option<PathBuf>) -> Result<Session, ToolError> {
         self.following = false;
@@ -1368,9 +1368,9 @@ impl Workspace {
         };
         self.check_leavable()?;
         let program = self.desktop_program.clone().ok_or_else(|| {
-            ToolError::unavailable("No Aster program was found beside this server")
+            ToolError::unavailable("No Neptune Video program was found beside this server")
         })?;
-        let folder = std::env::temp_dir().join(format!("aster-mcp-{}", std::process::id()));
+        let folder = std::env::temp_dir().join(format!("neptune-video-mcp-{}", std::process::id()));
         std::fs::create_dir_all(&folder)
             .map_err(|error| ToolError::unavailable(format!("No session folder: {error}")))?;
         // Let go of the file first, so the window owns it from the start;
@@ -1397,7 +1397,7 @@ impl Workspace {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .env_remove("ASTER_MCP_TOKEN");
+            .env_remove("NEPTUNE_VIDEO_MCP_TOKEN");
         detach(&mut command);
         let child = match command.spawn() {
             Ok(child) => child,
@@ -1425,7 +1425,7 @@ impl Workspace {
                 && let Ok(Some(status)) = child.try_wait()
             {
                 return Err(ToolError::unavailable(format!(
-                    "The Aster window ended before it opened the project ({status})"
+                    "The Neptune Video window ended before it opened the project ({status})"
                 )));
             }
             if file.exists() {
@@ -1445,7 +1445,7 @@ impl Workspace {
             thread::sleep(Duration::from_millis(250));
         }
         Err(ToolError::unavailable(
-            "The Aster window did not open the project within 45 seconds; when it has, call \
+            "The Neptune Video window did not open the project within 45 seconds; when it has, call \
              desktop {op: attach}",
         ))
     }
@@ -1514,7 +1514,7 @@ pub fn check_paths(roots: &Roots, command: &Command, project: &Project) -> Resul
     let probed = |asset: &editor_core::Asset| -> Result<(), ToolError> {
         if !editor_media::inspect::importable(&asset.path) {
             return Err(ToolError::invalid(format!(
-                "{} is not a kind of media Aster imports",
+                "{} is not a kind of media Neptune Video imports",
                 asset.path.display()
             )));
         }
@@ -1532,12 +1532,12 @@ pub fn check_paths(roots: &Roots, command: &Command, project: &Project) -> Resul
                 asset.kind
             ))),
             (None, Some(error)) => Err(ToolError::invalid(format!(
-                "{} is not media Aster can use: {}",
+                "{} is not media Neptune Video can use: {}",
                 asset.path.display(),
                 error.message
             ))),
             (None, None) => Err(ToolError::invalid(format!(
-                "{} is not media Aster can use",
+                "{} is not media Neptune Video can use",
                 asset.path.display()
             ))),
         }
@@ -1627,7 +1627,7 @@ impl Authority {
     pub fn start(workspace: Workspace) -> Self {
         let (tasks, inbox) = sync_channel::<Task>(64);
         thread::Builder::new()
-            .name("aster-mcp-authority".into())
+            .name("neptune-video-mcp-authority".into())
             .spawn(move || {
                 let mut workspace = workspace;
                 for task in inbox {
@@ -1718,12 +1718,12 @@ mod tests {
         );
         assert_eq!(
             workspace
-                .save(Some(dir.path().join("guard.aster")), Some(0))
+                .save(Some(dir.path().join("guard.nvp")), Some(0))
                 .unwrap_err()
                 .code,
             "stale_revision"
         );
-        assert!(!dir.path().join("guard.aster").exists());
+        assert!(!dir.path().join("guard.nvp").exists());
         assert_eq!(workspace.snapshot().unwrap().project.name, "Changed");
     }
     fn wait_scenario(first_code: &str, human_edit: bool) -> (AgentResponse, usize, String) {

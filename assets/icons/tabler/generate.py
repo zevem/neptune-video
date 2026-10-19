@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate Aster's embedded Tabler font subset and Rust glyph mapping.
+"""Regenerate Neptune Video's embedded Tabler font subset and Rust glyph mapping.
 
 Run with fonttools==4.60.1. The official pinned npm archive is verified before
 reading any members; --archive accepts a local copy for offline regeneration.
@@ -84,7 +84,7 @@ def generate(data: bytes) -> dict[str, bytes]:
         raise ValueError("SVG mapping version does not match the pinned font release")
     entries = manifest["icons"]
     if len({entry["icon"] for entry in entries}) != len(entries):
-        raise ValueError("Duplicate Aster Icon variant in mapping.json")
+        raise ValueError("Duplicate Neptune Video Icon variant in mapping.json")
     if any(entry["style"] not in FONT_SOURCES for entry in entries):
         raise ValueError("Unsupported icon style in mapping.json")
     outputs: dict[str, bytes] = {}

@@ -7,7 +7,7 @@ use crate::mcp::{
     errors::{ToolError, codes},
     frames::{self, Drawn, MOST_FRAMES},
     jobs::{JobInfo, Progress},
-    server::AsterServer,
+    server::NeptuneVideoServer,
     time::{Stamp, TimeSpec},
 };
 use editor_core::{Project, Time};
@@ -432,7 +432,7 @@ fn model_view(model: &Model, dir: Option<&std::path::Path>) -> serde_json::Value
 }
 
 #[tool_router(router = analysis_tools, vis = "pub(crate)")]
-impl AsterServer {
+impl NeptuneVideoServer {
     #[tool(
         description = "Draw exact timeline/source times with export effects and titles. \
                        only_tracks, exclude_tracks or solo_clip isolate layers without editing \

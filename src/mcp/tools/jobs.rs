@@ -3,7 +3,7 @@
 use crate::mcp::{
     errors::ToolError,
     jobs::{JobInfo, JobState},
-    server::AsterServer,
+    server::NeptuneVideoServer,
 };
 use editor_agent::{AgentOperation, AgentResult};
 use editor_core::export::{RenderJobInfo, RenderState};
@@ -90,7 +90,7 @@ fn export_info(job: &RenderJobInfo) -> JobInfo {
 }
 
 /// Every job: the server's own and the exports of the project's queue.
-pub async fn all(server: &AsterServer) -> JobList {
+pub async fn all(server: &NeptuneVideoServer) -> JobList {
     let mut jobs = server.shared.jobs.list();
     if let Ok(exports) = exports(server).await {
         jobs.extend(exports.iter().map(export_info));
@@ -98,7 +98,7 @@ pub async fn all(server: &AsterServer) -> JobList {
     JobList { jobs }
 }
 
-async fn exports(server: &AsterServer) -> Result<Vec<RenderJobInfo>, ToolError> {
+async fn exports(server: &NeptuneVideoServer) -> Result<Vec<RenderJobInfo>, ToolError> {
     server
         .on(|workspace| {
             let response = workspace.send(AgentOperation::RenderJobs, None)?;
@@ -112,7 +112,7 @@ async fn exports(server: &AsterServer) -> Result<Vec<RenderJobInfo>, ToolError> 
         .await
 }
 
-async fn find(server: &AsterServer, id: Uuid) -> Result<JobInfo, ToolError> {
+async fn find(server: &NeptuneVideoServer, id: Uuid) -> Result<JobInfo, ToolError> {
     if let Some(job) = server.shared.jobs.get(id) {
         return Ok(job);
     }
@@ -124,7 +124,10 @@ async fn find(server: &AsterServer, id: Uuid) -> Result<JobInfo, ToolError> {
         .ok_or_else(|| ToolError::not_found(format!("No job {id}")))
 }
 
-async fn render_op(server: &AsterServer, operation: AgentOperation) -> Result<JobInfo, ToolError> {
+async fn render_op(
+    server: &NeptuneVideoServer,
+    operation: AgentOperation,
+) -> Result<JobInfo, ToolError> {
     server
         .on(move |workspace| {
             let response = workspace.send(operation, None)?;
@@ -139,7 +142,7 @@ async fn render_op(server: &AsterServer, operation: AgentOperation) -> Result<Jo
 }
 
 #[tool_router(router = job_tools, vis = "pub(crate)")]
-impl AsterServer {
+impl NeptuneVideoServer {
     #[tool(
         description = "Jobs (transcription, model installs, scenes, loudness, exports): \
                           list, status, wait for one with progress, cancel; pause, resume, \

@@ -1,6 +1,6 @@
 //! The export sheet's poster: which output frame it is of, at what shape,
 //! when it is asked for, which drawn poster is shown, and the picture the
-//! `aster-poster` thread draws through the export's renderer.
+//! `neptune-video-poster` thread draws through the export's renderer.
 //!
 //! Pictures come from memory. The drawing test reads back from a real
 //! device and prints a line beginning `SKIP:` and passes without one.

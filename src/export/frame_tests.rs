@@ -896,7 +896,8 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("aster-export-test-{}", Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("neptune-video-export-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&path).expect("the scratch directory is made");
         Self(path)
     }

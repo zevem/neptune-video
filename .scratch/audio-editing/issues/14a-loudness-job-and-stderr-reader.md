@@ -121,7 +121,7 @@ Nothing was listened to.
   same run and may make it fail more often. `cargo clippy -p editor-media --all-targets
   --locked -- -D warnings`, `cargo clippy --locked --all-targets -- -D
   warnings` (the desktop), `cargo fmt -p editor-media -- --check`, `cargo
-  check --locked`, `cargo test --locked -p aster-editor peaks` (15 passed)
+  check --locked`, `cargo test --locked -p neptune-video peaks` (15 passed)
   and `scripts/check-architecture.py` pass.
 - Fixtures, printed as `MEASURE:` under `--nocapture`: a stereo 1 kHz tone
   at -20 dBFS reads -20.0 LUFS (BS.1770: -3.01 LUFS for full scale in one

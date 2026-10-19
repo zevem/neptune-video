@@ -45,8 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = AiRuntime::new(|| {})?;
     let config = AiConfig {
         provider,
-        executable: std::env::var_os("ASTER_AI_EXECUTABLE").map(Into::into),
-        model: std::env::var("ASTER_AI_MODEL").ok(),
+        executable: std::env::var_os("NEPTUNE_VIDEO_AI_EXECUTABLE").map(Into::into),
+        model: std::env::var("NEPTUNE_VIDEO_AI_MODEL").ok(),
         timeout_seconds: 180,
         ..AiConfig::default()
     };
@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } => {
                     assert_eq!(delivered, id);
                     assert!(Arc::ptr_eq(&editor.snapshot(), &before));
-                    if std::env::var_os("ASTER_AI_TRACE_PROPOSAL").is_some() {
+                    if std::env::var_os("NEPTUNE_VIDEO_AI_TRACE_PROPOSAL").is_some() {
                         // This opt-in harness creates only synthetic metadata.
                         // Product runtime diagnostics never expose proposals.
                         eprintln!(

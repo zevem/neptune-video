@@ -2,7 +2,7 @@
 //! the settings (rule 18).
 //!
 //! The file is `{ "version": 1, "presets": [ … ] }`. Each preset is read on
-//! its own: one this build cannot read (made by a newer Aster, or damaged by
+//! its own: one this build cannot read (made by a newer Neptune Video, or damaged by
 //! hand) is kept as it was read and written back unchanged, so saving a
 //! preset never loses another. A file that is not such an object at all, or
 //! that names a newer version, is never written over: it is moved aside
@@ -111,7 +111,7 @@ impl ExportPresets {
         match object.get("version").and_then(serde_json::Value::as_u64) {
             Some(version) if version > u64::from(VERSION) => {
                 return Err(format!(
-                    "they were saved by a newer Aster (version {version})"
+                    "they were saved by a newer Neptune Video (version {version})"
                 ));
             }
             Some(_) => {}

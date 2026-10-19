@@ -263,7 +263,7 @@ impl Frames {
         let stopping = stopped.clone();
         let drawing = active.clone();
         let worker = thread::Builder::new()
-            .name("aster-mcp-frames".into())
+            .name("neptune-video-mcp-frames".into())
             .spawn(move || {
                 let reader = SourceReader::new();
                 *publish_cancel

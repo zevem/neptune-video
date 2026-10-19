@@ -1,7 +1,7 @@
 # Tabler icon migration
 
 The user selected Tabler on 2026-10-14 and requested a complete migration of
-Aster's UI icons. This supersedes the visual preference in the earlier
+Neptune Video's UI icons. This supersedes the visual preference in the earlier
 [research](research.md).
 
 Use one pinned Tabler set for every editor control glyph, including window

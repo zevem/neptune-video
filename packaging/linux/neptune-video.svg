@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <title>Aster</title>
+  <title>Neptune Video</title>
   <defs>
     <linearGradient id="tile" x1="128" y1="16" x2="128" y2="240" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#3d9eff"/>

@@ -50,8 +50,8 @@ pub const MAX_HELD_PEAK_BYTES: usize = 32 << 20;
 /// Where peaks are kept between sessions: the user's cache directory, or
 /// the system's temporary one on a system without a home.
 pub fn cache_dir() -> PathBuf {
-    directories::ProjectDirs::from("app", "Aster", "Aster").map_or_else(
-        || std::env::temp_dir().join("aster-peaks"),
+    directories::ProjectDirs::from("rs", "Neptune", "NeptuneVideo").map_or_else(
+        || std::env::temp_dir().join("neptune-video-peaks"),
         |dirs| dirs.cache_dir().join("peaks"),
     )
 }
@@ -2085,7 +2085,7 @@ mod tests {
         let command = beat_markers(editor.project(), clip, &grid(250, 100)).unwrap();
         editor.dispatch(command).unwrap();
         let scratch = Scratch::new();
-        let file = scratch.dir.join("Beats.aster");
+        let file = scratch.dir.join("Beats.nvp");
         editor_store::save_project(&file, editor.project()).unwrap();
         let loaded = editor_store::load_project(&file).unwrap();
         assert_eq!(loaded.markers, editor.project().markers);
@@ -2142,7 +2142,7 @@ mod tests {
 
     impl Scratch {
         fn new() -> Self {
-            let dir = std::env::temp_dir().join(format!("aster-test-{}", Uuid::new_v4()));
+            let dir = std::env::temp_dir().join(format!("neptune-video-test-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&dir).expect("FIXTURE: the test's own directory");
             Self { dir }
         }
@@ -2191,7 +2191,7 @@ mod tests {
     }
 
     fn ffmpeg_available() -> bool {
-        let tool = std::env::var_os("ASTER_FFMPEG").unwrap_or_else(|| "ffmpeg".into());
+        let tool = std::env::var_os("NEPTUNE_VIDEO_FFMPEG").unwrap_or_else(|| "ffmpeg".into());
         std::process::Command::new(tool)
             .arg("-version")
             .stdout(std::process::Stdio::null())

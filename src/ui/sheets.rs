@@ -506,7 +506,7 @@ pub fn settings(
                                 egui::RichText::new(
                                     "Requests go through the Claude or Codex command line \
                                  installed on this computer, with the sign-in it already \
-                                 has. Aster keeps no key or password. As it works, the \
+                                 has. Neptune Video keeps no key or password. As it works, the \
                                  agent edits with every tool an outside agent has, and \
                                  each edit is a step you can undo. It may use the \
                                  project's folders, your Movies, Music, Pictures, \

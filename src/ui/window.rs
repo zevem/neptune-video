@@ -1,4 +1,4 @@
-//! The window's own frame. Aster draws its titlebar: the toolbar moves the
+//! The window's own frame. Neptune Video draws its titlebar: the toolbar moves the
 //! window, three lights at its leading edge close, minimize and maximize it,
 //! and the edges resize it. Nothing here touches the project; closing goes
 //! through the same request as the system's, so unsaved work is still asked

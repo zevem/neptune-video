@@ -73,7 +73,7 @@ cargo bench --locked -p editor-core --bench render_plan
 The [measured handover](../artifacts/performance-acceptance/round1/REPORT.md),
 [predeclared budgets](../artifacts/performance-acceptance/round1/PLAN.md) and
 [recomputed acceptance](../artifacts/performance-acceptance/round1/acceptance.json)
-identify source `b09ea17e` and optimized Linux `aster` `9b9ff3f0`.
+identify source `b09ea17e` and optimized Linux `neptune-video` `9b9ff3f0`.
 The [build record](../artifacts/performance-acceptance/round1/final-build.json)
 passes 310 focused core/desktop tests, formatting, architecture, denied-warning
 core/desktop all-target Clippy, media preflight and locked release linking.
@@ -95,7 +95,7 @@ against 2 GiB, GPU process row 314 MiB against 512 MiB, five decoder limit,
 finite memory-growth budget and paused CPU below 1% of one core. Visible and
 native minimized idle samples also pass. These playback controls and the
 large-input control constrain task-owned children to CPUs 0–15 (eight P cores
-and their SMT siblings); Aster ships no CPU-affinity policy.
+and their SMT siblings); Neptune Video ships no CPU-affinity policy.
 
 **Default shared-host performance remains below budget.** Completed unpinned
 playback observations range from 23.067–25.233 to 29.192–29.733 changes/s;
@@ -110,7 +110,7 @@ concurrent storage/agent work and hours-long sessions remain unverified.
 
 The [playback performance findings](../artifacts/production-readiness/playback-performance-round1/FINDINGS.md)
 and [independent worker audit](../artifacts/production-readiness/playback-performance-round1/sustained-audit.md)
-belong to source `ebc9da4c` and optimized Linux `aster` `4b3128d8`.
+belong to source `ebc9da4c` and optimized Linux `neptune-video` `4b3128d8`.
 The [final build record](../artifacts/production-readiness/playback-performance-round1/final-build-attempt-03/build-record.json)
 passes 610 workspace tests, formatting, architecture checks, warning-denied
 workspace Clippy and locked release linking, with explicit FFmpeg 8.0.1.
@@ -183,7 +183,7 @@ cargo bench --locked -p editor-core --bench timeline
 This measures pure editing metadata on a synthetic timeline. It excludes
 decoding, audio, texture upload, native input and GPU/display presentation, and
 does not exercise growing long-term history. That initial single run has no
-repeated-run distribution and is not a CapCut/Palmier Pro or Neptune comparison. It replaces
+repeated-run distribution and is not a CapCut/Palmier Pro or Neptune Terminal comparison. It replaces
 the earlier preliminary query run that sampled only the first 100 seconds.
 
 An earlier [five-trial sample](../artifacts/production-readiness/portable-fixture/timeline-repeated.json)
@@ -484,7 +484,7 @@ remain diagnostic records rather than successful native proof.
 
 The [native report](../artifacts/native/performance-round1/report.json) and
 [independent verification](../artifacts/production-readiness/final/round9-native-performance-root-verification.json)
-identify source `b29ccb69`, optimized `aster` `14435a4a` and unchanged source/
+identify source `b29ccb69`, optimized `neptune-video` `14435a4a` and unchanged source/
 binaries throughout. All 48 recorded process entries were verified stopped.
 The host was an i9-13900HX, approximately 31 GiB RAM and NVIDIA RTX 4060 Laptop
 GPU/driver 595.99.02. It remained shared with the person's desktop; the task
@@ -497,7 +497,7 @@ Two rigs were measured: software Xvfb and NVIDIA-EGL headless Weston→Xwayland
 with DRI3/Present. Neither had physical scan-out/vblank. Forced NVIDIA-only,
 lavapipe-only and GL-only loader comparisons, per-PID GPU rows and driver thread
 signatures strongly support NVIDIA Vulkan rendering in the default runs;
-Aster did not log its chosen adapter. This does not establish hardware decoding.
+Neptune Video did not log its chosen adapter. This does not establish hardware decoding.
 
 Paused trials used six seconds of warmup followed by about 15.2 seconds, three
 trials per case. No input, agent calls or screen polling occurred during those
@@ -831,7 +831,7 @@ every bucket of the media in view. That cost is not measured.
 The Agent tab's live agent ([native AI](native-ai.md#made-as-it-works)) has
 one worker thread a window (`editor-agent/src/conversation.rs`), started with
 the window, and at most one provider process, started by the first request
-and kept for the follow-ups. The provider starts `aster-mcp` as its own
+and kept for the follow-ups. The provider starts `neptune-video-mcp` as its own
 child; that server reaches the window through its agent session, one request
 at a time, answered on the window's logic pass like an outside client's. One
 request is answered at a time, and a prompt is 64 KiB at most. A provider's
@@ -843,7 +843,7 @@ most, Claude takes 400 turns at most, and Codex gives a tool 300 s. Stop
 kills the provider's whole process group, its server included (seen on
 macOS; Windows uses its own group and was not tried). The window is woken for each
 event read. The server's folders are in a roots file that a thread of the
-window's own (`aster-agent-roots`) writes whole, so the window does not wait
+window's own (`neptune-video-agent-roots`) writes whole, so the window does not wait
 on the disk while drawing. While the agent talks the window compares the
 revision, project path and the person's added folders each frame and
 recomputes the folders only when one of them changes; the person's usual
@@ -856,7 +856,7 @@ and while a conversation goes on the file follows changes without a wait.
 The server reads the file again only when its modified
 time, length or (on Unix) inode changes, and reads at most 256 KiB. Tests
 cover the file's writing and rereading; the cost of these writes and checks
-is not measured. The memory and CPU of the provider and `aster-mcp` during a
+is not measured. The memory and CPU of the provider and `neptune-video-mcp` during a
 conversation, and the cost of a long panel of steps, are not measured.
 
 ## Advanced editing budgets
@@ -961,7 +961,7 @@ before.
 
 While one lane steps backwards, the preview worker starts the run before the
 one being shown after it has published a frame (`DecoderPool::look_behind`).
-An `aster-look-behind` thread owns that FFmpeg process and reads only as many
+An `neptune-video-look-behind` thread owns that FFmpeg process and reads only as many
 frames as the pool has room to take, so the frames it holds, the pending
 frames and the cache together stay inside `FRAME_CACHE_BYTES`. It takes a
 decoder slot only when one of the five is free and gives it up when a request
@@ -1060,7 +1060,7 @@ underruns.
 
 | Bound | Value |
 | --- | --- |
-| Lane threads / FFmpeg processes at a time | 1 reading sound (`aster-sound`) and 1 reading the cache (`aster-sound-load`) / 1 |
+| Lane threads / FFmpeg processes at a time | 1 reading sound (`neptune-video-sound`) and 1 reading the cache (`neptune-video-sound-load`) / 1 |
 | Jobs waiting / cache reads waiting | 16 (`SOUND_QUEUE`) / 16 (`PEAK_LOADS`) |
 | Sound read | The first sound stream, one channel, 8 kHz, 16-bit, 32 KiB a read under the 10 s read deadline |
 | Peaks | 100 buckets a second (`PEAKS_PER_SECOND`) of 4 bytes; 2,097,152 a file at most (`MAX_PEAK_BUCKETS`, 5.8 hours, 8 MiB) |
@@ -1140,11 +1140,11 @@ A separation runs one external process, the person's stem separator
 (Demucs), on the sound lane over a whole media file. It holds the lane for
 as long as the tool runs, so waveforms, loudness and beats wait behind it;
 the tool's own threads, memory, GPU use and model download are its own and
-are not bounded by Aster.
+are not bounded by Neptune Video.
 
 | Bound | Value |
 | --- | --- |
-| Probe | Once a session on `aster-separator-probe`, `<tool> --help` within 60 s and 256 KiB of output; the window reads the answer and never waits for it |
+| Probe | Once a session on `neptune-video-separator-probe`, `<tool> --help` within 60 s and 256 KiB of output; the window reads the answer and never waits for it |
 | Process | 1; its output drained and dropped on a thread of its own; its progress read from the last 8 KiB of its error pipe every 0.5 s; looked at every 0.1 s for cancellation and its end |
 | Deadline | The whole run, 15 minutes plus 4 times the media's length, enforced by the process watchdog |
 | Files | One `<media> (stems).part` folder in the media folder, made with `create_dir` before the process (one already there is refused and left) and removed with what is in it however the job ends; stems moved out by hard link to a free name, or a rename where links are refused; never over a file |
@@ -1164,7 +1164,7 @@ claimed: nothing was listened to, and two tones are no test of it.
 ### Mixer level stage and master limiter
 
 The level stage and the limiter are arithmetic in the mixer's sum loop on the
-`aster-audio` worker; neither starts a process or allocates per frame, and the
+`neptune-video-audio` worker; neither starts a process or allocates per frame, and the
 device callback still only copies.
 
 | Bound | Value |
@@ -1231,7 +1231,7 @@ except `Drop`, which joins it.
 
 | Bound | Value |
 | --- | --- |
-| Threads / processes | 1 (`aster-record`) beside the device's own callback / none |
+| Threads / processes | 1 (`neptune-video-record`) beside the device's own callback / none |
 | Ring | Two seconds at the device's rate and channels (`RECORD_RING_SECONDS`), 32-bit samples in atomics: 375 KiB for mono 48 kHz, 750 KiB for stereo, 5.9 MiB at the highest rate taken (384 kHz stereo). A full ring drops the frames and counts them (`Take::dropped`); the callback never waits |
 | Callback | Copies whole frames into the ring with atomics: no lock, allocation, file work or wake. After `stop` it takes nothing |
 | Channels and rate | One or two channels as the device delivers them, more refused; 1 Hz to 384 kHz |
@@ -1254,7 +1254,7 @@ any length beyond these fixtures. The 44-byte header has no `fact` chunk;
 FFmpeg 8.1.2 reads it.
 
 In the desktop the frame loop does no file work for a take: the take's path
-and media folder are made on a short worker thread (`aster-take`), and the
+and media folder are made on a short worker thread (`neptune-video-take`), and the
 service is started from its answer. While a take runs the window is drawn
 ten times a second (`record::REPAINT`) for its elapsed time and level, and
 not at all for the take once it is placed; starting and closing are woken by
@@ -1274,7 +1274,7 @@ measurement.
 
 ### Title lane and textures
 
-A title costs the frame one quad. Its picture is drawn on the `aster-titles`
+A title costs the frame one quad. Its picture is drawn on the `neptune-video-titles`
 thread, never on the frame, and an animated title asks for a new picture on
 each frame its layer changes. How long a picture takes to draw, and so whether
 an animated caption keeps up with 30 or 60 fps playback, has not been
@@ -1283,7 +1283,7 @@ the frame.
 
 | Bound | Value |
 | --- | --- |
-| Lane threads | 1 (`aster-titles`), started with the window |
+| Lane threads | 1 (`neptune-video-titles`), started with the window |
 | Titles waiting for a picture | 64 (`TEXT_QUEUE`); past it the oldest is let go. Only the newest request per title is kept |
 | Pictures drawn but not yet taken | 64 MiB (`TITLE_BUDGET`); the lane draws no more until the window takes some |
 | Picture size | 4096 pixels a side at most (`MAX_TITLE_SIDE`); scale 1/64 to 16, quantized to eighth octaves so a zoom does not redraw every frame |
@@ -1296,7 +1296,7 @@ the frame.
 
 | Bound | Value |
 | --- | --- |
-| Jobs at a time | 1 on the `aster-speech` thread, started the first time captions are asked for: a model download or a transcription |
+| Jobs at a time | 1 on the `neptune-video-speech` thread, started the first time captions are asked for: a model download or a transcription |
 | Stretch heard | 6 hours of timeline at most (`MAX_SPEECH`) |
 | Sound held | The timeline mix at 16 kHz mono, rendered offline and taken in pieces of about 5 minutes cut at a quiet moment; one piece and its speech-only copy are held, not the whole stretch |
 | Recognition threads | All processors but one, from 1 to 8 |
@@ -1337,16 +1337,16 @@ FFmpeg commands run outside the editor. None is from macOS or Windows.
 | Bound | Value |
 | --- | --- |
 | Jobs listed | 64, finished ones included (`MAX_JOBS`); queueing more is refused as `queue_full` |
-| Jobs rendering | 1, on the `aster-render` thread; a paused running job holds the queue |
-| Output frames in existence | 3: the one being drawn and 2 handed to the `aster-render-writer` thread (`IN_FLIGHT`), in recycled buffers. At 3840x2160 that is about 95 MiB; at 8192x8192 about 768 MiB |
+| Jobs rendering | 1, on the `neptune-video-render` thread; a paused running job holds the queue |
+| Output frames in existence | 3: the one being drawn and 2 handed to the `neptune-video-render-writer` thread (`IN_FLIGHT`), in recycled buffers. At 3840x2160 that is about 95 MiB; at 8192x8192 about 768 MiB |
 | One frame written to FFmpeg | 60 s (`WRITE_DEADLINE`); a write past it kills FFmpeg, which is an encoder failure (see the software fallback in [architecture](architecture.md#export-and-rendering)) |
-| FFmpeg finishing the file | At least 600 s (`FINISH_DEADLINE`) plus the part file's size at 8 MiB/s (`FINISH_PACE`), on an `aster-render-finish` thread; past that, as long as the part file's length or modified time changes; 120 s without a change (`FINISH_STALL`) kills FFmpeg and fails the job, with no software fallback |
+| FFmpeg finishing the file | At least 600 s (`FINISH_DEADLINE`) plus the part file's size at 8 MiB/s (`FINISH_PACE`), on an `neptune-video-render-finish` thread; past that, as long as the part file's length or modified time changes; 120 s without a change (`FINISH_STALL`) kills FFmpeg and fails the job, with no software fallback |
 | One frame read back from the device | 60 s (`READ_DEADLINE` in `src/export/frame.rs`), polled without blocking, with short sleeps |
 | Progress wakes | At most one every 100 ms (`WAKE_EVERY`); start, stage changes, the end and the probe result wake at once |
 | Finished events waiting | 32 (`MAX_EVENTS`); the oldest go first |
 | Speed shown | Measured over the last 2 s (`SPEED_WINDOW`) |
 | Shutdown | Cancels every job and waits 750 ms at most for the running one to tidy up (`SHUTDOWN_GRACE`); joins no thread |
-| Sound file in the job's folder | Raw 32-bit float: sample rate x channels x 4 bytes a second, in `.aster-render-<job>` beside the destination, or `<system temp>/aster-render-<job>` when that folder cannot be made. 48 kHz stereo is 384,000 bytes a second, about 1.4 GB an hour (computed, not measured). No free space is checked first |
+| Sound file in the job's folder | Raw 32-bit float: sample rate x channels x 4 bytes a second, in `.neptune-video-render-<job>` beside the destination, or `<system temp>/neptune-video-render-<job>` when that folder cannot be made. 48 kHz stereo is 384,000 bytes a second, about 1.4 GB an hour (computed, not measured). No free space is checked first |
 | Left-over part files and working folders | Removed once unchanged for 1 h (`STALE_AFTER`) and named by no listed job: in the destination folder when a job starts there, and in the system's temporary folder when the queue starts |
 | Part file name | `.<name>.<job>.part`, the name cut at a character boundary so the whole stays within 255 bytes |
 | Encoder FFmpeg threads | libx264: `-threads:v` x264's own count, 1.5 times the logical processors (4 when they cannot be counted), from 1 to 24 (`X264_MAX_THREADS`): 2 processors give 3, 8 give 12, 16 or more give 24. libsvtav1: `-svtav1-params lp=4` (`SVT_AV1_PARALLELISM`), as it ignores `-threads`. libx265, libvpx-vp9, prores_ks, libaom-av1 and every hardware encoder get no thread option. The encoder probe uses the same arguments. Memory is under [export FFmpeg thread caps](#export-ffmpeg-thread-caps) |
@@ -1377,7 +1377,7 @@ FFmpeg commands run outside the editor. None is from macOS or Windows.
 
 | Bound | Value |
 | --- | --- |
-| Thread | One `aster-poster` thread with its own `FrameRenderer` and `SourceReader`, while the dialog is open |
+| Thread | One `neptune-video-poster` thread with its own `FrameRenderer` and `SourceReader`, while the dialog is open |
 | Picture | The output's shape at most 640 pixels on the long side (`POSTER_SIDE`) |
 | Requests | Sent once unchanged for 150 ms (`SETTLE`); only the latest waits; 10 s to read the picture back (`READ_DEADLINE` in `poster.rs`) |
 
@@ -1402,7 +1402,7 @@ There is no prefetch thread; FFmpeg's own threads decode ahead.
 
 | Bound | Value |
 | --- | --- |
-| When | Once on an `aster-render-probe` thread when the queue starts, and again on request; queued jobs wait for it |
+| When | Once on an `neptune-video-render-probe` thread when the queue starts, and again on request; queued jobs wait for it |
 | Probes at once | 4 (`PROBES_AT_ONCE`), each with a 10 s deadline (`PROBE_DEADLINE`) |
 | Test | Video: 2 frames of a 256x144 black picture (`PROBE_PICTURE`) through the export's own argument builder. Sound: 0.1 s of silence. VA-API tries each `/dev/dri/renderD*` |
 | Listings read | `-encoders` and `-muxers`, 4 MiB of output each at most (`LISTING_BYTES`) |
@@ -1411,7 +1411,7 @@ There is no prefetch thread; FFmpeg's own threads decode ahead.
 
 | Bound | Value |
 | --- | --- |
-| Lane threads / FFmpeg processes | 1 (`aster-proxy`) / 1; one proxy written at a time |
+| Lane threads / FFmpeg processes | 1 (`neptune-video-proxy`) / 1; one proxy written at a time |
 | Proxies waiting | 64 (`PROXY_QUEUE`); past it a request is refused and asked again at the next change of the library, project or mode |
 | Proxy picture | 1280 pixels on the long side at most (`PROXY_SIDE`), never larger than the source; H.264 `veryfast`, CRF 23, a keyframe every 15 frames and no B-frames, or MJPEG without libx264; no sound; frame grid from the file's start (`fps=N/D:start_time=0`); none for a source with an alpha pixel format |
 | FFmpeg threads | Half the processors, from 2 to 8, and 2 filter threads |
@@ -1451,7 +1451,7 @@ FFmpeg's start and the sound render are a large part of them.
 ### Release-build export measurements
 
 From the [native verification](verification.md#export-and-rendering) on
-2026-10-14: `cargo build --release --locked --bins`, `aster` SHA-256
+2026-10-14: `cargo build --release --locked --bins`, `neptune-video` SHA-256
 `3452f930…f2e572`; Dell G15 5530, i9-13900HX (32 threads), 30 GiB RAM,
 RTX 4060 Laptop driver 595.99.02 on Vulkan, Linux 7.0.0-38-generic; FFmpeg
 8.0.1-3ubuntu2. The window ran on Xvfb with no window manager, with other
@@ -1472,9 +1472,9 @@ figure (`SPEED_WINDOW`), polled during the job.
 
 | Memory | Result | How |
 | --- | --- | --- |
-| `aster` | Highest VmRSS 396 to 446 MiB on 1080p and smaller jobs, 570 MiB on 4K jobs | Sampled every 100 ms |
-| All of `aster`'s child processes, the viewer's decoders included | Highest summed VmRSS: about 1,150 to 1,190 MiB for 1080p NVENC, 1,720 to 1,780 MiB for 1080p libx264, 2,810 to 3,020 MiB for 4K NVENC, 5,990 to 6,040 MiB for 4K libx264. RSS counts shared pages in each process | Same |
-| 4K libx264 job, per process | Highest PSS: encoder FFmpeg 4,942 MiB, export source reader 1,004 MiB, `aster` 402 MiB. Highest PSS of `aster` and all its children together: 6,294 MiB | Sampled PSS |
+| `neptune-video` | Highest VmRSS 396 to 446 MiB on 1080p and smaller jobs, 570 MiB on 4K jobs | Sampled every 100 ms |
+| All of `neptune-video`'s child processes, the viewer's decoders included | Highest summed VmRSS: about 1,150 to 1,190 MiB for 1080p NVENC, 1,720 to 1,780 MiB for 1080p libx264, 2,810 to 3,020 MiB for 4K NVENC, 5,990 to 6,040 MiB for 4K libx264. RSS counts shared pages in each process | Same |
+| 4K libx264 job, per process | Highest PSS: encoder FFmpeg 4,942 MiB, export source reader 1,004 MiB, `neptune-video` 402 MiB. Highest PSS of `neptune-video` and all its children together: 6,294 MiB | Sampled PSS |
 
 These figures are from the build before the export FFmpeg thread caps; no
 job through the editor was measured with them.
@@ -1485,7 +1485,7 @@ Measured on 2026-10-14 on the same host (i9-13900HX, 32 logical processors,
 30 GiB RAM), FFmpeg 8.0.1 from `.tools`, SVT-AV1 2.3.0, by running the
 export's source reader command into its encoder command, with the export's
 own arguments, at Recommended and Balanced, outside the editor and without
-its compositor. Another task's `aster` kept the load average between 2 and
+its compositor. Another task's `neptune-video` kept the load average between 2 and
 21, so each figure is the median of 3 interleaved runs, and speed varied up
 to ±15 % between runs. Sources were synthetic: `testsrc2` with noise, H.264 at
 about 300 Mbit/s, and HEVC at 4K. Peaks are the higher of VmHWM and
@@ -1578,6 +1578,6 @@ distributions. Include decoder/subprocess CPU and memory when applicable;
 process RSS excludes GPU memory and can include shared mappings. Observe actual
 native input and presented output when claiming latency.
 
-Failed measurements remain diagnostic evidence. Neptune's parser/PTY/idle
-results belong to Neptune and are not an editor baseline. Cross-product
+Failed measurements remain diagnostic evidence. Neptune Terminal's parser/PTY/idle
+results belong to Neptune Terminal and are not an editor baseline. Cross-product
 comparisons require the same media, hardware, operation and observation method.

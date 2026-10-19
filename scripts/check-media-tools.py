@@ -2,7 +2,7 @@
 """Require working media executables before claiming FFmpeg fixture coverage.
 
 Tools resolve as a build in this checkout resolves them: an explicit
-`ASTER_FFMPEG` / `ASTER_FFPROBE`, else the copy fetch-media-tools.py placed
+`NEPTUNE_VIDEO_FFMPEG` / `NEPTUNE_VIDEO_FFPROBE`, else the copy fetch-media-tools.py placed
 in `.tools/media/<os>-<arch>`, else `PATH`.
 """
 
@@ -19,7 +19,7 @@ import tempfile
 
 TIMEOUT_SECONDS = 10
 MAX_VERSION_LINE_BYTES = 4096
-TOOLS = (("ffmpeg", "ASTER_FFMPEG"), ("ffprobe", "ASTER_FFPROBE"))
+TOOLS = (("ffmpeg", "NEPTUNE_VIDEO_FFMPEG"), ("ffprobe", "NEPTUNE_VIDEO_FFPROBE"))
 ROOT = Path(__file__).resolve().parents[1]
 
 

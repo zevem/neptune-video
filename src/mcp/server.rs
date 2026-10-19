@@ -27,9 +27,9 @@ use std::{
     time::Duration,
 };
 
-pub const PROJECT_URI: &str = "aster://project";
-pub const HISTORY_URI: &str = "aster://history";
-pub const JOBS_URI: &str = "aster://jobs";
+pub const PROJECT_URI: &str = "neptune-video://project";
+pub const HISTORY_URI: &str = "neptune-video://history";
+pub const JOBS_URI: &str = "neptune-video://jobs";
 
 /// What every session of one server shares.
 pub struct Shared {
@@ -52,7 +52,7 @@ pub struct Watcher {
 }
 
 #[derive(Clone)]
-pub struct AsterServer {
+pub struct NeptuneVideoServer {
     pub shared: Arc<Shared>,
     /// One per MCP session, to know its subscriptions.
     session: uuid::Uuid,
@@ -65,7 +65,7 @@ pub struct AsterServer {
 /// `structuredContent`). Input schemas retain structure and prose for operation
 /// choices, stored shapes, values and units. Shared targeting/guard guidance
 /// lives in the server instructions and docs/mcp.md.
-fn compact(mut router: ToolRouter<AsterServer>) -> ToolRouter<AsterServer> {
+fn compact(mut router: ToolRouter<NeptuneVideoServer>) -> ToolRouter<NeptuneVideoServer> {
     fn quiet(value: &mut serde_json::Value, prose: bool) {
         match value {
             serde_json::Value::Object(object) => {
@@ -160,11 +160,11 @@ fn compact(mut router: ToolRouter<AsterServer>) -> ToolRouter<AsterServer> {
 }
 
 pub const INSTRUCTIONS: &str = "\
-Aster is a desktop video editor. These tools edit one Aster project (.aster) with the same \
-validated commands, history and file as the Aster window.
+Neptune Video is a desktop video editor. These tools edit one Neptune Video project (.nvp) with the same \
+validated commands, history and file as the Neptune Video window.
 
 Start with project_status. Make a project with project_create (a path makes the file at once), \
-or open one with project_open; desktop {op: list|attach} edits a project open in a running Aster \
+or open one with project_open; desktop {op: list|attach} edits a project open in a running Neptune Video \
 window, where every edit appears at once. Import media with media_import, then place it with \
 clip_add. Inspect scope tracks for slim track state; timeline/media are paged (50 by default, \
 next_offset continues). Filter by track_ids, clip_ids, asset_ids or time_range {start,end}; fields \
@@ -207,7 +207,7 @@ poll it with job {op: wait}. Jobs never edit; apply their results with captions 
 {op: from_transcript} or audio_edit {op: normalize}. edit_apply reaches every core command; \
 edit_schema describes them. Files are read and written only inside the server's root folders.";
 
-impl AsterServer {
+impl NeptuneVideoServer {
     pub fn new(shared: Arc<Shared>) -> Self {
         Self {
             shared,
@@ -296,7 +296,7 @@ impl AsterServer {
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for AsterServer {
+impl ServerHandler for NeptuneVideoServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(
             ServerCapabilities::builder()
@@ -306,8 +306,8 @@ impl ServerHandler for AsterServer {
                 .build(),
         )
         .with_server_info(
-            Implementation::new("aster", env!("CARGO_PKG_VERSION"))
-                .with_title("Aster video editor"),
+            Implementation::new("neptune-video", env!("CARGO_PKG_VERSION"))
+                .with_title("Neptune Video editor"),
         )
         .with_instructions(INSTRUCTIONS)
     }

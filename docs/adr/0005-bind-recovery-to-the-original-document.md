@@ -18,7 +18,7 @@ and atomic replacement for cooperating writers; the recovery lease owns only
 recovery. This is not a global filesystem compare-and-swap: external programs
 that ignore the lock can race the final check and replacement.
 
-The [headless CLI](../../src/bin/aster-agent.rs) and
+The [headless CLI](../../src/bin/neptune-video-agent.rs) and
 [desktop](../../src/app.rs) implement this recovery Save As restriction.
 [Protocol verification](../agent-protocol.md) and the
 [db30 native GTK recovery run](../../artifacts/native/ai-round8/report.json)

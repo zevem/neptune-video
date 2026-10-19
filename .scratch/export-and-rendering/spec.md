@@ -61,7 +61,7 @@ This document is the binding design. Code comments, tests and the later ADR
    found the expected streams and duration. Cancel or failure removes the
    part file and job temp files. Sidecar subtitles are written the same way.
 8. **One render at a time, many queued.** The render queue runs jobs in
-   order on one `aster-render` thread. Pause stops feeding frames (FFmpeg
+   order on one `neptune-video-render` thread. Pause stops feeding frames (FFmpeg
    blocks on its pipe; no signals); resume continues the same encode.
    Cancel kills the job's own processes. Retry re-runs a failed or cancelled
    job from its snapshot. Finished jobs stay listed until removed. Quitting
@@ -468,7 +468,7 @@ Proxies and preview:
 HDR, 10-bit H.264/H.265 output, alpha-channel export, variable frame rate
 output, audio crossfades on transitions, pitch-preserving speed, surround
 sound, smart rendering (stream copy), distributed or parallel jobs, export
-from the headless `aster-agent` binary, and native acceptance on macOS or
+from the headless `neptune-video-agent` binary, and native acceptance on macOS or
 Windows (VideoToolbox, AMF, QSV, MF are probed and driven by the same code but
 were not run here).
 
@@ -554,15 +554,15 @@ the code and these notes hold over the text above:
 - Preview settings (decision 9): an unknown `quality` or `proxies`, or a
   non-numeric `proxy_budget_gib`, reads as the default and is written back
   unchanged until the person chooses that setting.
-- Working folder: `.aster-render-<id>`, hidden beside the destination; the
+- Working folder: `.neptune-video-render-<id>`, hidden beside the destination; the
   system's temporary folder only when that one cannot be made. The part
   name is cut so that it stays within 255 bytes.
 - Sweep (rule 20, extended to exports): at each job start, part files and
   working folders in the destination folder unchanged for an hour
   (`STALE_AFTER`) and of no listed job are removed; at queue start, the same
-  for `aster-render-<id>` in the temporary folder. Symbolic links are
+  for `neptune-video-render-<id>` in the temporary folder. Symbolic links are
   skipped.
-- Finish watchdog: `Encoder::finish` runs on `aster-render-finish`; FFmpeg
+- Finish watchdog: `Encoder::finish` runs on `neptune-video-render-finish`; FFmpeg
   gets at least `FINISH_DEADLINE` (600 s) plus the part file's size at
   `FINISH_PACE` (8 MiB/s), then as long as the file changes, and
   `FINISH_STALL` (120 s) without a change fails the job.
@@ -592,7 +592,7 @@ the code and these notes hold over the text above:
   queued and held jobs. The panel says "Held" and "Held until you start
   it", and offers "Start all".
 - Interface: the poster is drawn from the originals by its own
-  `aster-poster` thread (`POSTER_SIDE` 640, `SETTLE` 150 ms), not from the
+  `neptune-video-poster` thread (`POSTER_SIDE` 640, `SETTLE` 150 ms), not from the
   viewer's texture. Shift+Cmd/Ctrl+E opens the render queue, and each chord
   opens its sheet over the other. Closing the sheet unqueued keeps its state
   for the same project; `export_preset` in the settings remembers the

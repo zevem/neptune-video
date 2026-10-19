@@ -3,7 +3,7 @@
 //! header must name the loopback; a browser's `Origin` is refused; bodies
 //! are capped. The address and token are written to a connection file only
 //! its owner can read, removed when the server stops.
-use super::server::{AsterServer, Shared};
+use super::server::{NeptuneVideoServer, Shared};
 use axum::{
     Router,
     body::Body,
@@ -89,7 +89,7 @@ pub async fn serve(
         .map_err(|_| format!("{address} is not an IP address and port (use 127.0.0.1:PORT)"))?;
     if !address.ip().is_loopback() {
         return Err(format!(
-            "{address} is not a loopback address; aster-mcp serves this computer only"
+            "{address} is not a loopback address; neptune-video-mcp serves this computer only"
         ));
     }
     let given = token.is_some();
@@ -102,9 +102,9 @@ pub async fn serve(
     config.cancellation_token = stop.child_token();
     let factory = {
         let shared = shared.clone();
-        move || Ok(AsterServer::new(shared.clone()))
+        move || Ok(NeptuneVideoServer::new(shared.clone()))
     };
-    let service: StreamableHttpService<AsterServer, LocalSessionManager> =
+    let service: StreamableHttpService<NeptuneVideoServer, LocalSessionManager> =
         StreamableHttpService::new(factory, Default::default(), config);
     let router = Router::new()
         .nest_service("/mcp", service)
@@ -123,14 +123,16 @@ pub async fn serve(
             "roots": shared.roots.list(),
         });
         match write_private(file, &serde_json::to_vec_pretty(&body).unwrap_or_default()) {
-            Ok(()) => eprintln!("aster-mcp: connection file {}", file.display()),
-            Err(error) => eprintln!("aster-mcp: the connection file was not written: {error}"),
+            Ok(()) => eprintln!("neptune-video-mcp: connection file {}", file.display()),
+            Err(error) => {
+                eprintln!("neptune-video-mcp: the connection file was not written: {error}")
+            }
         }
     }
     eprintln!(
-        "aster-mcp: serving {url} ({})",
+        "neptune-video-mcp: serving {url} ({})",
         if given {
-            "token from ASTER_MCP_TOKEN"
+            "token from NEPTUNE_VIDEO_MCP_TOKEN"
         } else {
             "token in the connection file"
         }

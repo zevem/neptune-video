@@ -93,7 +93,7 @@ impl Roots {
             if too_wide(&canonical) {
                 return Err(format!(
                     "{} is too wide to work in{}. Name the folder the agent may use with \
-                     --root DIR or ASTER_MCP_ROOTS.",
+                     --root DIR or NEPTUNE_VIDEO_MCP_ROOTS.",
                     canonical.display(),
                     if implicit {
                         " (it is the working directory)"
@@ -157,7 +157,7 @@ impl Roots {
             codes::OUTSIDE_ROOTS,
             format!(
                 "{} is not inside the folders this server may use ({}); the person can add one \
-                 with --root, or for Aster's own agent in Settings › Agent › Folders",
+                 with --root, or for Neptune Video's own agent in Settings › Agent › Folders",
                 given.display(),
                 self.list()
                     .iter()
@@ -469,7 +469,7 @@ mod tests {
         );
         assert_eq!(
             roots
-                .destination(Path::new("dir/new.aster"), false)
+                .destination(Path::new("dir/new.nvp"), false)
                 .unwrap_err()
                 .code,
             codes::OUTSIDE_ROOTS

@@ -216,10 +216,10 @@ def dependencies(root: Path, metadata: dict, stage: Path, inputs: dict) -> list:
 
 
 def media_tools(folder: Path, target: str, stage: Path, inputs: dict) -> dict:
-    """Ship the fetched ffmpeg and ffprobe beside bin/aster, where Aster looks first."""
+    """Ship the fetched ffmpeg and ffprobe beside bin/neptune-video, where Neptune Video looks first."""
     folder = Path(os.path.abspath(folder))
     record = json.loads(regular(folder / "media-tools.json").read_text())
-    if record.get("schema") != "aster-media-tools-v1" or record.get("platform") != MEDIA_PLATFORMS[target]:
+    if record.get("schema") != "neptune-video-media-tools-v1" or record.get("platform") != MEDIA_PLATFORMS[target]:
         raise ValueError(f"Media tools are not the {MEDIA_PLATFORMS[target]} build fetch-media-tools.py writes")
     suffix = ".exe" if TARGETS[target][0] == "Windows" else ""
     executables = {f"ffmpeg{suffix}", f"ffprobe{suffix}"}
@@ -303,14 +303,14 @@ def package(root: Path, build_record: Path, cargo_metadata: Path, target: str,
                   regular(Path(__file__)): digest(Path(__file__))}
         record = json.loads(build_record.read_text())
         before = source_snapshot(root, record)
-        if set(record["binaries"]) != {"aster", "aster-agent", "aster-mcp"} or not str(record.get("profile", "")).startswith("release"):
+        if set(record["binaries"]) != {"neptune-video", "neptune-video-agent", "neptune-video-mcp"} or not str(record.get("profile", "")).startswith("release"):
             raise ValueError("A verified release record with every application binary is required")
         if record.get("target", target) != target:
             raise ValueError("Build record target differs from package target")
         version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.+-]+)?", version):
             raise ValueError("Unsafe package version")
-        stage = output / f"Aster-{version}-{target}-local-trial"
+        stage = output / f"Neptune-Video-{version}-{target}-local-trial"
         stage.mkdir()
         binaries = {}
         for name, entry in sorted(record["binaries"].items()):
@@ -349,7 +349,7 @@ def package(root: Path, build_record: Path, cargo_metadata: Path, target: str,
                 if path.is_dir():
                     continue
                 name = relative_name(str(path.relative_to(frontend_assets)))
-                allowed = name in {"AppRun", "Aster.desktop", "Aster.desktop.in", "aster.svg", "README.md", "install-user.sh", "uninstall-user.sh"} \
+                allowed = name in {"AppRun", "neptune-video.desktop", "neptune-video.desktop.in", "neptune-video.svg", "README.md", "install-user.sh", "uninstall-user.sh"} \
                     or (name.startswith("icons/") and path.suffix in (".png", ".svg") and not any(part.startswith(".") for part in Path(name).parts))
                 if not allowed:
                     raise ValueError(f"Unexpected frontend asset path: {name}")
@@ -357,15 +357,15 @@ def package(root: Path, build_record: Path, cargo_metadata: Path, target: str,
                 frontend_files.append(name)
         files = {str(p.relative_to(stage)): {"sha256": digest(p), "bytes": p.stat().st_size,
                  "mode": oct(stat.S_IMODE(p.stat().st_mode))} for p in sorted(stage.rglob("*")) if p.is_file()}
-        manifest = {"schema": "aster-portable-package-v1", "version": version, "target": target,
+        manifest = {"schema": "neptune-video-portable-package-v1", "version": version, "target": target,
                     "publication": "local trial; unpublished; no public license-compliance claim",
                     "project_license": project_license, "source": before,
                     "inputs": {"build_record_sha256": digest(build_record), "cargo_metadata_sha256": digest(cargo_metadata),
                                "packager_sha256": digest(Path(__file__))},
                     "binaries": binaries, "media_tools": media, "files": files, "frontend_assets": frontend_files,
-                    "desktop_integration": "portable assets only; no desktop installation or native acceptance" if frontend_files else "absent; launch bin/aster directly",
-                    "runtime_dependencies": {"codecs": (f"bundled FFmpeg {media['version']} ({media['license']}) in bin/, see notices/ffmpeg; ASTER_FFMPEG/ASTER_FFPROBE override it"
-                                                        if media else "external ffmpeg and ffprobe through PATH or ASTER_FFMPEG/ASTER_FFPROBE; no codecs bundled"),
+                    "desktop_integration": "portable assets only; no desktop installation or native acceptance" if frontend_files else "absent; launch bin/neptune-video directly",
+                    "runtime_dependencies": {"codecs": (f"bundled FFmpeg {media['version']} ({media['license']}) in bin/, see notices/ffmpeg; NEPTUNE_VIDEO_FFMPEG/NEPTUNE_VIDEO_FFPROBE override it"
+                                                        if media else "external ffmpeg and ffprobe through PATH or NEPTUNE_VIDEO_FFMPEG/NEPTUNE_VIDEO_FFPROBE; no codecs bundled"),
                                              "graphics_audio_desktop": "host-owned; linked dependencies above exclude dynamically loaded services"},
                     "update_policy": "manual side-by-side extraction; no automatic updates or changes to user storage",
                     "native_acceptance": "not_run by this packager"}

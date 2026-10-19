@@ -28,7 +28,7 @@ fn with_take(path: &Path) -> Project {
 #[test]
 fn the_media_folder_is_beside_the_document_and_named_by_its_stem() {
     let directory = TempDir::new().unwrap();
-    let document = directory.path().join("Film cut.aster");
+    let document = directory.path().join("Film cut.nvp");
 
     let folder = media_folder(&document).unwrap();
 
@@ -47,7 +47,7 @@ fn the_media_folder_is_beside_the_document_and_named_by_its_stem() {
 #[test]
 fn a_take_is_named_by_its_start_and_never_over_an_existing_file() {
     let directory = TempDir::new().unwrap();
-    let document = directory.path().join("film.aster");
+    let document = directory.path().join("film.nvp");
     let folder = directory.path().join("film media");
 
     let first = new_take(&document, at()).unwrap();
@@ -81,7 +81,7 @@ fn a_take_is_named_by_its_start_and_never_over_an_existing_file() {
 #[test]
 fn a_file_where_the_folder_goes_is_refused_and_kept() {
     let directory = TempDir::new().unwrap();
-    let document = directory.path().join("film.aster");
+    let document = directory.path().join("film.nvp");
     let blocker = directory.path().join("film media");
     fs::write(&blocker, b"mine").unwrap();
 
@@ -103,7 +103,7 @@ fn a_folder_that_cannot_be_made_is_an_error_and_names_no_take() {
     fs::create_dir(&locked).unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
 
-    let refused = new_take(&locked.join("film.aster"), at());
+    let refused = new_take(&locked.join("film.nvp"), at());
 
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(refused, Err(StoreError::Io(_))), "{refused:?}");
@@ -114,7 +114,7 @@ fn a_folder_that_cannot_be_made_is_an_error_and_names_no_take() {
 #[test]
 fn a_dangling_link_holds_its_name() {
     let directory = TempDir::new().unwrap();
-    let document = directory.path().join("film.aster");
+    let document = directory.path().join("film.nvp");
     let folder = directory.path().join("film media");
     fs::create_dir(&folder).unwrap();
     let link = folder.join("Voiceover 2026-10-14 15.30.12 UTC.wav");
@@ -137,7 +137,7 @@ fn a_name_that_cannot_be_looked_at_is_an_error_not_free() {
     // checked.
     fs::set_permissions(&folder, fs::Permissions::from_mode(0o644)).unwrap();
 
-    let refused = new_take(&directory.path().join("film.aster"), at());
+    let refused = new_take(&directory.path().join("film.nvp"), at());
 
     fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(refused, Err(StoreError::Io(_))), "{refused:?}");
@@ -149,7 +149,7 @@ fn a_clock_before_the_epoch_is_refused() {
     let early = UNIX_EPOCH - Duration::from_secs(1);
 
     assert!(matches!(
-        new_take(&directory.path().join("film.aster"), early),
+        new_take(&directory.path().join("film.nvp"), early),
         Err(StoreError::Invalid(_))
     ));
 }
@@ -157,7 +157,7 @@ fn a_clock_before_the_epoch_is_refused() {
 #[test]
 fn a_take_is_saved_by_its_absolute_path_through_save_as_and_checkpoints() {
     let directory = TempDir::new().unwrap();
-    let document = directory.path().join("film.aster");
+    let document = directory.path().join("film.nvp");
     let take = new_take(&document, at()).unwrap();
     fs::write(&take, b"RIFF").unwrap();
     let take = take.canonicalize().unwrap();
@@ -172,7 +172,7 @@ fn a_take_is_saved_by_its_absolute_path_through_save_as_and_checkpoints() {
     // Save as to another folder: the take stays where it was recorded.
     let elsewhere = directory.path().join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
-    let copy = elsewhere.join("film.aster");
+    let copy = elsewhere.join("film.nvp");
     save_project(&copy, &project).unwrap();
     assert_eq!(load_project(&copy).unwrap(), project);
     assert!(!elsewhere.join("film media").exists(), "nothing is copied");

@@ -146,7 +146,7 @@ impl Options {
 
 fn arm_watchdog(ttl_ms: u64) -> io::Result<()> {
     thread::Builder::new()
-        .name("aster-fixture-ttl".into())
+        .name("neptune-video-fixture-ttl".into())
         .spawn(move || {
             thread::sleep(Duration::from_millis(ttl_ms));
             // A blocked pipe writer cannot run a normal deadline check. This

@@ -1028,7 +1028,7 @@ impl KeyframesState {
         };
         // The system's clipboard is told too: a paste arrives only when it
         // holds something, and what it held was copied before these.
-        self.copied_text = format!("Aster keyframes ({})", self.selected.len());
+        self.copied_text = format!("Neptune Video keyframes ({})", self.selected.len());
         ctx.copy_text(self.copied_text.clone());
         self.copied = (self.selected.iter())
             .filter_map(|key| {

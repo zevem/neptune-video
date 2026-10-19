@@ -510,7 +510,7 @@ fn render_operations() -> Vec<AgentOperation> {
         AgentOperation::ExportCapabilities,
         AgentOperation::QueueExport {
             settings: ExportSettings::default(),
-            destination: std::env::temp_dir().join("aster-never-written.mp4"),
+            destination: std::env::temp_dir().join("neptune-video-never-written.mp4"),
             overwrite: false,
         },
         AgentOperation::RenderJobs,

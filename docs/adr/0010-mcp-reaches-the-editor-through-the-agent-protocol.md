@@ -4,8 +4,8 @@ status: accepted
 
 # MCP reaches the editor through the agent protocol
 
-Any MCP client (Claude Code, Codex, others) edits Aster projects through
-`aster-mcp`, a binary of the root package built on the official Rust MCP
+Any MCP client (Claude Code, Codex, others) edits Neptune Video projects through
+`neptune-video-mcp`, a binary of the root package built on the official Rust MCP
 SDK (`rmcp` 3.5), over stdio or Streamable HTTP on a loopback address. The
 binding design, with its sixteen decisions, is
 [the native MCP spec](../../.scratch/native-mcp/spec.md); this record keeps
@@ -16,7 +16,7 @@ filesystem; `editor-agent` depends on neither the store nor the media crate.
 **One authority per project, reached by `AgentRequest`.** The server holds no
 project state of its own. Its project is either **local**, the server's
 own `Editor` with a protected `DocumentSession`, saved after every changing
-edit by the same `headless` code `aster-agent --project` uses, or
+edit by the same `headless` code `neptune-video-agent --project` uses, or
 **desktop**, the `Editor` of a running window, reached through the
 window's authenticated `AgentHost` session. Every MCP mutation becomes one
 guarded `AgentRequest` (`apply`, `undo`, `redo`, `save`) carrying the
@@ -78,7 +78,7 @@ only inside its roots. Paths are canonicalized and symbolic links
 followed, `..` is refused, and nothing is replaced without
 `overwrite: true`. FFmpeg probes run with `-protocol_whitelist file`.
 Streamable HTTP binds loopback literals only and requires a bearer token,
-compared in constant time, from `ASTER_MCP_TOKEN` or 244 random bits. It
+compared in constant time, from `NEPTUNE_VIDEO_MCP_TOKEN` or 244 random bits. It
 validates `Host` and refuses browser `Origin`s, caps bodies at 4 MiB, and
 writes its address and token to an owner-only connection file that is
 removed on exit. FFmpeg formats that read other files are never media,
@@ -97,8 +97,8 @@ described once in the server's instructions. The tool list stays under
 
 ## Consequences
 
-- `src/lib.rs` turns the root package into a library shared by `aster`,
-  `aster-agent` and `aster-mcp`. `src/headless.rs` holds the headless
+- `src/lib.rs` turns the root package into a library shared by `neptune-video`,
+  `neptune-video-agent` and `neptune-video-mcp`. `src/headless.rs` holds the headless
   document code the two command-line programs share.
 - `AgentOperation` gains `History`, `Document` and `Save`, and `Applied`
   gains `created`. The window answers `Document` even while busy.

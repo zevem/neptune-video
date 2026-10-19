@@ -273,7 +273,7 @@ impl AudioService {
         let (sender, events) = mpsc::sync_channel(8);
         let (worker_state, worker_processes) = (Arc::clone(&state), processes.clone());
         thread::Builder::new()
-            .name("aster-audio".into())
+            .name("neptune-video-audio".into())
             .spawn(move || {
                 if let Err(error) = audio_worker(
                     Arc::clone(&worker_state),

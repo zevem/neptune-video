@@ -66,7 +66,7 @@ command to trace, and no project state, command, save or load is touched.
 - `sound.rs`: `SoundService::beats(job: PeakJob)`. The job is a `PeakJob`
   (project, asset, cache), as `load_peaks` takes one: the beats are of the
   peaks that cache keeps. It runs on the thread that reads the cache
-  (`aster-sound-load`), in the queue of kept-peak reads (`PEAK_LOADS`),
+  (`neptune-video-sound-load`), in the queue of kept-peak reads (`PEAK_LOADS`),
   which now holds a `Load::{Kept, Beats}`; the worker and its FFmpeg are
   not involved. The answer is `SoundEvent::Beats { request, project,
   asset_id, source, result: Result<Option<BeatGrid>, String> }`: `Ok(None)`
@@ -98,9 +98,9 @@ real tools. Nothing was listened to.
 
 - `cargo test -p editor-media --locked sound::`: 40 passed, five runs in a
   row after one test race was fixed (see Comments); `cargo test -p
-  editor-media --locked`: 287 passed, one run. `cargo test -p aster-editor
+  editor-media --locked`: 287 passed, one run. `cargo test -p neptune-video
   --locked peaks`: 18 passed. `cargo clippy -p editor-media --all-targets
-  --locked -- -D warnings`, `cargo clippy -p aster-editor --all-targets
+  --locked -- -D warnings`, `cargo clippy -p neptune-video --all-targets
   --locked -- -D warnings`, `cargo fmt` of both crates and
   `scripts/check-architecture.py` pass.
 - Synthetic peaks, printed as `MEASURE:` under `--nocapture`: click tracks

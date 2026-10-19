@@ -169,7 +169,7 @@ fn encode(dir: &Path, name: &str, plan: &ExportPlan, subtitles: Option<SubtitleI
         video,
         audio,
         subtitles,
-        title: "Aster export test",
+        title: "Neptune Video export test",
     };
     let mut encoder = Encoder::start(plan, &inputs, &output).unwrap();
     if let Some(video) = &plan.video {
@@ -396,7 +396,10 @@ fn h264_and_aac_in_mp4_carry_every_frame_bt709_tags_title_and_subtitles() {
     assert_bt709(&probe);
     assert_eq!(stream(&probe, "subtitle")["codec_name"], "mov_text");
     assert_eq!(stream(&probe, "subtitle")["tags"]["language"], "eng");
-    assert_eq!(probe["format"]["tags"]["title"], "Aster export test");
+    assert_eq!(
+        probe["format"]["tags"]["title"],
+        "Neptune Video export test"
+    );
     // The edit list is in samples, not milliseconds.
     let timing = ffprobe(&output, "stream=codec_type,time_base,duration_ts");
     assert_eq!(stream(&timing, "audio")["time_base"], "1/48000");

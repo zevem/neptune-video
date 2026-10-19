@@ -44,7 +44,7 @@ fn write_archive(path: &Path, value: &Value) {
 // the parent supplies an owned temporary destination, and it waits for exit.
 #[test]
 fn recovery_independent_writer_child() {
-    let Some(path) = std::env::var_os("ASTER_RECOVERY_BINDING_CHILD_PATH") else {
+    let Some(path) = std::env::var_os("NEPTUNE_VIDEO_RECOVERY_BINDING_CHILD_PATH") else {
         return;
     };
     let path = PathBuf::from(path);
@@ -56,7 +56,7 @@ fn recovery_independent_writer_child() {
 #[test]
 fn restored_crash_history_cannot_overwrite_an_independent_processes_later_save() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("film.aster");
+    let path = dir.path().join("film.nvp");
     let (mut editor, document) = opened(&path);
     rename(&mut editor, "Recovered unsaved edit");
     rename(&mut editor, "Recovered redo branch");
@@ -72,7 +72,7 @@ fn restored_crash_history_cannot_overwrite_an_independent_processes_later_save()
             "recovery_independent_writer_child",
             "--nocapture",
         ])
-        .env("ASTER_RECOVERY_BINDING_CHILD_PATH", &path)
+        .env("NEPTUNE_VIDEO_RECOVERY_BINDING_CHILD_PATH", &path)
         .output()
         .unwrap();
     assert!(
@@ -108,7 +108,7 @@ fn restored_crash_history_cannot_overwrite_an_independent_processes_later_save()
 #[test]
 fn same_baseline_recovery_can_continue_protected_saves_and_history() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("film.aster");
+    let path = dir.path().join("film.nvp");
     let (mut editor, document) = opened(&path);
     rename(&mut editor, "Recovered edit");
     save_recovery_with_document(&document, &editor).unwrap();
@@ -131,7 +131,7 @@ fn same_baseline_recovery_can_continue_protected_saves_and_history() {
 #[test]
 fn a_missing_original_baseline_is_preserved_until_a_competing_creation() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("not-yet-saved.aster");
+    let path = dir.path().join("not-yet-saved.nvp");
     let document = DocumentSession::create(&path).unwrap();
     let editor = Editor::default();
     save_recovery_with_document(&document, &editor).unwrap();
@@ -150,7 +150,7 @@ fn a_missing_original_baseline_is_preserved_until_a_competing_creation() {
 #[test]
 fn legacy_recovery_restores_unsaved_without_inferring_a_current_disk_baseline() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("legacy.aster");
+    let path = dir.path().join("legacy.nvp");
     let (editor, _) = opened(&path);
     assert!(!editor.is_dirty());
     save_recovery(&path, &editor).unwrap();
@@ -168,8 +168,8 @@ fn legacy_recovery_restores_unsaved_without_inferring_a_current_disk_baseline() 
 #[test]
 fn private_recovery_is_unbound_and_rejects_an_ordinary_binding() {
     let dir = TempDir::new().unwrap();
-    let ordinary = dir.path().join("film.aster");
-    let private = dir.path().join("window-instance.aster");
+    let ordinary = dir.path().join("film.nvp");
+    let private = dir.path().join("window-instance.nvp");
     let (mut editor, document) = opened(&ordinary);
     rename(&mut editor, "Second window's unsaved work");
     let lease = Arc::new(RecoveryLease::acquire(&private).unwrap());
@@ -194,8 +194,8 @@ fn private_recovery_is_unbound_and_rejects_an_ordinary_binding() {
 #[test]
 fn copying_named_recovery_elsewhere_does_not_grant_its_ordinary_save_authority() {
     let dir = TempDir::new().unwrap();
-    let ordinary = dir.path().join("film.aster");
-    let copy = dir.path().join("copied-recovery.aster");
+    let ordinary = dir.path().join("film.nvp");
+    let copy = dir.path().join("copied-recovery.nvp");
     let (editor, document) = opened(&ordinary);
     save_recovery_with_document(&document, &editor).unwrap();
     fs::copy(recovery_path(&ordinary), recovery_path(&copy)).unwrap();
@@ -208,7 +208,7 @@ fn copying_named_recovery_elsewhere_does_not_grant_its_ordinary_save_authority()
 #[test]
 fn queued_recovery_keeps_its_submitted_baseline_when_an_earlier_job_advances_the_session() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("film.aster");
+    let path = dir.path().join("film.nvp");
     let (mut editor, document) = opened(&path);
     let path = document.path().to_path_buf();
     let lease = Arc::new(RecoveryLease::acquire(&path).unwrap());
@@ -225,7 +225,7 @@ fn queued_recovery_keeps_its_submitted_baseline_when_an_earlier_job_advances_the
     // Deterministically pause the worker at its first completion, with no
     // sleeps or storage/process manipulation outside this owned directory.
     worker
-        .request(dir.path().join("gate.aster"), &Editor::default(), false)
+        .request(dir.path().join("gate.nvp"), &Editor::default(), false)
         .unwrap();
     wake_rx.recv_timeout(DEADLINE).unwrap();
     worker.poll().unwrap().result.unwrap();
@@ -282,7 +282,7 @@ fn queued_recovery_keeps_its_submitted_baseline_when_an_earlier_job_advances_the
 #[test]
 fn deleted_original_remains_a_conflict_after_restoring_recovery() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("film.aster");
+    let path = dir.path().join("film.nvp");
     let (editor, document) = opened(&path);
     save_recovery_with_document(&document, &editor).unwrap();
     fs::remove_file(&path).unwrap();
@@ -299,7 +299,7 @@ fn deleted_original_remains_a_conflict_after_restoring_recovery() {
 fn damaged_or_future_ordinary_files_do_not_acquire_save_authority_from_archive_hashes() {
     use sha2::{Digest, Sha256};
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("film.aster");
+    let path = dir.path().join("film.nvp");
     let (editor, document) = opened(&path);
     save_recovery_with_document(&document, &editor).unwrap();
     let original_archive = archive_json(&path);
@@ -325,7 +325,7 @@ fn damaged_or_future_ordinary_files_do_not_acquire_save_authority_from_archive_h
 #[test]
 fn future_or_malformed_binding_versions_preserve_the_existing_archive() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("film.aster");
+    let path = dir.path().join("film.nvp");
     let (editor, document) = opened(&path);
     save_recovery_with_document(&document, &editor).unwrap();
     let original = archive_json(&path);

@@ -25,7 +25,8 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("aster-queue-{label}-{}", Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("neptune-video-queue-{label}-{}", Uuid::new_v4()));
         fs::create_dir_all(&path).expect("FIXTURE: the scratch folder is made");
         Self(
             path.canonicalize()
@@ -640,21 +641,17 @@ fn a_destination_must_be_a_new_file_the_project_does_not_own() {
     );
 
     // The project's file and what is kept beside it.
-    let aster = rig.dir.join("film.aster");
-    fs::write(&aster, b"{}").unwrap();
-    let checkpoints = rig.dir.join("film.aster.checkpoints");
+    let document = rig.dir.join("film.nvp");
+    fs::write(&document, b"{}").unwrap();
+    let checkpoints = rig.dir.join("film.nvp.checkpoints");
     fs::create_dir(&checkpoints).unwrap();
     let beside = |name: &str| NewJob {
         destination: rig.dir.join(name),
         settings: ExportSettings::default(),
-        project_path: Some(aster.clone()),
+        project_path: Some(document.clone()),
         ..rig.job("x.mp4")
     };
-    for name in [
-        "film.aster.recovery",
-        "film.aster.lock",
-        "film.aster.write-lock",
-    ] {
+    for name in ["film.nvp.recovery", "film.nvp.lock", "film.nvp.write-lock"] {
         // Named with the container's extension they are other files; the
         // sidecar names themselves are refused whatever the extension says.
         let job = beside(name);
@@ -668,11 +665,11 @@ fn a_destination_must_be_a_new_file_the_project_does_not_own() {
         );
     }
     assert_eq!(
-        refused(beside("film.aster.checkpoints/take.mp4")),
+        refused(beside("film.nvp.checkpoints/take.mp4")),
         EnqueueError::DestinationIsProject
     );
     assert_eq!(
-        refused(beside("FILM.ASTER.CHECKPOINTS/take.mp4")),
+        refused(beside("FILM.NVP.CHECKPOINTS/take.mp4")),
         EnqueueError::DestinationIsProject
     );
     // A project file that has the container's extension is itself refused.
@@ -716,11 +713,11 @@ fn a_destination_must_be_a_new_file_the_project_does_not_own() {
             EnqueueError::DestinationIsSource.to_string()
         );
         let linked = rig.dir.join("linked-project.mp4");
-        fs::hard_link(&aster, &linked).unwrap();
+        fs::hard_link(&document, &linked).unwrap();
         assert_eq!(
             rig.fails_at_start(NewJob {
                 destination: linked,
-                project_path: Some(aster.clone()),
+                project_path: Some(document.clone()),
                 ..rig.job("x.mp4")
             }),
             EnqueueError::DestinationIsProject.to_string()
@@ -885,7 +882,9 @@ fn a_starting_job_removes_what_stopped_exports_left_in_its_folder() {
     let stale_part = rig.dir.join(&format!(".Old.mp4.{}.part", Uuid::new_v4()));
     fs::write(&stale_part, b"half a film").unwrap();
     age(&stale_part);
-    let stale_work = rig.dir.join(&format!(".aster-render-{}", Uuid::new_v4()));
+    let stale_work = rig
+        .dir
+        .join(&format!(".neptune-video-render-{}", Uuid::new_v4()));
     fs::create_dir(&stale_work).unwrap();
     let sound = stale_work.join("sound.f32");
     fs::write(&sound, b"sound").unwrap();
@@ -922,15 +921,15 @@ fn a_starting_job_removes_what_stopped_exports_left_in_its_folder() {
 fn stale_working_folders_in_the_temporary_folder_are_removed() {
     let dir = Scratch::new("temp-sweep");
     let hour_ago = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
-    let old = dir.join(&format!("aster-render-{}", Uuid::new_v4()));
+    let old = dir.join(&format!("neptune-video-render-{}", Uuid::new_v4()));
     fs::create_dir(&old).unwrap();
     fs::File::open(&old)
         .unwrap()
         .set_modified(hour_ago)
         .unwrap();
-    let recent = dir.join(&format!("aster-render-{}", Uuid::new_v4()));
+    let recent = dir.join(&format!("neptune-video-render-{}", Uuid::new_v4()));
     fs::create_dir(&recent).unwrap();
-    let other = dir.join("aster-render-notes");
+    let other = dir.join("neptune-video-render-notes");
     fs::create_dir(&other).unwrap();
     fs::File::open(&other)
         .unwrap()

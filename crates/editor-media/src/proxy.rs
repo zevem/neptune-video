@@ -197,7 +197,7 @@ impl Stamp {
 /// The name a proxy of `source`, as `stamp` finds it, is kept under.
 fn key(source: &SourceIdentity, stamp: &Stamp) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"aster-proxy\0");
+    hasher.update(b"neptune-video-proxy\0");
     hasher.update(PROXY_PROFILE.to_le_bytes());
     for path in [&stamp.canonical, &source.path] {
         let bytes = path.as_os_str().as_encoded_bytes();
@@ -566,7 +566,7 @@ impl ProxyService {
         });
         let state = Arc::clone(&shared);
         thread::Builder::new()
-            .name("aster-proxy".into())
+            .name("neptune-video-proxy".into())
             .spawn(move || worker(state, dir, run, wake))
             .map_err(|error| io("Cannot start proxy worker", error))?;
         Ok(Self { shared, processes })

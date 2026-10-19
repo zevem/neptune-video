@@ -310,7 +310,7 @@ fn scaled(content: &ClipContent, factor: f32) -> ClipContent {
     content
 }
 
-/// Every look Aster comes with, in the order the tab lists them.
+/// Every look Neptune Video comes with, in the order the tab lists them.
 pub fn builtin() -> &'static [Arc<Look>] {
     catalog::builtin()
 }

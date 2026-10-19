@@ -7,7 +7,7 @@ use editor_core::{Asset, AssetId, Clip, Clipboard, ClipboardClip, Time, TrackKin
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-const PREFIX: &str = "{\"aster_clips\":";
+const PREFIX: &str = "{\"neptune_video_clips\":";
 /// Written as 2 since clips carry looks, motion and time maps, and as 3 since
 /// they carry fades, so a build that would strip them does not take the text
 /// for clips. Version 1 and 2 text is read.
@@ -17,7 +17,7 @@ const LIMIT: usize = 8 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 struct Payload {
-    aster_clips: u32,
+    neptune_video_clips: u32,
     origin: Time,
     clips: Vec<Item>,
 }
@@ -49,7 +49,7 @@ pub fn lacks_media(clipboard: &Clipboard, assets: &BTreeMap<AssetId, Asset>) -> 
 
 pub fn encode(clipboard: &Clipboard) -> Option<String> {
     serde_json::to_string(&Payload {
-        aster_clips: VERSION,
+        neptune_video_clips: VERSION,
         origin: clipboard.origin,
         clips: clipboard
             .clips
@@ -70,7 +70,7 @@ pub fn decode(text: &str) -> Option<Clipboard> {
         return None;
     }
     let payload: Payload = serde_json::from_str(text).ok()?;
-    if !(1..=VERSION).contains(&payload.aster_clips) || payload.clips.is_empty() {
+    if !(1..=VERSION).contains(&payload.neptune_video_clips) || payload.clips.is_empty() {
         return None;
     }
     Some(Clipboard {
@@ -274,11 +274,11 @@ mod tests {
     #[test]
     fn older_text_is_read_and_newer_text_is_left_alone() {
         let text = encode(&copied()).expect("clips encode");
-        assert!(text.starts_with("{\"aster_clips\":3,"));
+        assert!(text.starts_with("{\"neptune_video_clips\":3,"));
         let as_version = |version: u32| {
             text.replacen(
-                "\"aster_clips\":3",
-                &format!("\"aster_clips\":{version}"),
+                "\"neptune_video_clips\":3",
+                &format!("\"neptune_video_clips\":{version}"),
                 1,
             )
         };
@@ -295,9 +295,9 @@ mod tests {
     fn other_text_is_not_taken_for_clips() {
         assert!(decode("a sentence someone copied").is_none());
         assert!(decode("{\"type\":\"rename_project\",\"name\":\"Film\"}").is_none());
-        assert!(decode("{\"aster_clips\":1,\"origin\":0,\"clips\":[]}").is_none());
-        assert!(decode("{\"aster_clips\":2,\"origin\":0,\"clips\":[]}").is_none());
-        assert!(decode("{\"aster_clips\":3,\"origin\":0,\"clips\":[]}").is_none());
-        assert!(decode("{\"aster_clips\":").is_none());
+        assert!(decode("{\"neptune_video_clips\":1,\"origin\":0,\"clips\":[]}").is_none());
+        assert!(decode("{\"neptune_video_clips\":2,\"origin\":0,\"clips\":[]}").is_none());
+        assert!(decode("{\"neptune_video_clips\":3,\"origin\":0,\"clips\":[]}").is_none());
+        assert!(decode("{\"neptune_video_clips\":").is_none());
     }
 }

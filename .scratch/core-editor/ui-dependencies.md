@@ -125,7 +125,7 @@ contract can be checked against it. Names are suggestions.
 
 ## Gaps the UI cannot fill itself (requests)
 
-- **Agent protocol.** The contract names `src/bin/aster-agent.rs` but no
+- **Agent protocol.** The contract names `src/bin/neptune-video-agent.rs` but no
   interface. The panel currently runs a local, real interpreter (plain
   commands and raw JSON `Command`s, dispatched through `Editor::dispatch`).
   To drive an external agent the UI needs: how to start it, what it reads and
@@ -141,14 +141,14 @@ contract can be checked against it. Names are suggestions.
 
 ## UI status — 2026-10-12 (Claude Opus 5.5 high)
 
-Desktop UI is implemented and wired: `src/main.rs`, `src/app.rs`, `src/{theme,icons,settings,timefmt,textures,rules,agent}.rs`, `src/ui/{mod,widgets,toolbar,library,viewer,timeline,inspector,agent,sheets}.rs`. No backend crate, root manifest, `src/bin/aster-agent.rs` or project doc was changed. No new dependency is needed beyond what the root manifest already has.
+Desktop UI is implemented and wired: `src/main.rs`, `src/app.rs`, `src/{theme,icons,settings,timefmt,textures,rules,agent}.rs`, `src/ui/{mod,widgets,toolbar,library,viewer,timeline,inspector,agent,sheets}.rs`. No backend crate, root manifest, `src/bin/neptune-video-agent.rs` or project doc was changed. No new dependency is needed beyond what the root manifest already has.
 
-Verified here (Linux, Wayland, wgpu): `cargo check`, `cargo clippy --bin aster -- -D warnings` clean, `cargo test --bin aster` 29 passed, and native runs with real PNG/JPEG/GIF imports captured via `aster --screenshot PATH [--screenshot-delay S] [--size WxH] [--settings PATH]`. A live `aster-agent --connect` session added tracks/clips/markers, undid/redid, and a stale revision was refused; the window followed.
+Verified here (Linux, Wayland, wgpu): `cargo check`, `cargo clippy --bin neptune-video -- -D warnings` clean, `cargo test --bin neptune-video` 29 passed, and native runs with real PNG/JPEG/GIF imports captured via `neptune-video --screenshot PATH [--screenshot-delay S] [--size WxH] [--settings PATH]`. A live `neptune-video-agent --connect` session added tracks/clips/markers, undid/redid, and a stale revision was refused; the window followed.
 
 ### ui-review.md findings
 
 1. Done. `Playback::tick_with_audio(now, duration, audio.position())`; `sync` only on transport/document changes.
-2. Done. A project without a file keeps its recovery copy at `<settings dir>/recovery/<editor instance id>.aster.recovery`; the newest one is offered on a launch without a project (sheet: Restore / Discard). A restored copy keeps writing to the same place until it is saved to a file.
+2. Done. A project without a file keeps its recovery copy at `<settings dir>/recovery/<editor instance id>.nvp.recovery`; the newest one is offered on a launch without a project (sheet: Restore / Discard). A restored copy keeps writing to the same place until it is saved to a file.
 3. Done. If the document is still dirty after the acknowledgement, whatever waited on the save asks again instead of proceeding.
 4. Done. Completions are matched on `context_id` + `project_id` (+ the save target path).
 5. Done. The sidecar is removed only when the document is clean after `mark_saved`; if a recovery write is in flight it is removed when that lands; if dirty a fresh copy is requested at once.
@@ -166,21 +166,21 @@ Verified here (Linux, Wayland, wgpu): `cargo check`, `cargo clippy --bin aster -
 
 Built, all reachable from the interface:
 
-- **Clipboard.** Copy/Cut publish the clips to the system clipboard as text (`{"aster_clips":1,…}`, `src/clipboard.rs`); a paste event is taken only when its text is that. Text fields and other clipboard text are left alone; the timeline menu still pastes the window's own last copy. Clips also paste into another Aster window when their media is in that project.
+- **Clipboard.** Copy/Cut publish the clips to the system clipboard as text (`{"neptune_video_clips":1,…}`, `src/clipboard.rs`); a paste event is taken only when its text is that. Text fields and other clipboard text are left alone; the timeline menu still pastes the window's own last copy. Clips also paste into another Neptune Video window when their media is in that project.
 - **Checkpoints.** Project menu → Checkpoints…: name + Save, list with age and Restore. One worker at a time for write/list/read. Restore is `Command::RestoreProject` after an off-thread `load_project`: one undo step, same file, project id and context. Command line: `checkpoint NAME`, `restore NAME`, `checkpoints`.
-- **Duplicate.** Project menu → Duplicate…: save dialog, `duplicate_project` (fresh id, name from the file), written on a worker; the window carries on in the copy when the document did not move meanwhile. The source file is never written; a duplicate onto its own file is refused. Command line: `duplicate project /abs/path.aster`.
+- **Duplicate.** Project menu → Duplicate…: save dialog, `duplicate_project` (fresh id, name from the file), written on a worker; the window carries on in the copy when the document did not move meanwhile. The source file is never written; a duplicate onto its own file is refused. Command line: `duplicate project /abs/path.nvp`.
 - **Library sort.** Sort button: Name, Duration, Kind, File size × Ascending/Descending; kept in settings (`library_sort`).
 - **Folders.** Add menu → New folder (named inline, made in the folder in view); asset menu → Move to; drag an asset onto a folder, or onto "All media" in the breadcrumb.
 - **Recovery leases.** The lease is acquired on a worker before the first recovery write and passed with `request_with_lease`; scans and the open-project offer skip active copies; Restore and Discard acquire first; a window removes or rewrites only a copy it owns.
 - Fixed on the way: media named on the command line beside a project was cancelled when the project finished loading; menus took the popup's full width.
 
-Verified (Linux, X11 on the task-owned Xvfb :92, `ci` profile): `cargo clippy --bin aster -- -D warnings` clean, `cargo test --bin aster` 37 passed, `scripts/native-smoke.py` 9/9 (`artifacts/native/smoke3/report.json`), and the round-2 behaviour driven by real XTest input with captures in `artifacts/native/ui-round2/` (`drive.py` is the helper used; the steps were run one at a time, not as one script).
+Verified (Linux, X11 on the task-owned Xvfb :92, `ci` profile): `cargo clippy --bin neptune-video -- -D warnings` clean, `cargo test --bin neptune-video` 37 passed, `scripts/native-smoke.py` 9/9 (`artifacts/native/smoke3/report.json`), and the round-2 behaviour driven by real XTest input with captures in `artifacts/native/ui-round2/` (`drive.py` is the helper used; the steps were run one at a time, not as one script).
 
 Notes for root:
 
 - I ran a workspace-wide `cargo fmt` once by mistake. `crates/editor-store/src/worker.rs` was not rustfmt-clean before and is now (whitespace only, e.g. `context_id:x` → `context_id: x`); no other backend file differs. Later formatting used `rustfmt src/main.rs` only.
 - No `RemoveFolder`/`RenameFolder` command exists, so a folder can be made and filled but not renamed or deleted except by undo.
-- `.lock` sidecars are never unlinked (your rule), so each unsaved session that wrote a recovery copy leaves an empty `<id>.aster.lock` in the settings `recovery/` folder.
+- `.lock` sidecars are never unlinked (your rule), so each unsaved session that wrote a recovery copy leaves an empty `<id>.nvp.lock` in the settings `recovery/` folder.
 - Checkpoints cannot be deleted from the interface (no store function).
 - Not driven natively: the rfd file dialogs (Open, Save as, Duplicate…, Import) — the test display has no portal, and the session bus was pointed away so no dialog could reach the real desktop. Duplicate was exercised through the command line, which shares everything after the dialog.
 - Still open: waveform peaks, asset relink, export.
@@ -203,7 +203,7 @@ Frontend only (`src/**`); no backend crate, manifest, script or doc was edited.
 
 Verified (Linux, X11 on the task-owned Xvfb :92, `ci` profile, Rust 1.97.1):
 
-- `cargo clippy --profile ci --bin aster -- -D warnings` clean; `cargo test --profile ci --bin aster` 47 passed (10 new: source transport bounds, clock end/loop, still, last-frame clamp, lane separation, stale-asset rules ×2, autosave retry ×2, `preview` command).
+- `cargo clippy --profile ci --bin neptune-video -- -D warnings` clean; `cargo test --profile ci --bin neptune-video` 47 passed (10 new: source transport bounds, clock end/loop, still, last-frame clamp, lane separation, stale-asset rules ×2, autosave retry ×2, `preview` command).
 - `scripts/native-smoke.py` 9/9 on the final binary: `artifacts/native/ui-round3/smoke/report.json`.
 - Native XTest runs, captures in `artifacts/native/ui-round3/` (`drive3.py` is the helper; steps were run one at a time):
   - 02–06, 08–09, 23: menu → Preview, play (00:00:03:08 after about 3 s), frame steps, End, scrub click, on H.264+AAC files. 10–11: another asset chosen in the library, playing 1080p. 12–16: GIF from the hover badge, playing and paused. 17–19: WAV. 21: PNG.
@@ -218,7 +218,7 @@ Open, for root:
 
 - **GIF playback lags in the `ci` build.** Paused GIF frames are exact (frame 22 at 2.2 s, capture 15). While playing, the picture was about 1.3 s behind its playhead (frame 7 at 2.07 s, capture 14). Video did not lag. Not measured in a release build; the decode is the backend's.
 - A GIF has no `frame_rate`, so its monitor steps on a 30 fps grid: three presses per 10 fps frame.
-- `cargo clippy --tests` fails in `src/bin/aster-agent.rs` (two `collapsible_if`, lines 63 and 103). Not mine to edit.
+- `cargo clippy --tests` fails in `src/bin/neptune-video-agent.rs` (two `collapsible_if`, lines 63 and 103). Not mine to edit.
 - With Shift held, XTest → moved the timeline one frame, not one second (seen once while driving; not investigated).
 - **Wayland file drop is a release gate, not supported today.** winit 0.30.13's Wayland backend never emits `DroppedFile`/`HoveredFile` (only `platform_impl/linux/x11` does), so `raw.dropped_files` stays empty on a Wayland session; the import button and command-line paths work there. Neptune fills this with its own `wl_data_device` listener on the window's connection (`src/platform/file_drag.rs`, the `linux::wayland` module plus `uri_list_paths`). Porting it needs two direct dependencies in the desktop manifest, both already in `Cargo.lock` transitively: `wayland-client = "0.31"` and `wayland-backend = { version = "0.3", features = ["client_system"] }` (Linux only), and the `eframe::Frame` display/window handles in `App::logic`. I did not add them (root's manifest) and did not port the helper untested: this task's display is X11. X11 drop goes through winit and was not driven here either (no XDND source on the test display).
 - Still open from before: waveform peaks, asset relink, export, folder rename/delete, checkpoint delete.
@@ -233,8 +233,8 @@ Frontend only: `src/app.rs`, `src/main.rs`, new `src/file_drop.rs`. No backend c
 **Shift+Arrow (item 2).** Cause: `Driver.chord` sends Shift↓ key↓ key↑ Shift↑ in one burst, all inside one frame; the shortcuts read `i.modifiers`, the state the frame *ends* with, so the key looked unmodified. `struck(events, key, Held)` now reads each key with the modifiers of its own `Event::Key`. Timeline and source-monitor paths both use it (arrows, J/K/L, Space, S/M/T/N, Delete, Shift+Z, Shift+Delete). The `consume_shortcut` chords already matched per event.
 
 **Wayland file drop (item 3).** `FileDrop` (attach in `logic`, `poll` in `ui`, `stop` first thing in `on_exit`, and again from `Drop`). X11/macOS/Windows still come from winit; the Wayland listener is added only for a Wayland window, root viewport, own surface (decorations are other surfaces); paths from both are merged, each once.
-- One thread, `aster-file-drop`. The foreign `Backend` and the surface `ObjectId` are made on the window's thread; the thread owns the `Connection`, its queue and every proxy and drops them before it ends. No round trip: globals arrive as registry events (first seat ≤ v5, manager ≤ v3; seat removal handled). Loop: `dispatch_pending` → `flush` → `prepare_read` → `poll(display fd, stop eventfd, done eventfd)` → `read`. It waits nowhere else; the read intent is dropped before anything else is done. `stop` raises the eventfd and joins; on the way out offers are destroyed, the device and seat released, the connection flushed.
-- The list is read on `aster-file-drop-read`, one at a time: non-blocking pipe, `poll` with the stop signal, 1 MiB budget (over it the whole drop is refused), 5 s deadline. The protocol thread `finish`es the offer only when the list was read, the compositor reported an agreed action and the offer is v3+ (an unagreed `finish` is a protocol error that would close the window's connection), then destroys it.
+- One thread, `neptune-video-file-drop`. The foreign `Backend` and the surface `ObjectId` are made on the window's thread; the thread owns the `Connection`, its queue and every proxy and drops them before it ends. No round trip: globals arrive as registry events (first seat ≤ v5, manager ≤ v3; seat removal handled). Loop: `dispatch_pending` → `flush` → `prepare_read` → `poll(display fd, stop eventfd, done eventfd)` → `read`. It waits nowhere else; the read intent is dropped before anything else is done. `stop` raises the eventfd and joins; on the way out offers are destroyed, the device and seat released, the connection flushed.
+- The list is read on `neptune-video-file-drop-read`, one at a time: non-blocking pipe, `poll` with the stop signal, 1 MiB budget (over it the whole drop is refused), 5 s deadline. The protocol thread `finish`es the offer only when the list was read, the compositor reported an agreed action and the offer is v3+ (an unagreed `finish` is a protocol error that would close the window's connection), then destroys it.
 - Bounds: 8 unclaimed offers, 4096 files per drop enforced while parsing (set-based dedup; a 1 MiB list of shortest entries is refused in well under a second — unit test), 4096 paths waiting for a frame, path ≤ 4095 bytes.
 - URIs: `file:` only (any case); host empty, `localhost` or this computer's name (`/proc/sys/kernel/hostname`); `file:/abs` accepted; percent escapes decode to raw bytes (non-UTF-8 names survive); refused: other schemes, other hosts, userinfo/port, relative paths, malformed escapes, NUL raw or escaped, raw control bytes, unescaped `?`/`#`. Notices: none usable / some not usable / too many / not handed over in time / unreadable.
 - Root's four review points are in: count enforced during parsing, `?`/`#` refused, `Drop` joins, listener stopped before other shutdown I/O.
@@ -242,10 +242,10 @@ Frontend only: `src/app.rs`, `src/main.rs`, new `src/file_drop.rs`. No backend c
 **Import hand-back (item 4).** `restart_media` goes through `hand_back(waiting, import)`. Two tests: order kept and one refusal not stopping the batches behind it (pure); and against the real `MediaService` — import a PNG, `cancel()`, hand back, exactly one current-generation `Imported` with that asset and none after.
 
 Verified (Linux, Rust 1.97.1, `ci` profile):
-- `cargo clippy --locked --profile ci --bin aster --tests -- -D warnings` clean; `cargo test --locked --profile ci --bin aster` 62 passed (15 new: recovery at exit ×3 using the worker's own result backpressure to hold a write back deterministically; key modifiers; hand-back ×2; URI list ×3 + merge; reader budget/deadline/stop/end ×4; inbox bound).
+- `cargo clippy --locked --profile ci --bin neptune-video --tests -- -D warnings` clean; `cargo test --locked --profile ci --bin neptune-video` 62 passed (15 new: recovery at exit ×3 using the worker's own result backpressure to hold a write back deterministically; key modifiers; hand-back ×2; URI list ×3 + merge; reader budget/deadline/stop/end ×4; inbox bound).
 - `scripts/native-smoke.py` 13/13 on the final binary: `artifacts/native/ui-round4/smoke/report.json`.
-- **Wayland, native, task-owned.** Weston 14 from `.tools/wayland-test` with its X11 backend as a window on Xvfb :92 (`weston.sh`, pixman renderer, socket in `artifacts/native/wayland/runtime`); Aster as a real Wayland client on lavapipe; a GTK3 drag source inside Weston (`source.py`); the drag driven by XTest pointer input on :92 (`pointer.py`, `wl.py`). Nothing touched the person's desktop.
-  - `drop/`: 6 URIs dragged (3 local incl. a space, `é`, a literal `%`; `https://…`; `file://elsewhere/…`; one repeated). 01 hover tint + "Drop to import media"; 02 after the drop: the 3 files in the project (agent inspect), notice "Some dropped items are not files on this computer." `aster.log` is the `WAYLAND_DEBUG` trace: `accept`, `set_actions(1,1)`, `action(1)`, `receive`, `finish`, `destroy`.
+- **Wayland, native, task-owned.** Weston 14 from `.tools/wayland-test` with its X11 backend as a window on Xvfb :92 (`weston.sh`, pixman renderer, socket in `artifacts/native/wayland/runtime`); Neptune Video as a real Wayland client on lavapipe; a GTK3 drag source inside Weston (`source.py`); the drag driven by XTest pointer input on :92 (`pointer.py`, `wl.py`). Nothing touched the person's desktop.
+  - `drop/`: 6 URIs dragged (3 local incl. a space, `é`, a literal `%`; `https://…`; `file://elsewhere/…`; one repeated). 01 hover tint + "Drop to import media"; 02 after the drop: the 3 files in the project (agent inspect), notice "Some dropped items are not files on this computer." `neptune-video.log` is the `WAYLAND_DEBUG` trace: `accept`, `set_actions(1,1)`, `action(1)`, `receive`, `finish`, `destroy`.
   - `shut/`: source that accepts and never writes; window closed with the reader waiting: process gone 0.09 s after the click; trace ends `wl_data_offer.destroy` (no `finish`), `wl_data_device.release`, `wl_seat.release`, then the toolkit's own teardown. No panic.
   - `late/`: same source, left alone: two file-drop threads at 2 s, one at 6 s; notice "The dropped files were not handed over in time." (01); nothing imported.
 - **Shift+Arrow, X11 on :92**, same `Driver.chord` as before: `keys/01` 00:00:01:00 after one Shift+→; `keys/timecodes.png` 00:00:00:00 → (3× Shift+→, 1× →) 00:00:03:01 → (Shift+←) 00:00:02:01.

@@ -11,7 +11,7 @@ keeps its peaks outside the project. No desktop change; the workspace gains a
 service nothing calls yet.
 
 - `crates/editor-media/src/sound.rs`: `SoundService::new(wake)` with one
-  worker thread (`aster-sound`), one loader thread for cache reads, its own
+  worker thread (`neptune-video-sound`), one loader thread for cache reads, its own
   `Processes`, and a queue of 16 (`MediaError::Busy` beyond). A newer request
   with the same target replaces the waiting one and stops the running one;
   neither answers. The target is the job's own, as `Work::target()` is in
@@ -56,8 +56,8 @@ trace, and no project state, command, save or load is touched.
 
 - `crates/editor-media/src/sound.rs`: `SoundService::new(wake)`, `peaks(job)`,
   `load_peaks(job)`, `cancel(request)`, `cancel_all()`, `poll()` and `busy()`,
-  with `PeakJob { project, asset, cache }`. Threads `aster-sound` and
-  `aster-sound-load`, a `Processes` of its own, `SOUND_QUEUE` 16 and
+  with `PeakJob { project, asset, cache }`. Threads `neptune-video-sound` and
+  `neptune-video-sound-load`, a `Processes` of its own, `SOUND_QUEUE` 16 and
   `PEAK_LOADS` 16. The replacement target is a private `Target` enum with one
   variant a kind, `Peaks(AssetId)` today, so tickets 14a, 16a, 20 and 21a add
   a variant each (with `from` and `span` where their target has them).
@@ -195,7 +195,7 @@ Resolved. The owner delegated the reading this ticket waited for; it was
 done by an agent, not a person. Result and Evidence were checked against
 `crates/editor-media/src/sound.rs`, `sound/peaks.rs`, `sound/tests.rs` and
 `lib.rs` as they stand, and hold: `SoundService::new(wake)` with the threads
-`aster-sound` and `aster-sound-load`, `SOUND_QUEUE` and `PEAK_LOADS` both 16
+`neptune-video-sound` and `neptune-video-sound-load`, `SOUND_QUEUE` and `PEAK_LOADS` both 16
 and `Busy` beyond each; the private `Target` enum with `Peaks(AssetId)`,
 since joined by the loudness, beats, extract and separation targets; the
 FFmpeg command as scoped (`-threads 1`, `-map 0:a:0 -vn -sn -dn -ac 1 -ar

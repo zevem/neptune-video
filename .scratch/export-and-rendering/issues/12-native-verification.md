@@ -19,7 +19,7 @@ taken.
 ## Comments
 
 2026-10-14: Driven on the Linux host (i9-13900HX, RTX 4060 Laptop, driver
-595.99.02, Ubuntu 26.04.1, FFmpeg 8.0.1) with the release build, `aster`
+595.99.02, Ubuntu 26.04.1, FFmpeg 8.0.1) with the release build, `neptune-video`
 SHA-256 `3452f930…f2e572`, on private Xvfb displays at 1440x900 and 760x560.
 Record: `docs/verification.md#export-and-rendering`; measurements:
 `docs/performance.md#release-build-export-measurements`; raw files:
