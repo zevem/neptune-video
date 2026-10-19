@@ -100,7 +100,10 @@ job installs window/audio build dependencies and Mesa's lavapipe, the software
 adapter export renders on where a runner has no GPU. Every native job fetches the
 pinned FFmpeg that packages ship with
 [fetch-media-tools.py](../scripts/fetch-media-tools.py), so media tests run
-against the shipped tools rather than the runner's own.
+against the shipped tools rather than the runner's own. A download that times
+out or drops is tried again, up to three times;
+[test-fetch-media-tools.py](../scripts/test-fetch-media-tools.py), part of fast
+validation, checks that with a stand-in network.
 
 Before headless correctness, every native CI job runs
 [check-media-tools.py](../scripts/check-media-tools.py). It requires both
