@@ -937,11 +937,12 @@ async fn files_outside_the_roots_are_refused_and_nothing_is_replaced_unasked() {
         refused(&client, "media_import", json!({"paths": [secret]})).await,
         "outside_roots"
     );
-    let climbing = format!(
-        "{}/../{}/secret.mp4",
-        dir.display(),
-        outside.path().display()
-    );
+    // Out of the root and into the folder beside it, which holds the secret.
+    // Joined, not written out: in a canonical Windows path only `\` parts it.
+    let climbing = dir
+        .join("..")
+        .join(outside.path().file_name().unwrap())
+        .join("secret.mp4");
     assert_eq!(
         refused(&client, "media_import", json!({"paths": [climbing]})).await,
         "invalid",

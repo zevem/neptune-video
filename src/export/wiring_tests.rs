@@ -717,6 +717,9 @@ fn stop_and_quit_cancels_every_job_at_once_and_starts_none() {
     rig.finish.store(false, Ordering::SeqCst);
     assert!(rig.queue.retry(waiting));
     assert_eq!(stop_all(&rig.queue), 1);
+    // The retried job may have started at once; then it reads Cancelled
+    // when its render has stopped, and a Stop before that asks again.
+    until("the retried job to stop", || !rig.queue.busy());
     assert_eq!(stop_all(&rig.queue), 0, "nothing is left to stop");
 }
 
