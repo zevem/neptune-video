@@ -104,15 +104,8 @@ fn requested_playback_and_urgent_work_preempt_speculation() {
     service.retire_preview(other);
     let before_hint = service.shared.queue.lock().unwrap().maintenance;
     assert!(read_ahead_current(&service.shared, &job, before_hint));
+    // A poster waits for its own worker, not for this one's speculation.
     service.request_poster(&asset, Time::ZERO, [1, 1]).unwrap();
-    assert!(!read_ahead_current(&service.shared, &job, before_hint));
-    service
-        .shared
-        .queue
-        .lock()
-        .unwrap()
-        .frames
-        .retain(|_, frame| frame.purpose != FramePurpose::Poster);
     assert!(read_ahead_current(&service.shared, &job, before_hint));
     service
         .set_preview_retention([Some(owner), None, None])

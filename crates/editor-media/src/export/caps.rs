@@ -30,14 +30,42 @@ use std::{
 const PROBES_AT_ONCE: usize = 4;
 /// How long one test encode may take before it counts as failed.
 const PROBE_DEADLINE: Duration = Duration::from_secs(10);
+/// How often a running test encode asks whether it should step aside.
+const GATE_EVERY: Duration = Duration::from_millis(20);
 /// The test picture: small enough for any encoder, above NVENC's minimum.
 const PROBE_PICTURE: &str = "color=black:s=256x144:r=30,format=rgba";
 const LISTING_BYTES: usize = 4 * 1024 * 1024;
+
+/// What a capability probe steps aside for. A hardware encoder's test
+/// opens its GPU, which on a laptop with two can hold up the preview for
+/// most of a second: while the gate is held no test encode starts, and one
+/// that is running is stopped and run again once `wait` returns.
+pub trait ProbeGate: Sync {
+    /// Whether test encodes should give way now.
+    fn held(&self) -> bool;
+    /// Returns once test encodes may run.
+    fn wait(&self);
+}
+
+/// A gate that never holds.
+struct Open;
+
+impl ProbeGate for Open {
+    fn held(&self) -> bool {
+        false
+    }
+    fn wait(&self) {}
+}
 
 /// Probes the installed FFmpeg. Blocking: run it on a worker. A missing
 /// FFmpeg is an error; an encoder that fails its test is listed in
 /// `unavailable` with the reason FFmpeg gave.
 pub fn probe_capabilities() -> Result<Capabilities, MediaError> {
+    probe_capabilities_gated(&Open)
+}
+
+/// [`probe_capabilities`], its test encodes giving way to `gate`.
+pub fn probe_capabilities_gated(gate: &dyn ProbeGate) -> Result<Capabilities, MediaError> {
     let processes = Processes::default();
     let listing = |args: &[&str]| -> Result<String, MediaError> {
         let mut command = tool_command("ffmpeg");
@@ -66,7 +94,7 @@ pub fn probe_capabilities() -> Result<Capabilities, MediaError> {
         )
         .collect();
     let devices = render_nodes();
-    let outcomes = run_all(&trials, &devices);
+    let outcomes = run_all(&trials, &devices, gate);
 
     let mut capabilities = Capabilities {
         ffmpeg: version.lines().next().unwrap_or_default().trim().to_owned(),
@@ -112,7 +140,7 @@ impl Trial {
 type Outcome = Result<Option<String>, String>;
 
 /// Runs every trial, at most `PROBES_AT_ONCE` at a time, in their order.
-fn run_all(trials: &[Trial], devices: &[PathBuf]) -> Vec<Outcome> {
+fn run_all(trials: &[Trial], devices: &[PathBuf], gate: &dyn ProbeGate) -> Vec<Outcome> {
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<Option<Outcome>>> = Mutex::new(trials.iter().map(|_| None).collect());
     thread::scope(|scope| {
@@ -123,7 +151,7 @@ fn run_all(trials: &[Trial], devices: &[PathBuf]) -> Vec<Outcome> {
                     let Some(trial) = trials.get(index) else {
                         return;
                     };
-                    let outcome = run(trial, devices);
+                    let outcome = run(trial, devices, gate);
                     if let Ok(mut results) = results.lock() {
                         results[index] = Some(outcome);
                     }
@@ -139,9 +167,11 @@ fn run_all(trials: &[Trial], devices: &[PathBuf]) -> Vec<Outcome> {
         .collect()
 }
 
-fn run(trial: &Trial, devices: &[PathBuf]) -> Outcome {
+fn run(trial: &Trial, devices: &[PathBuf], gate: &dyn ProbeGate) -> Outcome {
     match trial {
-        Trial::Audio(encoder) => attempt(&audio_probe(encoder), None, &encoder.name).map(|_| None),
+        Trial::Audio(encoder) => {
+            attempt(&audio_probe(encoder), None, &encoder.name, gate).map(|_| None)
+        }
         Trial::Video(known) if known.hardware == Some(editor_core::export::HardwareKind::Vaapi) => {
             // The default node may belong to another GPU (here the first is
             // NVIDIA's); the node that encoded is kept for the export.
@@ -152,7 +182,8 @@ fn run(trial: &Trial, devices: &[PathBuf]) -> Outcome {
             for device in devices {
                 let device = device.to_string_lossy().into_owned();
                 let encoder = video_encoder(known, Some(device.clone()));
-                match attempt(&video_probe(&encoder), environment(&encoder), known.name) {
+                let probe = video_probe(&encoder);
+                match attempt(&probe, environment(&encoder), known.name, gate) {
                     Ok(()) => return Ok(Some(device)),
                     Err(reason) => reasons.push(format!("{device}: {reason}")),
                 }
@@ -161,7 +192,8 @@ fn run(trial: &Trial, devices: &[PathBuf]) -> Outcome {
         }
         Trial::Video(known) => {
             let encoder = video_encoder(known, None);
-            attempt(&video_probe(&encoder), environment(&encoder), known.name).map(|_| None)
+            let probe = video_probe(&encoder);
+            attempt(&probe, environment(&encoder), known.name, gate).map(|_| None)
         }
     }
 }
@@ -243,23 +275,38 @@ fn audio_probe(encoder: &AudioEncoder) -> Vec<OsString> {
     args
 }
 
-/// Runs one test encode with its deadline.
+/// Runs one test encode with its deadline, once `gate` lets it. One the
+/// gate stops is run again from the start when it may.
 fn attempt(
     args: &[OsString],
     environment: Option<(&str, &str)>,
     encoder: &str,
+    gate: &dyn ProbeGate,
 ) -> Result<(), String> {
-    let processes = Processes::default();
-    let mut command = tool_command("ffmpeg");
-    command.args(args);
-    if let Some((key, value)) = environment {
-        command.env(key, value);
-    }
-    let process =
-        Process::spawn("ffmpeg", &mut command, &processes).map_err(|error| error.to_string())?;
-    let status = process
-        .wait_until(Instant::now() + PROBE_DEADLINE)
-        .map_err(|error| error.to_string())?;
+    let (process, status) = 'run: loop {
+        gate.wait();
+        let processes = Processes::default();
+        let mut command = tool_command("ffmpeg");
+        command.args(args);
+        if let Some((key, value)) = environment {
+            command.env(key, value);
+        }
+        let process = Process::spawn("ffmpeg", &mut command, &processes)
+            .map_err(|error| error.to_string())?;
+        let deadline = Instant::now() + PROBE_DEADLINE;
+        loop {
+            let status = process
+                .wait_until((Instant::now() + GATE_EVERY).min(deadline))
+                .map_err(|error| error.to_string())?;
+            if status.is_some() || Instant::now() >= deadline {
+                break 'run (process, status);
+            }
+            if gate.held() {
+                // Dropping the process stops it.
+                continue 'run;
+            }
+        }
+    };
     match status {
         Some(status) if status.success() => Ok(()),
         Some(status) => {
@@ -333,6 +380,48 @@ fn render_nodes() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Held the first time a running test asks, then never again.
+    #[derive(Default)]
+    struct HeldOnce {
+        asked: AtomicUsize,
+        waited: AtomicUsize,
+    }
+
+    impl ProbeGate for HeldOnce {
+        fn held(&self) -> bool {
+            self.asked.fetch_add(1, Ordering::SeqCst) == 0
+        }
+        fn wait(&self) {
+            self.waited.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn a_test_encode_the_gate_stops_runs_again_from_the_start() {
+        if !crate::export::tests::ffmpeg_available() {
+            eprintln!("FFmpeg is unavailable; the gate's test skipped");
+            return;
+        }
+        // A second of silence, read at its own pace after FFmpeg's first
+        // half second: still running when it first asks the gate.
+        let args: Vec<OsString> =
+            "-hide_banner -nostdin -loglevel error -re -f lavfi -i anullsrc -t 1 -f null -"
+                .split(' ')
+                .map(Into::into)
+                .collect();
+        let gate = HeldOnce::default();
+        assert_eq!(attempt(&args, None, "null", &gate), Ok(()));
+        assert_eq!(
+            gate.waited.load(Ordering::SeqCst),
+            2,
+            "it waited for the gate before each start"
+        );
+        assert!(
+            gate.asked.load(Ordering::SeqCst) > 1,
+            "the second run was asked too and went on to the end"
+        );
+    }
 
     #[test]
     fn listings_give_their_names() {

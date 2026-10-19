@@ -39,7 +39,7 @@ struct AdmissionState {
     pending_order: VecDeque<Lane>,
     pending: Vec<PendingState>,
     in_flight: Option<(u64, u64, Lane)>,
-    bypasses: u8,
+    poster_in_flight: Option<(u64, u64, Lane)>,
     retention: [Option<PreviewConsumer>; 3],
     maintenance: u64,
     mailbox: (usize, usize),
@@ -68,7 +68,9 @@ fn admission_state(service: &MediaService) -> AdmissionState {
         in_flight: queue
             .in_flight
             .map(|identity| (identity.generation, identity.sequence, identity.lane)),
-        bypasses: queue.interactive_bypasses,
+        poster_in_flight: queue
+            .poster_in_flight
+            .map(|identity| (identity.generation, identity.sequence, identity.lane)),
         retention: queue.preview_retention,
         maintenance: queue.maintenance,
         mailbox: (queue.events.len(), queue.event_bytes),
@@ -280,7 +282,7 @@ fn playback_capacity_refusal_is_bounded_and_immediate_replacement_keeps_rank() {
 }
 
 #[test]
-fn playback_has_interactive_priority_without_exceeding_two_oldest_bypasses() {
+fn playback_and_seeks_take_turns_in_admission_order_and_never_wait_for_a_poster() {
     let service = fixture();
     let poster = source();
     let asset = source();
@@ -304,14 +306,23 @@ fn playback_has_interactive_priority_without_exceeding_two_oldest_bypasses() {
     assert_eq!(second.lane, Lane::Consumer(seek));
     assert!(publish(&service, &second, 2));
     expect_picture(&service, &second, 2);
+    let newcomer = PreviewConsumer::new();
     service
-        .request_playback_preview(PreviewConsumer::new(), &asset, Time(40), [1, 1])
+        .request_playback_preview(newcomer, &asset, Time(40), [1, 1])
         .unwrap();
-    let oldest = take(&service);
-    assert_eq!(oldest.asset.id, poster.id);
-    assert_eq!(oldest.time, Time::ZERO);
-    assert!(publish(&service, &oldest, 3));
-    expect_picture(&service, &oldest, 3);
+    // However many turns the viewer has had, the poster is not one of them.
+    for (owner, time, color) in [(playback, Time(30), 3), (newcomer, Time(40), 4)] {
+        let job = take(&service);
+        assert_eq!((job.lane, job.time), (Lane::Consumer(owner), time));
+        assert!(publish(&service, &job, color));
+        expect_picture(&service, &job, color);
+    }
+    assert!(service.shared.queue.lock().unwrap().take_frame().is_none());
+    let oldest = service.shared.queue.lock().unwrap().take_pending_poster();
+    let oldest = oldest.expect("the poster waits for its own worker");
+    assert_eq!((oldest.asset.id, oldest.time), (poster.id, Time::ZERO));
+    assert!(publish(&service, &oldest, 5));
+    expect_picture(&service, &oldest, 5);
 }
 
 #[test]

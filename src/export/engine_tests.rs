@@ -322,7 +322,7 @@ fn queue(gpu: Option<(wgpu::Device, wgpu::Queue)>) -> RenderQueue {
     let mut engine = Engine::new(gpu, None);
     let queue = RenderQueue::with_parts(
         || {},
-        Arc::new(move || Ok(caps.clone())),
+        Arc::new(move |_| Ok(caps.clone())),
         Box::new(move |ticket, handle| engine.run(ticket, handle)),
     );
     let until = Instant::now() + Duration::from_secs(5);

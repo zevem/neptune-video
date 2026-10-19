@@ -102,8 +102,8 @@
   route; prove clock fallback and natural decoder cleanup separately from the
   resolved [private-state regression](issues/06-audio-output-failure.md).
 - Verify native use of the implemented [bounded preview dispatch policy](issues/10-preview-dispatch-policy.md)
-  with explicit poster demand, retained first-admission
-  order and at most two interactive bypasses before global oldest. Preserve
+  with explicit poster demand on its own worker and retained first-admission
+  order within each worker. Preserve
   delivery/currentness and separate dispatch opportunities from latency,
   successful publication and multi-layer throughput. The verified optimized
   27-case video probe exposes a four-to-five lane sequential latency jump;

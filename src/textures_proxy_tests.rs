@@ -476,3 +476,37 @@ fn proxy_statuses_are_kept_until_forgotten() {
     textures.forget_proxies();
     assert_eq!(textures.proxy_status(asset.id), &ProxyStatus::None);
 }
+
+#[test]
+fn a_poster_is_read_of_a_ready_proxy_and_of_the_original_once_that_fails() {
+    let Ok(media) = MediaService::new(|| {}) else {
+        println!("SKIP: the media workers did not start");
+        return;
+    };
+    let mut asset = uhd("/nowhere/never-decoded.mov");
+    asset.path = std::env::temp_dir().join(format!("neptune-video-absent-{}.mov", asset.id));
+    let (mut textures, proxy) = reading(&asset);
+    textures.want_poster(&media, &asset);
+    assert_eq!(
+        textures.poster_requested[&asset.id],
+        Some(proxy.path.clone())
+    );
+
+    // The proxy could not be decoded: nothing to tell, and the original is
+    // asked for in its place, as a layer would.
+    assert!(!textures.failed(None, asset.id, Some(POSTER)));
+    assert!(!textures.poster_failed.contains(&asset.id));
+    textures.want_poster(&media, &asset);
+    assert_eq!(textures.poster_requested[&asset.id], None);
+    // The original failing is told, and its icon stays.
+    assert!(textures.failed(None, asset.id, Some(POSTER)));
+    assert!(textures.poster_failed.contains(&asset.id));
+    textures.want_poster(&media, &asset);
+    assert!(!textures.poster_requested.contains_key(&asset.id));
+
+    // Proxies not read: the original, ready proxy or not.
+    let (mut textures, _) = reading(&asset);
+    textures.read_proxies(false);
+    textures.want_poster(&media, &asset);
+    assert_eq!(textures.poster_requested[&asset.id], None);
+}

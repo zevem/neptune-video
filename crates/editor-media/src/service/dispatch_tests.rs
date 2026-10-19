@@ -1,4 +1,5 @@
-//! Scheduling regressions at request, single-worker dispatch, publication and poll.
+//! Scheduling regressions at request, dispatch, publication and poll. The
+//! viewer's pictures and posters are taken by separate workers.
 use super::*;
 use crate::Frame;
 
@@ -19,6 +20,16 @@ fn asset() -> Asset {
 
 fn complete(service: &MediaService, expected_time: Time) -> AssetId {
     let job = service.shared.queue.lock().unwrap().take_frame().unwrap();
+    publish_and_poll(service, job, expected_time)
+}
+
+/// As [`complete`], for the poster worker's next poster.
+fn complete_poster(service: &MediaService, expected_time: Time) -> AssetId {
+    let job = service.shared.queue.lock().unwrap().take_pending_poster();
+    publish_and_poll(service, job.unwrap(), expected_time)
+}
+
+fn publish_and_poll(service: &MediaService, job: FrameJob, expected_time: Time) -> AssetId {
     assert_eq!(
         job.time, expected_time,
         "latest pending source time is dispatched"
@@ -44,7 +55,8 @@ fn complete(service: &MediaService, expected_time: Time) -> AssetId {
     assert_eq!(time, expected_time);
     assert_eq!(&*frame.rgba, &[7, 0, 0, 255]);
     assert!(service.poll().is_none());
-    assert!(service.shared.queue.lock().unwrap().in_flight.is_none());
+    let queue = service.shared.queue.lock().unwrap();
+    assert!(queue.in_flight.is_none() && queue.poster_in_flight.is_none());
     assert_eq!(asset_id, job.asset.id);
     asset_id
 }
@@ -114,11 +126,12 @@ fn explicit_interactive_demand_bypasses_older_and_newer_posters_at_equal_size() 
 }
 
 #[test]
-fn global_oldest_is_selected_after_two_interactive_bypasses() {
+fn the_viewer_never_gives_a_turn_to_a_poster_and_posters_go_oldest_first() {
     let service = fixture();
     let poster = asset();
     service.request_poster(&poster, Time::ZERO, [1, 1]).unwrap();
-    for turn in 0..2 {
+    let mut newer_posters = Vec::new();
+    for turn in 0..8 {
         let interactive = asset();
         let newer_poster = asset();
         service
@@ -127,19 +140,22 @@ fn global_oldest_is_selected_after_two_interactive_bypasses() {
         service
             .request_poster(&newer_poster, Time(100 + turn), [1, 1])
             .unwrap();
+        newer_posters.push((newer_poster.id, Time(100 + turn)));
         assert_eq!(complete(&service, Time(turn + 1)), interactive.id);
-        // Replacing P cannot erase its age or the bypass debt.
+        // Replacing P cannot erase its age.
         service
             .request_poster(&poster, Time(turn + 10), [1, 1])
             .unwrap();
     }
-    let newest = asset();
-    service.request_frame(&newest, Time(200), [1, 1]).unwrap();
-    assert_eq!(complete(&service, Time(11)), poster.id);
+    assert!(service.shared.queue.lock().unwrap().take_frame().is_none());
+    assert_eq!(complete_poster(&service, Time(17)), poster.id);
+    for (id, time) in newer_posters {
+        assert_eq!(complete_poster(&service, time), id);
+    }
 }
 
 #[test]
-fn changing_pending_purpose_preserves_global_admission_rank_and_bypass_debt() {
+fn changing_pending_purpose_moves_the_lane_to_the_other_worker_with_its_admission_rank() {
     let service = fixture();
     let first = asset();
     service.request_poster(&first, Time::ZERO, [1, 1]).unwrap();
@@ -153,27 +169,53 @@ fn changing_pending_purpose_preserves_global_admission_rank_and_bypass_debt() {
     service.request_frame(&first, Time(99), [1, 1]).unwrap();
     let newer = asset();
     service.request_frame(&newer, Time(100), [1, 1]).unwrap();
+    assert!(
+        (service.shared.queue.lock().unwrap().take_pending_poster()).is_none(),
+        "the lane asked for again as a frame is no longer a poster"
+    );
     assert_eq!(complete(&service, Time(99)), first.id);
+    assert_eq!(complete(&service, Time(100)), newer.id);
+
+    let older = asset();
+    let demoted = asset();
+    service.request_poster(&older, Time(1), [1, 1]).unwrap();
+    service.request_frame(&demoted, Time(2), [1, 1]).unwrap();
+    service.request_poster(&demoted, Time(3), [1, 1]).unwrap();
+    assert!(service.shared.queue.lock().unwrap().take_frame().is_none());
+    assert_eq!(complete_poster(&service, Time(1)), older.id);
+    assert_eq!(complete_poster(&service, Time(3)), demoted.id);
 }
 
 #[test]
-fn full_poster_queue_still_rejects_new_lanes_and_accepts_pending_replacement() {
+fn a_full_poster_queue_rejects_new_posters_but_never_the_viewer() {
     let service = fixture();
     let assets: Vec<_> = (0..32).map(|_| asset()).collect();
     for asset in &assets {
         service.request_poster(asset, Time::ZERO, [1, 1]).unwrap();
     }
     assert!(matches!(
-        service.request_frame(&asset(), Time::ZERO, [1, 1]),
+        service.request_poster(&asset(), Time::ZERO, [1, 1]),
         Err(MediaError::Busy)
     ));
     service
         .request_poster(&assets[0], Time(100), [1, 1])
         .unwrap();
     assert_eq!(service.shared.queue.lock().unwrap().frames.len(), 32);
+    let interactive = asset();
+    service
+        .request_frame(&interactive, Time(5), [1, 1])
+        .unwrap();
+    let viewer = PreviewConsumer::new();
+    service
+        .request_preview(viewer, &asset(), Time(6), [1, 1])
+        .unwrap();
+    assert_eq!(complete(&service, Time(5)), interactive.id);
+    let job = service.shared.queue.lock().unwrap().take_frame().unwrap();
+    assert_eq!((job.lane, job.time), (Lane::Consumer(viewer), Time(6)));
+    publish_and_poll(&service, job, Time(6));
     for (index, asset) in assets.iter().enumerate() {
         assert_eq!(
-            complete(&service, if index == 0 { Time(100) } else { Time::ZERO }),
+            complete_poster(&service, if index == 0 { Time(100) } else { Time::ZERO }),
             asset.id
         );
     }
@@ -189,11 +231,11 @@ fn poster_and_interactive_methods_coalesce_same_lane_and_latest_purpose() {
     service.request_frame(&same, Time(3), [1, 1]).unwrap();
     assert_eq!(service.shared.queue.lock().unwrap().frames.len(), 2);
     assert_eq!(complete(&service, Time(3)), same.id);
-    assert_eq!(complete(&service, Time(2)), other.id);
+    assert_eq!(complete_poster(&service, Time(2)), other.id);
 }
 
 #[test]
-fn a_full_mixed_cohort_with_renewed_interactive_work_respects_the_rank_bound() {
+fn a_poster_behind_a_full_cohort_is_reached_within_its_rank_while_the_viewer_renews() {
     let service = fixture();
     let older: Vec<_> = (0..29).map(|_| asset()).collect();
     for asset in &older {
@@ -202,7 +244,8 @@ fn a_full_mixed_cohort_with_renewed_interactive_work_respects_the_rank_bound() {
     let target = asset();
     service.request_poster(&target, Time::ZERO, [1, 1]).unwrap();
     let interactive = [asset(), asset()];
-    let rank_bound = 3 * (older.len() + 1);
+    // Viewer renewals take none of the poster worker's turns.
+    let rank_bound = older.len() + 1;
     let mut served_target = false;
     for opportunity in 1..=rank_bound {
         let time = Time(opportunity as i64);
@@ -210,9 +253,10 @@ fn a_full_mixed_cohort_with_renewed_interactive_work_respects_the_rank_bound() {
         for asset in &interactive {
             service.request_frame(asset, time, [1, 1]).unwrap();
         }
-        assert!(service.shared.queue.lock().unwrap().frames.len() <= 32);
+        assert!(service.shared.queue.lock().unwrap().pending(true) <= 32);
         // Older unrenewed poster jobs still request Time::ZERO.
-        let job = service.shared.queue.lock().unwrap().take_frame().unwrap();
+        let job = service.shared.queue.lock().unwrap().take_pending_poster();
+        let job = job.unwrap();
         if job.asset.id == target.id {
             assert_eq!(job.time, time);
             served_target = true;
@@ -240,26 +284,45 @@ fn a_full_mixed_cohort_with_renewed_interactive_work_respects_the_rank_bound() {
 }
 
 #[test]
-fn failed_publication_does_not_reset_bypass_debt_and_cancel_starts_a_fresh_cohort() {
+fn failed_publication_frees_its_worker_and_cancel_starts_both_workers_afresh() {
     let service = fixture();
     let poster = asset();
     service.request_poster(&poster, Time::ZERO, [1, 1]).unwrap();
+    let decoding = (service.shared.queue.lock().unwrap().take_pending_poster()).unwrap();
     for _ in 0..2 {
         service.request_frame(&asset(), Time::ZERO, [1, 1]).unwrap();
         let job = service.shared.queue.lock().unwrap().take_frame().unwrap();
-        assert_ne!(job.asset.id, poster.id);
         assert!(!publish_result(&service.shared, &job, Err(MediaError::Cancelled)).unwrap());
         assert!(service.poll().is_none());
+        let queue = service.shared.queue.lock().unwrap();
+        assert!(queue.in_flight.is_none());
+        assert!(queue.poster_in_flight == Some(decoding.identity()));
     }
-    service.request_frame(&asset(), Time::ZERO, [1, 1]).unwrap();
-    assert_eq!(complete(&service, Time::ZERO), poster.id);
     let before = service.generation();
     assert_ne!(service.cancel(), before);
+    assert!(
+        service
+            .shared
+            .queue
+            .lock()
+            .unwrap()
+            .poster_in_flight
+            .is_none()
+    );
+    // The poster decoded before the worker started over is nobody's.
+    let stale = publish_result(
+        &service.shared,
+        &decoding,
+        Ok(Frame::new(1, 1, vec![0, 0, 0, 255]).unwrap()),
+    );
+    assert!(!stale.unwrap());
+    assert!(service.poll().is_none());
     let older = asset();
     let newer = asset();
     service.request_poster(&older, Time::ZERO, [1, 1]).unwrap();
     service.request_frame(&newer, Time::ZERO, [1, 1]).unwrap();
     assert_eq!(complete(&service, Time::ZERO), newer.id);
-    assert_eq!(complete(&service, Time::ZERO), older.id);
-    assert!(service.shared.queue.lock().unwrap().take_frame().is_none());
+    assert_eq!(complete_poster(&service, Time::ZERO), older.id);
+    let mut queue = service.shared.queue.lock().unwrap();
+    assert!(queue.take_frame().is_none() && queue.take_pending_poster().is_none());
 }
