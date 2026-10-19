@@ -17,7 +17,7 @@ mod reader;
 mod verify;
 
 pub use audio::{AudioRender, render_audio};
-pub use caps::probe_capabilities;
+pub use caps::{ProbeGate, probe_capabilities, probe_capabilities_gated};
 pub use encoder::Encoder;
 pub use reader::{MAX_READ_BYTES, MAX_READ_SIDE, SourceReader};
 pub use verify::{Expectation, verify_output};

@@ -24,6 +24,7 @@ use editor_core::{
     Project,
     export::{Capabilities, ExportError, ExportSettings, RenderJobInfo, RenderState},
 };
+use editor_media::export::ProbeGate;
 use eframe::wgpu;
 use std::{
     collections::{HashSet, VecDeque},
@@ -47,6 +48,9 @@ const MAX_EVENTS: usize = 32;
 const WAKE_EVERY: Duration = Duration::from_millis(100);
 /// How long `shutdown` waits for the job it stopped to tidy up.
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(750);
+/// How long the window has not played before the encoder probe's test
+/// encodes run: from launch, and again from each stop.
+const PROBE_SETTLE: Duration = Duration::from_secs(5);
 
 /// What this host's FFmpeg can make, as far as it is known.
 #[derive(Debug, Clone, PartialEq)]
@@ -202,8 +206,9 @@ pub enum RenderEvent {
     },
 }
 
-/// Answers a capability probe; FFmpeg's in production.
-pub(crate) type Probe = Arc<dyn Fn() -> Result<Capabilities, String> + Send + Sync>;
+/// Answers a capability probe, its test encodes giving way to the gate;
+/// FFmpeg's in production.
+pub(crate) type Probe = Arc<dyn Fn(&dyn ProbeGate) -> Result<Capabilities, String> + Send + Sync>;
 /// Runs one job to its end on the render thread.
 pub(crate) type Runner = Box<dyn FnMut(&Ticket, &Handle) -> Finish + Send>;
 
@@ -228,8 +233,8 @@ impl RenderQueue {
         gpu: Option<(wgpu::Device, wgpu::Queue)>,
         steady: Option<PathBuf>,
     ) -> Self {
-        let probe: Probe = Arc::new(|| {
-            editor_media::export::probe_capabilities().map_err(|error| error.to_string())
+        let probe: Probe = Arc::new(|gate| {
+            editor_media::export::probe_capabilities_gated(gate).map_err(|error| error.to_string())
         });
         let mut engine = Engine::new(gpu, steady);
         Self::build(
@@ -267,6 +272,10 @@ impl RenderQueue {
                 events: VecDeque::new(),
                 caps: CapabilityState::Probing,
                 probe_generation: 0,
+                probe_held: false,
+                probe_still: Instant::now(),
+                probe_settle: PROBE_SETTLE,
+                probe_wanted: false,
                 shutdown: false,
                 broken: None,
             }),
@@ -299,15 +308,36 @@ impl RenderQueue {
         }
     }
 
-    /// What this host can export, as far as it is known.
+    /// What this host can export, as far as it is known. Asking lets a held
+    /// probe go on: see [`Self::hold_probe`].
     pub fn capabilities(&self) -> CapabilityState {
-        self.shared.lock().caps.clone()
+        self.shared.want_probe().caps.clone()
     }
 
     /// Checks FFmpeg again, for instance after it was installed. Queued jobs
     /// wait for the answer; the one rendering goes on.
     pub fn reprobe(&self) {
+        drop(self.shared.want_probe());
         start_probe(&self.shared);
+    }
+
+    /// Whether the window plays or records. The encoder probe's test
+    /// encodes run once it has not for [`PROBE_SETTLE`], from launch and
+    /// from each stop; while it does, the ones running are stopped, to run
+    /// again later. A hardware encoder's test opens its GPU, which on a
+    /// laptop with two held up the preview for most of a second just after
+    /// launch. Asking for the capabilities, or queueing an export, lets the
+    /// probe run at once.
+    pub fn hold_probe(&self, held: bool) {
+        let mut state = self.shared.lock();
+        if state.probe_held != held {
+            state.probe_held = held;
+            if !held {
+                state.probe_still = Instant::now();
+            }
+            drop(state);
+            self.shared.work.notify_all();
+        }
     }
 
     /// Queues an export after checking it: FFmpeg is known, the settings make
@@ -321,7 +351,7 @@ impl RenderQueue {
     /// job starts; a job that fails there fails with the same reason.
     pub fn enqueue(&self, job: NewJob) -> Result<Uuid, EnqueueError> {
         let caps = {
-            let state = self.shared.lock();
+            let state = self.shared.want_probe();
             if let Some(why) = &state.broken {
                 return Err(EnqueueError::Stopped(why.clone()));
             }
@@ -735,6 +765,16 @@ impl Shared {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// The state, the probe no longer held for playback.
+    fn want_probe(&self) -> MutexGuard<'_, State> {
+        let mut state = self.lock();
+        if !state.probe_wanted {
+            state.probe_wanted = true;
+            self.work.notify_all();
+        }
+        state
+    }
+
     /// Wakes the window: at once for a change of state, at most every
     /// [`WAKE_EVERY`] for progress.
     fn signal(&self, now: bool) {
@@ -758,12 +798,39 @@ struct State {
     events: VecDeque<RenderEvent>,
     caps: CapabilityState,
     probe_generation: u64,
+    /// The window is playing: see [`RenderQueue::hold_probe`].
+    probe_held: bool,
+    /// When the window was launched or last stopped playing.
+    probe_still: Instant,
+    /// [`PROBE_SETTLE`], shorter in tests.
+    probe_settle: Duration,
+    /// The capabilities were asked for or an export queued: the probe is
+    /// no longer held.
+    probe_wanted: bool,
     shutdown: bool,
     /// Why the render thread is not running, if it could not start.
     broken: Option<String>,
 }
 
 impl State {
+    /// Whether the probe's running test encodes give way now.
+    fn probe_yields(&self) -> bool {
+        self.probe_held && !self.probe_wanted && !self.shutdown
+    }
+
+    /// How long the probe's next test encode waits: `None` when it may
+    /// start, `Some(None)` until playback stops.
+    fn probe_wait(&self) -> Option<Option<Duration>> {
+        if self.probe_wanted || self.shutdown {
+            return None;
+        }
+        if self.probe_held {
+            return Some(None);
+        }
+        let left = (self.probe_still + self.probe_settle).saturating_duration_since(Instant::now());
+        (!left.is_zero()).then_some(Some(left))
+    }
+
     fn index(&self, id: Uuid) -> Option<usize> {
         self.jobs.iter().position(|entry| entry.info.id == id)
     }
@@ -1053,7 +1120,7 @@ fn start_probe(shared: &Arc<Shared>) {
     let spawned = thread::Builder::new()
         .name("neptune-video-render-probe".into())
         .spawn(move || {
-            let answer = catch_unwind(AssertUnwindSafe(|| (probing.probe)()))
+            let answer = catch_unwind(AssertUnwindSafe(|| (probing.probe)(&Gate(&probing))))
                 .unwrap_or_else(|panic| Err(format!("Internal error: {}", panic_text(&*panic))));
             {
                 let mut state = probing.lock();
@@ -1072,6 +1139,29 @@ fn start_probe(shared: &Arc<Shared>) {
         let mut state = shared.lock();
         if state.probe_generation == generation {
             state.caps = CapabilityState::Failed(format!("FFmpeg could not be checked ({error})"));
+        }
+    }
+}
+
+/// The probe's gate: see [`RenderQueue::hold_probe`].
+struct Gate<'a>(&'a Shared);
+
+impl ProbeGate for Gate<'_> {
+    fn held(&self) -> bool {
+        self.0.lock().probe_yields()
+    }
+
+    fn wait(&self) {
+        let mut state = self.0.lock();
+        while let Some(left) = state.probe_wait() {
+            state = match left {
+                None => (self.0.work.wait(state)).unwrap_or_else(|poisoned| poisoned.into_inner()),
+                Some(left) => {
+                    (self.0.work.wait_timeout(state, left))
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .0
+                }
+            };
         }
     }
 }

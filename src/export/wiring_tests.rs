@@ -135,7 +135,7 @@ fn rig_with(probe: Probe) -> Rig {
 }
 
 fn rig() -> Rig {
-    let rig = rig_with(Arc::new(|| Ok(caps())));
+    let rig = rig_with(Arc::new(|_| Ok(caps())));
     until("the capabilities", || {
         matches!(rig.queue.capabilities(), CapabilityState::Ready(_))
     });
@@ -383,7 +383,7 @@ fn quitting_asks_about_rendering_first_then_unsaved_work() {
 fn capabilities_are_pending_until_probed_then_listed_with_presets() {
     let released = Arc::new(Mutex::new(false));
     let gate = Arc::clone(&released);
-    let rig = rig_with(Arc::new(move || {
+    let rig = rig_with(Arc::new(move |_| {
         while !*gate.lock().unwrap() {
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -414,7 +414,7 @@ fn capabilities_are_pending_until_probed_then_listed_with_presets() {
         other => panic!("expected capabilities, got {other:?}"),
     }
 
-    let failed = rig_with(Arc::new(|| Err("FFmpeg was not found".into())));
+    let failed = rig_with(Arc::new(|_| Err("FFmpeg was not found".into())));
     until("the probe to fail", || {
         matches!(failed.queue.capabilities(), CapabilityState::Failed(_))
     });

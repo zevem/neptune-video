@@ -68,6 +68,42 @@ searches; the benchmark excludes media, GPU work and native presentation.
 cargo bench --locked -p editor-core --bench render_plan
 ```
 
+## Playback right after opening (2026-10-19)
+
+The [task report](../artifacts/startup-playback-2026-10-19/REPORT.md) and
+[per-run table](../artifacts/startup-playback-2026-10-19/table.md) cover the
+same reel and host, optimized builds of `483d1f3` and of this change, with
+the timeline at 52% of a 2000x1400 window and Space pressed as the project
+finished loading. A byte-preserving FFmpeg wrapper records decoder output;
+the viewer's pixels are sampled at 120 Hz. Sound was not measured.
+
+Posters were decoded on the preview worker, from 4K 10-bit HEVC originals at
+0.6–1.1 s each. With at most two viewer pictures passing a poster, every
+playing layer stopped for each poster until the opening's roughly two dozen
+were done, and Auto stepped down to Half. Posters now have their own worker,
+and a video with a ready proxy has its poster read from the proxy.
+
+| Play right after load, quiet host | Presenter longest gap | Presenter decode size | Export test encodes during play |
+| --- | ---: | --- | ---: |
+| `483d1f3`, 3 runs | 943, 1,036, 1,062 ms | 180x320 (Half) | 17–18 |
+| Posters on their own worker, 3 runs | 132, 110, 139 ms | 360x640 (Full) | 17–18 |
+| And the encoder check settled, 3 runs | 134, 126, 121 ms | 360x640 (Full) | 0 |
+
+The export encoder check started about 30 test encodes at launch, three of
+them NVENC. In an earlier interval of the same day, with posters already on
+their own worker, they coincided with 71–173 ms viewer stalls in five of five
+runs; holding back all of them, or only the NVENC three, left none above 45 ms
+in four of four. Later the same builds showed no such stalls, with the
+NVENC tests at half their earlier length: the GPU's state was not controlled.
+The test encodes now wait until the window has not played for 5 s (see the
+[encoder probe](#encoder-probe)).
+
+The remaining 110–140 ms presenter gap is the cold cut at 3.5 s, in every
+build and in the 8-second control: the overlay's decoder starts at the cut,
+the presenter waits on the same worker, and Auto steps to Half for the rest
+of playback. Displayed frame times, sound start with a device, other GPUs
+and platforms, and a project without proxies remain unmeasured.
+
 ## Current performance acceptance
 
 The [measured handover](../artifacts/performance-acceptance/round1/REPORT.md),
@@ -628,6 +664,8 @@ start-qualified prefix, not just returned clips; no interval index was added.
 The [dispatch-policy task](../.scratch/core-editor/issues/10-preview-dispatch-policy.md)
 now has a selected design: explicit poster demand, retained first-admission
 order, and at most two interactive bypasses before global-oldest dispatch.
+Posters have since moved to a worker of their own, which removed the bypasses:
+see [playback right after opening](#playback-right-after-opening-2026-10-19).
 R14 does not contain the selected correction. The earlier 22-focused/76-media
 checks and the 96-test consumer stage remain historical. Follow-up source now
 passes [112 media tests and current package-only denied-warning Clippy](../artifacts/production-readiness/decoder-retention-round2/backend-root-verification.json).
@@ -1403,6 +1441,7 @@ There is no prefetch thread; FFmpeg's own threads decode ahead.
 | Bound | Value |
 | --- | --- |
 | When | Once on an `neptune-video-render-probe` thread when the queue starts, and again on request; queued jobs wait for it |
+| Test encodes start | Once the window has not played or recorded for 5 s (`PROBE_SETTLE`), from launch and from each stop. Ones running when playback starts are stopped and run again. Asking for the capabilities (the export dialog, the agent) or queueing an export starts them at once |
 | Probes at once | 4 (`PROBES_AT_ONCE`), each with a 10 s deadline (`PROBE_DEADLINE`) |
 | Test | Video: 2 frames of a 256x144 black picture (`PROBE_PICTURE`) through the export's own argument builder. Sound: 0.1 s of silence. VA-API tries each `/dev/dri/renderD*` |
 | Listings read | `-encoders` and `-muxers`, 4 MiB of output each at most (`LISTING_BYTES`) |

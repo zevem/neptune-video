@@ -152,12 +152,12 @@ fn poster_dispatch_does_not_prepare_other_owners() {
     service
         .request_poster(&videos.assets[0], Time::ZERO, [64, 32])
         .unwrap();
-    let PendingFrame { job, purpose } = service
+    let job = service
         .shared
         .queue
         .lock()
         .unwrap()
-        .take_pending_frame()
+        .take_pending_poster()
         .unwrap();
     service
         .request_playback_preview(
@@ -167,6 +167,7 @@ fn poster_dispatch_does_not_prepare_other_owners() {
             [64, 32],
         )
         .unwrap();
+    let purpose = FramePurpose::Poster;
     prepare_video_cohort(&service.shared, &mut videos.pool, &job, purpose, 0).unwrap();
     assert_eq!(videos.processes.started_tools(), 0);
     let frame = videos.pool.frame(&job, || true).unwrap();

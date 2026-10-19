@@ -27,9 +27,11 @@ wake/cache/GPU or audio proof; fifteen sampled process identities were gone.
 
 ## Current interfaces and completed source checks
 
-- `request_poster(asset,time,size)` uses explicit purpose, retained first-admission
-  order and at most two interactive bypasses before global-oldest dispatch.
-  The conditional 96-dispatch-opportunity bound is neither latency nor delivery.
+- `request_poster(asset,time,size)` uses explicit purpose. Posters decode one
+  at a time on their own `neptune-video-posters` worker, oldest admission
+  first; viewer pictures never wait for one. A lane changing purpose moves to
+  the other worker with its admission rank. Each kind has its own
+  32-pending bound. Ranks bound dispatch opportunities, not latency or delivery.
 - `PreviewConsumer`, `request_preview(consumer,&asset,time,size)` and
   `retire_preview(consumer)` preserve continuing owner/cut bindings separately
   from shared decoded pixels. Legacy requests still coalesce by asset/bounds.

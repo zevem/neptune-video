@@ -5,6 +5,33 @@ editing evidence. Production readiness, CapCut/Palmier Pro parity and extreme
 performance remain goals requiring the gates below.
 Neptune Terminal was inspected read-only as the stack and engineering reference.
 
+## Playback right after opening (2026-10-19)
+
+The [task report](../artifacts/startup-playback-2026-10-19/REPORT.md) records
+why preview playback froze for its first seconds after the LeyFind reel was
+opened, and native before/after traces of optimized builds on the same
+i9-13900HX / RTX 4060 Linux host. Posters now decode on a worker of their
+own, from a ready proxy where there is one; the export encoder check's test
+encodes wait for the window to stop playing for 5 s. Preview quality is not
+lowered: immediate play keeps the presenter at Full, where it had dropped to
+Half, and its longest decoder gap falls from 0.94–1.06 s to 0.11–0.14 s.
+
+Regressions first failed at their seams: a poster whose decode never ends
+held back the viewer's picture (a pipe fixture on the real service), a
+held test encode was not stopped, and the probe neither waited for playback
+nor for the window to settle. `editor-media` passes **456 tests** and the
+desktop package **1,155**, with formatting, architecture validation and
+denied-warning all-target Clippy for both packages. Whole-workspace tests
+were not rerun.
+
+Native captures show the final build after playing at 2000x1400 and in a
+900x700 window, with timeline posters drawn. Displayed frame times, sound
+start with an output device, other platforms and GPUs, and a project without
+proxies are not verified. The cold cut at 3.5 s still steps Auto to Half in
+every build. Runs taken while other work loaded the host are kept and
+excluded. [Performance](performance.md#playback-right-after-opening-2026-10-19)
+records the measurements.
+
 ## LeyFind preview follow-up (2026-10-16)
 
 The [investigation report](../artifacts/preview-performance-2026-10-16/REPORT.md)

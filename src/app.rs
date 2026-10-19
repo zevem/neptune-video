@@ -6758,6 +6758,13 @@ impl eframe::App for App {
         if let Some(wait) = self.recording.repaint_after() {
             ctx.request_repaint_after(wait);
         }
+        // The export's encoder check waits while the person watches or
+        // records, unless they ask for it.
+        self.renders.hold_probe(
+            self.playback.playing
+                || self.recording.busy()
+                || (self.source.as_ref()).is_some_and(|source| source.playback.playing),
+        );
 
         // A recovery copy of unsaved work, at most every few seconds. A
         // project without a file has one too, in the application's folder.

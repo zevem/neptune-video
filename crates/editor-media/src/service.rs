@@ -87,6 +87,12 @@ struct PendingFrame {
     purpose: FramePurpose,
 }
 
+impl PendingFrame {
+    fn poster(&self) -> bool {
+        self.purpose == FramePurpose::Poster
+    }
+}
+
 impl FrameJob {
     fn identity(&self) -> FrameIdentity {
         FrameIdentity {
@@ -102,12 +108,14 @@ struct Queue {
     sequence: u64,
     imports: VecDeque<ImportJob>,
     luts: VecDeque<LutJob>,
+    /// Pending pictures of both kinds, one per lane: the viewer's, which
+    /// the preview worker takes, and posters, which the poster worker takes.
     frames: BTreeMap<Lane, PendingFrame>,
     pending_order: VecDeque<Lane>,
-    interactive_bypasses: u8,
     maintenance: u64,
     preview_retention: [Option<PreviewConsumer>; 3],
     in_flight: Option<FrameIdentity>,
+    poster_in_flight: Option<FrameIdentity>,
     latest: BTreeMap<Lane, u64>,
     events: VecDeque<MediaEvent>,
     event_bytes: usize,
@@ -122,10 +130,10 @@ impl Default for Queue {
             luts: VecDeque::new(),
             frames: BTreeMap::new(),
             pending_order: VecDeque::new(),
-            interactive_bypasses: 0,
             maintenance: 0,
             preview_retention: [None; 3],
             in_flight: None,
+            poster_in_flight: None,
             latest: BTreeMap::new(),
             events: VecDeque::new(),
             event_bytes: 0,
@@ -140,35 +148,34 @@ impl Queue {
         self.take_pending_frame().map(|pending| pending.job)
     }
 
+    /// The viewer's longest-waiting picture, for the preview worker. A
+    /// poster is never among them: it waits for the poster worker.
     fn take_pending_frame(&mut self) -> Option<PendingFrame> {
-        let oldest = self.pending_order.front().copied()?;
-        let interactive = self.pending_order.iter().copied().find(|lane| {
-            self.frames.get(lane).is_some_and(|pending| {
-                matches!(
-                    pending.purpose,
-                    FramePurpose::Interactive | FramePurpose::Playback
-                )
-            })
-        });
-        let lane = if self.interactive_bypasses < 2 {
-            interactive.unwrap_or(oldest)
-        } else {
-            oldest
-        };
-        if lane == oldest {
-            self.interactive_bypasses = 0;
-        } else {
-            self.interactive_bypasses += 1;
-        }
-        self.pending_order.retain(|pending| *pending != lane);
-        if self.pending_order.is_empty() {
-            self.interactive_bypasses = 0;
-        }
-        let pending = self.frames.remove(&lane);
-        if let Some(pending) = &pending {
-            self.in_flight = Some(pending.job.identity());
-        }
-        pending
+        let pending = self.take_oldest(false)?;
+        self.in_flight = Some(pending.job.identity());
+        Some(pending)
+    }
+
+    /// The longest-waiting poster, for the poster worker.
+    fn take_pending_poster(&mut self) -> Option<FrameJob> {
+        let pending = self.take_oldest(true)?;
+        self.poster_in_flight = Some(pending.job.identity());
+        Some(pending.job)
+    }
+
+    fn take_oldest(&mut self, posters: bool) -> Option<PendingFrame> {
+        let index = self.pending_order.iter().position(|lane| {
+            (self.frames.get(lane)).is_some_and(|pending| pending.poster() == posters)
+        })?;
+        let lane = self.pending_order.remove(index)?;
+        self.frames.remove(&lane)
+    }
+
+    /// How many posters, or how many of the viewer's pictures, wait.
+    fn pending(&self, posters: bool) -> usize {
+        (self.frames.values())
+            .filter(|pending| pending.poster() == posters)
+            .count()
     }
 
     fn frame_current(&self, job: &FrameJob) -> bool {
@@ -201,6 +208,7 @@ impl Queue {
                 .filter(|(lane, _)| {
                     !self.frames.contains_key(*lane)
                         && self.in_flight.is_none_or(|flight| flight.lane != **lane)
+                        && (self.poster_in_flight).is_none_or(|flight| flight.lane != **lane)
                         && !lane.protected_by(&self.preview_retention)
                 })
                 .min_by_key(|(_, sequence)| **sequence)
@@ -254,6 +262,9 @@ impl Queue {
         if self.in_flight == Some(job.identity()) {
             self.in_flight = None;
         }
+        if self.poster_in_flight == Some(job.identity()) {
+            self.poster_in_flight = None;
+        }
     }
 
     fn frame_event_capacity(&self, bytes: usize) -> bool {
@@ -270,7 +281,11 @@ struct Shared {
     ready: Condvar,
 }
 
-/// Nonblocking caller interface; import and preview decoding own separate workers.
+/// A worker thread's body.
+type Worker = fn(Arc<Shared>, Processes, Wake);
+
+/// Nonblocking caller interface; import, preview decoding and poster decoding
+/// own separate workers.
 pub struct MediaService {
     shared: Arc<Shared>,
     processes: Processes,
@@ -281,19 +296,18 @@ impl MediaService {
         let shared = Arc::new(Shared::default());
         let processes = Processes::default();
         let wake: Wake = Arc::new(wake);
-        for (name, imports) in [
-            ("neptune-video-import", true),
-            ("neptune-video-preview", false),
-        ] {
+        let workers: [(&str, Worker); 3] = [
+            ("neptune-video-import", import_worker),
+            ("neptune-video-preview", preview_worker),
+            ("neptune-video-posters", poster_worker),
+        ];
+        for (name, worker) in workers {
             let (state, children, callback) =
                 (Arc::clone(&shared), processes.clone(), Arc::clone(&wake));
-            if let Err(error) = thread::Builder::new().name(name.into()).spawn(move || {
-                if imports {
-                    import_worker(state, children, callback);
-                } else {
-                    preview_worker(state, children, callback);
-                }
-            }) {
+            if let Err(error) = thread::Builder::new()
+                .name(name.into())
+                .spawn(move || worker(state, children, callback))
+            {
                 if let Ok(mut queue) = shared.queue.lock() {
                     queue.stopped = true;
                 }
@@ -380,8 +394,11 @@ impl MediaService {
         )
     }
 
-    /// Declares library, timeline or inspector poster demand without reserving
-    /// capacity. It coalesces with the same asset/size lane as `request_frame`.
+    /// Declares library, timeline or inspector poster demand. Posters are
+    /// decoded one at a time on their own worker, oldest first, so a slow one
+    /// never holds back a picture the viewer waits for. It coalesces with the
+    /// same asset/size lane as `request_frame`: the latest call's purpose
+    /// decides which worker takes it.
     pub fn request_poster(
         &self,
         asset: &Asset,
@@ -475,9 +492,6 @@ impl MediaService {
             }
             queue.preview_retention = normalized_retention(queue.preview_retention);
             queue.pending_order.retain(|pending| *pending != lane);
-            if queue.pending_order.is_empty() {
-                queue.interactive_bypasses = 0;
-            }
             queue
                 .events
                 .retain(|event| !event_matches_lane(event, lane));
@@ -504,6 +518,11 @@ impl MediaService {
         if asset.kind == MediaKind::Lut {
             return Err(MediaError::Invalid("LUT assets have no video frame".into()));
         }
+        if asset.kind == MediaKind::Font {
+            return Err(MediaError::Invalid(
+                "Font assets have no video frame".into(),
+            ));
+        }
         let mut queue = self.shared.queue.lock().map_err(|_| MediaError::Closed)?;
         if queue.stopped {
             return Err(MediaError::Closed);
@@ -514,7 +533,10 @@ impl MediaService {
         {
             return Err(MediaError::Busy);
         }
-        if queue.frames.len() >= 32 && !queue.frames.contains_key(&lane) {
+        // At most 32 posters and 32 of the viewer's pictures wait; a full
+        // set of either never turns the other away.
+        if !queue.frames.contains_key(&lane) && queue.pending(purpose == FramePurpose::Poster) >= 32
+        {
             return Err(MediaError::Busy);
         }
         queue.sequence = queue.sequence.wrapping_add(1);
@@ -522,7 +544,7 @@ impl MediaService {
         let generation = queue.generation;
         queue.latest.insert(lane, sequence);
         // Replacement keeps first admission, independent of sequence wrap and
-        // caller purpose changes. There are at most 32 pending positions.
+        // caller purpose changes. There are at most 64 pending positions.
         if !queue.frames.contains_key(&lane) {
             queue.pending_order.push_back(lane);
         }
@@ -540,9 +562,9 @@ impl MediaService {
                 },
             },
         );
-        // At most 32 pending lanes, one worker-owned lane and three hinted
-        // consumers are protected;
-        // the 64-entry history still has evictable completed entries.
+        // At most 65 pending lanes (a lane changing purpose may join a full
+        // set), two worker-owned lanes and three hinted consumers are
+        // protected; the history stays within one more than those.
         queue.prune_latest();
         self.shared.ready.notify_all();
         Ok(generation)
@@ -572,8 +594,8 @@ impl MediaService {
             queue.luts.clear();
             queue.frames.clear();
             queue.pending_order.clear();
-            queue.interactive_bypasses = 0;
             queue.in_flight = None;
+            queue.poster_in_flight = None;
             queue.latest.clear();
             queue.preview_retention = [None; 3];
             queue.events.clear();
@@ -734,7 +756,7 @@ fn preview_worker(shared: Arc<Shared>, processes: Processes, wake: Wake) {
             let Ok(mut queue) = shared.queue.lock() else {
                 return;
             };
-            while queue.frames.is_empty()
+            while queue.pending(false) == 0
                 && !queue.stopped
                 && queue.generation == generation
                 && queue.maintenance == maintenance
@@ -747,8 +769,7 @@ fn preview_worker(shared: Arc<Shared>, processes: Processes, wake: Wake) {
             if queue.stopped {
                 return;
             }
-            // Latest source time within each lane; bounded interactive preference
-            // across lanes cannot repeatedly displace the global oldest.
+            // Latest source time within each lane, longest-waiting lane first.
             let retained = (queue.generation != generation || queue.maintenance != maintenance)
                 .then(|| queue.preview_maintenance());
             (
@@ -824,6 +845,60 @@ fn preview_worker(shared: Arc<Shared>, processes: Processes, wake: Wake) {
                     });
                 }
             }
+            Ok(false) => {}
+            Err(_) => return,
+        }
+    }
+}
+
+/// Decodes posters, one at a time and apart from the viewer's pictures. A cold
+/// poster of a long-GOP 4K video can take a second, and a playing viewer asks
+/// for a picture every few milliseconds: on one worker every layer would stop
+/// for every poster. Nothing is kept from one poster to the next, neither a
+/// pipe nor a picture, so this adds at most one FFmpeg process while it works.
+fn poster_worker(shared: Arc<Shared>, processes: Processes, wake: Wake) {
+    let mut decoders = DecoderPool::new(processes);
+    let mut maintenance = 0;
+    loop {
+        let job = {
+            let Ok(mut queue) = shared.queue.lock() else {
+                return;
+            };
+            while queue.pending(true) == 0 && !queue.stopped {
+                let Ok(next) = shared.ready.wait(queue) else {
+                    return;
+                };
+                queue = next;
+            }
+            if queue.stopped {
+                return;
+            }
+            queue.take_pending_poster()
+        };
+        let Some(job) = job else {
+            continue;
+        };
+        let current = || {
+            shared
+                .queue
+                .lock()
+                .is_ok_and(|queue| queue.frame_current(&job))
+        };
+        let result = decoders.frame(&job, current);
+        let published = publish_result_with_admission(
+            &shared,
+            &job,
+            result,
+            || {},
+            &mut maintenance,
+            |_| {},
+            true,
+        );
+        // The next poster is of another asset: this one's pipe would only
+        // hold its codec's memory.
+        decoders.clear();
+        match published {
+            Ok(true) => wake(),
             Ok(false) => {}
             Err(_) => return,
         }
@@ -908,7 +983,8 @@ fn read_ahead_current(shared: &Shared, job: &FrameJob, maintenance: u64) -> bool
             && queue.maintenance == maintenance
             // Requested pictures outrank speculative future cache entries,
             // including another playback owner waiting for its first picture.
-            && queue.frames.is_empty()
+            // A poster waits for its own worker, not this one.
+            && queue.pending(false) == 0
     })
 }
 
@@ -1056,6 +1132,9 @@ mod prefetch_tests;
 
 #[cfg(test)]
 mod warmup_tests;
+
+#[cfg(test)]
+mod poster_tests;
 
 #[cfg(test)]
 mod tests {

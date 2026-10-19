@@ -104,3 +104,17 @@ passed root verification; its sequential-worker scope excludes poster competitio
 and native presentation; the [completed independent audit](../../../artifacts/production-readiness/multilayer-preview-round3/audit-attempt-01.md)
 agrees with arithmetic and exact build attribution. Earlier pending notes above describe their
 own stages; progress stays claimed until required native evidence is complete.
+
+## Posters on their own worker (2026-10-19)
+
+Native diagnosis of slow playback just after opening the LeyFind reel found
+the two-bypass policy serializing playback behind posters: each cold 4K
+poster took 0.6–1.1 s to decode, so every third viewer turn waited for one
+and Auto quality stepped down. Posters now decode one at a time on a
+`neptune-video-posters` worker with a decoder pool of its own, cleared after
+each poster. The preview worker no longer takes poster jobs and no bypass
+accounting remains. A lane changing purpose moves to the other worker with
+its admission rank. Each kind has its own 32-pending bound, so a full poster
+queue no longer refuses a viewer. A poster of a video with a ready proxy is
+read from the proxy and falls back to the original once if the proxy fails.
+The measurements are in [performance](../../../docs/performance.md#playback-right-after-opening-2026-10-19).

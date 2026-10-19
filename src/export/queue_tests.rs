@@ -119,7 +119,7 @@ struct Rig {
 }
 
 fn rig() -> Rig {
-    let rig = rig_with(Arc::new(|| Ok(caps())));
+    let rig = rig_with(Arc::new(|_| Ok(caps())));
     until("the capabilities", || {
         matches!(rig.queue.capabilities(), CapabilityState::Ready(_))
     });
@@ -1009,7 +1009,7 @@ fn settings_are_checked_against_the_project_when_queued() {
 fn nothing_is_queued_before_the_capabilities_are_known() {
     let (release, released) = mpsc::channel::<Result<Capabilities, String>>();
     let released = Mutex::new(released);
-    let rig = rig_with(Arc::new(move || {
+    let rig = rig_with(Arc::new(move |_| {
         released
             .lock()
             .unwrap()
@@ -1052,6 +1052,69 @@ fn nothing_is_queued_before_the_capabilities_are_known() {
     release.send(Ok(caps())).unwrap();
     assert_eq!(rig.next_started(), b);
     rig.wait_state(b, RenderState::Done);
+}
+
+/// The encoder probe's test encodes wait while the window plays, and until
+/// it has not for a while, from launch and from each stop: a hardware
+/// encoder's test held up the preview just after launch. Asking for the
+/// capabilities, or queueing an export, lets them run at once.
+#[test]
+fn a_probe_waits_for_the_window_to_settle_unless_asked_or_queued_to() {
+    for release in ["settled", "asked", "queued to"] {
+        let (go, gone) = mpsc::channel::<()>();
+        let gone = Mutex::new(gone);
+        let (told, held) = mpsc::channel::<bool>();
+        let told = Mutex::new(told);
+        let rig = rig_with(Arc::new(move |gate| {
+            gone.lock().unwrap().recv().unwrap();
+            told.lock().unwrap().send(gate.held()).unwrap();
+            gate.wait();
+            Ok(caps())
+        }));
+        let settle = Duration::from_millis(300);
+        rig.queue.shared.lock().probe_settle = settle;
+        rig.queue.hold_probe(true);
+        go.send(()).unwrap();
+        assert!(
+            held.recv_timeout(PATIENCE).unwrap(),
+            "{release}: playing holds it"
+        );
+        // Looked at without asking: asking lets it go.
+        let probing = || rig.queue.shared.lock().caps == CapabilityState::Probing;
+        thread::sleep(settle + Duration::from_millis(100));
+        assert!(
+            probing(),
+            "{release}: it waits for as long as the window plays"
+        );
+        rig.queue.hold_probe(true);
+        assert!(probing(), "{release}: holding again changes nothing");
+        let stopped = Instant::now();
+        if release == "settled" {
+            rig.queue.hold_probe(false);
+            until(release, || !probing());
+            assert!(
+                stopped.elapsed() >= settle,
+                "it waited for the window to settle"
+            );
+        } else {
+            // Neither playback nor a long settle holds it once it is wanted.
+            rig.queue.shared.lock().probe_settle = Duration::from_secs(60);
+            rig.queue.hold_probe(false);
+            if release == "asked" {
+                assert_eq!(rig.queue.capabilities(), CapabilityState::Probing);
+            } else {
+                assert_eq!(
+                    rig.queue.enqueue(rig.job("a.mp4")),
+                    Err(EnqueueError::CapabilitiesPending)
+                );
+            }
+            until(release, || !probing());
+        }
+        assert!(matches!(
+            rig.queue.capabilities(),
+            CapabilityState::Ready(_)
+        ));
+    }
 }
 
 #[test]
@@ -1164,7 +1227,7 @@ fn headless_shutdown_waits_for_the_runners_resources_to_drop() {
     let resource = Resource(dropped.clone());
     let queue = RenderQueue::with_parts(
         || {},
-        Arc::new(|| Ok(caps())),
+        Arc::new(|_| Ok(caps())),
         Box::new(move |_, _| {
             let _held = &resource;
             Finish::Cancelled

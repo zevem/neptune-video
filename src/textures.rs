@@ -507,9 +507,10 @@ pub struct Textures {
     /// The largest poster kept so far: the room set aside for one that has
     /// been asked for and not yet decoded.
     poster_reserve: usize,
-    /// Posters asked for that have not arrived. Never more than the budget
-    /// has posters.
-    poster_requested: HashSet<AssetId>,
+    /// Posters asked for that have not arrived, with the proxy file each was
+    /// asked of when it was not the original. Never more than the budget has
+    /// posters.
+    poster_requested: HashMap<AssetId, Option<PathBuf>>,
     /// Assets whose poster could not be decoded or kept; they keep their icon.
     poster_failed: HashSet<AssetId>,
     /// A poster was turned away this frame for want of room, and nothing has
@@ -767,14 +768,24 @@ impl Textures {
         Some(&poster.texture)
     }
 
-    /// Asks once for the poster of an asset that can have one.
+    /// Asks once for the poster of an asset that can have one. It is read
+    /// from the asset's proxy when one serves: at a poster's size the picture
+    /// is the same, and a 4K original's frame two seconds in can take a
+    /// second to decode where the proxy's takes a few milliseconds.
     pub fn want_poster(&mut self, media: &MediaService, asset: &Asset) {
         let Some(time) = self.claim_poster(asset) else {
             return;
         };
-        if media.request_poster(asset, time, POSTER).is_err() {
+        let proxy = self.preview.serving(asset, POSTER);
+        let source = proxy.map(|proxy| proxied(asset, proxy));
+        if media
+            .request_poster(source.as_ref().unwrap_or(asset), time, POSTER)
+            .is_err()
+        {
             // The worker was busy; ask again on a later frame.
             self.unclaim_poster(asset.id);
+        } else if let Some(source) = source {
+            self.poster_requested.insert(asset.id, Some(source.path));
         }
     }
 
@@ -793,8 +804,12 @@ impl Textures {
     /// to ask at, or nothing when it is kept, was asked for, has failed or
     /// has no room among the posters on screen.
     fn claim_poster(&mut self, asset: &Asset) -> Option<Time> {
-        // Neither sound nor a lookup table has a picture: they keep their icon.
-        if matches!(asset.kind, MediaKind::Audio | MediaKind::Lut) {
+        // Sound, a lookup table and a font have no picture: they keep their
+        // icon.
+        if !matches!(
+            asset.kind,
+            MediaKind::Video | MediaKind::Image | MediaKind::Gif
+        ) {
             return None;
         }
         if let Some(poster) = self.posters.get(&asset.id) {
@@ -802,7 +817,7 @@ impl Textures {
             poster.shown.set(self.tick());
             return None;
         }
-        if self.poster_failed.contains(&asset.id) || self.poster_requested.contains(&asset.id) {
+        if self.poster_failed.contains(&asset.id) || self.poster_requested.contains_key(&asset.id) {
             return None;
         }
         // Room only shrinks while a frame is drawn, so one refusal answers
@@ -811,7 +826,7 @@ impl Textures {
             self.poster_refused = true;
             return None;
         }
-        self.poster_requested.insert(asset.id);
+        self.poster_requested.insert(asset.id, None);
         // A little way in: the very first frame of a video is often black.
         Some(match asset.kind {
             MediaKind::Video => Time(asset.duration.0 / 10).min(Time::from_seconds(2.0)),
@@ -1870,7 +1885,9 @@ impl Textures {
     /// wanted, and so worth telling the person about.
     ///
     /// One that names no consumer is a poster's: it keeps its icon and is not
-    /// asked for again. One that names a consumer is of the layer that
+    /// asked for again, unless it was asked of a proxy. That proxy is not read
+    /// again while it is the proxy, and the original is asked for instead, with
+    /// nothing to tell. One that names a consumer is of the layer that
     /// consumer still has, while it is of the asset and at the size that layer
     /// asks for now. The time it had asked for is not asked for again at that
     /// box: it asks again at another time or another box, when the worker
@@ -1887,9 +1904,17 @@ impl Textures {
         size: Option<[u32; 2]>,
     ) -> bool {
         let Some(consumer) = consumer else {
-            if self.poster_requested.remove(&asset) {
-                self.poster_failed.insert(asset);
-                self.poster_refused = false;
+            match self.poster_requested.remove(&asset) {
+                Some(Some(proxy)) => {
+                    self.preview.unreadable.insert(asset, proxy);
+                    self.poster_refused = false;
+                    return false;
+                }
+                Some(None) => {
+                    self.poster_failed.insert(asset);
+                    self.poster_refused = false;
+                }
+                None => {}
             }
             return true;
         };
@@ -2180,6 +2205,21 @@ mod tests {
         // The one shown longest ago made way, not the one after it.
         assert_eq!(kept(&textures, &assets), [true, false, true]);
         assert_eq!(allocated(&ctx) - before, 2);
+    }
+
+    #[test]
+    fn sound_a_lookup_table_and_a_font_keep_their_icon_and_ask_for_no_poster() {
+        let mut textures = Textures::default();
+        for kind in [MediaKind::Audio, MediaKind::Lut, MediaKind::Font] {
+            let mut asset = assets(1).remove(0);
+            asset.kind = kind;
+            assert_eq!(textures.claim_poster(&asset), None, "{kind:?}");
+        }
+        for kind in [MediaKind::Video, MediaKind::Image, MediaKind::Gif] {
+            let mut asset = assets(1).remove(0);
+            asset.kind = kind;
+            assert!(textures.claim_poster(&asset).is_some(), "{kind:?}");
+        }
     }
 
     #[test]
@@ -2592,7 +2632,7 @@ mod tests {
         // poster.
         assert!(textures.failed(Some(asked[0]), asset.id, Some(BOX)));
         assert_eq!(requested(&textures), [None, Some(time)]);
-        assert!(textures.poster_requested.contains(&asset.id));
+        assert!(textures.poster_requested.contains_key(&asset.id));
         assert!(!textures.poster_failed.contains(&asset.id));
 
         // Failures that are of nothing current: at a size no longer asked,

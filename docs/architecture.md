@@ -781,6 +781,14 @@ five retained video decoders; imports cap a batch at 10,000 entries. Thumbnail
 and preview requests occupy independent lanes with generation/latest-request
 checks. These are runtime bounds, not maximum editable track counts.
 
+Posters (library, timeline and inspector thumbnails) decode on a
+`neptune-video-posters` worker of their own, one at a time and oldest first,
+with a decoder pool that is cleared after each poster. The preview worker
+takes only viewer pictures, so a cold 4K poster still decoding never delays
+one. Each kind admits at most 32 pending lanes. A poster of a video with a
+ready proxy is read from the proxy; if that read fails, it is asked once more
+of the original.
+
 The preview worker may prepare the current admitted video and at most four
 admitted pending videos before reading requested pixels. Preparation retains
 request identity, does not publish or evict another lane, and runs outside the
@@ -907,11 +915,16 @@ jobs waiting at most, and a second thread that only reads the stabilization
 cache. Its bounds are in [performance](performance.md#analysis-lane-and-stabilization-cache).
 Sound for a clip with a time map plays on straight forward stretches only.
 
-Export opens its own FFmpeg processes, apart from the preview's: an
-`neptune-video-render-probe` thread that test-encodes each known encoder at start (at
-most four at once), one decode pipe per clip, picture and size in the
-`SourceReader`, the mixer's decoders for the sound render, and the encoder.
-They belong to the job and are killed when it is cancelled. The dialog's
+Export opens its own FFmpeg processes, apart from the preview's. An
+`neptune-video-render-probe` thread test-encodes each known encoder, at most
+four at once, once the window has not played or recorded for five seconds,
+from launch and from each stop. Test encodes running when playback starts are
+stopped and run again later: a hardware encoder's test opens its GPU, which
+held up the preview just after launch. Opening the export dialog, asking the
+agent for the capabilities or queueing an export runs them at once. A job
+has one decode pipe per clip, picture and size in the `SourceReader`, the
+mixer's decoders for the sound render, and the encoder. They belong to the
+job and are killed when it is cancelled. The dialog's
 poster has its own `SourceReader` on the `neptune-video-poster` thread while the
 dialog is open. Proxies are
 written by their own lane, described under
