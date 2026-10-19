@@ -78,7 +78,7 @@ const NOTICE_SECONDS: f64 = 3.2;
 const PROBLEM_SECONDS: f64 = 7.0;
 /// What the notice of a new interface scale begins with.
 const SCALE_NOTICE: &str = "Interface size";
-const PROJECT_EXTENSION: &str = "aster";
+const PROJECT_EXTENSION: &str = "nvp";
 /// The narrowest content the library is shown beside.
 const LIBRARY_FITS: f32 = 760.0;
 const RECOVERY_SUFFIX: &str = ".recovery";
@@ -1604,7 +1604,7 @@ impl App {
                 // when it is granted.
                 self.lease = None;
                 if !self.leasing {
-                    self.leasing = self.spawn(ctx, "aster-recovery", move || Job::Leased {
+                    self.leasing = self.spawn(ctx, "neptune-video-recovery", move || Job::Leased {
                         result: RecoveryLease::acquire(&base),
                         base,
                     });
@@ -1647,7 +1647,7 @@ impl App {
             .as_ref()
             .filter(|(owned, _)| *owned == base)
             .map(|(_, lease)| lease.clone());
-        self.spawn(ctx, "aster-recovery", move || {
+        self.spawn(ctx, "neptune-video-recovery", move || {
             Job::Background(
                 remove_own_recovery(&base, held)
                     .map(|()| String::new())
@@ -1671,7 +1671,7 @@ impl App {
         let Some(dir) = self.recovery_dir.clone() else {
             return;
         };
-        self.spawn(ctx, "aster-recovery", move || {
+        self.spawn(ctx, "neptune-video-recovery", move || {
             let newest = std::fs::read_dir(&dir)
                 .into_iter()
                 .flatten()
@@ -1733,7 +1733,7 @@ impl App {
         }
         let epoch = self.epoch;
         let project = self.editor.snapshot();
-        self.checkpoints.busy = self.spawn(ctx, "aster-checkpoint", move || {
+        self.checkpoints.busy = self.spawn(ctx, "neptune-video-checkpoint", move || {
             let saved = label.map(|label| {
                 editor_store::checkpoint(&path, &project, &label)
                     .map(|_| label)
@@ -1753,7 +1753,7 @@ impl App {
     fn restore_named(&mut self, ctx: &egui::Context, name: String) -> Result<(), String> {
         let path = self.checkpoint_home()?;
         let epoch = self.epoch;
-        self.checkpoints.busy = self.spawn(ctx, "aster-checkpoint", move || {
+        self.checkpoints.busy = self.spawn(ctx, "neptune-video-checkpoint", move || {
             let wanted = name.to_lowercase();
             let result = list_checkpoints(&path).and_then(|list| {
                 // The list is newest first.
@@ -1787,13 +1787,14 @@ impl App {
             return;
         }
         let epoch = self.epoch;
-        self.checkpoints.busy =
-            self.spawn(ctx, "aster-checkpoint", move || Job::CheckpointLoaded {
+        self.checkpoints.busy = self.spawn(ctx, "neptune-video-checkpoint", move || {
+            Job::CheckpointLoaded {
                 epoch,
                 result: editor_store::load_project(&checkpoint.path)
                     .map_err(|error| error.to_string()),
                 label: checkpoint.label,
-            });
+            }
+        });
     }
 
     /// Writes the project to `path` under an identity of its own. The file
@@ -1811,7 +1812,7 @@ impl App {
         let epoch = self.epoch;
         let context = self.editor.instance_id();
         let revision = self.editor.revision();
-        self.duplicating = self.spawn(ctx, "aster-duplicate", move || {
+        self.duplicating = self.spawn(ctx, "neptune-video-duplicate", move || {
             let result = if own.is_some_and(|own| same_file(&own, &path)) {
                 Err("a duplicate needs a file of its own".to_owned())
             } else {
@@ -1835,9 +1836,9 @@ impl App {
             Pick::Open => {
                 let choice = dialog
                     .set_title("Open project")
-                    .add_filter("Aster project", &[PROJECT_EXTENSION])
+                    .add_filter("Neptune Video project", &[PROJECT_EXTENSION])
                     .pick_file();
-                self.spawn(ctx, "aster-dialog", move || {
+                self.spawn(ctx, "neptune-video-dialog", move || {
                     let path = pollster::block_on(choice).map(|file| file.path().to_path_buf());
                     Job::Picked(Pick::Open, path.into_iter().collect())
                 });
@@ -1846,10 +1847,10 @@ impl App {
                 let name = format!("{}.{PROJECT_EXTENSION}", self.editor.project().name);
                 let choice = dialog
                     .set_title("Save project")
-                    .add_filter("Aster project", &[PROJECT_EXTENSION])
+                    .add_filter("Neptune Video project", &[PROJECT_EXTENSION])
                     .set_file_name(name)
                     .save_file();
-                self.spawn(ctx, "aster-dialog", move || {
+                self.spawn(ctx, "neptune-video-dialog", move || {
                     let path = pollster::block_on(choice).map(|file| file.path().to_path_buf());
                     Job::Picked(Pick::SaveAs, path.into_iter().collect())
                 });
@@ -1858,10 +1859,10 @@ impl App {
                 let name = format!("{} copy.{PROJECT_EXTENSION}", self.editor.project().name);
                 let choice = dialog
                     .set_title("Duplicate project")
-                    .add_filter("Aster project", &[PROJECT_EXTENSION])
+                    .add_filter("Neptune Video project", &[PROJECT_EXTENSION])
                     .set_file_name(name)
                     .save_file();
-                self.spawn(ctx, "aster-dialog", move || {
+                self.spawn(ctx, "neptune-video-dialog", move || {
                     let path = pollster::block_on(choice).map(|file| file.path().to_path_buf());
                     Job::Picked(Pick::Duplicate, path.into_iter().collect())
                 });
@@ -1879,7 +1880,7 @@ impl App {
                     )
                     .add_filter("All files", &["*"])
                     .pick_files();
-                self.spawn(ctx, "aster-dialog", move || {
+                self.spawn(ctx, "neptune-video-dialog", move || {
                     let files = pollster::block_on(choice).unwrap_or_default();
                     Job::Picked(
                         Pick::ImportFiles,
@@ -1892,7 +1893,7 @@ impl App {
                     .set_title("Import fonts")
                     .add_filter("Fonts", &["ttf", "otf", "ttc", "otc"])
                     .pick_files();
-                self.spawn(ctx, "aster-dialog", move || {
+                self.spawn(ctx, "neptune-video-dialog", move || {
                     let files = pollster::block_on(choice).unwrap_or_default();
                     Job::Picked(
                         Pick::ImportFonts,
@@ -1905,7 +1906,7 @@ impl App {
                     .set_title("Choose a Whisper model")
                     .add_filter("Whisper models", &["bin"])
                     .pick_file();
-                self.spawn(ctx, "aster-dialog", move || {
+                self.spawn(ctx, "neptune-video-dialog", move || {
                     let file = pollster::block_on(choice);
                     Job::Picked(
                         Pick::SpeechModel,
@@ -1918,7 +1919,7 @@ impl App {
                     .set_title("Import captions")
                     .add_filter("Subtitles", &["srt", "vtt"])
                     .pick_files();
-                self.spawn(ctx, "aster-dialog", move || {
+                self.spawn(ctx, "neptune-video-dialog", move || {
                     let files = pollster::block_on(choice).unwrap_or_default();
                     Job::Picked(
                         Pick::ImportCaptions,
@@ -1937,7 +1938,7 @@ impl App {
                     .add_filter(filter, &[extension])
                     .set_file_name(name)
                     .save_file();
-                self.spawn(ctx, "aster-dialog", move || {
+                self.spawn(ctx, "neptune-video-dialog", move || {
                     let path = pollster::block_on(choice).map(|file| file.path().to_path_buf());
                     Job::Picked(
                         Pick::ExportCaptions(track, format),
@@ -1947,14 +1948,14 @@ impl App {
             }
             Pick::ImportFolder => {
                 let choice = dialog.set_title("Import folder").pick_folder();
-                self.spawn(ctx, "aster-dialog", move || {
+                self.spawn(ctx, "neptune-video-dialog", move || {
                     let path = pollster::block_on(choice).map(|file| file.path().to_path_buf());
                     Job::Picked(Pick::ImportFolder, path.into_iter().collect())
                 });
             }
             Pick::AgentFolder => {
                 let choice = dialog.set_title("A folder the agent may use").pick_folder();
-                self.spawn(ctx, "aster-dialog", move || {
+                self.spawn(ctx, "neptune-video-dialog", move || {
                     let path = pollster::block_on(choice).map(|file| file.path().to_path_buf());
                     Job::Picked(Pick::AgentFolder, path.into_iter().collect())
                 });
@@ -1965,7 +1966,7 @@ impl App {
                     dialog = dialog.set_directory(folder);
                 }
                 let choice = dialog.pick_folder();
-                self.spawn(ctx, "aster-dialog", move || {
+                self.spawn(ctx, "neptune-video-dialog", move || {
                     let path = pollster::block_on(choice).map(|file| file.path().to_path_buf());
                     Job::Picked(Pick::ExportFolder, path.into_iter().collect())
                 });
@@ -1989,7 +1990,7 @@ impl App {
             .add_filter("WAV audio", &[extract::EXTENSION])
             .set_file_name(asked.file_name())
             .save_file();
-        self.spawn(ctx, "aster-dialog", move || {
+        self.spawn(ctx, "neptune-video-dialog", move || {
             let picked = pollster::block_on(choice).map(|file| file.path().to_path_buf());
             Job::AudioPicked {
                 to: picked.map(|picked| extract::target(picked, Path::exists)),
@@ -2022,7 +2023,7 @@ impl App {
     fn load(&mut self, ctx: &egui::Context, path: PathBuf) {
         let epoch = self.epoch;
         let revision = self.editor.revision();
-        self.spawn(ctx, "aster-open", move || {
+        self.spawn(ctx, "neptune-video-open", move || {
             let result =
                 editor_store::load_project_with_session(&path).map_err(|error| error.to_string());
             // The file is known from here on by the one path its session
@@ -2078,7 +2079,7 @@ impl App {
         let epoch = self.epoch;
         let context = self.editor.instance_id();
         let origin = self.origin;
-        self.preparing = self.spawn(ctx, "aster-save-as", move || Job::Prepared {
+        self.preparing = self.spawn(ctx, "neptune-video-save-as", move || Job::Prepared {
             epoch,
             context,
             origin,
@@ -2215,7 +2216,7 @@ impl App {
                         continue;
                     }
                     let epoch = self.epoch;
-                    self.spawn(ctx, "aster-captions", move || Job::CaptionsRead {
+                    self.spawn(ctx, "neptune-video-captions", move || Job::CaptionsRead {
                         epoch,
                         files: (paths.into_iter())
                             .map(|path| {
@@ -2231,7 +2232,7 @@ impl App {
                     };
                     match captions_tab::exported(self.editor.project(), track, format) {
                         Ok((text, count)) => {
-                            self.spawn(ctx, "aster-captions", move || {
+                            self.spawn(ctx, "neptune-video-captions", move || {
                                 Job::Background(captions_tab::write_file(&path, &text).map(|()| {
                                     let name = path.file_name().map_or_else(
                                         || path.display().to_string(),
@@ -2251,7 +2252,7 @@ impl App {
                     let Some(path) = paths.into_iter().next() else {
                         continue;
                     };
-                    self.spawn(ctx, "aster-models", move || {
+                    self.spawn(ctx, "neptune-video-models", move || {
                         let result = ModelShape::read(&path).map_err(|error| error.to_string());
                         Job::ModelChecked { path, result }
                     });
@@ -2611,7 +2612,7 @@ impl App {
         }
         // The timeline is what records, from its playhead.
         self.close_source();
-        let spawned = self.spawn(ctx, "aster-take", move || Job::TakePath {
+        let spawned = self.spawn(ctx, "neptune-video-take", move || Job::TakePath {
             project: instance,
             result: editor_store::new_take(&beside, SystemTime::now())
                 .map_err(|error| error.to_string()),
@@ -3471,7 +3472,7 @@ impl App {
     /// Looks at which models are downloaded, on a worker.
     fn look_at_models(&mut self, ctx: &egui::Context) {
         if let Some(dir) = self.models_dir.clone() {
-            self.spawn(ctx, "aster-models", move || {
+            self.spawn(ctx, "neptune-video-models", move || {
                 Job::Models(Inventory::look(&dir))
             });
         }
@@ -4096,17 +4097,10 @@ impl App {
                 )),
             };
         };
-        if !path.is_absolute()
-            || path
-                .extension()
-                .is_none_or(|extension| extension != "aster")
-        {
+        if !path.is_absolute() || path.extension().is_none_or(|extension| extension != "nvp") {
             return Err(AgentResult::error(
                 codes::INVALID_EDIT,
-                format!(
-                    "{} must be an absolute path ending in .aster",
-                    path.display()
-                ),
+                format!("{} must be an absolute path ending in .nvp", path.display()),
             ));
         }
         if std::fs::symlink_metadata(&path).is_ok() {
@@ -4428,7 +4422,7 @@ impl App {
         let asked = self.export_presets_asked;
         let presets = self.export_presets.clone();
         let written = Arc::clone(&self.export_presets_written);
-        self.spawn(ctx, "aster-export-presets", move || {
+        self.spawn(ctx, "neptune-video-export-presets", move || {
             let mut writes = written
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -5280,7 +5274,7 @@ impl App {
     }
 
     /// Sends `prompt` to the agent that edits as it works. It reaches this
-    /// window through `aster-mcp`, started in the session the window
+    /// window through `neptune-video-mcp`, started in the session the window
     /// publishes, and its edits come back as requests like any connected
     /// agent's. Nothing is waited for here, except a changed folders file
     /// before a conversation starts.
@@ -5333,7 +5327,7 @@ impl App {
         )
     }
 
-    /// `aster-mcp`, started in this window, with the folders it may use.
+    /// `neptune-video-mcp`, started in this window, with the folders it may use.
     fn tool_server(&self) -> Result<editor_agent::ToolServer, String> {
         let session = self.session_path.as_deref().ok_or_else(|| {
             format!(
@@ -6001,7 +5995,7 @@ impl App {
                 image::ColorType::Rgba8,
             );
             if let Err(error) = saved {
-                eprintln!("aster: cannot write {}: {error}", path.display());
+                eprintln!("neptune-video: cannot write {}: {error}", path.display());
             }
             self.exit_approved = true;
             self.screenshot = None;
@@ -6475,7 +6469,7 @@ impl App {
                         "This project was closed with changes that were not saved. \
                          A recovery copy of them was kept."
                     } else {
-                        "A project that was never saved was open when Aster last \
+                        "A project that was never saved was open when Neptune Video last \
                          closed. A recovery copy of it was kept."
                     })
                     .font(theme::regular(12.5))
@@ -6501,7 +6495,7 @@ impl App {
         if restore {
             let epoch = self.epoch;
             let revision = self.editor.revision();
-            self.spawn(ctx, "aster-recover", move || Job::Recovered {
+            self.spawn(ctx, "neptune-video-recover", move || Job::Recovered {
                 epoch,
                 revision,
                 // Owned before it is read: the offer was only a glance, and
@@ -6517,7 +6511,7 @@ impl App {
                 offer,
             });
         } else {
-            self.spawn(ctx, "aster-recovery", move || {
+            self.spawn(ctx, "neptune-video-recovery", move || {
                 // Taken first, so that a copy in use elsewhere is left alone.
                 let removed = RecoveryLease::acquire(&offer.base)
                     .and_then(|_lease| editor_store::remove_recovery(&offer.base));
@@ -6805,7 +6799,7 @@ impl eframe::App for App {
             if let Some(path) = self.presets_path.clone() {
                 let presets = Arc::clone(&self.presets);
                 let aside = std::mem::take(&mut self.presets_unread);
-                self.spawn(ctx, "aster-presets", move || {
+                self.spawn(ctx, "neptune-video-presets", move || {
                     Job::Background(match presets.save(&path, aside) {
                         Ok(Some(kept)) => Ok(format!(
                             "The presets file that could not be read was kept as {}.",
@@ -6821,7 +6815,7 @@ impl eframe::App for App {
             self.settings_saved = self.settings.clone();
             if let Some(path) = self.settings_path.clone() {
                 let settings = self.settings.clone();
-                self.spawn(ctx, "aster-settings", move || {
+                self.spawn(ctx, "neptune-video-settings", move || {
                     Job::Background(
                         settings
                             .save(&path)
@@ -7373,7 +7367,7 @@ mod tests {
     }
 
     fn scratch() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("aster-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -7432,7 +7426,7 @@ mod tests {
     #[test]
     fn the_last_recovery_copy_is_written_by_the_worker_after_an_earlier_one() {
         let dir = scratch();
-        let base = dir.join("film.aster");
+        let base = dir.join("film.nvp");
         let lease = Arc::new(RecoveryLease::acquire(&base).unwrap());
         let mut editor = blank();
         let saver = SaveWorker::new(|| {});
@@ -7457,7 +7451,7 @@ mod tests {
     #[test]
     fn a_wait_that_runs_out_leaves_the_last_copy_with_the_worker() {
         let dir = scratch();
-        let base = dir.join("film.aster");
+        let base = dir.join("film.nvp");
         let lease = Arc::new(RecoveryLease::acquire(&base).unwrap());
         let mut editor = blank();
         renamed(&mut editor, "Written");
@@ -7497,7 +7491,7 @@ mod tests {
     #[test]
     fn a_recovery_copy_is_removed_only_when_the_worker_is_idle() {
         let dir = scratch();
-        let base = dir.join("film.aster");
+        let base = dir.join("film.nvp");
         let copy = editor_store::recovery_path(&base);
         let lease = Arc::new(RecoveryLease::acquire(&base).unwrap());
         let mut editor = blank();
@@ -7968,9 +7962,9 @@ mod tests {
 
     #[test]
     fn a_checkpoint_file_name_says_when_it_was_made() {
-        let path = Path::new("/p/film.aster.checkpoints/1760250000123-6f0c.aster");
+        let path = Path::new("/p/film.nvp.checkpoints/1760250000123-6f0c.nvp");
         assert_eq!(checkpoint_time(path), Some(1_760_250_000));
-        assert_eq!(checkpoint_time(Path::new("/p/notes.aster")), None);
+        assert_eq!(checkpoint_time(Path::new("/p/notes.nvp")), None);
     }
 
     /// The worker's answer to the one save that was asked for.
@@ -7982,7 +7976,7 @@ mod tests {
     #[test]
     fn a_file_another_writer_saved_is_not_replaced_and_the_edits_stay_unsaved() {
         let dir = scratch();
-        let file = dir.join("film.aster");
+        let file = dir.join("film.nvp");
         editor_store::save_project(&file, &Project::default()).unwrap();
         let saver = SaveWorker::new(|| {});
 
@@ -8015,14 +8009,14 @@ mod tests {
         assert_eq!(editor_store::load_project(&file).unwrap().name, "Theirs");
 
         // Choosing the open file in Save As is still the open file.
-        let prepared = DocumentSession::prepare(&dir.join(".").join("film.aster")).unwrap();
+        let prepared = DocumentSession::prepare(&dir.join(".").join("film.nvp")).unwrap();
         assert!(Arc::ptr_eq(
             &destination(Some(&session), prepared),
             &session
         ));
 
         // Another file takes the edits; the other writer's file is as it left it.
-        let prepared = DocumentSession::prepare(&dir.join("mine.aster")).unwrap();
+        let prepared = DocumentSession::prepare(&dir.join("mine.nvp")).unwrap();
         let elsewhere = destination(Some(&session), prepared);
         assert!(!Arc::ptr_eq(&elsewhere, &session));
         let revision = editor.register_save();
@@ -8049,7 +8043,7 @@ mod tests {
     #[test]
     fn a_checkpoint_restore_saves_through_the_session_the_file_was_opened_with() {
         let dir = scratch();
-        let file = dir.join("film.aster");
+        let file = dir.join("film.nvp");
         editor_store::save_project(&file, &Project::default()).unwrap();
         let saver = SaveWorker::new(|| {});
         let (project, session) = editor_store::load_project_with_session(&file).unwrap();
@@ -8081,20 +8075,20 @@ mod tests {
     fn a_duplicate_never_replaces_a_file_that_is_there() {
         let dir = scratch();
         let project = Project::default();
-        let taken = dir.join("taken.aster");
+        let taken = dir.join("taken.nvp");
         std::fs::write(&taken, b"someone's notes").unwrap();
         let refused = create_document(&taken, &project).unwrap_err();
         assert!(refused.contains("already exists"), "{refused}");
         assert_eq!(std::fs::read(&taken).unwrap(), b"someone's notes");
 
-        let session = create_document(&dir.join("copy.aster"), &project).unwrap();
+        let session = create_document(&dir.join("copy.nvp"), &project).unwrap();
         assert_eq!(
             editor_store::load_project(session.path()).unwrap().id,
             project.id
         );
 
         // A file that arrives after the destination was found free is kept.
-        let raced = dir.join("raced.aster");
+        let raced = dir.join("raced.nvp");
         let session = DocumentSession::create(&raced).unwrap();
         std::fs::write(&raced, b"arrived first").unwrap();
         let error = editor_store::save_project_with_session(&session, &project).unwrap_err();
@@ -8106,7 +8100,7 @@ mod tests {
     #[test]
     fn a_second_window_keeps_its_recovery_copy_apart_from_the_first() {
         let dir = scratch();
-        let file = dir.join("film.aster");
+        let file = dir.join("film.nvp");
         let folder = dir.join("recovery");
         let instance = uuid::Uuid::new_v4();
         let home =
@@ -8118,7 +8112,7 @@ mod tests {
 
         // The second keeps its own, and neither touches the other's.
         let own = home(true);
-        assert_eq!(own, folder.join(format!("{instance}.aster")));
+        assert_eq!(own, folder.join(format!("{instance}.nvp")));
         let _second = RecoveryLease::acquire(&own).unwrap();
         let mut editor = blank();
         renamed(&mut editor, "Second window");
@@ -8132,7 +8126,7 @@ mod tests {
             Some(file.clone())
         );
         // A project without a file was in its own place all along.
-        let unsaved = folder.join("earlier.aster");
+        let unsaved = folder.join("earlier.nvp");
         assert_eq!(
             recovery_home(None, Some(&unsaved), Some(&folder), instance, false),
             Some(unsaved)
@@ -8147,7 +8141,7 @@ mod tests {
     #[test]
     fn a_late_removal_leaves_a_copy_another_window_has_taken_up() {
         let dir = scratch();
-        let base = dir.join("film.aster");
+        let base = dir.join("film.nvp");
         let copy = editor_store::recovery_path(&base);
         let mut editor = blank();
         renamed(&mut editor, "Theirs now");
@@ -8170,8 +8164,8 @@ mod tests {
         editor_store::save_recovery(&base, &editor).unwrap();
         remove_own_recovery(&base, None).unwrap();
         assert!(!copy.exists());
-        remove_own_recovery(&dir.join("never.aster"), None).unwrap();
-        assert!(!dir.join("never.aster.lock").exists());
+        remove_own_recovery(&dir.join("never.nvp"), None).unwrap();
+        assert!(!dir.join("never.nvp.lock").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -8202,7 +8196,7 @@ mod tests {
     #[test]
     fn restored_work_does_not_replace_what_another_writer_saved_since_the_copy() {
         let dir = scratch();
-        let file = dir.join("film.aster");
+        let file = dir.join("film.nvp");
         editor_store::save_project(&file, &Project::default()).unwrap();
         let base = left_unsaved(&file, "Mine");
 
@@ -8261,7 +8255,7 @@ mod tests {
     #[test]
     fn a_copy_that_names_no_file_comes_back_as_unsaved_work() {
         let dir = scratch();
-        let file = dir.join("film.aster");
+        let file = dir.join("film.nvp");
         editor_store::save_project(&file, &Project::default()).unwrap();
         let (project, session) = editor_store::load_project_with_session(&file).unwrap();
         let base = session.path().to_path_buf();
@@ -8287,7 +8281,7 @@ mod tests {
 
         // A second window's own copy: it is not beside the file, so it may
         // not speak for it, and the worker refuses one that tries.
-        let private = dir.join("recovery").join("window.aster");
+        let private = dir.join("recovery").join("window.nvp");
         std::fs::create_dir_all(private.parent().unwrap()).unwrap();
         assert!(bound_document(&private, Some(&session)).is_none());
         assert!(bound_document(&base, Some(&session)).is_some());
@@ -8317,7 +8311,7 @@ mod tests {
         // A copy that recorded its file, found beside another one.
         editor_store::remove_recovery(&base).unwrap();
         let base = left_unsaved(&file, "Mine");
-        let moved = dir.join("elsewhere.aster");
+        let moved = dir.join("elsewhere.nvp");
         std::fs::copy(
             editor_store::recovery_path(&base),
             editor_store::recovery_path(&moved),
@@ -8343,7 +8337,7 @@ mod tests {
         renamed(&mut editor, "Mine");
         editor_store::save_recovery(&base, &editor).unwrap();
 
-        let private = dir.join("recovery").join("window.aster");
+        let private = dir.join("recovery").join("window.nvp");
         std::fs::create_dir_all(private.parent().unwrap()).unwrap();
         let lease = Arc::new(RecoveryLease::acquire(&private).unwrap());
         assert!(part_with_recovery(
@@ -8381,11 +8375,11 @@ mod tests {
     #[test]
     fn restored_work_without_a_file_never_replaces_a_file_that_is_there() {
         let dir = scratch();
-        let file = dir.join("film.aster");
+        let file = dir.join("film.nvp");
         editor_store::save_project(&file, &Project::default()).unwrap();
-        let other = dir.join("other.aster");
+        let other = dir.join("other.nvp");
         editor_store::save_project(&other, named("Theirs").project()).unwrap();
-        let notes = dir.join("notes.aster");
+        let notes = dir.join("notes.nvp");
         std::fs::write(&notes, b"someone's notes").unwrap();
         let saver = SaveWorker::new(|| {});
 
@@ -8406,7 +8400,7 @@ mod tests {
             // The file the work was made from, another project, and a file
             // that is no project, under any name they go by: all refused
             // before anything is written.
-            for taken in [&file, &other, &notes, &dir.join(".").join("film.aster")] {
+            for taken in [&file, &other, &notes, &dir.join(".").join("film.nvp")] {
                 let refused = origin.prepare(taken).unwrap_err();
                 assert!(refused.contains("already exists"), "{refused}");
                 unchanged();
@@ -8414,7 +8408,7 @@ mod tests {
 
             // A file that arrives after the destination was found free is
             // refused by the save, and the work stays unsaved.
-            let raced = dir.join("raced.aster");
+            let raced = dir.join("raced.nvp");
             let session = origin.prepare(&raced).unwrap();
             std::fs::write(&raced, b"arrived first").unwrap();
             editor.register_save();
@@ -8436,7 +8430,7 @@ mod tests {
     #[test]
     fn restored_work_without_a_file_takes_a_new_one_and_saves_there_from_then_on() {
         let dir = scratch();
-        let file = dir.join("film.aster");
+        let file = dir.join("film.nvp");
         editor_store::save_project(&file, &Project::default()).unwrap();
         let original = std::fs::read(&file).unwrap();
         let saver = SaveWorker::new(|| {});
@@ -8448,7 +8442,7 @@ mod tests {
             let mut editor = restored.editor;
 
             let session = origin
-                .prepare(&dir.join(format!("restored {index}.aster")))
+                .prepare(&dir.join(format!("restored {index}.nvp")))
                 .unwrap();
             let revision = editor.register_save();
             saver.request_document(session.clone(), &editor).unwrap();
@@ -8491,7 +8485,7 @@ mod tests {
     #[test]
     fn a_deliberate_save_as_still_replaces_the_project_that_was_chosen() {
         let dir = scratch();
-        let chosen = dir.join("chosen.aster");
+        let chosen = dir.join("chosen.nvp");
         editor_store::save_project(&chosen, named("Old").project()).unwrap();
         let saver = SaveWorker::new(|| {});
 
@@ -8511,17 +8505,17 @@ mod tests {
 
         // A file that is no project is refused for everyone, and a path
         // that is free is taken.
-        let notes = dir.join("notes.aster");
+        let notes = dir.join("notes.nvp");
         std::fs::write(&notes, b"someone's notes").unwrap();
         assert!(Origin::Ordinary.prepare(&notes).is_err());
         assert_eq!(std::fs::read(&notes).unwrap(), b"someone's notes");
-        assert!(Origin::Ordinary.prepare(&dir.join("free.aster")).is_ok());
+        assert!(Origin::Ordinary.prepare(&dir.join("free.nvp")).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn only_another_writer_brings_up_the_review() {
-        let path = PathBuf::from("/p/film.aster");
+        let path = PathBuf::from("/p/film.nvp");
         assert_eq!(
             other_writer(&StoreError::DocumentConflict(path.clone())),
             Some(false)
@@ -8536,15 +8530,15 @@ mod tests {
 
     #[test]
     fn a_duplicate_may_not_take_the_file_it_is_made_from() {
-        let dir = std::env::temp_dir().join(format!("aster-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
-        let file = dir.join("film.aster");
+        let file = dir.join("film.nvp");
         std::fs::write(&file, b"{}").unwrap();
         assert!(same_file(
             &file,
-            &dir.join("sub").join("..").join("film.aster")
+            &dir.join("sub").join("..").join("film.nvp")
         ));
-        assert!(!same_file(&file, &dir.join("film copy.aster")));
+        assert!(!same_file(&file, &dir.join("film copy.nvp")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

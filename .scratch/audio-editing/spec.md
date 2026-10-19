@@ -49,7 +49,7 @@ file wins; change it deliberately and note the change under Comments.
 
 1. **Sound is shaped in two places.** Whatever is a level (clip volume, volume
    keyframes, fades, track volume, the master limiter) is arithmetic in the
-   mixer's sum loop on the `aster-audio` worker. Whatever is spectral or
+   mixer's sum loop on the `neptune-video-audio` worker. Whatever is spectral or
    dynamic (equalizer, compressor, limiter, noise reduction, pitch, centre
    reduction) is an FFmpeg filter in the `-af` chain of the clip's own decoder
    process, which already exists. No DSP crate is added, nothing runs in the
@@ -408,7 +408,7 @@ still no export, and a future one would call `level_at` and `chain` too.
 | 7 | Equalizer, compression, pitch, speed | `EqBand` (`equalizer`), `Compressor` (`acompressor`), `Pitch` (`asetrate` then one `atempo`), all in the voice chain. Speed stays `playback_rate` and `Retime`; a `Pitch` effect on the clip makes speed keep pitch while speed over pitch ratio is within 0.5 to 2. | An EQ curve display, attack/release controls, multiband or sidechain, formant preservation, `rubberband` (not in ordinary builds), pitch held beyond one `atempo` stage, compensation of `atempo`'s lead (sound up to about 60 ms early at 0.5), sound on freeze/reverse/ramp, keeping pitch on a picture clip without detaching |
 | 8 | Automatic ducking | "Duck under speech" on selected clips: an energy gate over the cached `rms` of every other clip, wherever `audible_at` says it is heard, taken one asset at a time, gives spans, `duck_keys` turns them into `Gain` keyframes, and one `Batch` of `SetKeyframes` writes them. Visible, editable, undoable. | A live sidechain, re-ducking when speech moves (run it again), speech detection (any loud sound triggers it) |
 | 9 | Beat detection and synchronization | "Show beats" on a music clip: an onset envelope from the cached `low` and `rms`, tempo by autocorrelation over 60 to 200 BPM, beats placed by dynamic programming. Ticks on the tile; edges, trims and the playhead snap to them; "Markers from beats" writes at most 256 markers. The grid is derived and kept in memory only. | Cutting picture to the beat, downbeats and bars, any accuracy claim, beats visible to a headless agent |
-| 10 | Vocal/instrument separation | "Separate stems" (ticket 21a) runs an external separator executable, found by `ASTER_SEPARATOR` or on `PATH` and probed as FFmpeg is, as a file-writing job on the sound lane. Its stems are probed in the job and placed in one `Batch` as linked clips on new audio tracks, with the original clip's volume set to 0. The item is disabled, with words, when no tool is found. No crate, no bundled model, no network request by the editor. FFmpeg has no stem filter (none in `ffmpeg -filters` on 8.1.2). The ticket's first step is to verify the tool's command line and the licence of its weights; it also waits on ticket 17. `CenterCut` ("Reduce centre") is a separate, optional audio effect and is not separation: it lowers whatever is panned to the centre of a stereo file. | A bundled or downloaded model, an in-process runtime, separation without the tool installed, any quality or run-time claim, live separation |
+| 10 | Vocal/instrument separation | "Separate stems" (ticket 21a) runs an external separator executable, found by `NEPTUNE_VIDEO_SEPARATOR` or on `PATH` and probed as FFmpeg is, as a file-writing job on the sound lane. Its stems are probed in the job and placed in one `Batch` as linked clips on new audio tracks, with the original clip's volume set to 0. The item is disabled, with words, when no tool is found. No crate, no bundled model, no network request by the editor. FFmpeg has no stem filter (none in `ffmpeg -filters` on 8.1.2). The ticket's first step is to verify the tool's command line and the licence of its weights; it also waits on ticket 17. `CenterCut` ("Reduce centre") is a separate, optional audio effect and is not separation: it lowers whatever is panned to the centre of a stereo file. | A bundled or downloaded model, an in-process runtime, separation without the tool installed, any quality or run-time claim, live separation |
 | 11 | Normalization and limiting | "Normalize loudness": one FFmpeg run over the clip's span with its effects and `ebur128=peak=true` (the same figures as `loudnorm`, measured about six times faster), then `SetGain` so the span reaches -14 LUFS with true peak at most -1 dBTP and volume within 0..=8; a keyed clip has its keys scaled so its loudest key reaches that volume. A clip that does not sound is refused in words. A `Limiter` effect (`alimiter`) per clip. The master limiter replaces the hard clamp at the same level, 0 dBFS. | A span under 0.4 s (too short to measure; refused in words), `loudnorm` as a live filter, two-pass file normalization, programme loudness, a loudness meter, true-peak safety at the master |
 
 ## Dependencies added
@@ -532,7 +532,7 @@ a minimum FFmpeg version; macOS, Windows or Linux acceptance.
    with Detach audio unchanged.
 10. **The stem separator** (ticket 21a). Decided on the owner's behalf
     (2026-10-14): the Demucs command line (`demucs`, 4.1.0, MIT code),
-    found on `PATH` or by `ASTER_SEPARATOR`, installed by the person. The
+    found on `PATH` or by `NEPTUNE_VIDEO_SEPARATOR`, installed by the person. The
     licence of its pretrained weights is unsettled (the author: "provided
     for research purpose", 2023); the documentation says so and recommends
     the tool, not the weights for any use. The editor bundles and downloads
@@ -1354,7 +1354,7 @@ no microphone was opened and nothing was listened to. Details are in the
 ticket. Settled by building it:
 
 - *Nothing waits on the caller.* `start` only checks the path has a file
-  name and starts `aster-record`; that thread finds the device, builds the
+  name and starts `neptune-video-record`; that thread finds the device, builds the
   stream, plays it, and then makes the file with `create_new`. No
   microphone is `RecordEvent::Failed(MediaError::NoMicrophone)` ("No
   microphone") through `poll`, not `start`'s `Err`, and
@@ -1529,9 +1529,9 @@ The two defects native acceptance left are fixed.
   which fails with the fix taken out.
 
 Checked on macOS 26.5.2 (Apple M1, Rust 1.97.1): `cargo fmt --all --
---check`; `cargo clippy --locked -p aster-editor --all-targets -- -D
-warnings`; `cargo test --locked -p aster-editor`, 832 and 12 passed;
-`cargo build --release --locked`, `target/release/aster` sha256
+--check`; `cargo clippy --locked -p neptune-video --all-targets -- -D
+warnings`; `cargo test --locked -p neptune-video`, 832 and 12 passed;
+`cargo build --release --locked`, `target/release/neptune-video` sha256
 `64a0360878cbccb5397168452b50edc666b8f76a8cd03996c78a429fdd56c038`. That
 build was relaunched on fresh copies of the acceptance's task-owned project
 with fresh `--settings`, driven the same way at 1280x709 and 760x620

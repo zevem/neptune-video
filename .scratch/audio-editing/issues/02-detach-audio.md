@@ -58,7 +58,7 @@ menu item, which needs a pointer and is a person's to take.
 
 On macOS 26.5.2 (arm64), Rust 1.97.1, Homebrew FFmpeg 8.1.2, 2026-10-13:
 
-- `cargo test --locked -p aster-editor --bin aster -- rules:: agent:: toolbar`:
+- `cargo test --locked -p neptune-video --bin neptune-video -- rules:: agent:: toolbar`:
   38 passed. The five `rules::tests::detached_*`, `audio_that_cannot_*` and
   `a_detach_that_fails_*` tests cover the batch, the span and rate, the shared
   link, one history entry that undo removes whole, a time map and volume
@@ -76,9 +76,9 @@ On macOS 26.5.2 (arm64), Rust 1.97.1, Homebrew FFmpeg 8.1.2, 2026-10-13:
   unit test; these wait on the captures below.
 - `cargo test --locked -p editor-media --lib audio::plan`: 9 passed, with
   `a_detached_pair_is_planned_as_its_audio_clip_alone`.
-- `cargo clippy --locked -p aster-editor -p editor-media --all-targets -- -D warnings`
+- `cargo clippy --locked -p neptune-video -p editor-media --all-targets -- -D warnings`
   and `cargo fmt --all`: clean.
-- `target/debug/aster-agent --project … --create` took the batch as an agent
+- `target/debug/neptune-video-agent --project … --create` took the batch as an agent
   writes it over a generated six second fixture: applied, undone to the
   picture alone and unlinked, redone to the pair
   (`artifacts/audio-editing/02-detach-audio/headless-agent.jsonl`).
@@ -163,6 +163,6 @@ too, and asks for no poster. Ownership by span was not added by ticket 06:
 ownership stays by link and media, the core's `sound::owned`. The menu
 capture is still a person's to take.
 
-2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/aster` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `aster-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
+2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/neptune-video` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `neptune-video-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
 
 `normal-19`/`narrow-19` video clip menu with Detach audio enabled; `normal-20`/`narrow-20` the pair it made (Audio 3, link marks on both tiles) and the picture's inspector line "Sound is on the linked audio clip"; `normal-21`/`narrow-21` the same menu after detaching, the row disabled and Unlink offered; `normal-22`/`narrow-22` the Clip group of the project menu with Detach audio; `normal-23`/`narrow-23` its refusal toast on the detached picture. The owner has not answered on where the lane is chosen; the spec's reading stands (the action carries the clip id; the lane is chosen when it is carried out), as ticket 09 also reads it.

@@ -318,12 +318,12 @@ impl AnalysisService {
         let shared = Arc::new(Shared::default());
         let (state, waker) = (Arc::clone(&shared), Arc::clone(&wake));
         thread::Builder::new()
-            .name("aster-analysis".into())
+            .name("neptune-video-analysis".into())
             .spawn(move || worker(state, run, steady, waker))
             .map_err(|error| io("Cannot start analysis worker", error))?;
         let state = Arc::clone(&shared);
         let started = thread::Builder::new()
-            .name("aster-analysis-load".into())
+            .name("neptune-video-analysis-load".into())
             .spawn(move || loader(state, wake));
         if let Err(error) = started {
             // The worker that did start is told to end.

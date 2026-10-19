@@ -71,8 +71,9 @@ def main() -> int:
 
     print(f"Provider fault fixture: {fixture} (SHA-256 {digest.hexdigest()})", flush=True)
     environment = os.environ.copy()
-    environment["ASTER_PROVIDER_TEST_FIXTURE"] = str(fixture)
-    test = [cargo, "test", *common, "--all-targets"]
+    environment["NEPTUNE_VIDEO_PROVIDER_TEST_FIXTURE"] = str(fixture)
+    # Every test binary runs, so one run reports every failure.
+    test = [cargo, "test", *common, "--all-targets", "--no-fail-fast"]
     if arguments.package:
         for package in arguments.package:
             test.extend(["-p", package])

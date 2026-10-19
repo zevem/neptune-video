@@ -670,7 +670,7 @@ fn a_file_that_is_not_there_is_an_answer_and_not_a_silence() {
     }
     let service = AnalysisService::new(|| {}).unwrap();
     let mut asked = job(Uuid::from_u128(1), 0);
-    asked.asset.path = "/nonexistent/aster-analysis.mkv".into();
+    asked.asset.path = "/nonexistent/neptune-video-analysis.mkv".into();
     service.track(asked).unwrap();
     let limit = Instant::now() + Duration::from_secs(30);
     loop {

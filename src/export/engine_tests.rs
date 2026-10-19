@@ -44,9 +44,9 @@ const PATIENCE: Duration = Duration::from_secs(180);
 
 fn tool(name: &str) -> Command {
     let variable = if name == "ffmpeg" {
-        "ASTER_FFMPEG"
+        "NEPTUNE_VIDEO_FFMPEG"
     } else {
-        "ASTER_FFPROBE"
+        "NEPTUNE_VIDEO_FFPROBE"
     };
     Command::new(std::env::var_os(variable).unwrap_or_else(|| name.into()))
 }
@@ -98,7 +98,8 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("aster-export-{label}-{}", Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("neptune-video-export-{label}-{}", Uuid::new_v4()));
         fs::create_dir_all(&path).expect("FIXTURE: the scratch folder is made");
         Self(
             path.canonicalize()
@@ -1275,7 +1276,7 @@ fn the_working_folder_is_beside_the_file_unless_that_folder_takes_none() {
                 .file_name()
                 .unwrap()
                 .to_string_lossy()
-                .starts_with(".aster-render-"),
+                .starts_with(".neptune-video-render-"),
             "it is hidden"
         );
         fs::write(files.temp.join("sound.f32"), b"sound").unwrap();

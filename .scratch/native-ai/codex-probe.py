@@ -21,7 +21,7 @@ project = {"id":uid(),"name":"Synthetic AI acceptance","settings":{"width":1920,
 project["tracks"][:0] = [{"id":uid(),"name":f"{kind.title()} 1","kind":kind,"locked":False,"hidden":False,"muted":False,"clips":[]} for kind in ["video","audio"]]
 prompt = json.dumps({"request":"Rename this project to 'Native AI verified', move the selected title exactly one second later without changing its duration, and set a 1080 by 1920 portrait canvas. Preserve frame rate, background and audio settings. Propose these edits now.","selected_clip_ids":[clip["id"]],"playhead_microseconds":2000000,"project":project})
 features = ["shell_tool", "unified_exec", "code_mode_host", "apps", "multi_agent", "view_image", "image_generation", "plugins", "hooks", "tool_suggest", "sleep_tool", "goals", "browser_use", "computer_use", "skill_search", "in_app_browser", "memories"]
-with tempfile.TemporaryDirectory(prefix="aster-ai-probe-") as directory:
+with tempfile.TemporaryDirectory(prefix="neptune-video-ai-probe-") as directory:
     args = ["codex", "app-server"]
     for feature in features:
         args.extend(["-c", f"features.{feature}=false"])
@@ -37,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix="aster-ai-probe-") as directory:
         process.stdin.write(json.dumps(value) + "\n")
         process.stdin.flush()
     try:
-        send("initialize", {"clientInfo":{"name":"aster", "title":"Aster", "version":"0.1.0"}}, "init")
+        send("initialize", {"clientInfo":{"name":"neptune-video", "title":"Neptune Video", "version":"0.1.0"}}, "init")
         deadline = time.monotonic() + 60
         frames = deque()
         buffer = b""

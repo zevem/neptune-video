@@ -137,7 +137,7 @@ These citations describe mechanisms, not actual token values.
 
 Its bridge is TCP, not a Unix socket. The Unix limitation comes from adapter
 creation and `open_lead` gating (`agents.rs:990,1002,1075`). Reuse provider stdio
-and Aster's [authenticated TCP host](../../crates/editor-agent/src/host.rs),
+and Neptune Video's [authenticated TCP host](../../crates/editor-agent/src/host.rs),
 without copying terminal shell shims or Unix gating. Windows also needs its own
 owned process-tree teardown: Neptune's Unix process-group signal helper is a
 no-op on other systems (`project_lead.rs:1039`).
@@ -152,8 +152,8 @@ does not prove account/model access.
 
 | Option | Concrete interface | Scope and tradeoff |
 | --- | --- | --- |
-| Claude plan-only child | `claude -p --output-format json --json-schema SCHEMA --tools '' --no-session-persistence`, isolated app-owned cwd/settings/MCP; request/context through bounded stdin | Small Rust process adapter; parse `structured_output`, deserialize/validate a bounded plan, present/apply through Aster guards; process cancellation must invalidate late output |
-| Claude persistent native agent | Neptune's stream-JSON driver plus Aster MCP stdio adapter over its existing local protocol | Streaming/multiple turns and product tool calls; requires protocol fixtures, MCP-ready handshake, permissions and bounded lifecycle, rather than copying terminal-specific tools |
+| Claude plan-only child | `claude -p --output-format json --json-schema SCHEMA --tools '' --no-session-persistence`, isolated app-owned cwd/settings/MCP; request/context through bounded stdin | Small Rust process adapter; parse `structured_output`, deserialize/validate a bounded plan, present/apply through Neptune Video guards; process cancellation must invalidate late output |
+| Claude persistent native agent | Neptune's stream-JSON driver plus Neptune Video MCP stdio adapter over its existing local protocol | Streaming/multiple turns and product tool calls; requires protocol fixtures, MCP-ready handshake, permissions and bounded lifecycle, rather than copying terminal-specific tools |
 | Codex app-server native agent | `codex app-server --listen stdio://`; initialize/initialized, thread/start or resume, turn/start, delta/completed events, turn/interrupt | JSON-RPC harness reusable from Rust; version-specific schema and explicit product-only tool restrictions; MCP works through a product stdio adapter |
 
 Official [Claude programmatic docs](https://code.claude.com/docs/en/headless)

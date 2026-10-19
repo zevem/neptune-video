@@ -510,7 +510,7 @@ fn finish(encoder: Encoder, part: &Path) -> Result<(), Failure> {
     };
     let result = thread::scope(|scope| {
         let finishing = thread::Builder::new()
-            .name("aster-render-finish".into())
+            .name("neptune-video-render-finish".into())
             .spawn_scoped(scope, move || encoder.finish(NO_LIMIT))
             .map_err(|error| {
                 Failure::Other(format!("The export could not be finished: {error}"))
@@ -619,7 +619,7 @@ fn frames(
     }
     thread::scope(|scope| {
         let writer = thread::Builder::new()
-            .name("aster-render-writer".into())
+            .name("neptune-video-render-writer".into())
             .spawn_scoped(scope, move || -> Result<Encoder, MediaError> {
                 let mut encoder = encoder;
                 for buffer in written {
@@ -914,7 +914,7 @@ pub(crate) fn work_path(destination: &Path, id: Uuid) -> PathBuf {
 }
 
 /// How working folders are named, before the job's id.
-const TEMP_PREFIX: &str = "aster-render-";
+const TEMP_PREFIX: &str = "neptune-video-render-";
 
 /// The caption file beside an export: `<stem>.<language>.<ext>`, or
 /// `<stem>.<ext>` when the track has no usable language.
@@ -980,7 +980,7 @@ pub(crate) fn clean(id: Uuid, destination: &Path) {
 }
 
 /// Removes the working folders in `folder` (the system's temporary folder)
-/// that exports stopped by a crash or a kill left: `aster-render-<id>`,
+/// that exports stopped by a crash or a kill left: `neptune-video-render-<id>`,
 /// unchanged for [`STALE_AFTER`]. Returns how many went.
 pub(crate) fn sweep_temp(folder: &Path, now: SystemTime) -> usize {
     sweep(folder, now, &HashSet::new(), |name| {
@@ -990,7 +990,7 @@ pub(crate) fn sweep_temp(folder: &Path, now: SystemTime) -> usize {
 
 /// Removes, from the folder exports are written to, what stopped exports
 /// left there: hidden part files `.<name>.<id>.part` and working folders
-/// `.aster-render-<id>`, unchanged for [`STALE_AFTER`] and of no job in
+/// `.neptune-video-render-<id>`, unchanged for [`STALE_AFTER`] and of no job in
 /// `live`. Returns how many went.
 pub(crate) fn sweep_folder(folder: &Path, live: &HashSet<Uuid>, now: SystemTime) -> usize {
     sweep(folder, now, live, |name| {

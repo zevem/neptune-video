@@ -3,7 +3,6 @@
 //! stems. No Python and no model; the stems are probed by the real ffprobe.
 use super::*;
 use crate::{SoundEvent, SoundService, process::tool_command};
-use std::process::Stdio;
 
 #[test]
 fn the_tools_progress_and_last_words_are_read_from_its_error_pipe() {
@@ -97,6 +96,7 @@ mod fake {
     use super::*;
     use crate::sound::Cancel;
     use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
 
     /// What the stand-in does once it has read its arguments as Demucs
     /// takes them: `$out` is the folder after `-o`, `$src` the media.
@@ -495,15 +495,15 @@ done
 
 // ---- With the person's own separator --------------------------------------------
 
-/// The separator `ASTER_SEPARATOR_TEST` names, over twenty seconds of two
+/// The separator `NEPTUNE_VIDEO_SEPARATOR_TEST` names, over twenty seconds of two
 /// tones FFmpeg makes, through the lane. Set it on a host with Demucs to
 /// run this: it takes the tool's time, and its first run fetches the tool's
 /// model. It says the tool's time and what it wrote, and claims nothing of
 /// quality. Without it, it says it was skipped, as tests do without FFmpeg.
 #[test]
 fn the_persons_separator_splits_twenty_seconds_into_two_stems() {
-    let Some(program) = std::env::var_os("ASTER_SEPARATOR_TEST") else {
-        eprintln!("SKIP: ASTER_SEPARATOR_TEST names no separator; none was run");
+    let Some(program) = std::env::var_os("NEPTUNE_VIDEO_SEPARATOR_TEST") else {
+        eprintln!("SKIP: NEPTUNE_VIDEO_SEPARATOR_TEST names no separator; none was run");
         return;
     };
     let _heavy = crate::heavy_test();

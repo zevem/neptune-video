@@ -121,8 +121,8 @@ ffprobe 8.1.2 on `PATH` (`scripts/check-media-tools.py` passed), 2026-10-13,
 `dev` profile. Only the desktop crate changed, so no other crate was built
 or tested. No native window was opened and nothing was listened to.
 
-- `cargo test --locked -p aster-editor`: 740 and 12 passed;
-  `cargo test --locked -p aster-editor --bin aster normalize`: 21 passed,
+- `cargo test --locked -p neptune-video`: 740 and 12 passed;
+  `cargo test --locked -p neptune-video --bin neptune-video normalize`: 21 passed,
   three runs in a row. `cargo clippy --locked --all-targets -- -D
   warnings`, `cargo fmt -- --check`, `cargo check --locked` and
   `scripts/check-architecture.py` pass. No test was skipped.
@@ -255,9 +255,9 @@ and are fixed in `src/normalize.rs`, each with a test:
   `every_clip_over_the_bound_is_passed_over_and_counted` (66 clips: 64
   jobs, "2 were passed over").
 
-`cargo test --locked -p aster-editor --bin aster normalize`: 23 passed
+`cargo test --locked -p neptune-video --bin neptune-video normalize`: 23 passed
 (macOS 26.5.2 arm64, Rust 1.97.1, FFmpeg 8.1.2, 2026-10-14).
 
-2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/aster` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `aster-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
+2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/neptune-video` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `neptune-video-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
 
 `normal-32`/`narrow-32` Normalize loudness chosen: "music.wav measured -22.8 LUFS, peak -5.5 dBFS; volume keys scaled so the loudest is 168%. It stops short of -14 LUFS so that its peak stays at -1 dBTP." with the Volume field reading 168 %; `narrow-32` also shows the "Measuring the loudness of music.wav." notice.

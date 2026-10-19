@@ -1,16 +1,16 @@
-//! Aster: a desktop video editor.
+//! Neptune Video: a desktop video editor.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use aster_editor::app::{App, Launch};
-use aster_editor::settings;
 use eframe::egui;
+use neptune_video::app::{App, Launch};
+use neptune_video::settings;
 use std::path::PathBuf;
 
 const USAGE: &str = "\
-Usage: aster [OPTIONS] [PROJECT] [MEDIA]...
+Usage: neptune-video [OPTIONS] [PROJECT] [MEDIA]...
 
 Arguments:
-  [PROJECT]                A .aster project to open
+  [PROJECT]                A .nvp project to open
   [MEDIA]...               Files or folders to import
 
 Options:
@@ -36,7 +36,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(Launch, [f32; 2]), S
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("aster {}", env!("CARGO_PKG_VERSION"));
+                println!("neptune-video {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "--agent-session" => launch.agent_session = Some(value("--agent-session")?.into()),
@@ -67,9 +67,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(Launch, [f32; 2]), S
                 // directory, so paths are made absolute once, here.
                 let path = PathBuf::from(other);
                 let path = std::path::absolute(&path).unwrap_or(path);
-                let project = path
-                    .extension()
-                    .is_some_and(|extension| extension == "aster");
+                let project = path.extension().is_some_and(|extension| extension == "nvp");
                 if project && launch.project.is_none() {
                     launch.project = Some(path);
                 } else {
@@ -85,8 +83,8 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(Launch, [f32; 2]), S
 fn native_options(size: [f32; 2]) -> eframe::NativeOptions {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Aster")
-            .with_app_id("aster")
+            .with_title("Neptune Video")
+            .with_app_id("rs.neptune.video")
             .with_inner_size(size)
             .with_min_inner_size(settings::LEAST_WINDOW)
             .with_drag_and_drop(true)
@@ -97,6 +95,9 @@ fn native_options(size: [f32; 2]) -> eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
+    if let Some(icon) = native_icon() {
+        options.viewport = options.viewport.with_icon(icon);
+    }
     // A blocking FIFO acquire can stall the interface thread for seconds on
     // Linux hybrid graphics after the window was covered. The automatic mode
     // takes Immediate or Mailbox where they exist and keeps FIFO as fallback.
@@ -113,25 +114,36 @@ fn native_options(size: [f32; 2]) -> eframe::NativeOptions {
     options
 }
 
+/// The window's icon. eframe also sets the macOS Dock icon from it, so macOS
+/// takes the padded artwork of its app icon and the Dock keeps its size.
+fn native_icon() -> Option<egui::IconData> {
+    let png: &[u8] = if cfg!(target_os = "macos") {
+        include_bytes!("../assets/branding/neptune-video-macos-logo.png")
+    } else {
+        include_bytes!("../assets/icons/neptune-video-256.png")
+    };
+    eframe::icon_data::from_png_bytes(png).ok()
+}
+
 fn main() -> std::process::ExitCode {
     let (launch, size) = match parse(std::env::args().skip(1)) {
         Ok(parsed) => parsed,
         Err(problem) => {
-            eprintln!("aster: {problem}");
+            eprintln!("neptune-video: {problem}");
             return std::process::ExitCode::from(2);
         }
     };
 
     let options = native_options(size);
     let run = eframe::run_native(
-        "Aster",
+        "Neptune Video",
         options,
         Box::new(move |cc| Ok(Box::new(App::new(cc, launch)))),
     );
     match run {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("aster: the window could not be opened: {error}");
+            eprintln!("neptune-video: the window could not be opened: {error}");
             std::process::ExitCode::FAILURE
         }
     }
@@ -149,5 +161,14 @@ mod tests {
             options.viewport.transparent,
             Some(!cfg!(target_os = "windows"))
         );
+    }
+
+    #[test]
+    fn the_window_carries_the_application_icon() {
+        let options = native_options([1440.0, 900.0]);
+        let icon = options.viewport.icon.expect("the bundled icon decodes");
+        let side = if cfg!(target_os = "macos") { 1024 } else { 256 };
+        assert_eq!((icon.width, icon.height), (side, side));
+        assert_eq!(icon.rgba.len(), (side * side * 4) as usize);
     }
 }

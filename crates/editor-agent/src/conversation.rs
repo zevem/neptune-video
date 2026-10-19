@@ -1,5 +1,5 @@
 //! A conversation with the person's signed-in Claude or Codex whose tools are
-//! one Aster MCP server's. The provider edits through that server, so every
+//! one Neptune Video MCP server's. The provider edits through that server, so every
 //! edit is the same guarded request an outside agent sends, validated and
 //! undoable where it lands. This runtime only owns the provider's process
 //! and reports what it said and did; it never edits.
@@ -21,9 +21,9 @@ use uuid::Uuid;
 
 /// What the provider is told, before the person's first request.
 pub const INSTRUCTIONS: &str = "\
-You are the editing agent inside Aster, a video editor. The person is \
-working in Aster's window and asked you for something in its Agent panel. \
-You work on the project open in that window through the aster tools, \
+You are the editing agent inside Neptune Video, a video editor. The person is \
+working in Neptune Video's window and asked you for something in its Agent panel. \
+You work on the project open in that window through the neptune-video tools, \
 which are the only tools you have. Every edit you make appears in the \
 window at once and is one step of its undo history, which the person \
 shares with you.
@@ -189,7 +189,7 @@ impl Conversation {
         });
         let owned = shared.clone();
         let worker = thread::Builder::new()
-            .name("aster-agent".into())
+            .name("neptune-video-agent".into())
             .spawn(move || run(owned, wake))
             .map_err(|_| AiError::WorkerStopped)?;
         Ok(Self {
@@ -508,12 +508,12 @@ mod tests {
         std::fs::write(
             &path,
             r#"#!/bin/sh
-printf '%s\n' '{"type":"system","subtype":"init","model":"fake","mcp_servers":[{"name":"aster","status":"connected"}]}'
+printf '%s\n' '{"type":"system","subtype":"init","model":"fake","mcp_servers":[{"name":"neptune-video","status":"connected"}]}'
 n=0
 while read -r line; do
   n=$((n+1))
   case "$line" in *never*) sleep 30;; esac
-  printf '%s\n' "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t$n\",\"name\":\"mcp__aster__clip_edit\",\"input\":{\"op\":\"trim\"}}]}}"
+  printf '%s\n' "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t$n\",\"name\":\"mcp__neptune-video__clip_edit\",\"input\":{\"op\":\"trim\"}}]}}"
   printf '%s\n' "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t$n\",\"content\":\"{\\\"label\\\":\\\"Trim clip\\\",\\\"changed\\\":true}\"}]}}"
   printf '%s\n' "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Answer $n\"}]}}"
   printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"ok","modelUsage":{"fake":{}}}'
@@ -535,7 +535,7 @@ done
 
     fn server() -> ToolServer {
         ToolServer {
-            command: PathBuf::from("/opt/aster/aster-mcp"),
+            command: PathBuf::from("/opt/neptune-video/neptune-video-mcp"),
             args: vec!["--window".into(), "/tmp/window.json".into()],
         }
     }
@@ -666,7 +666,7 @@ done
         let conversation = Conversation::new(|| {}).unwrap();
         let turn = conversation
             .ask(
-                config(PathBuf::from("/aster-test/no-such-claude")),
+                config(PathBuf::from("/neptune-video-test/no-such-claude")),
                 server(),
                 "Trim".into(),
             )

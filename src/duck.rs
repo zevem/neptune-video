@@ -1189,9 +1189,9 @@ mod tests {
         let mut bench = Bench::new();
         let (command, _) = ducked(&mut bench, depth_of_db(18.0).unwrap());
         bench.editor.dispatch(command).unwrap();
-        let dir = std::env::temp_dir().join(format!("aster-duck-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-duck-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("Ducked.aster");
+        let file = dir.join("Ducked.nvp");
         editor_store::save_project(&file, bench.project()).unwrap();
         let loaded = editor_store::load_project(&file);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1413,7 +1413,7 @@ mod tests {
     // ---- Through the real lane ---------------------------------------------------
 
     fn ffmpeg_available() -> bool {
-        let tool = std::env::var_os("ASTER_FFMPEG").unwrap_or_else(|| "ffmpeg".into());
+        let tool = std::env::var_os("NEPTUNE_VIDEO_FFMPEG").unwrap_or_else(|| "ffmpeg".into());
         std::process::Command::new(tool)
             .arg("-version")
             .stdout(std::process::Stdio::null())
@@ -1465,7 +1465,7 @@ mod tests {
             eprintln!("SKIP: FFmpeg is unavailable; nothing was read through the lane");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("aster-duck-lane-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-duck-lane-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut bench = Bench::new();
         let voice = burst(&dir);

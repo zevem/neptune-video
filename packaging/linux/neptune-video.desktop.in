@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.5
+Type=Application
+Name=Neptune Video
+GenericName=Video Editor
+Comment=Edit video on a timeline
+Exec="@NEPTUNE_VIDEO_APP_RUN@" %F
+TryExec=@NEPTUNE_VIDEO_APP_RUN_PATH@
+Icon=@NEPTUNE_VIDEO_ICON@
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+Keywords=video;editor;timeline;film;clip;neptune;
+StartupWMClass=rs.neptune.video

@@ -73,7 +73,7 @@
   interval index is claimed.
 - [R15 headless/release checkpoint](../../artifacts/production-readiness/final/round15-build-record.json)
   passes 521 tests and nine sequential architecture/media/fmt/lint/source-target/
-  Linux release checks on 83 files (`dfbb53e9`, `aster` `362ba180`). This includes
+  Linux release checks on 83 files (`dfbb53e9`, `neptune-video` `362ba180`). This includes
   consumer, budget, dispatch, compact transport and failure/admission corrections.
   R15's [thirteen native editing/input controls](../../artifacts/native/round15-editing-smoke/root-verification.json)
   pass with five viewed captures and eleven sampled process identities gone;

@@ -490,7 +490,7 @@ pub fn reveal(file: &Path) -> Result<(), String> {
         .spawn()
         .map_err(|error| format!("The file manager could not be opened ({program}: {error})"))?;
     std::thread::Builder::new()
-        .name("aster-reveal".into())
+        .name("neptune-video-reveal".into())
         .spawn(move || {
             let _ = child.wait();
         })

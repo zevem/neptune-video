@@ -1,26 +1,26 @@
 # Agent editing protocol
 
-`editor-agent` lets external coding/AI agents inspect and edit Aster through the
+`editor-agent` lets external coding/AI agents inspect and edit Neptune Video through the
 same validated commands and undo history as the desktop. It supplies a local
 transport and command/schema protocol. The crate also supplies
 [native provider planning](native-ai.md); that reviewed proposal workflow uses
 a narrower schema and the same reducer. The Agent tab's default conversation
-edits instead through [`aster-mcp`](mcp.md#asters-agent-tab), which reaches
+edits instead through [`neptune-video-mcp`](mcp.md#neptune-videos-agent-tab), which reaches
 the window through this protocol.
 
 ## Headless sessions
 
-Build `aster-agent`, then run an in-memory session or a task-owned project:
+Build `neptune-video-agent`, then run an in-memory session or a task-owned project:
 
 ```sh
-cargo build --locked --bin aster-agent
-target/debug/aster-agent
-target/debug/aster-agent --project /absolute/project.aster --create
-target/debug/aster-agent --project /absolute/project.aster --recover
-target/debug/aster-agent --project /absolute/project.aster --recover --save-as /absolute/recovered.aster
+cargo build --locked --bin neptune-video-agent
+target/debug/neptune-video-agent
+target/debug/neptune-video-agent --project /absolute/project.nvp --create
+target/debug/neptune-video-agent --project /absolute/project.nvp --recover
+target/debug/neptune-video-agent --project /absolute/project.nvp --recover --save-as /absolute/recovered.nvp
 ```
 
-On Windows the executable is `target/debug/aster-agent.exe`. With `--project`,
+On Windows the executable is `target/debug/neptune-video-agent.exe`. With `--project`,
 successful mutations save the current project and its recovery history.
 `--create` immediately creates a new document and refuses every existing file.
 `--recover` opens the sibling recovery archive under its recovery lease and
@@ -31,7 +31,7 @@ restores undo/redo. An ordinary project open starts a new undo/redo history.
 destination without discarding undo/redo. It also requires `--project`, cannot
 combine with `--create`, and refuses an existing destination. The source project
 and recovery copy remain untouched. These argument and durability paths are
-implemented in [aster-agent.rs](../src/bin/aster-agent.rs) and exercised through
+implemented in [neptune-video-agent.rs](../src/bin/neptune-video-agent.rs) and exercised through
 the real Linux stdin/stdout CLI in
 [eight acceptance checks](../artifacts/production-readiness/store/headless-bound-stdio.json)
 alongside [12 binary tests](../artifacts/production-readiness/store/headless-bound-tests.log).
@@ -68,7 +68,7 @@ version, instance ID and session token. Connect to the descriptor path shown
 by the desktop or supplied for an isolated verification run:
 
 ```sh
-target/debug/aster-agent --connect /absolute/session.json
+target/debug/neptune-video-agent --connect /absolute/session.json
 ```
 
 The descriptor is session-specific and contains a capability token; keep it
@@ -169,14 +169,14 @@ in `document` tell when it is done. A headless session saves at once.
 
 ```json
 {"request_id":"save-1","operation":"save","expected_project_id":"00000000-0000-0000-0000-000000000000","expected_context_id":"00000000-0000-0000-0000-000000000000"}
-{"request_id":"save-2","operation":"save","expected_project_id":"00000000-0000-0000-0000-000000000000","expected_context_id":"00000000-0000-0000-0000-000000000000","destination":"/absolute/copy.aster"}
+{"request_id":"save-2","operation":"save","expected_project_id":"00000000-0000-0000-0000-000000000000","expected_context_id":"00000000-0000-0000-0000-000000000000","destination":"/absolute/copy.nvp"}
 ```
 
 While the person is in the middle of a change, a window refuses every
 mutation (`apply`, `undo`, `redo`, `save`) with `person_editing`, and with
 `desktop_busy` while it is asking the person something; nothing is applied
 and the client tries again. [MCP clients](mcp.md) reach the same
-operations through `aster-mcp`.
+operations through `neptune-video-mcp`.
 
 ### Look, motion and speed commands
 
@@ -376,7 +376,7 @@ Export is not an edit. It has no command and no undo entry, and it never
 changes the project. The desktop's render queue renders each job from a
 snapshot of the project taken when the job was queued, so later edits do not
 change a queued or running job. Only a live desktop session runs render
-jobs: a headless `aster-agent` answers every operation below with
+jobs: a headless `neptune-video-agent` answers every operation below with
 `unsupported`, so connect with `--connect`.
 
 | Operation | Fields | Guards | Result |

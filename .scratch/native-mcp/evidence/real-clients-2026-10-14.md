@@ -1,7 +1,7 @@
 # Real MCP clients, 2026-10-14
 
 Host: macOS 26.5.2 (Darwin 25.5.0), Apple Silicon, 8 CPUs, 8 GB. Debug
-build of `aster-mcp` (`cargo build --locked --bin aster-mcp`), FFmpeg 9.0.2
+build of `neptune-video-mcp` (`cargo build --locked --bin neptune-video-mcp`), FFmpeg 9.0.2
 from `.tools/media/macos-aarch64`, Whisper `tiny` installed by the server.
 Each client had a fresh folder as the only root, with `footage/`
 (interview.mp4: a test pattern with macOS `say` speech; street.mp4;
@@ -13,7 +13,7 @@ entrance animation, music at −12 dB, look at frames, fix, preview, export.
 ## Claude Code 2.1.300
 
 `claude -p BRIEF --mcp-config mcp.json --strict-mcp-config --allowedTools
-"mcp__aster__*"` with the built-in file and shell tools disallowed.
+"mcp__neptune-video__*"` with the built-in file and shell tools disallowed.
 
 - 41 tool calls, 42 turns, one refusal: `text_edit` with a shadow offset
   in pixels ("Invalid text style"). It read `edit_schema {command:
@@ -25,7 +25,7 @@ entrance animation, music at −12 dB, look at frames, fix, preview, export.
 - `promo-preview.mp4` (960x540) and `promo.mp4` (1280x720, 30 fps, 9.47 s,
   284 frames, with sound) were written. The project was at revision 14 and
   saved.
-- Opened afterwards in the debug `aster`, it showed the five captions, the
+- Opened afterwards in the debug `neptune-video`, it showed the five captions, the
   title, the three clips with the dissolve, and the music in two pieces.
   The window offered to restore a recovery copy: the client had stopped
   the server with a signal, which this build then did not handle. Fixed
@@ -33,8 +33,8 @@ entrance animation, music at −12 dB, look at frames, fix, preview, export.
 
 ## Codex CLI 0.162.1
 
-`codex exec --json -c mcp_servers.aster.command=… -c
-mcp_servers.aster.args=[…] -c mcp_servers.aster.tool_timeout_sec=120 -s
+`codex exec --json -c mcp_servers.neptune-video.command=… -c
+mcp_servers.neptune-video.args=[…] -c mcp_servers.neptune-video.tool_timeout_sec=120 -s
 read-only BRIEF`.
 
 - First run: Codex refused every non-read-only tool ("MCP tool call
@@ -65,6 +65,6 @@ Same brief, a fresh folder, and the build whose hashes
   was not checked by ear. Its music was shorter than the video, so it was
   repeated with a fade.
 - The server stopped with the client and left no recovery copy. The
-  project opened in `aster` as saved
+  project opened in `neptune-video` as saved
   (`../captures/5-person-opens-claude-code-project.png`).
 

@@ -3,7 +3,7 @@
 //! them; the core checks every value against the same ranges.
 use super::{Guard, batch, clip, refused};
 use crate::{
-    mcp::{errors::ToolError, server::AsterServer, time::TimeSpec, workspace::Edited},
+    mcp::{errors::ToolError, server::NeptuneVideoServer, time::TimeSpec, workspace::Edited},
     speed::{self, Curve, Ramp},
     ui::{inspector, transitions},
 };
@@ -366,7 +366,7 @@ fn ramp(text: &str) -> Result<Ramp, ToolError> {
 }
 
 #[tool_router(router = effect_tools, vis = "pub(crate)")]
-impl AsterServer {
+impl NeptuneVideoServer {
     #[tool(
         description = "Everything effects, masks, transitions, looks, blend modes, keyframes and \
                        text animations can be: kinds, parameter keys with ranges and defaults, \

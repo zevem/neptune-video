@@ -3,7 +3,8 @@ name = "editor-media"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Bounded import, preview decoding and audio workers for Aster"
+license.workspace = true
+description = "Bounded import, preview decoding and audio workers for Neptune Video"
 
 [dependencies]
 editor-core = { path = "../editor-core" }

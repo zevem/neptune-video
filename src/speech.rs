@@ -105,7 +105,7 @@ impl SpeechSettings {
 pub fn models_dir(told_settings: Option<&Path>) -> Option<PathBuf> {
     match told_settings {
         Some(settings) => settings.parent().map(|dir| dir.join("models")),
-        None => directories::ProjectDirs::from("app", "Aster", "Aster")
+        None => directories::ProjectDirs::from("rs", "Neptune", "NeptuneVideo")
             .map(|dirs| dirs.data_local_dir().join("models")),
     }
 }
@@ -386,7 +386,7 @@ mod tests {
             models_dir(Some(Path::new("/tmp/run/settings.json"))),
             Some(PathBuf::from("/tmp/run/models"))
         );
-        let dir = std::env::temp_dir().join(format!("aster-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-test-{}", uuid::Uuid::new_v4()));
         assert_eq!(Inventory::look(&dir), Inventory::default());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(DETECTOR.path(&dir), vec![0; DETECTOR.bytes as usize]).unwrap();

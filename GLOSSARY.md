@@ -354,7 +354,7 @@ never deleted by the editor.
 _Avoid_: Clip, which is the take's placement on the timeline
 
 **Media folder**:
-The `<document stem> media` folder (the project file's name without `.aster`,
+The `<document stem> media` folder (the project file's name without `.nvp`,
 then ` media`) beside a saved project, made on the first take or separation.
 It holds takes and stems and is never emptied by the editor.
 
@@ -534,7 +534,7 @@ The hidden file, `.<name>.<job>.part`, that an export is written to in its
 destination folder. It is renamed over the destination only after FFmpeg
 finished and the file was checked, and removed if the job fails or is
 cancelled. Its job's working files, the rendered sound among them, are in a
-hidden working folder, `.aster-render-<job>`, beside it.
+hidden working folder, `.neptune-video-render-<job>`, beside it.
 _Avoid_: Temporary file, which is the job's working folder
 
 **Preview quality**:
@@ -595,13 +595,13 @@ A declared incomplete view of a captured project that retains the selected
 clips, their linked/grouped relatives and source limits.
 
 **MCP server**:
-`aster-mcp`, which lets an AI agent in an MCP client create, inspect, edit,
+`neptune-video-mcp`, which lets an AI agent in an MCP client create, inspect, edit,
 analyse, preview and export projects with the editor's own commands. Its tools
 are also the in-app agent's only tools.
 
 **Edit authority**:
 Where the project an MCP server edits lives: in the server itself, saved
-after every edit (local), or in a running Aster window (desktop). There is
+after every edit (local), or in a running Neptune Video window (desktop). There is
 one authority per project at a time.
 _Avoid_: Replica, mirror
 
@@ -669,7 +669,7 @@ the person applies it.
 _Avoid_: Ask, which is the mode either way of answering belongs to
 
 **Home window**:
-The Aster window an MCP server started with `--window FILE` begins in: the
+The Neptune Video window an MCP server started with `--window FILE` begins in: the
 one whose session file is `FILE`. The server attaches to it at once, or at its
 first call if the window is not answering yet, and goes back to it when
 `desktop {op: attach}` names no window. It may still create, open and close
@@ -679,6 +679,6 @@ _Avoid_: Pinned server, which suggests the server cannot leave it
 
 **Request tag**:
 The start of an MCP server's request ids, set with `--tag` (`mcp` when none is
-given). The in-app agent's server uses `aster-tab-<instance>`, the window's
+given). The in-app agent's server uses `neptune-video-tab-<instance>`, the window's
 agent session instance id in 32 hex digits, by which each window tells its
 own agent's requests from an outside client's or another window's agent's.

@@ -121,7 +121,7 @@ On macOS 26.5.2 (arm64, Apple M1), Rust 1.97.1, 2026-10-13, `dev` profile.
 Only the desktop crate changed, so no other crate was built or tested. No
 native window was opened and nothing was listened to.
 
-- `cargo test --locked -p aster-editor`: 717 and 12 passed, three runs;
+- `cargo test --locked -p neptune-video`: 717 and 12 passed, three runs;
   719 and 12 after the review fixes (one run).
   New tests:
   - `src/audio.rs`: `the_presets_write_the_effects_the_spec_names_with_fresh_ids`,
@@ -176,7 +176,7 @@ native window was opened and nothing was listened to.
     (was ticket 10's "keeps them through the sound card"), the sections
     assert of `a_title_and_a_sound_are_offered_only_what_the_project_accepts`,
     and `effects_are_added_and_removed_by_name`.
-- `cargo clippy --locked --bin aster --bin aster-agent --all-targets -- -D
+- `cargo clippy --locked --bin neptune-video --bin neptune-video-agent --all-targets -- -D
   warnings`, `cargo fmt --all -- --check` and
   `python3 scripts/check-architecture.py`: clean.
 - One test was flaky while written: the centre-reduction row and its card
@@ -207,7 +207,7 @@ project or the settings; this host offers no private display to drive.
 For a person, at 1440x900 and 760x560 with a release build, a sound on an
 audio track and fresh `--settings`: select the sound (the empty Audio
 section), Add audio effect → Voice (four cards, High-pass open), the same
-with `afftdn` unavailable (an FFmpeg without it, or `ASTER_FFMPEG` pointing
+with `afftdn` unavailable (an FFmpeg without it, or `NEPTUNE_VIDEO_FFMPEG` pointing
 at one; the Noise reduction card says "Not available in this FFmpeg
 build"), and the library's Effects tab scrolled to Audio.
 
@@ -294,6 +294,6 @@ are fixed, each with a test that fails on the code before it:
   keeps the project independent of one machine's FFmpeg. The menu-row
   disabling is removed, which returns to what the ticket asked for.
 
-2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/aster` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `aster-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
+2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/neptune-video` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `neptune-video-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
 
-At 1280x709 and 760x560: `normal-24`/`narrow560-01` the empty Audio section; `normal-25`/`narrow560-02` the Add audio effect menu (Voice, 3-band EQ, the kinds); `normal-26`/`narrow560-03` Voice with High-pass open at 80 Hz; `normal-27`, `narrow-27` the four cards; `normal-41`, `normal-42`, `narrow560-04`, `narrow560-05` Noise reduction saying "Not available in this FFmpeg build" with its rows disabled; `normal-38`/`narrow560-06` the Effects tab's Audio group. The unavailable kind was made with `ASTER_FFMPEG` pointing at a task-owned wrapper that runs the host FFmpeg but fails any command naming `afftdn`, not with a real FFmpeg build lacking it.
+At 1280x709 and 760x560: `normal-24`/`narrow560-01` the empty Audio section; `normal-25`/`narrow560-02` the Add audio effect menu (Voice, 3-band EQ, the kinds); `normal-26`/`narrow560-03` Voice with High-pass open at 80 Hz; `normal-27`, `narrow-27` the four cards; `normal-41`, `normal-42`, `narrow560-04`, `narrow560-05` Noise reduction saying "Not available in this FFmpeg build" with its rows disabled; `normal-38`/`narrow560-06` the Effects tab's Audio group. The unavailable kind was made with `NEPTUNE_VIDEO_FFMPEG` pointing at a task-owned wrapper that runs the host FFmpeg but fails any command naming `afftdn`, not with a real FFmpeg build lacking it.

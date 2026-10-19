@@ -121,9 +121,9 @@ fn v1_archive() -> Value {
 /// A project, a checkpoint and a recovery archive of one session, as the last
 /// build that wrote version 2 saved them: every advanced feature, two steps
 /// undone in the archive, and media named beside the document.
-const V2_PROJECT: &str = include_str!("fixtures/version-two.aster");
-const V2_CHECKPOINT: &str = include_str!("fixtures/version-two-checkpoint.aster");
-const V2_ARCHIVE: &str = include_str!("fixtures/version-two.aster.recovery");
+const V2_PROJECT: &str = include_str!("fixtures/version-two.nvp");
+const V2_CHECKPOINT: &str = include_str!("fixtures/version-two-checkpoint.nvp");
+const V2_ARCHIVE: &str = include_str!("fixtures/version-two.nvp.recovery");
 
 fn read_json(path: &Path) -> Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
@@ -296,7 +296,7 @@ fn advanced(root: &Path) -> (Editor, ClipId) {
 #[test]
 fn version_one_project_loads_and_the_next_save_writes_the_current_version() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     write_json(
         &path,
         &json!({"schema_version": 1, "project": v1_project("Version one")}),
@@ -326,7 +326,7 @@ fn version_one_project_loads_and_the_next_save_writes_the_current_version() {
 #[test]
 fn version_one_project_can_be_replaced_by_a_one_shot_save() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     write_json(
         &path,
         &json!({"schema_version": 1, "project": v1_project("Version one")}),
@@ -342,11 +342,11 @@ fn version_one_project_can_be_replaced_by_a_one_shot_save() {
 #[test]
 fn version_one_checkpoint_is_listed_and_loads_beside_a_new_one() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let old = directory
         .path()
-        .join("project.aster.checkpoints")
-        .join("1-00000000-0000-4000-8000-000000000009.aster");
+        .join("project.nvp.checkpoints")
+        .join("1-00000000-0000-4000-8000-000000000009.nvp");
     write_json(
         &old,
         &json!({
@@ -375,7 +375,7 @@ fn version_one_checkpoint_is_listed_and_loads_beside_a_new_one() {
 #[test]
 fn version_one_recovery_restores_history_and_the_next_save_writes_the_current_version() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let archive_path = recovery_path(&path);
     write_json(&archive_path, &v1_archive());
 
@@ -415,7 +415,7 @@ fn v2_clip(project: &Project) -> &Clip {
 #[test]
 fn version_two_project_loads_and_the_next_save_writes_the_current_version() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     write_text(&path, V2_PROJECT);
     let fixture = read_json(&path);
     assert_eq!(fixture["schema_version"], json!(2));
@@ -466,7 +466,7 @@ fn version_two_project_loads_and_the_next_save_writes_the_current_version() {
 #[test]
 fn version_two_project_can_be_replaced_by_a_one_shot_save() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     write_text(&path, V2_PROJECT);
     let project = load_project(&path).unwrap();
 
@@ -479,11 +479,11 @@ fn version_two_project_can_be_replaced_by_a_one_shot_save() {
 #[test]
 fn version_two_checkpoint_is_listed_and_loads_beside_a_new_one() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let old = directory
         .path()
-        .join("project.aster.checkpoints")
-        .join("1-00000000-0000-4000-8000-000000000009.aster");
+        .join("project.nvp.checkpoints")
+        .join("1-00000000-0000-4000-8000-000000000009.nvp");
     write_text(&old, V2_CHECKPOINT);
 
     let project = load_project(&old).unwrap();
@@ -506,7 +506,7 @@ fn version_two_checkpoint_is_listed_and_loads_beside_a_new_one() {
 #[test]
 fn version_two_recovery_restores_history_and_the_next_save_writes_the_current_version() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let archive_path = recovery_path(&path);
     write_text(&path, V2_PROJECT);
     write_text(&archive_path, V2_ARCHIVE);
@@ -556,7 +556,7 @@ fn v5_project() -> Value {
 #[test]
 fn version_five_is_refused_and_protected_everywhere() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let future = v5_project();
     let mut as_current = future.clone();
     as_current["schema_version"] = json!(SCHEMA_VERSION);
@@ -600,8 +600,8 @@ fn version_five_is_refused_and_protected_everywhere() {
 
     let checkpoint = directory
         .path()
-        .join("project.aster.checkpoints")
-        .join("1-00000000-0000-4000-8000-000000000009.aster");
+        .join("project.nvp.checkpoints")
+        .join("1-00000000-0000-4000-8000-000000000009.nvp");
     write_json(&checkpoint, &future);
     let original = fs::read(&checkpoint).unwrap();
     assert!(matches!(
@@ -622,7 +622,7 @@ fn version_five_is_refused_and_protected_everywhere() {
 #[test]
 fn version_zero_stays_unsupported_and_preserved() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let zero = json!({"schema_version": 0, "project": v1_project("Before one")});
     write_json(&path, &zero);
     let original = fs::read(&path).unwrap();
@@ -638,8 +638,8 @@ fn version_zero_stays_unsupported_and_preserved() {
 
     let checkpoint = directory
         .path()
-        .join("project.aster.checkpoints")
-        .join("1-00000000-0000-4000-8000-000000000009.aster");
+        .join("project.nvp.checkpoints")
+        .join("1-00000000-0000-4000-8000-000000000009.nvp");
     write_json(&checkpoint, &zero);
     let original = fs::read(&checkpoint).unwrap();
     assert!(matches!(
@@ -652,7 +652,7 @@ fn version_zero_stays_unsupported_and_preserved() {
 #[test]
 fn every_advanced_feature_round_trips_through_a_project_file() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let (editor, clip_id) = advanced(directory.path());
     let project = editor.project();
     let clip = project.clip(clip_id).unwrap().1;
@@ -677,7 +677,7 @@ fn every_advanced_feature_round_trips_through_a_project_file() {
 #[test]
 fn a_lut_asset_and_the_effects_that_read_assets_round_trip_through_a_project_file() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let (mut editor, clip_id) = advanced(directory.path());
     // A table as import describes it: no time, no picture, its points along
     // an edge for a width.
@@ -741,7 +741,7 @@ fn a_lut_asset_and_the_effects_that_read_assets_round_trip_through_a_project_fil
 #[test]
 fn every_advanced_feature_round_trips_through_recovery_with_history() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let (mut editor, _) = advanced(directory.path());
     assert!(editor.undo());
     assert!(editor.undo());
@@ -794,7 +794,7 @@ fn every_advanced_feature_round_trips_through_recovery_with_history() {
 #[test]
 fn recovery_stores_each_tracker_once_however_many_maps_share_it() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let (mut editor, _) = advanced(directory.path());
     let asset_id = *editor.project().assets.keys().next().unwrap();
     let tracker = |name: &str| Tracker {
@@ -920,7 +920,7 @@ fn assert_sound(project: &Project) {
 #[test]
 fn fades_track_volume_and_solo_round_trip_through_a_project_file() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let editor = sound(directory.path());
     let project = editor.project();
     assert_sound(project);
@@ -955,7 +955,7 @@ fn fades_track_volume_and_solo_round_trip_through_a_project_file() {
 #[test]
 fn fades_track_volume_and_solo_round_trip_through_a_checkpoint() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let editor = sound(directory.path());
 
     let kept = checkpoint(&path, editor.project(), "With sound").unwrap();
@@ -975,7 +975,7 @@ fn fades_track_volume_and_solo_round_trip_through_a_checkpoint() {
 #[test]
 fn fades_track_volume_and_solo_round_trip_through_recovery_with_history() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut editor = sound(directory.path());
     // Solo and the music track's volume are undone when the archive is written.
     assert!(editor.undo() && editor.undo());
@@ -1033,7 +1033,7 @@ fn fades_track_volume_and_solo_round_trip_through_recovery_with_history() {
 #[test]
 fn a_file_whose_fades_or_track_volume_are_out_of_bounds_is_refused_and_preserved() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let editor = sound(directory.path());
     save_project(&path, editor.project()).unwrap();
     let written = read_json(&path);
@@ -1087,7 +1087,7 @@ fn a_file_whose_fades_or_track_volume_are_out_of_bounds_is_refused_and_preserved
 #[test]
 fn a_project_with_fades_out_of_bounds_is_not_written_anywhere() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let editor = sound(directory.path());
     save_project(&path, editor.project()).unwrap();
     let original = fs::read(&path).unwrap();
@@ -1143,7 +1143,7 @@ fn audio_effects(root: &Path) -> (Editor, Vec<Effect>) {
 #[test]
 fn one_of_each_audio_kind_round_trips_through_a_project_file_and_a_checkpoint() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let (editor, stack) = audio_effects(directory.path());
     let project = editor.project();
 
@@ -1186,7 +1186,7 @@ fn one_of_each_audio_kind_round_trips_through_a_project_file_and_a_checkpoint() 
 #[test]
 fn audio_effects_round_trip_through_recovery_with_history() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let (mut editor, stack) = audio_effects(directory.path());
     // The effects are undone when the archive is written.
     assert!(editor.undo());
@@ -1217,7 +1217,7 @@ fn audio_effects_round_trip_through_recovery_with_history() {
 #[test]
 fn a_file_whose_audio_effects_break_a_rule_is_refused_and_preserved() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let (editor, _) = audio_effects(directory.path());
     save_project(&path, editor.project()).unwrap();
     let written = read_json(&path);
@@ -1285,7 +1285,7 @@ fn a_file_whose_audio_effects_break_a_rule_is_refused_and_preserved() {
 #[test]
 fn version_two_title_loads_plain_and_the_next_save_writes_the_current_version() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut project = v1_project("Version two");
     let mut text = v1_track();
     text["id"] = json!("00000000-0000-4000-8000-000000000005");
@@ -1339,7 +1339,7 @@ fn titles_graphics_captions_and_fonts_round_trip_through_a_project_file() {
         TextOutline, TextStyle, TextUnit, TrackKind, WordTime,
     };
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let mut editor = Editor::default();
     let track = editor
         .project()

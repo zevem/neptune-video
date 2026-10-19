@@ -1,4 +1,4 @@
-# In-app agent edits through aster-mcp
+# In-app agent edits through neptune-video-mcp
 
 Status: ready-for-human
 Progress: implemented; first round accepted natively on macOS with debug builds; the second round ([issue 06](issues/06-same-reach-as-an-outside-agent.md)) accepted natively on macOS with release builds on 2026-10-15; no Linux or Windows window run
@@ -6,14 +6,14 @@ Type: task
 
 The Agent tab's Ask mode becomes a live conversation with the Claude Code
 or Codex command line the person has signed in to. Its only tools are those
-of `aster-mcp`, the same binary and the same 39 tools external MCP clients
+of `neptune-video-mcp`, the same binary and the same 39 tools external MCP clients
 use, started in the window. Every edit of the window's project goes
 through the window's authenticated agent session, appears at once and is
 one undo step in the history the person uses. Like an outside agent, it
 may also make, open and close projects of its own and come back.
 
 This document is the binding design.
-[ADR 0011](../../docs/adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md)
+[ADR 0011](../../docs/adr/0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md)
 records the decision; [the native MCP spec](../native-mcp/spec.md) and
 [ADR 0010](../../docs/adr/0010-mcp-reaches-the-editor-through-the-agent-protocol.md)
 stay as they are. A change to a decision is a dated comment below.
@@ -26,17 +26,17 @@ with no pixels; the person reviewed it and applied it as one undo step
 ([ADR 0004](../../docs/adr/0004-native-ai-produces-reviewed-edit-proposals.md),
 [native AI](../../docs/native-ai.md)). That planner cannot look at frames,
 transcribe, export or check its own work. An external MCP client connected
-to the same window could do all of that, so the agent inside Aster could do
+to the same window could do all of that, so the agent inside Neptune Video could do
 less than one outside it.
 
 ## Decisions
 
-1. **One tool layer.** The panel's agent uses `aster-mcp`, not a second,
+1. **One tool layer.** The panel's agent uses `neptune-video-mcp`, not a second,
    in-process tool layer. A new MCP tool reaches the Agent tab with no
    change to the window; the panel names its step by the tool's name until
    `ai::step_words` has words for it.
-2. **Started in its window.** The window starts `aster-mcp --window <its
-   session file> --tag aster-tab-<instance> --roots-file <its session
+2. **Started in its window.** The window starts `neptune-video-mcp --window <its
+   session file> --tag neptune-video-tab-<instance> --roots-file <its session
    file with extension .roots> --desktop-settings <settings file> --models <models
    dir>`. The server attaches to that window's `AgentHost` session at once,
    or at the first call if the window is not answering yet, and goes back
@@ -46,7 +46,7 @@ less than one outside it.
 3. **The same reach as an outside agent.** Decided on the owner's behalf
    (2026-10-15): `project_create`, `project_open`, `project_close` and
    `desktop {op: open}` work exactly as for any MCP client, because an
-   agent locked to one project could do less than one outside Aster. A
+   agent locked to one project could do less than one outside Neptune Video. A
    project no window shows is edited by the server itself and saved after
    every edit; `desktop {op: open}` shows a project in a new window;
    `desktop {op: attach}` with an `instance_id` reaches another window, and
@@ -109,9 +109,9 @@ less than one outside it.
   12 hours; 600 seconds without a word from it fails the turn.
   Conversation output lines may be up to 256 MiB; the stream and standard
   error have no total limit.
-- The window finds the program in `ASTER_MCP`, else `aster-mcp` beside the
-  running `aster`, else the request fails with a message. Request IDs
-  start with `aster-tab-<instance>-`, `<instance>` being the window's agent
+- The window finds the program in `NEPTUNE_VIDEO_MCP`, else `neptune-video-mcp` beside the
+  running `neptune-video`, else the request fails with a message. Request IDs
+  start with `neptune-video-tab-<instance>-`, `<instance>` being the window's agent
   session instance ID in 32 hex digits (`ai::window_tag`), and a window
   claims only its own (`ai::own_request`); for them the window counts the turn's changes
   and does not add the "Agent: …" rows it shows for outside clients. Tool
@@ -121,7 +121,7 @@ less than one outside it.
   refuse every client.
 - The roots file is the window's agent session file with extension
   `.roots`: `{"roots": [DIR, …]}`, 0600 on Unix, written whole (a part
-  file renamed over it) by a thread of its own, `aster-agent-roots`. While
+  file renamed over it) by a thread of its own, `neptune-video-agent-roots`. While
   the agent talks, the window compares the project's revision, its path
   and the person's folders each frame and writes the file again only when they change. It
   never waits on the disk while drawing, except up to one second for the
@@ -136,7 +136,7 @@ less than one outside it.
   file and no `--root`, the working directory is not a root; `--root`
   folders stay and come first. `project_status.roots` lists the current
   roots. `outside_roots` ends "the person can add one with --root, or for
-  Aster's own agent in Settings › Agent › Folders".
+  Neptune Video's own agent in Settings › Agent › Folders".
 - Settings › Agent lists the person's folders below "Edits" (name, the
   full path on hover, Remove) and a row "Folders" with "Add folder…", a
   native dialog titled "A folder the agent may use". A folder too wide is
@@ -144,17 +144,17 @@ less than one outside it.
   `AiSettings.folders` is serde default empty.
 - Claude Code (verified 2.1.300) runs `claude --print --verbose` with
   stream-json input and output, `--tools ""`, `--strict-mcp-config`, a
-  private `aster-tools.json` (0600 on Unix) naming one server `aster`,
-  `--allowedTools "mcp__aster__*"`, `--permission-mode dontAsk`,
+  private `neptune-video-tools.json` (0600 on Unix) naming one server `neptune-video`,
+  `--allowedTools "mcp__neptune-video__*"`, `--permission-mode dontAsk`,
   `--setting-sources ""`, `--disable-slash-commands`,
-  `--no-session-persistence`, `--max-turns 400` and Aster's
+  `--no-session-persistence`, `--max-turns 400` and Neptune Video's
   `INSTRUCTIONS` as the system prompt. It does not use `--safe-mode`,
   which in 2.1.300 drops every MCP server. A turn fails unless the init
-  line reports `aster` connected. The person's words go on stdin.
+  line reports `neptune-video` connected. The person's words go on stdin.
 - Codex (verified codex-cli 0.162.1) runs `codex app-server` with the
   planner's disabled features except `code_mode_host`. The shell tool, web
   search, project docs and notify are off, the person's own MCP servers
-  are disabled for the thread beside one server `aster_window`
+  are disabled for the thread beside one server `neptune_video_window`
   (`startup_timeout_sec` 30, `tool_timeout_sec` 300,
   `default_tools_approval_mode` "approve"), the approval policy is never
   and the sandbox is read-only. An approval request, a tool of another
@@ -169,7 +169,7 @@ less than one outside it.
   words, with the window note, and the live agent's tool results reach the
   provider under the person's own sign-in and terms: the project's editing
   data, rendered frames, contact sheets, transcripts, level and loudness
-  measurements, and file names and paths inside the roots. Aster uploads no source media file.
+  measurements, and file names and paths inside the roots. Neptune Video uploads no source media file.
   The agent cannot read outside the roots, run shell commands, browse the
   web or use other MCP servers.
 - Panel texts: steps (running, done with the edit's label, refused with
@@ -192,7 +192,7 @@ less than one outside it.
   measurements only.
 - Hosted HTTP credentials and local models. Sign-in, model access and
   usage limits are the person's own.
-- Hiding Aster's `INSTRUCTIONS` from the process list. They are Aster's
+- Hiding Neptune Video's `INSTRUCTIONS` from the process list. They are Neptune Video's
   own text and hold no person data.
 - Codex versions other than 0.162.1 and Claude Code versions other than
   2.1.300.
@@ -201,7 +201,7 @@ less than one outside it.
 
 - Library, MCP and provider tests pass on the host, including the
   `tests/mcp.rs` cases for the agent's own server
-  ([issue 02](issues/02-pinned-aster-mcp-for-the-window.md),
+  ([issue 02](issues/02-pinned-neptune-video-mcp-for-the-window.md),
   [issue 06](issues/06-same-reach-as-an-outside-agent.md)).
 - With each provider, in a running debug window: a multi-step request
   edits the timeline, looks at frames, exports and saves; a follow-up in
@@ -234,13 +234,13 @@ run with release builds on 2026-10-15
 [In-app agent](../../docs/verification.md#in-app-agent) in verification):
 with both providers, including Codex exporting and saving in a narrow
 window and Stop with Codex. Those runs found defect 12, the shared
-`aster-tab` request tag, now fixed with a tag per window.
+`neptune-video-tab` request tag, now fixed with a tag per window.
 
 ## Comments
 
 2026-10-14: Implemented on base commit `1d25fc7` plus uncommitted work.
 Probes changed two provider choices: Claude conversations run without
-`--safe-mode`, which dropped Aster's server in 2.1.300, and Codex keeps
+`--safe-mode`, which dropped Neptune Video's server in 2.1.300, and Codex keeps
 `code_mode_host`, without which 0.162.1 answered that its tool host was
 disabled. The planner keeps both as before.
 
@@ -261,7 +261,7 @@ it and come back; the roots are live through `--roots-file`, and the person
 adds folders in Settings › Agent › Folders. Roots no longer restart the
 conversation, and the restart note names only the provider, model or
 effort. ADR 0011's file is now
-[0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md](../../docs/adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md).
+[0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md](../../docs/adr/0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md).
 `tests/mcp.rs` has 12 cases, all passing on macOS 26.5.2 arm64, and a new
 `src/ai.rs` unit test covers the roots file; native runs followed the
 same day ([issue 06](issues/06-same-reach-as-an-outside-agent.md)).

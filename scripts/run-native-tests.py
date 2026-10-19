@@ -34,6 +34,7 @@ def digest(path: Path) -> str:
 
 def source_digest(root: Path) -> str:
     paths = {Path("Cargo.toml"), Path("Cargo.lock"), Path("rust-toolchain.toml"), Path(".cargo/config.toml")}
+    paths.update(path for path in (Path("build.rs"),) if (root / path).exists())
     paths.update(path.relative_to(root) for base in ("src", "crates") for path in (root / base).rglob("*.rs"))
     paths.update(path.relative_to(root) for path in (root / "crates").rglob("Cargo.toml"))
     value = hashlib.sha256()
@@ -63,10 +64,10 @@ def collect_results(output: Path) -> tuple[dict, dict]:
             if not isinstance(target, dict) or "bin" not in target.get("kind", []):
                 continue
             name, executable = target.get("name"), event.get("executable")
-            if name in ("aster", "aster-agent", "aster-mcp") and executable:
+            if name in ("neptune-video", "neptune-video-agent", "neptune-video-mcp") and executable:
                 binary = Path(executable).resolve(strict=True)
                 binaries[name] = {"path": str(binary), "bytes": binary.stat().st_size, "sha256": digest(binary)}
-    if set(binaries) != {"aster", "aster-agent", "aster-mcp"} or not results or counts["passed"] == 0 or counts["failed"]:
+    if set(binaries) != {"neptune-video", "neptune-video-agent", "neptune-video-mcp"} or not results or counts["passed"] == 0 or counts["failed"]:
         raise ValueError("Native build/test records are incomplete")
     return counts, binaries
 

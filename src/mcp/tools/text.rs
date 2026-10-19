@@ -3,7 +3,7 @@ use super::{Guard, batch, clip, refused, stamp};
 use crate::{
     mcp::{
         errors::{ToolError, codes},
-        server::AsterServer,
+        server::NeptuneVideoServer,
         time::TimeSpec,
         tools::effects::named,
         workspace::Edited,
@@ -409,7 +409,7 @@ fn subtitle_format(path: &std::path::Path) -> Result<SubtitleFormat, ToolError> 
 }
 
 #[tool_router(router = text_tools, vis = "pub(crate)")]
-impl AsterServer {
+impl NeptuneVideoServer {
     #[tool(
         description = "Add a title or graphic: plain text, or a template (lower third, \
                           title card, callout, sticker, emoji) with its texts, size, colour, \

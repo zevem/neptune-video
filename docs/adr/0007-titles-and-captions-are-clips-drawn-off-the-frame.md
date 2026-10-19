@@ -22,7 +22,7 @@ dependency. egui's text path was set aside because it has one font, no outline
 or shadow and a 480-point cap. A GPU glyph renderer was set aside as a second
 implementation that an export path would not share.
 
-**Pictures are made off the frame.** The `aster-titles` lane makes a title's
+**Pictures are made off the frame.** The `neptune-video-titles` lane makes a title's
 picture from the layer `resolve` produced, at the scale the screen shows it.
 The viewer draws the newest picture it holds as one quad through the layer's
 transform. Answers name their clip and exact layer and are dropped when stale,

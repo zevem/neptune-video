@@ -247,36 +247,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aster-editor"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64",
- "directories",
- "editor-agent",
- "editor-core",
- "editor-media",
- "editor-store",
- "eframe",
- "image",
- "libc",
- "pollster 1.0.1",
- "rfd",
- "rmcp",
- "rustix 1.1.5",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "uuid",
- "wayland-backend",
- "wayland-client",
-]
-
-[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2482,6 +2452,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
+]
+
+[[package]]
+name = "neptune-video"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "directories",
+ "editor-agent",
+ "editor-core",
+ "editor-media",
+ "editor-store",
+ "eframe",
+ "image",
+ "libc",
+ "pollster 1.0.1",
+ "rfd",
+ "rmcp",
+ "rustix 1.1.5",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "wayland-backend",
+ "wayland-client",
+ "winresource",
 ]
 
 [[package]]
@@ -5136,6 +5137,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winresource"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0986a8b1d586b7d3e4fe3d9ea39fb451ae22869dcea4aa109d287a374d866087"
+dependencies = [
+ "version_check",
 ]
 
 [[package]]

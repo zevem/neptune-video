@@ -28,7 +28,7 @@ def dependencies(manifest: dict) -> set[str]:
 
 def validate_graph(manifests: dict[str, dict]) -> list[str]:
     failures: list[str] = []
-    expected = {"aster-editor", "editor-core", "editor-media", "editor-store", "editor-agent"}
+    expected = {"neptune-video", "editor-core", "editor-media", "editor-store", "editor-agent"}
     for name in sorted(expected - manifests.keys()):
         failures.append(f"missing package: {name}")
     core = manifests.get("editor-core", {})
@@ -38,11 +38,11 @@ def validate_graph(manifests: dict[str, dict]) -> list[str]:
         deps = dependencies(manifests.get(package, {}))
         if "editor-core" not in deps:
             failures.append(f"{package} must use editor-core's shared domain types")
-        for name in sorted(deps & {"aster-editor", "editor-media", "editor-store", "editor-agent"}):
+        for name in sorted(deps & {"neptune-video", "editor-media", "editor-store", "editor-agent"}):
             failures.append(f"{package} cannot depend on {name}")
-    desktop_deps = dependencies(manifests.get("aster-editor", {}))
+    desktop_deps = dependencies(manifests.get("neptune-video", {}))
     for name in sorted({"editor-core", "editor-media", "editor-store", "editor-agent"} - desktop_deps):
-        failures.append(f"aster-editor must compose {name}")
+        failures.append(f"neptune-video must compose {name}")
     return failures
 
 
@@ -83,7 +83,7 @@ def inspect_repository(root: Path) -> list[str]:
 
 def self_test() -> None:
     graph = {
-        "aster-editor": {"dependencies": {"editor-core": {}, "editor-media": {}, "editor-store": {}, "editor-agent": {}}},
+        "neptune-video": {"dependencies": {"editor-core": {}, "editor-media": {}, "editor-store": {}, "editor-agent": {}}},
         "editor-core": {"dependencies": {"serde": {}, "uuid": {}}},
         "editor-media": {"dependencies": {"editor-core": {}}},
         "editor-store": {"dependencies": {"editor-core": {}}},

@@ -4,7 +4,7 @@
 use super::check_readable;
 use crate::mcp::{
     errors::{ToolError, codes},
-    server::AsterServer,
+    server::NeptuneVideoServer,
     time::TimeSpec,
 };
 use editor_agent::{AgentOperation, AgentResult};
@@ -54,7 +54,7 @@ pub struct ExportParams {
 
 /// What the authority can export, once FFmpeg's encoders have been checked
 /// (the first moments after a start).
-async fn capabilities(server: &AsterServer) -> Result<AgentResult, ToolError> {
+async fn capabilities(server: &NeptuneVideoServer) -> Result<AgentResult, ToolError> {
     for _ in 0..60 {
         let answer = server
             .on(|workspace| {
@@ -77,7 +77,7 @@ async fn capabilities(server: &AsterServer) -> Result<AgentResult, ToolError> {
 }
 
 #[tool_router(router = render_tools, vis = "pub(crate)")]
-impl AsterServer {
+impl NeptuneVideoServer {
     #[tool(
         description = "What this computer can export: containers, video and audio encoders \
                        (hardware ones too), and the export presets.",

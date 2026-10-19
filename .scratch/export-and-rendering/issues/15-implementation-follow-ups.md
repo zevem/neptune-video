@@ -25,7 +25,7 @@ Gaps the implementers reported, none blocking:
   in the preview).
 - Part files and working folders left by a crash are swept only once
   unchanged for an hour, and only in a folder a later job writes to; the
-  sweep could remove the files of another Aster instance's job paused for
+  sweep could remove the files of another Neptune Video instance's job paused for
   more than an hour.
 - `check_queue_export` and the window's replace check read file metadata
   on the window's thread; `enqueue` itself no longer does.
@@ -44,7 +44,7 @@ Gaps the implementers reported, none blocking:
   `crates/editor-media/src/process.rs` has no `pre_exec` hook to set one.
 - No free-space check before the sound is rendered or the encode starts.
 - Windows: hard links to a source are not detected (std has no stable
-  volume and file index), and the `.aster-render-<id>` folder is not given
+  volume and file index), and the `.neptune-video-render-<id>` folder is not given
   the hidden attribute. Explorer's `/select` quoting was not run on Windows.
 - `+faststart` is still used for MOV.
 - AMF, QSV, VA-API, VideoToolbox and Media Foundation quality mappings and
@@ -88,7 +88,7 @@ Gaps the implementers reported, none blocking:
   sound; libaom AV1 (still open).
 
 2026-10-14: The five interface defects above are fixed and were checked in
-a release build (`aster` `07b644ca…f9ad1b`) at 1440x900 and 760x560,
+a release build (`neptune-video` `07b644ca…f9ad1b`) at 1440x900 and 760x560,
 `artifacts/export-phase7/polish-20261014-102125/results.md`:
 
 - Scroll bar: the export sheet's scroll areas keep a gutter for the
@@ -121,6 +121,6 @@ Still open from this run:
 - One 1080p NVENC job of 1200 frames, with the export sheet open at
   1440x900, reported "Done in 1:06" against 0:13 to 0:21 in every other
   run. Not reproduced; its log shows nothing.
-- After a clean Don't save exit a 0-byte `recovery/<id>.aster.lock` stayed
+- After a clean Don't save exit a 0-byte `recovery/<id>.nvp.lock` stayed
   beside `settings.json` (recovery's lane, not export's).
 - 96 kHz and mono sound, libaom AV1; macOS, Windows and real displays.

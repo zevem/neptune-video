@@ -20,7 +20,7 @@ Not yet offered:
   so importing from a new folder or adding one in Settings › Agent ›
   Folders keeps the conversation.
 - Keeping `INSTRUCTIONS` out of the provider's process arguments, where
-  `ps` shows them. They are Aster's own text with no person data.
+  `ps` shows them. They are Neptune Video's own text with no person data.
 
 ## Result
 

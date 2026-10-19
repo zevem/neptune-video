@@ -111,7 +111,7 @@ impl AgentHost {
         let shown = document.clone();
         let worker_stopped = stopped.clone();
         let token = descriptor.token.clone();
-        thread::Builder::new().name("aster-agent".into()).spawn(move||{
+        thread::Builder::new().name("neptune-video-agent".into()).spawn(move||{
             while !worker_stopped.load(Ordering::Acquire){
                 let Ok((mut stream,address))=listener.accept() else{break;};
                 if worker_stopped.load(Ordering::Acquire){break;}

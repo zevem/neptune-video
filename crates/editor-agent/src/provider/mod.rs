@@ -128,7 +128,7 @@ pub(crate) enum Heard {
     Send(Value),
 }
 
-/// A tool result's content, read as the Aster server writes it: whether it
+/// A tool result's content, read as the Neptune Video server writes it: whether it
 /// is a refusal, and the label of the edit it made or the refusal's reason.
 fn summary(content: &Value) -> (bool, Option<String>) {
     let text = match content {
@@ -151,7 +151,7 @@ fn summary(content: &Value) -> (bool, Option<String>) {
     }
 }
 
-/// A conversation with a provider whose only tools are one Aster server's.
+/// A conversation with a provider whose only tools are one Neptune Video server's.
 pub(crate) struct Agent(Party);
 
 enum Party {
@@ -231,7 +231,7 @@ pub(crate) fn converse(
                     "",
                     "--strict-mcp-config",
                     "--allowedTools",
-                    "mcp__aster__*",
+                    "mcp__neptune-video__*",
                     "--permission-mode",
                     "dontAsk",
                     "--setting-sources",
@@ -298,9 +298,9 @@ fn configure_claude_server(
     server: &ToolServer,
 ) -> Result<(), AiError> {
     use std::{fs::OpenOptions, io::Write};
-    let path = std::path::absolute(directory.join("aster-tools.json"))
+    let path = std::path::absolute(directory.join("neptune-video-tools.json"))
         .map_err(|_| AiError::Provider("Cannot resolve the private tool configuration".into()))?;
-    let config = serde_json::json!({"mcpServers":{"aster":{
+    let config = serde_json::json!({"mcpServers":{"neptune-video":{
         "type":"stdio",
         "command":server.command,
         "args":server.args,
@@ -339,8 +339,8 @@ fn configure_codex_instructions(
     instructions: &str,
 ) -> Result<(), AiError> {
     use std::{fs::OpenOptions, io::Write};
-    let path =
-        std::path::absolute(directory.join("aster-model-instructions.txt")).map_err(|_| {
+    let path = std::path::absolute(directory.join("neptune-video-model-instructions.txt"))
+        .map_err(|_| {
             AiError::Provider("Cannot resolve the private Codex instruction path".into())
         })?;
     let encoded = path.to_str().ok_or_else(|| {
@@ -484,7 +484,7 @@ fn validate_windows_launcher(provider: AiProvider, path: &std::path::Path) -> Re
 #[cfg(any(windows, test))]
 fn claude_batch_error() -> AiError {
     AiError::Provider(
-        "Claude needs the native Windows CLI: install it and choose claude.exe in AI settings. .cmd and .bat launchers cannot pass Aster's schema and instructions safely.".into(),
+        "Claude needs the native Windows CLI: install it and choose claude.exe in AI settings. .cmd and .bat launchers cannot pass Neptune Video's schema and instructions safely.".into(),
     )
 }
 
@@ -629,14 +629,14 @@ mod tests {
     }
 
     #[test]
-    fn private_codex_instruction_file_contains_only_aster_instructions_and_preserves_unicode_path()
-    {
+    fn private_codex_instruction_file_contains_only_neptune_video_instructions_and_preserves_unicode_path()
+     {
         let parent = tempfile::tempdir().unwrap();
         let directory = parent.path().join("Unicode 日本語 folder");
         std::fs::create_dir(&directory).unwrap();
         let mut command = Command::new("owned-provider");
         configure_codex_instructions(&mut command, &directory, planner::SYSTEM).unwrap();
-        let path = directory.join("aster-model-instructions.txt");
+        let path = directory.join("neptune-video-model-instructions.txt");
         assert_eq!(std::fs::read(&path).unwrap(), planner::SYSTEM.as_bytes());
         let arguments: Vec<_> = command
             .get_args()
@@ -669,7 +669,8 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    // macOS file systems hold only UTF-8 names, so the path cannot arise there.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn an_unrepresentable_native_path_is_refused_before_creating_an_instruction_file() {
         use std::os::unix::ffi::OsStrExt;

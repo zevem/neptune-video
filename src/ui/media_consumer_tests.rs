@@ -182,7 +182,7 @@ struct Scratch {
 
 impl Scratch {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("aster-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-test-{}", uuid::Uuid::new_v4()));
         fixture(
             std::fs::create_dir_all(&dir).is_ok(),
             "the test's own directory was not made",

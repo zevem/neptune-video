@@ -76,7 +76,7 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new(name: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "aster-captions-{name}-{}",
+            "neptune-video-captions-{name}-{}",
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&path).unwrap();

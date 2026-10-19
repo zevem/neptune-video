@@ -301,7 +301,7 @@ pub fn checkpoint(path: &Path, project: &Project, label: &str) -> Result<PathBuf
         .duration_since(UNIX_EPOCH)
         .map_err(|_| StoreError::Invalid("System clock precedes Unix epoch".into()))?
         .as_millis();
-    let path = checkpoint_dir(path).join(format!("{now}-{}.aster", editor_core::AssetId::new_v4()));
+    let path = checkpoint_dir(path).join(format!("{now}-{}.nvp", editor_core::AssetId::new_v4()));
     atomic_json(
         &path,
         &ProjectFile {
@@ -320,7 +320,7 @@ pub fn list_checkpoints(path: &Path) -> Result<Vec<CheckpointInfo>, StoreError> 
     let mut entries = Vec::new();
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
-        if path.extension().is_none_or(|ext| ext != "aster") {
+        if path.extension().is_none_or(|ext| ext != "nvp") {
             continue;
         }
         let file: ProjectFile = serde_json::from_value(read_versioned(&path)?)?;

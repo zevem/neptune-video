@@ -1,4 +1,4 @@
-# Aster
+# Neptune Video
 
 ## Product contract
 
@@ -53,8 +53,9 @@ started by the task and clean up only those. Preserve unrelated files and user
 projects. UI acceptance requires captures of the running final native build,
 including narrow windows and changed states; name any unavailable capture.
 
-Reference Neptune for ownership and native performance discipline; give this
-editor its own visual identity. Neptune is a read-only reference project.
+Reference Neptune Terminal for ownership and native performance discipline;
+give this editor its own visual identity. Neptune Terminal is a read-only
+reference project.
 
 ## Agent skills
 

@@ -94,7 +94,7 @@ impl Driver {
 
     fn initialize() -> Value {
         json!({"id":"init","method":"initialize","params":{"clientInfo":{
-            "name":"aster", "title":"Aster", "version":env!("CARGO_PKG_VERSION")
+            "name":"neptune-video", "title":"Neptune Video", "version":env!("CARGO_PKG_VERSION")
         }}})
     }
 

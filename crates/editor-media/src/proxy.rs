@@ -197,7 +197,7 @@ impl Stamp {
 /// The name a proxy of `source`, as `stamp` finds it, is kept under.
 fn key(source: &SourceIdentity, stamp: &Stamp) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"aster-proxy\0");
+    hasher.update(b"neptune-video-proxy\0");
     hasher.update(PROXY_PROFILE.to_le_bytes());
     for path in [&stamp.canonical, &source.path] {
         let bytes = path.as_os_str().as_encoded_bytes();
@@ -566,7 +566,7 @@ impl ProxyService {
         });
         let state = Arc::clone(&shared);
         thread::Builder::new()
-            .name("aster-proxy".into())
+            .name("neptune-video-proxy".into())
             .spawn(move || worker(state, dir, run, wake))
             .map_err(|error| io("Cannot start proxy worker", error))?;
         Ok(Self { shared, processes })
@@ -812,10 +812,11 @@ impl Drop for ProxyService {
     }
 }
 
-/// What the worker does next.
+/// What the worker does next. A job is boxed: its paths make it large where
+/// paths are wide, as on Windows.
 enum Work {
     Tidy,
-    Make(Job, Arc<AtomicBool>),
+    Make(Box<Job>, Arc<AtomicBool>),
 }
 
 fn worker(shared: Arc<Shared>, dir: PathBuf, run: Runner, wake: Wake) {
@@ -859,7 +860,7 @@ fn worker(shared: Arc<Shared>, dir: PathBuf, run: Runner, wake: Wake) {
                         done: 0.0,
                         cancel: Arc::clone(&cancel),
                     });
-                    break Work::Make(job, cancel);
+                    break Work::Make(Box::new(job), cancel);
                 }
                 let Ok(next) = shared.ready.wait(lane) else {
                     return;
@@ -874,7 +875,7 @@ fn worker(shared: Arc<Shared>, dir: PathBuf, run: Runner, wake: Wake) {
                 }
             }
             Work::Make(job, cancel) => {
-                if !make(&shared, &dir, &run, &wake, job, &cancel) {
+                if !make(&shared, &dir, &run, &wake, *job, &cancel) {
                     return;
                 }
             }

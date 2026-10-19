@@ -32,7 +32,7 @@ starts fresh. The stream readers `provider/claude_agent.rs` and
   in a private config and `--permission-mode dontAsk`, without
   `--safe-mode`. Codex 0.162.1 runs `codex app-server` with
   `code_mode_host` on and the shell tool off.
-- Tests with `ASTER_PROVIDER_TEST_FIXTURE`: 84 passed in the
+- Tests with `NEPTUNE_VIDEO_PROVIDER_TEST_FIXTURE`: 84 passed in the
   `editor-agent` library, among them three conversation tests (a fake
   `claude` script: several turns keep one process, `end` starts fresh,
   `stop` ends within 3 s, a missing provider fails), three for
@@ -46,7 +46,7 @@ starts fresh. The stream readers `provider/claude_agent.rs` and
 
 2026-10-14: Resolved on macOS 26.5.2 with debug builds. Two probes changed
 the providers' arguments for conversations: Claude Code 2.1.300's
-`--safe-mode` drops every MCP server, Aster's included, so conversations do
+`--safe-mode` drops every MCP server, Neptune Video's included, so conversations do
 not use it; Codex 0.162.1 with `code_mode_host` off answered "I couldn't
-call aster_window.project_status because the tool host is disabled", so
+call neptune_video_window.project_status because the tool host is disabled", so
 conversations keep it. Other Codex versions are unverified.

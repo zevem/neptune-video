@@ -147,7 +147,7 @@ request was made, no application was launched and nothing was listened to.
   file`, which fails on this host's filesystem before the code under test
   runs, as tickets 01, 05a and 05c record. The script stops there, so the
   protocol tests were run by the command above.
-- `cargo test --profile ci --locked -p aster-editor`: 692 and 12 passed.
+- `cargo test --profile ci --locked -p neptune-video`: 692 and 12 passed.
   New: `clipboard::tests::a_copied_audio_effect_survives_the_system_
   clipboard` (text round trip, then pasted), `the_effects_tab_lists_the_
   picture_kinds_it_listed_before_the_audio_kinds` (the seventeen entries

@@ -1,5 +1,5 @@
 //! Codex app-server as a conversation: one thread whose only tools are the
-//! Aster tool server's, approved for that server alone, and one turn per
+//! Neptune Video tool server's, approved for that server alone, and one turn per
 //! request. Shell, file changes, web search and every other server stay off;
 //! any of them, or any request for approval, ends the conversation.
 use super::codex::{identity, turn_failure, valid_identity};
@@ -8,9 +8,9 @@ use crate::{AiConfig, AiError, ToolServer, conversation::INSTRUCTIONS};
 use serde_json::{Map, Value, json};
 use std::{collections::HashSet, path::Path};
 
-/// The name the Aster server has in this thread: one an inherited server of
+/// The name the Neptune Video server has in this thread: one an inherited server of
 /// the person's cannot share, so none of its settings merge into ours.
-pub(super) const SERVER: &str = "aster_window";
+pub(super) const SERVER: &str = "neptune_video_window";
 const MAX_SERVERS: usize = 64;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -61,7 +61,7 @@ impl CodexAgent {
 
     pub(super) fn initialize() -> Value {
         json!({"id":"init","method":"initialize","params":{"clientInfo":{
-            "name":"aster", "title":"Aster", "version":env!("CARGO_PKG_VERSION")
+            "name":"neptune-video", "title":"Neptune Video", "version":env!("CARGO_PKG_VERSION")
         }}})
     }
 
@@ -84,7 +84,7 @@ impl CodexAgent {
                 // approved in the thread's configuration, and nothing else
                 // may run.
                 return Err(provider(&format!(
-                    "asked for {} during the conversation, which Aster does not grant",
+                    "asked for {} during the conversation, which Neptune Video does not grant",
                     asked_for(method)
                 )));
             }
@@ -285,7 +285,7 @@ impl CodexAgent {
         if method == "item/mcpToolCall/progress" {
             let item = params["itemId"].as_str().unwrap_or_default();
             if !self.calls.contains(item) {
-                return Err(provider("ran a tool Aster does not grant"));
+                return Err(provider("ran a tool Neptune Video does not grant"));
             }
             return Ok(Vec::new());
         }
@@ -295,13 +295,13 @@ impl CodexAgent {
             || method.starts_with("item/webSearch/")
             || method.starts_with("item/tool/")
         {
-            return Err(provider("ran a tool Aster does not grant"));
+            return Err(provider("ran a tool Neptune Video does not grant"));
         }
         if method == "mcpServer/startupStatus/updated"
             && params["name"] == SERVER
             && matches!(params["status"].as_str(), Some("failed" | "cancelled"))
         {
-            return Err(provider("could not start Aster's editing tools"));
+            return Err(provider("could not start Neptune Video's editing tools"));
         }
         let mut heard = Vec::new();
         match method {
@@ -379,7 +379,7 @@ impl CodexAgent {
         Ok(heard)
     }
 
-    /// Items a conversation may hold: messages, reasoning and the Aster
+    /// Items a conversation may hold: messages, reasoning and the Neptune Video
     /// server's tool calls, in any thread.
     fn allowed(&self, item: &Value) -> Result<(), AiError> {
         match item["type"].as_str() {
@@ -387,7 +387,7 @@ impl CodexAgent {
                 Ok(())
             }
             Some("mcpToolCall") if item["server"] == SERVER => Ok(()),
-            _ => Err(provider("ran a tool Aster does not grant")),
+            _ => Err(provider("ran a tool Neptune Video does not grant")),
         }
     }
 }
@@ -419,7 +419,7 @@ mod tests {
         CodexAgent::new(
             &AiConfig::default(),
             &ToolServer {
-                command: PathBuf::from("/opt/aster/aster-mcp"),
+                command: PathBuf::from("/opt/neptune-video/neptune-video-mcp"),
                 args: vec!["--window".into(), "/tmp/w.json".into()],
             },
             Path::new("/private"),
@@ -464,12 +464,16 @@ mod tests {
     }
 
     #[test]
-    fn only_the_aster_server_is_enabled_and_its_tools_need_nobody() {
-        let (_, thread) = opened(json!({"private":{"env":{"TOKEN":"secret"}},"aster":{"url":"x"}}));
+    fn only_the_neptune_video_server_is_enabled_and_its_tools_need_nobody() {
+        let (_, thread) =
+            opened(json!({"private":{"env":{"TOKEN":"secret"}},"neptune-video":{"url":"x"}}));
         let servers = &thread["params"]["config"]["mcp_servers"];
         assert_eq!(servers["private"], json!({"enabled":false}));
-        assert_eq!(servers["aster"], json!({"enabled":false}));
-        assert_eq!(servers[SERVER]["command"], "/opt/aster/aster-mcp");
+        assert_eq!(servers["neptune-video"], json!({"enabled":false}));
+        assert_eq!(
+            servers[SERVER]["command"],
+            "/opt/neptune-video/neptune-video-mcp"
+        );
         assert_eq!(servers[SERVER]["default_tools_approval_mode"], "approve");
         assert!(!thread.to_string().contains("secret"));
         assert_eq!(thread["params"]["approvalPolicy"], "never");

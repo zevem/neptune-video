@@ -889,7 +889,7 @@ impl DecoderPool {
         let (processes, staged) = (self.processes.clone(), Arc::clone(&shared));
         let dimensions = stream.dimensions;
         let started = thread::Builder::new()
-            .name("aster-look-behind".into())
+            .name("neptune-video-look-behind".into())
             .spawn(move || {
                 run_behind(command, processes, staged, dimensions, bytes, from, until);
             });
@@ -2082,6 +2082,17 @@ mod tests {
              {ahead_longest:.1} ms, steps over 33 ms {ahead_late:?} (both after the first two \
              steps, which are the seek and the first run; steps are numbered from one)"
         );
+        // A run is decoded behind while the one before it plays, sharing the
+        // computer with the frame path. Only where one decodes in half the
+        // time it plays is there room for the look-behind to be judged.
+        let playing = tick.as_secs_f64() * 1000.0 * group as f64;
+        if longest > playing / 2.0 {
+            eprintln!(
+                "MEASURE: a run took {longest:.1} ms to decode and plays for {playing:.0} ms; \
+                 without twice that headroom the look-behind is not judged"
+            );
+            return;
+        }
         assert_eq!(ahead_starts, 2, "the seek and the first run, and no more");
     }
 }

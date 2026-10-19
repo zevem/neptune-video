@@ -649,7 +649,7 @@ mod tests {
         // The folder is beside the saved document; without one, none.
         assert_eq!(folder(None), Err(UNTITLED.to_owned()));
         assert_eq!(
-            folder(Some(Path::new("/work/Film.aster"))),
+            folder(Some(Path::new("/work/Film.nvp"))),
             Ok(PathBuf::from("/work/Film media"))
         );
     }

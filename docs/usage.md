@@ -1,19 +1,19 @@
 # Core editor guide
 
-Aster's current core is a native editing workspace. It keeps source files
+Neptune Video's current core is a native editing workspace. It keeps source files
 unchanged and records durable edits through the same validated history used by
 external agents. The [verification record](verification.md) identifies tested
 flows and remaining platform/media gates.
 
 
 AI agents in MCP clients such as Claude Code and Codex can edit the same
-projects, live in the window or on their own: see [Aster for MCP clients](mcp.md).
+projects, live in the window or on their own: see [Neptune Video for MCP clients](mcp.md).
 By default, Ask in the [Agent panel](#the-agent-panel) uses the same tools
 inside the window.
 
 ## Projects and recovery
 
-The project menu creates, opens, saves and duplicates `.aster` documents.
+The project menu creates, opens, saves and duplicates `.nvp` documents.
 Duplicate writes a new file with a fresh project identity and keeps the original
 file unchanged; a duplicate cannot replace its own source path. Preferences
 persist the window's library/inspector layout, appearance, interface size,
@@ -25,8 +25,8 @@ window from 50% to 300% in 10% steps. A size larger than leaves the editor its
 150% at 1280 × 800 and 200% at 1920 × 1080. The chosen size returns as the
 window grows.
 
-Autosave retains recoverable editing state. The ordinary `.aster` file stores
-the current project; its `.aster.recovery` sidecar preserves undo/redo chains.
+Autosave retains recoverable editing state. The ordinary `.nvp` file stores
+the current project; its `.nvp.recovery` sidecar preserves undo/redo chains.
 Opening the ordinary file starts fresh history; accepting recovery restores the
 session's history. Unsaved projects have an isolated recovery destination under
 the settings directory. Save and recovery errors remain visible.
@@ -37,7 +37,7 @@ one reversible edit in the current project: Undo/Redo remains available, and
 the project path and live context stay intact. Checkpoints from another project
 identity are rejected.
 
-An OS lock on `.aster.lock` owns the recovery sidecar. A second editor does not
+An OS lock on `.nvp.lock` owns the recovery sidecar. A second editor does not
 offer or overwrite another active editor's recovery; after an actual crash,
 the lock is released and recovery can be offered. The lock file can remain
 after ownership ends. This lease does not provide conflict resolution for two
@@ -106,7 +106,7 @@ Select clips to trim their handles, drag/move, split, copy/paste, duplicate or
 delete. Ripple deletion/trimming shifts following eligible content. Linking
 preserves editing relationships and grouping moves a selection together. Track
 locks block clip edits; hide suppresses picture and mute suppresses sound.
-Clipboard copies work between native Aster windows and carry source references;
+Clipboard copies work between native Neptune Video windows and carry source references;
 unrelated text on the OS clipboard does not silently create clips.
 
 Detach audio, in a video clip's menu and under Clip in the project menu, puts
@@ -657,8 +657,8 @@ sound, so cuts, volume and mutes are what is heard; nothing is uploaded.
 The first use of a model downloads it once (**Download and generate**), with
 `curl` from the whisper.cpp model repository, and keeps it only if its
 SHA-256 sum matches. Models are kept in `models/` beside the settings file when
-Aster is started with `--settings`, otherwise in the platform's local data
-directory (on Linux, `~/.local/share/aster/models`). **Stop making captions**
+Neptune Video is started with `--settings`, otherwise in the platform's local data
+directory (on Linux, `~/.local/share/neptune-video/models`). **Stop making captions**
 stops a download at once and recognition at the end of the model's current
 pass, which took about 3 seconds with Tiny and takes longer with larger
 models.
@@ -928,7 +928,7 @@ checked for the streams and length expected is it renamed over the
 destination, so an existing file there stays as it was until the new one is
 complete. A subtitle file beside it is written the same way. The job's
 working files, its rendered sound among them, go in a hidden folder,
-`.aster-render-<job>`, beside the destination, or in the system's temporary
+`.neptune-video-render-<job>`, beside the destination, or in the system's temporary
 folder when that one cannot be made. Cancelling or a failure removes the
 hidden file and the working folder; quitting during a render removes them
 too, unless the editor is stopped before it has done so. What a crash leaves
@@ -981,7 +981,7 @@ not be checked; install or fix FFmpeg and press **Try again**.
   uses the software encoder.
 - Every export reencodes; nothing is copied from a source file unchanged.
 - Agents can queue and control exports in a running editor window (see the
-  [agent protocol](agent-protocol.md#render-jobs)); the headless `aster-agent`
+  [agent protocol](agent-protocol.md#render-jobs)); the headless `neptune-video-agent`
   cannot export.
 - Only NVIDIA NVENC was run on real hardware. AMD AMF, Intel Quick Sync, Apple
   VideoToolbox, VA-API and Media Foundation are checked and driven by the same
@@ -1026,7 +1026,7 @@ shown meanwhile. Sound, tracking, stabilization, captions from speech and
 every export read the original file.
 
 Proxies are kept in a cache in the user's cache directory (or in `proxies/`
-beside the settings file when Aster is started with `--settings`), not in the
+beside the settings file when Neptune Video is started with `--settings`), not in the
 project. **Cache size** chooses its limit, from 5 to 500 GB (20 GB unless
 changed); the oldest unused proxies are removed first, never one the viewer
 has open. A proxy removed to keep the limit goes back to having none, and
@@ -1214,7 +1214,7 @@ Separate stems, in the menu of a clip that is heard and as "separate stems"
 in the command panel (for the one selected clip), splits the whole sound of
 the clip's media into two stems, Vocals and Instruments, with Demucs, a stem
 separator you install yourself (see [installation](installation.md#stem-separator)).
-Aster ships no separator, no model and no runtime, and downloads none;
+Neptune Video ships no separator, no model and no runtime, and downloads none;
 whatever the tool fetches to run, such as its model on first use, is the
 tool's own doing. Without one the row is shown without being able to be
 chosen and says "Needs a stem separator; see the documentation"; while the
@@ -1270,7 +1270,7 @@ press on it ends the take; the play button, K, L, a double-click on the
 picture and the panel's "play" and "pause" do not, and say so. A timeline that
 was playing when record was pressed is paused, and plays on from there at 1×
 once the microphone runs. "No microphone", a microphone the system does not
-let Aster use and a device that will not open are said in words and nothing
+let Neptune Video use and a device that will not open are said in words and nothing
 plays.
 
 A take is as long as the person speaks. The timeline stops at its end as it
@@ -1349,21 +1349,21 @@ The Agent panel has two modes. **Command** interprets supported editing phrases
 or raw command JSON locally; no model is asked. **Ask** sends your request to
 the Claude Code or Codex command line installed on this computer, using its own
 sign-in. Select the provider, model, effort or executable override in the panel
-menu or **Settings › Agent**; credentials are not stored in Aster preferences
-or projects. On Windows, Aster refuses a Claude `.cmd` or `.bat` launcher and
+menu or **Settings › Agent**; credentials are not stored in Neptune Video preferences
+or projects. On Windows, Neptune Video refuses a Claude `.cmd` or `.bat` launcher and
 needs the native `claude.exe`.
 
 Ask edits in one of two ways, chosen under **Edits** in **Settings › Agent**
 (**As it works** or **For review**) or in the **Edits** section of the Ask menu
 (**Made as it works** or **Proposed for review**). Made as it works is the
 default. [Caption translation](#translating-captions) is always proposed for
-review, whichever is chosen. [ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md)
+review, whichever is chosen. [ADR 0011](adr/0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md)
 records why.
 
 ### Made as it works
 
-Ask starts a conversation with the provider whose only tools are Aster's MCP
-server, `aster-mcp`: the same program and the same 39 tools that
+Ask starts a conversation with the provider whose only tools are Neptune Video's MCP
+server, `neptune-video-mcp`: the same program and the same 39 tools that
 [MCP clients](mcp.md) use, started in this window. Every edit to this window's
 project goes through the window's agent session, with the same validation and
 undo history as your own edits, and appears in the window at once.
@@ -1404,7 +1404,7 @@ The agent starts on the project open in its window. Like any MCP client, it
 can also create, open, save and close projects: a project no window shows is
 edited by the agent's server itself and saved after every edit, and the agent
 can show it in a new window. When the agent attaches without naming a window,
-it comes back to this one. Aster's instructions tell it to say so when it
+it comes back to this one. Neptune Video's instructions tell it to say so when it
 leaves your project, and to come back unless you ask otherwise. It can save
 this project, or save a copy as a new file.
 
@@ -1421,7 +1421,7 @@ effect for the agent's later tool calls, without a new conversation.
 To add a folder, choose **Add folder…** in the **Folders** row of
 **Settings › Agent** and pick it in the folder dialog. Each added folder gets
 a row with its name; hover shows the full path, and **Remove** takes it out.
-A folder that is too wide is not added, and Aster says "… is too wide for the
+A folder that is too wide is not added, and Neptune Video says "… is too wide for the
 agent; choose a folder inside it".
 
 The agent cannot run shell commands, browse the web or use other MCP servers
@@ -1429,7 +1429,7 @@ or tools.
 
 Each of its edits is one step in the window's history, shared with yours.
 Command/Ctrl+Z undoes the agent's last edit like your own, and Redo brings it
-back. Aster's instructions tell the agent to undo only its own edits unless
+back. Neptune Video's instructions tell the agent to undo only its own edits unless
 you ask; after it leaves this window and comes back, its earlier edits here
 count as yours to its undo. While you are in the middle of a gesture or a
 dialog is open, its edit is refused, and the agent is told to wait and try
@@ -1444,10 +1444,10 @@ queued before Stop finished in the queue.
 Unlike a proposal for review, the agent sees what its tools return: rendered
 frames and contact sheets as images, transcripts, level and loudness
 measurements, file names, paths and other project data inside the folders
-above, and the playhead and selection note. Aster does not upload the source
+above, and the playhead and selection note. Neptune Video does not upload the source
 media files themselves. The agent cannot listen to sound; it judges audio
 from levels and loudness measurements. Your words reach the provider on its
-standard input. Aster's own instructions to the agent are on the provider's
+standard input. Neptune Video's own instructions to the agent are on the provider's
 command line, where other programs on this computer can read them; they hold
 no project data. Anthropic or OpenAI receive this under your own sign-in and
 terms, and sign-in, model access and usage limits are yours.
@@ -1456,9 +1456,9 @@ Made as it works needs:
 
 - Claude Code or the Codex CLI, installed and signed in. Claude Code 2.1.300
   and codex-cli 0.162.1 were checked; other versions are unverified. Codex
-  reaches MCP tools through its `code_mode_host` feature, which Aster leaves
+  reaches MCP tools through its `code_mode_host` feature, which Neptune Video leaves
   on for the conversation while it turns Codex's other features off.
-- `aster-mcp` beside the `aster` executable, or the `ASTER_MCP` environment
+- `neptune-video-mcp` beside the `neptune-video` executable, or the `NEPTUNE_VIDEO_MCP` environment
   variable naming it. Without it the request fails and names the missing
   file.
 

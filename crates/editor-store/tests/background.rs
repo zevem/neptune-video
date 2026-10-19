@@ -22,7 +22,7 @@ fn rename(editor: &mut Editor, name: &str) {
 #[test]
 fn pending_saves_to_one_destination_coalesce_to_the_latest_revision() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let (wake_tx, wake_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let release_rx = Mutex::new(release_rx);
@@ -58,7 +58,7 @@ fn pending_saves_to_one_destination_coalesce_to_the_latest_revision() {
 #[test]
 fn old_save_completion_keeps_new_edits_dirty_and_recovery_restores_saved_identity() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let (wake_tx, wake_rx) = mpsc::channel();
     let worker = SaveWorker::new(move || {
         let _ = wake_tx.send(());
@@ -88,7 +88,7 @@ fn old_save_completion_keeps_new_edits_dirty_and_recovery_restores_saved_identit
 #[test]
 fn failed_background_save_reports_error_and_keeps_the_existing_file() {
     let directory = TempDir::new().unwrap();
-    let path = directory.path().join("project.aster");
+    let path = directory.path().join("project.nvp");
     let original = b"Unrecoverable original document";
     fs::write(&path, original).unwrap();
     let (wake_tx, wake_rx) = mpsc::channel();
@@ -122,7 +122,7 @@ fn queue_capacity_rejects_new_destinations_but_accepts_replacement_snapshots() {
     });
     let mut editor = Editor::default();
     worker
-        .request(directory.path().join("first.aster"), &editor, false)
+        .request(directory.path().join("first.nvp"), &editor, false)
         .unwrap();
     wake_rx.recv_timeout(DEADLINE).unwrap();
     worker.poll().unwrap().result.unwrap();
@@ -130,22 +130,22 @@ fn queue_capacity_rejects_new_destinations_but_accepts_replacement_snapshots() {
     for index in 0..16 {
         worker
             .request(
-                directory.path().join(format!("pending-{index}.aster")),
+                directory.path().join(format!("pending-{index}.nvp")),
                 &editor,
                 false,
             )
             .unwrap();
     }
-    let overflow = worker.request(directory.path().join("overflow.aster"), &editor, false);
+    let overflow = worker.request(directory.path().join("overflow.nvp"), &editor, false);
     rename(&mut editor, "Latest at capacity");
-    let replacement = worker.request(directory.path().join("pending-0.aster"), &editor, false);
+    let replacement = worker.request(directory.path().join("pending-0.nvp"), &editor, false);
     release_tx.send(()).unwrap();
     worker.flush(DEADLINE).unwrap();
 
     assert!(matches!(overflow, Err(StoreError::QueueFull)));
     assert!(replacement.is_ok());
     assert_eq!(
-        load_project(&directory.path().join("pending-0.aster"))
+        load_project(&directory.path().join("pending-0.nvp"))
             .unwrap()
             .name,
         "Latest at capacity"

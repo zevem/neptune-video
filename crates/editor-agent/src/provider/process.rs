@@ -117,7 +117,7 @@ impl Process {
             return Err(AiError::Cancelled);
         }
         let mut directory_builder = tempfile::Builder::new();
-        directory_builder.prefix("aster-ai-");
+        directory_builder.prefix("neptune-video-ai-");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -184,7 +184,7 @@ impl Process {
         let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
         process.monitor = Some(
             thread::Builder::new()
-                .name("aster-ai-watchdog".into())
+                .name("neptune-video-ai-watchdog".into())
                 .spawn(move || {
                     loop {
                         if cancel.load(Ordering::Acquire) {
@@ -215,7 +215,7 @@ impl Process {
         let stdout = stdout.ok_or(AiError::WorkerStopped)?;
         process.readers.push(
             thread::Builder::new()
-                .name("aster-ai-stdout".into())
+                .name("neptune-video-ai-stdout".into())
                 .spawn(move || read_stdout(stdout, send, reason, limits))
                 .map_err(|_| AiError::WorkerStopped)?,
         );
@@ -223,7 +223,7 @@ impl Process {
         let stderr = stderr.ok_or(AiError::WorkerStopped)?;
         process.readers.push(
             thread::Builder::new()
-                .name("aster-ai-stderr".into())
+                .name("neptune-video-ai-stderr".into())
                 .spawn(move || drain_stderr(stderr, reason, limits.stderr))
                 .map_err(|_| AiError::WorkerStopped)?,
         );
@@ -499,7 +499,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut captured = None;
         let result = Process::spawn_with(
-            Command::new("/aster-owned-provider-must-not-start"),
+            Command::new("/neptune-video-owned-provider-must-not-start"),
             Arc::new(AtomicBool::new(false)),
             5,
             |_, directory| {

@@ -1,6 +1,6 @@
 //! Headless editing of one project file: an `Editor` that saves through a
 //! protected `DocumentSession` after every changing mutation and keeps its
-//! session history in the recovery archive. `aster-agent --project` and the
+//! session history in the recovery archive. `neptune-video-agent --project` and the
 //! MCP server's local projects are both this code.
 use editor_agent::{AgentOperation, AgentRequest, AgentResponse, AgentResult};
 use editor_core::Editor;
@@ -53,11 +53,11 @@ pub fn open_headless(
         let recovered = editor_store::load_recovery_with_document(&recovery_base)?;
         if recovered.document_changed {
             eprintln!(
-                "aster-agent: The project changed since this recovery copy; protected saves will conflict. Use --save-as NEWPATH to keep this work separately."
+                "neptune-video-agent: The project changed since this recovery copy; protected saves will conflict. Use --save-as NEWPATH to keep this work separately."
             );
         } else if recovered.document.is_none() {
             eprintln!(
-                "aster-agent: Recovery has no ordinary-file save authority. Use --save-as NEWPATH before durable edits."
+                "neptune-video-agent: Recovery has no ordinary-file save authority. Use --save-as NEWPATH before durable edits."
             );
         }
         // A real canonical destination may differ from an older alias's copy.
@@ -157,7 +157,7 @@ impl HeadlessDocument {
     }
 
     /// Takes the recovery lease of the file now rather than at the first
-    /// edit, so a second writer (another server, `aster-agent`) is refused
+    /// edit, so a second writer (another server, `neptune-video-agent`) is refused
     /// before it edits anything. Refused while another process holds it.
     pub fn claim(&mut self) -> Result<(), StoreError> {
         if self.recovery_lease.is_none() {
@@ -449,14 +449,16 @@ mod tests {
 
     impl OwnedDirectory {
         fn new() -> Self {
-            let path =
-                std::env::temp_dir().join(format!("aster-headless-test-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!(
+                "neptune-video-headless-test-{}",
+                uuid::Uuid::new_v4()
+            ));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
 
         fn project(&self) -> PathBuf {
-            self.0.join("film.aster")
+            self.0.join("film.nvp")
         }
     }
 
@@ -791,7 +793,7 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), ordinary);
         assert_eq!(fs::read(editor_store::recovery_path(&path)).unwrap(), copy);
 
-        let destination = dir.0.join("restored/kept.aster");
+        let destination = dir.0.join("restored/kept.nvp");
         assert!(
             configure_save_as(&mut recovered, &mut document, &destination)
                 .unwrap()
@@ -833,7 +835,7 @@ mod tests {
             .unwrap();
         editor_store::save_recovery(&path, &archived).unwrap();
         let (mut recovered, mut document) = open_headless(&path, false, true).unwrap();
-        let destination = dir.0.join("existing.aster");
+        let destination = dir.0.join("existing.nvp");
         let target = DocumentSession::create(&destination).unwrap();
         editor_store::save_project_with_session(&target, &Project::new("Other work")).unwrap();
         let original = fs::read(&destination).unwrap();

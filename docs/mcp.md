@@ -1,13 +1,13 @@
-# Aster for MCP clients
+# Neptune Video for MCP clients
 
-`aster-mcp` lets an AI agent in any MCP client (Claude Code, Codex and others)
-create, inspect, edit, analyse, preview and export Aster projects. It edits
+`neptune-video-mcp` lets an AI agent in any MCP client (Claude Code, Codex and others)
+create, inspect, edit, analyse, preview and export Neptune Video projects. It edits
 with the same validated, undoable commands as the window, so a person can open
 the project an agent made, or watch and continue the one an agent is editing
-in a running Aster window. Aster's own Agent tab edits through it too by
+in a running Neptune Video window. Neptune Video's own Agent tab edits through it too by
 default, starting in its window.
 
-The server is a native binary built beside `aster` and `aster-agent`
+The server is a native binary built beside `neptune-video` and `neptune-video-agent`
 (`cargo build --release --locked --bins`). It uses the official Rust MCP SDK,
 `rmcp` 3.5, over stdio or Streamable HTTP. [ADR 0010](adr/0010-mcp-reaches-the-editor-through-the-agent-protocol.md)
 records the design; [verification](verification.md#native-mcp) records what
@@ -16,7 +16,7 @@ was verified and on which host.
 ## Setting it up
 
 The server reads and writes only inside its **roots**: the folders named with
-`--root` (repeatable) or `ASTER_MCP_ROOTS` (separated as `PATH` is). Without
+`--root` (repeatable) or `NEPTUNE_VIDEO_MCP_ROOTS` (separated as `PATH` is). Without
 either it uses the folder it starts in, unless that is a home, drive or system
 folder, which it refuses. Give it the folder that holds the footage and where
 projects and exports should go. `--roots-file` names more folders in a file
@@ -25,7 +25,7 @@ the server reads again whenever it changes.
 ### Claude Code
 
 ```bash
-claude mcp add --transport stdio aster -- /path/to/aster-mcp --root ~/Videos/promo
+claude mcp add --transport stdio neptune-video -- /path/to/neptune-video-mcp --root ~/Videos/promo
 ```
 
 Or in a project's `.mcp.json`:
@@ -33,29 +33,29 @@ Or in a project's `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "aster": {
+    "neptune-video": {
       "type": "stdio",
-      "command": "/path/to/aster-mcp",
+      "command": "/path/to/neptune-video-mcp",
       "args": ["--root", "${HOME}/Videos/promo"]
     }
   }
 }
 ```
 
-The tools appear as `mcp__aster__project_create` and so on. A headless run
-can allow them all: `claude -p "…" --allowedTools "mcp__aster__*"`.
+The tools appear as `mcp__neptune-video__project_create` and so on. A headless run
+can allow them all: `claude -p "…" --allowedTools "mcp__neptune-video__*"`.
 
 ### Codex
 
 ```bash
-codex mcp add aster -- /path/to/aster-mcp --root ~/Videos/promo
+codex mcp add neptune-video -- /path/to/neptune-video-mcp --root ~/Videos/promo
 ```
 
 Or in `~/.codex/config.toml`:
 
 ```toml
-[mcp_servers.aster]
-command = "/path/to/aster-mcp"
+[mcp_servers.neptune-video]
+command = "/path/to/neptune-video-mcp"
 args = ["--root", "/Users/me/Videos/promo"]
 # Exports and transcription answer within 50 s; a longer timeout leaves room.
 tool_timeout_sec = 120
@@ -66,21 +66,21 @@ default_tools_approval_mode = "approve"
 ### Other clients over Streamable HTTP
 
 ```bash
-ASTER_MCP_TOKEN=$(openssl rand -hex 32) aster-mcp --root ~/Videos/promo --http
+NEPTUNE_VIDEO_MCP_TOKEN=$(openssl rand -hex 32) neptune-video-mcp --root ~/Videos/promo --http
 ```
 
 The server listens on `http://127.0.0.1:47420/mcp` by default
 (`--http 127.0.0.1:PORT`; port 0 picks a free one). It refuses any address
 that is not a loopback address. Every request must carry
-`Authorization: Bearer TOKEN`. Without `ASTER_MCP_TOKEN` the server makes a
+`Authorization: Bearer TOKEN`. Without `NEPTUNE_VIDEO_MCP_TOKEN` the server makes a
 random 244-bit token. The address and token are written to a connection
 file, `mcp/PID.json` beside the settings, that only its owner can read. The
 file is removed when the server stops (Ctrl-C, SIGTERM or SIGHUP).
 
 ```bash
-claude mcp add --transport http aster http://127.0.0.1:47420/mcp \
-  --header "Authorization: Bearer $ASTER_MCP_TOKEN"
-codex mcp add aster --url http://127.0.0.1:47420/mcp --bearer-token-env-var ASTER_MCP_TOKEN
+claude mcp add --transport http neptune-video http://127.0.0.1:47420/mcp \
+  --header "Authorization: Bearer $NEPTUNE_VIDEO_MCP_TOKEN"
+codex mcp add neptune-video --url http://127.0.0.1:47420/mcp --bearer-token-env-var NEPTUNE_VIDEO_MCP_TOKEN
 ```
 
 All HTTP clients of one server share its project. Requests whose `Host` is
@@ -96,9 +96,9 @@ it from its own environment so that FFmpeg and windows it starts never see it.
 | `--http [ADDR]` | Serve Streamable HTTP instead of stdio |
 | `--desktop-settings PATH` | The settings file of the windows to work with; sessions, presets, models and connection files are beside it |
 | `--sessions DIR` | Where windows publish their live sessions |
-| `--models DIR` | Speech models (also `ASTER_MODELS_DIR`) |
-| `--aster PATH` | The window program `desktop {op: open}` starts; the `aster` beside the server by default |
-| `--window FILE` | Start in the window whose session descriptor is FILE: attach to it at once, and go back to it when `desktop {op: attach}` names no window. See [Aster's Agent tab](#asters-agent-tab) |
+| `--models DIR` | Speech models (also `NEPTUNE_VIDEO_MODELS_DIR`) |
+| `--neptune-video PATH` | The window program `desktop {op: open}` starts; the `neptune-video` beside the server by default |
+| `--window FILE` | Start in the window whose session descriptor is FILE: attach to it at once, and go back to it when `desktop {op: attach}` names no window. See [Neptune Video's Agent tab](#neptune-videos-agent-tab) |
 | `--roots-file FILE` | A JSON file, `{"roots": [DIR, …]}`, naming more folders the server may use; see below |
 | `--tag TAG` | Begin request ids with TAG, as `TAG-1`, `TAG-2` and so on, so a window can tell this server's requests apart; 1–64 ASCII letters, digits and dashes; `mcp` by default |
 
@@ -122,10 +122,10 @@ would print there goes to standard error.
 `project_status` says where it is:
 
 - **local**: the server edits the file itself. It holds the file's lock, saves
-  after every edit and keeps a recovery copy, exactly as `aster-agent
+  after every edit and keeps a recovery copy, exactly as `neptune-video-agent
   --project` does. A project made without a path stays in memory until
   `project_save {destination}`.
-- **desktop**: the project is open in an Aster window and the server edits it
+- **desktop**: the project is open in a Neptune Video window and the server edits it
   there. Edits appear in the window at once, are in the window's undo
   history, and are saved when the window saves (`project_save`).
   `project_open` on a file a window has open edits it in that window,
@@ -201,7 +201,7 @@ source's frame grid; this does not add arbitrary VFR-PTS or HDR acceptance.
 | History | `history` (list with object/field diffs, changes_since, undo, redo), `checkpoint` |
 | Everything else | `edit_apply` (any core command, in an all-or-nothing batch), `edit_schema` |
 
-Resources: `aster://project`, `aster://history` and `aster://jobs`. A
+Resources: `neptune-video://project`, `neptune-video://history` and `neptune-video://jobs`. A
 subscribed client gets `notifications/resources/updated` when they change.
 
 **Inspect live state in small answers.** `project_inspect {scope: tracks}`
@@ -308,7 +308,7 @@ a typed tool.
 
 ## A session
 
-1. `project_create {path: "…/promo.aster", width: 1280, height: 720, frame_rate: 30}`
+1. `project_create {path: "…/promo.nvp", width: 1280, height: 720, frame_rate: 30}`
 2. `media_import {paths: ["…/footage"]}`, then `contact_sheet {asset_id}` to
    see what each file holds and `scenes_start` to find its cuts.
 3. `clip_add`, `clip_edit {op: trim|split|move}`, `transition_set`,
@@ -321,24 +321,24 @@ a typed tool.
    `render_export_start {preview: true}` for a quick, small file.
 7. `render_export_start {destination, preset}`, then `job {op: wait}` until
    it ends.
-8. The person opens the `.aster` file in Aster, or watches it all happen in
+8. The person opens the `.nvp` file in Neptune Video, or watches it all happen in
    the window when the project was opened there.
 
-## Aster's Agent tab
+## Neptune Video's Agent tab
 
 The Agent tab's live agent ("Edits: Made as it works") is this same server.
 The window holds a conversation with the installed Claude Code or Codex CLI
 whose only tools are this server's: no shell, no web and none of the
 person's own MCP servers. The agent's edits enter the window's agent session
 as an outside client's do, and each is one step in the window's undo
-history. [ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md)
+history. [ADR 0011](adr/0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md)
 records the design.
 
-The window starts the program `ASTER_MCP` names, or the `aster-mcp` beside
-its own `aster`, as:
+The window starts the program `NEPTUNE_VIDEO_MCP` names, or the `neptune-video-mcp` beside
+its own `neptune-video`, as:
 
 ```bash
-aster-mcp --window SESSION.json --tag aster-tab-INSTANCE \
+neptune-video-mcp --window SESSION.json --tag neptune-video-tab-INSTANCE \
   --roots-file SESSION.roots --desktop-settings SETTINGS --models DIR
 ```
 
@@ -379,8 +379,8 @@ any MCP client can:
 - The window ends the conversation when the person opens or makes another
   project in it.
 
-With `--tag aster-tab-INSTANCE` its request ids are `aster-tab-INSTANCE-1`,
-`aster-tab-INSTANCE-2` and so on; an outside server's are `mcp-N` unless it
+With `--tag neptune-video-tab-INSTANCE` its request ids are `neptune-video-tab-INSTANCE-1`,
+`neptune-video-tab-INSTANCE-2` and so on; an outside server's are `mcp-N` unless it
 is given another tag. Each window claims only requests with its own tag, so
 another window's agent is an outside client to it. The
 window counts its own agent's edits for the turn, and the changes the agent
@@ -406,7 +406,7 @@ are unverified. See [verification](verification.md#in-app-agent).
 
 - Paths are resolved through symbolic links and must stay inside the roots.
   A path containing `..` is refused. The `outside_roots` message lists the
-  roots and says that the person can add one with `--root`, or for Aster's
+  roots and says that the person can add one with `--root`, or for Neptune Video's
   own agent in Settings › Agent › Folders. A refusal does not say whether
   the file exists.
 - Nothing is replaced without `overwrite: true`: projects, exports, pictures

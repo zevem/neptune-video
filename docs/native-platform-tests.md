@@ -9,7 +9,7 @@ substitute for running it.
 This paragraph stands as written when the twelfth version was created. The
 source pin is `89aa6908…1673` (87 files) and the build record is
 [publish-first-read-ahead-round1/build-record.json](../artifacts/production-readiness/publish-first-read-ahead-round1/build-record.json)
-(`b0b1c3e5…4f38`; Linux `aster` `61dc6abd…09c5`, `aster-agent` `00906bba…c76a`,
+(`b0b1c3e5…4f38`; Linux `neptune-video` `61dc6abd…09c5`, `neptune-video-agent` `00906bba…c76a`,
 549 workspace tests, as that record states them). The twelfth version changed
 the pin and its wording only: `FROZEN_SOURCE` and its comment in the runner,
 `prepared` in `cases.json`, the frozen digest and note in
@@ -42,7 +42,7 @@ of them a case of this pack:
 four captures) and
 [13 editing and input checks](../artifacts/native/publish-first-editing-r17-attempt-02/root-verification.json)
 (`passed`; the root was viewing its captures when this was written; its
-first attempt stopped on the harness's own project argument before Aster
+first attempt stopped on the harness's own project argument before Neptune Video
 started and is no product result). Neither measures sound on a device, a GPU
 or a frame rate, and the playing figures are no improvement claim over the
 eleventh version's build. The twelfth version's guards, `validate`, plans,
@@ -55,7 +55,7 @@ created, before the root ran anything on it; the paragraph after it gives the
 state since. The
 source pin is `b7fc3308…f87d` (85 files) and the build record is
 [playback-admission-round1/build-record.json](../artifacts/production-readiness/playback-admission-round1/build-record.json)
-(`40ea3dfc…5a13`; Linux `aster` `160efa02…1da5`, `aster-agent` `00906bba…c76a`,
+(`40ea3dfc…5a13`; Linux `neptune-video` `160efa02…1da5`, `neptune-video-agent` `00906bba…c76a`,
 538 workspace tests, as that record states them). The author hashed the 85
 files on disk and they equal the record. The eleventh version changed the pin
 and its wording only: `FROZEN_SOURCE` and its comment in the runner,
@@ -188,8 +188,8 @@ All under [artifacts/native/platform-test-preparation](../artifacts/native/platf
 | --- | --- | --- |
 | [run_platform_acceptance.py](../artifacts/native/platform-test-preparation/run_platform_acceptance.py) | Entry point: `plan`, `validate`, `run` | Tenth version: parsed only. The ninth version's `plan`, `validate`, dry run and wrong-host refusal ran on Linux; `run --execute` never got past its refusal |
 | [test_run_platform_acceptance.py](../artifacts/native/platform-test-preparation/test_run_platform_acceptance.py) | 106 tests of the runner's refusals, of every way it withholds a pass, of which interpreter it starts for a Python child, and of pinned projects, a copy per case, identifier relations, setup, sizes, sequences and diagnostics | The 92 of the ninth version ran on Linux under the root. **The tenth version's 106 are unexecuted** until the root runs them. Temporary files, fake process handles and a fake driver; not a native run |
-| [aster_input_macos.py](../artifacts/native/platform-test-preparation/aster_input_macos.py) | CoreGraphics events and `screencapture -l` for the owned window | Never executed |
-| [aster_input_windows.py](../artifacts/native/platform-test-preparation/aster_input_windows.py) | `SendInput` and screen capture for the owned window | Never executed |
+| [neptune_video_input_macos.py](../artifacts/native/platform-test-preparation/aster_input_macos.py) | CoreGraphics events and `screencapture -l` for the owned window | Never executed |
+| [neptune_video_input_windows.py](../artifacts/native/platform-test-preparation/aster_input_windows.py) | `SendInput` and screen capture for the owned window | Never executed |
 | [cases.json](../artifacts/native/platform-test-preparation/cases.json) | 64 cases, 63 per platform (62 acceptance, 2 diagnostic): trigger, expected outcome, state checks, required artifacts, failure scope | Authored from source; unexecuted |
 | [supplementary-fixtures.json](../artifacts/native/platform-test-preparation/supplementary-fixtures.json) | Pins of the ten supplementary projects and their media | Byte copy of the root's pin file `bd985f5b…be34`. The root generated the fixtures, opened each project once on Linux and verified the hashes, identifiers and their relations; no macOS or Windows host has read them |
 | [report-template.json](../artifacts/native/platform-test-preparation/report-template.json) | Report shape; every case defaults to `not_run` | Template |
@@ -225,10 +225,10 @@ downloads nothing.
 | Checkout | The frozen checkout copied without newline or content conversion; the runner recomputes the source digest and reports a mismatch | Same (disable `core.autocrlf` if Git is used) | Host owner |
 | Build | `cargo build --release --locked --bins` with Rust 1.97.1 and Xcode command-line tools | Same, MSVC toolchain with the Visual Studio C++ tools and Windows SDK | Build owner, before the run, from the frozen checkout. The runner hashes the result and cannot tell what it was built from |
 | Build record | Optional JSON with `source_sha256` and `binaries.<name>.sha256`, as [record-build.py](../artifacts/production-readiness/final/record-build.py) writes | Same | Build owner. Passed as `--build-record`; compared, never treated as proof |
-| Media tools | `ffmpeg` and `ffprobe` from `scripts/fetch-media-tools.py`, `PATH` or `ASTER_FFMPEG` / `ASTER_FFPROBE` | Same | Host owner |
-| Input permission | Accessibility for the terminal that runs Python | Python at the same integrity level as Aster | **The person**, in System Settings. The pack only asks whether it is granted |
+| Media tools | `ffmpeg` and `ffprobe` from `scripts/fetch-media-tools.py`, `PATH` or `NEPTUNE_VIDEO_FFMPEG` / `NEPTUNE_VIDEO_FFPROBE` | Same | Host owner |
+| Input permission | Accessibility for the terminal that runs Python | Python at the same integrity level as Neptune Video | **The person**, in System Settings. The pack only asks whether it is granted |
 | Capture permission | Screen Recording for that terminal | Unlocked desktop | **The person** |
-| Folder prompts | Files and Folders prompts for Aster, if macOS shows them | None | **The person** answers; note each under MAC-01 |
+| Folder prompts | Files and Folders prompts for Neptune Video, if macOS shows them | None | **The person** answers; note each under MAC-01 |
 | Devices | Speakers or headphones; optionally a second display, a CJK input method, VoiceOver | Same with Narrator | Host owner |
 | Provider requests | Installed, already signed-in `claude` / `codex` | Same; Claude needs the native `claude.exe` | **Host owner authorizes per run** with `--authorize-provider-requests` |
 
@@ -253,7 +253,7 @@ python3 artifacts/native/platform-test-preparation/run_platform_acceptance.py va
 python3 artifacts/native/platform-test-preparation/run_platform_acceptance.py plan --target aarch64-apple-darwin
 ```
 
-Check the runner's own refusals anywhere. This starts no Aster process, sends
+Check the runner's own refusals anywhere. This starts no Neptune Video process, sends
 no input and is not a native run:
 
 ```sh
@@ -299,16 +299,16 @@ directory for the run. Omitting `--execute` prints the plan and exits.
 # macOS Apple Silicon (use x86_64-apple-darwin on an Intel Mac)
 python3 artifacts/native/platform-test-preparation/run_platform_acceptance.py run \
   --target aarch64-apple-darwin \
-  --binary target/release/aster --agent-binary target/release/aster-agent \
-  --run-root "$HOME/aster-acceptance" --operator "Name" --execute
+  --binary target/release/neptune-video --agent-binary target/release/neptune-video-agent \
+  --run-root "$HOME/neptune-video-acceptance" --operator "Name" --execute
 ```
 
 ```powershell
 # Windows x86-64 MSVC
 py -3 artifacts\native\platform-test-preparation\run_platform_acceptance.py run `
   --target x86_64-pc-windows-msvc `
-  --binary target\release\aster.exe --agent-binary target\release\aster-agent.exe `
-  --run-root "$env:USERPROFILE\aster-acceptance" --operator "Name" --execute
+  --binary target\release\neptune-video.exe --agent-binary target\release\neptune-video-agent.exe `
+  --run-root "$env:USERPROFILE\neptune-video-acceptance" --operator "Name" --execute
 ```
 
 | Option | Effect |
@@ -375,13 +375,13 @@ run can never establish acceptance.
    display and audio inventory, session and permission state, and the output
    of the media preflight.
 3. Creates one new run folder. All owned paths sit under
-   `Aster tëst 日本語 %41 run/`, so launch, settings, session descriptor, project,
+   `Neptune Video tëst 日本語 %41 run/`, so launch, settings, session descriptor, project,
    recovery and media all exercise spaces, accents, CJK and a literal percent.
    The fixtures are copies of the recorded Linux
    [project](../artifacts/native/fixture.aster) and
    [video](../artifacts/native/fixtures/shot.mp4) with the asset path rewritten,
    plus a generated WAV and PNG and the recorded GIF.
-4. Launches `aster PROJECT --settings … --agent-session … --size 1440x900`
+4. Launches `neptune-video PROJECT --settings … --agent-session … --size 1440x900`
    as a child and keeps its handle. A case with `setup` gets a fresh window on
    its own project at its own size, launched before the case's first
    snapshot, and so does the first case without `setup` that follows it.
@@ -407,7 +407,7 @@ uses these runner commands:
 | `q NAME SECONDS` | Capture the owned window back to back for at most `SECONDS` (bound: 120 s and 2,000 frames). The first frame is taken before the runner says it is capturing; then the operator performs the trigger |
 | `m LABEL` | Record what `ps` or `Get-Process` prints for the owned PID, and the names of its direct children |
 | `2` | Open a second owned window on the same project |
-| `x` | An independent writer (`aster-agent --project`) renames and saves the project |
+| `x` | An independent writer (`neptune-video-agent --project`) renames and saves the project |
 | `d` | Done: record the after state and capture, then give `p`/`f`/`b`/`n` and an observation |
 
 The operator's verdict is a claim; the stored status is what the evidence

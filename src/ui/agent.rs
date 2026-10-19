@@ -456,7 +456,7 @@ fn session_row(ui: &mut Ui, rect: Rect, input: &AgentInput, actions: &mut Vec<Ac
         p.fg,
     );
     let detail = match (input.session, input.session_problem) {
-        (Some(path), _) => format!("aster-agent --connect {}", path.display()),
+        (Some(path), _) => format!("neptune-video-agent --connect {}", path.display()),
         (None, Some(problem)) => problem.to_owned(),
         (None, None) => "The session could not be opened.".to_owned(),
     };
@@ -505,7 +505,7 @@ fn introduction(ui: &mut Ui, p: &Palette, input: &AgentInput) {
         body(
             ui,
             &format!(
-                "{} edits this project with Aster's own tools while you watch: it can \
+                "{} edits this project with Neptune Video's own tools while you watch: it can \
                  look at frames, import media, cut and arrange clips, add effects, \
                  titles and captions, transcribe speech, mix sound and export. Each \
                  edit appears here as it is made and is one step you can undo.",

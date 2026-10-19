@@ -7,8 +7,8 @@ No backend crate, manifest, script or doc is edited from here.
 
 - 2026-10-12, written against the contract before the grant.
 - 2026-10-12, after the frontend Cargo grant (Linux, pinned 1.97.1):
-  `cargo clippy --profile ci --bin aster --all-targets --locked -- -D warnings`
-  clean and `cargo test --profile ci --bin aster --locked` 81 passed at the
+  `cargo clippy --profile ci --bin neptune-video --all-targets --locked -- -D warnings`
+  clean and `cargo test --profile ci --bin neptune-video --locked` 81 passed at the
   backend state of about 03:50. After that the desktop only changed
   `src/ui/sheets.rs` (settings sheet height); tests were rerun, 81 passed.
   A later clippy run stopped inside backend files that were being edited
@@ -19,7 +19,7 @@ No backend crate, manifest, script or doc is edited from here.
   those runs is `fake_provider.py`, a deterministic stand-in set through
   `ai.claude_executable`. **No real provider request was sent from the desktop.**
 - `scripts/native-smoke.py` rerun on the new build: 13 of 13.
-- **Cargo window returned to root.** Both Xvfb servers and every Aster process
+- **Cargo window returned to root.** Both Xvfb servers and every Neptune Video process
   started here were stopped.
 
 - 2026-10-12, round 2, **source only, not compiled**: bound recovery from
@@ -34,9 +34,9 @@ No backend crate, manifest, script or doc is edited from here.
   round-2 source compiled as written; no file under `src/` changed in this
   round. Pinned 1.97.1, Linux x86_64, record in
   `artifacts/native/ai-round7/report.json`:
-  - `cargo clippy --profile ci --bin aster --all-targets --locked -- -D warnings`
-    clean; `cargo test --profile ci --bin aster --locked` 83 passed.
-    `cargo build --release --bins --locked` built `aster`
+  - `cargo clippy --profile ci --bin neptune-video --all-targets --locked -- -D warnings`
+    clean; `cargo test --profile ci --bin neptune-video --locked` 83 passed.
+    `cargo build --release --bins --locked` built `neptune-video`
     `bca32395…6f043b`. `scripts/native-smoke.py` on that binary: 13 of 13,
     fixture and media hashes unchanged.
   - **Real file dialogs** (rfd → xdg-desktop-portal → GTK FileChooser v4, on
@@ -70,7 +70,7 @@ No backend crate, manifest, script or doc is edited from here.
     its own copy. A window that closes with unsaved work before any periodic
     copy leaves a bound copy written at exit, which restores and saves to its
     own file.
-  - **Cargo is returned to root.** No Cargo, Aster, Xvfb, DBus or portal
+  - **Cargo is returned to root.** No Cargo, Neptune Video, Xvfb, DBus or portal
     process started here is running; no watcher and no child task is left.
   - Not established here: macOS, Windows, Wayland, sound, playback rate,
     codecs. This is not a claim that the product is finished.
@@ -99,7 +99,7 @@ No new dependency is needed.
   file takes a new file only (see "Restored work without a file" below).
   `src/app.rs` alone changed; pinned `rustfmt --edition 2024 --check` clean.
   No Cargo, provider or native run this round. Pending the next grant:
-  `cargo test --profile ci --bin aster --locked` (83 before, 86 expected) and
+  `cargo test --profile ci --bin neptune-video --locked` (83 before, 86 expected) and
   clippy; then a native run of unbound restore, Save As onto an existing
   project (refused, bytes equal), Save As to a new file, Save again.
 
@@ -109,14 +109,14 @@ No new dependency is needed.
   `src/ai.rs`, `src/app.rs`, `src/ui/agent.rs`. Pinned
   `rustfmt --edition 2024 --check` on those three is clean. No Cargo, native
   process, provider, display or binary was touched this round. Pending for
-  root: `cargo test --profile ci --bin aster --locked` (86 before, 90
+  root: `cargo test --profile ci --bin neptune-video --locked` (86 before, 90
   expected: three in `ai::tests`, one in `app::tests`) and clippy. The three
   `ai::tests` are `cfg(unix)` and start an owned `/bin/sh` script from a
   fresh temp directory as the provider, through `AiRuntime`; no real provider
   is called. Not captured: the "No changes" card in the running build.
 
 - 2026-10-12, native round 5 (test sub-agent), **Linux acceptance of the
-  existing release `aster` `9f721c8b…17131c`** (source `db30b8bd…373016`,
+  existing release `neptune-video` `9f721c8b…17131c`** (source `db30b8bd…373016`,
   record `artifacts/production-readiness/final/db30-native-round5-build-record.json`).
   No Cargo and no source edit here. Record and captures:
   `artifacts/native/ai-round8/report.json`.
@@ -148,7 +148,7 @@ No new dependency is needed.
     already differ from this build and need their own build and native run),
     a cancel racing an answer in flight, a destination appearing between
     choosing and writing, macOS, Windows, Wayland, sound, playback rate.
-  - Every Aster, Xvfb, DBus and portal process started here is stopped.
+  - Every Neptune Video, Xvfb, DBus and portal process started here is stopped.
 
 ## Decisions taken here
 
@@ -222,7 +222,7 @@ No new dependency is needed.
 
 - **Second window of one project** (contract update): when the lease beside
   the file cannot be taken, the window switches to
-  `<settings dir>/recovery/<editor instance>.aster` for its recovery copy and
+  `<settings dir>/recovery/<editor instance>.nvp` for its recovery copy and
   takes that lease instead. Its save destination and `DocumentSession` do not
   change. It never writes or removes the copy beside the file. After a crash
   that private copy is offered at the next launch without a project, as a

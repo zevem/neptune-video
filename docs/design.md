@@ -1,7 +1,7 @@
 # Interface direction
 
 The editor should feel like a focused native creative tool: picture and
-timeline dominate, with restrained chrome and one distinctive accent. Neptune
+timeline dominate, with restrained chrome and one distinctive accent. Neptune Terminal
 is a reference for spacing, native rendering and attention to state, rather
 than an interface to copy.
 
@@ -25,7 +25,9 @@ glyphs, including dropdowns, layout presets and window controls. Outline is the
 default; transport controls and the on-key diamond use Tabler's filled style.
 Keep the library's optical spacing inside its 24-point grid and recolor glyphs
 for state. Timeline marks, curve handles and effect previews describe editing
-content and retain their own geometry.
+content and retain their own geometry. The toolbar's application mark draws the
+supplied [app icon](../assets/README.md) as it is: brand artwork is not a glyph
+and is never recolored.
 
 Distinguish hover, focus, selection, disabled, pressed and busy states using a
 consistent surface and contrast hierarchy. Track lock, visibility, mute and

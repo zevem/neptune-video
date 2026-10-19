@@ -389,7 +389,7 @@ mod wayland {
             let inbox = Arc::new(Mutex::new(Inbox::default()));
             let (stop, done) = (signal()?, signal()?);
             let thread = std::thread::Builder::new()
-                .name("aster-file-drop".into())
+                .name("neptune-video-file-drop".into())
                 .spawn({
                     let (inbox, stop) = (inbox.clone(), stop.clone());
                     // Had the thread not started, this closure and the
@@ -544,7 +544,7 @@ mod wayland {
             let (sender, result) = mpsc::sync_channel(1);
             let (stop, done, host) = (self.stop.clone(), self.done.clone(), self.host.clone());
             let spawned = std::thread::Builder::new()
-                .name("aster-file-drop-read".into())
+                .name("neptune-video-file-drop-read".into())
                 .spawn(move || {
                     let deadline = Instant::now() + TRANSFER_DEADLINE;
                     let found = read_list(&reader, &stop, deadline, MAX_TRANSFER)

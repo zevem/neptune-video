@@ -642,7 +642,7 @@ fn read_faces(path: &Path) -> Result<Vec<(u32, Names, usize)>, MediaError> {
         .collect();
     if faces.is_empty() {
         return Err(MediaError::Invalid(format!(
-            "{} is not a font Aster can draw with",
+            "{} is not a font Neptune Video can draw with",
             path.display()
         )));
     }

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Aster portable launcher: runs bin/aster from the bundle this file lives in.
+# Neptune Video portable launcher: runs bin/neptune-video from the bundle this file lives in.
 set -u
 
 self=$0
@@ -25,17 +25,17 @@ while [ -L "$self" ]; do
 done
 
 bundle=$(CDPATH='' cd -- "$(dirname -- "$self")" && pwd -P) || exit 1
-aster=$bundle/bin/aster
+neptune_video=$bundle/bin/neptune-video
 
-if [ ! -f "$aster" ]; then
-    printf '%s\n' "AppRun: missing $aster" >&2
+if [ ! -f "$neptune_video" ]; then
+    printf '%s\n' "AppRun: missing $neptune_video" >&2
     exit 127
 fi
-if [ ! -x "$aster" ]; then
-    printf '%s\n' "AppRun: not executable: $aster" >&2
+if [ ! -x "$neptune_video" ]; then
+    printf '%s\n' "AppRun: not executable: $neptune_video" >&2
     exit 126
 fi
 
-# The working directory, PATH, ASTER_FFMPEG and ASTER_FFPROBE pass through
-# unchanged; Aster finds the ffmpeg and ffprobe in bin/ beside it itself.
-exec "$aster" "$@"
+# The working directory, PATH, NEPTUNE_VIDEO_FFMPEG and NEPTUNE_VIDEO_FFPROBE pass through
+# unchanged; Neptune Video finds the ffmpeg and ffprobe in bin/ beside it itself.
+exec "$neptune_video" "$@"

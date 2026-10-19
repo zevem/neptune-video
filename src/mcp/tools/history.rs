@@ -2,7 +2,7 @@
 //! work, and checkpoints beside the project file.
 use crate::mcp::{
     errors::{ToolError, codes},
-    server::AsterServer,
+    server::NeptuneVideoServer,
     workspace::Edited,
 };
 use editor_core::Command;
@@ -53,7 +53,7 @@ pub struct HistoryView {
     pub agent_can_undo: bool,
 }
 
-pub async fn list(server: &AsterServer) -> Result<HistoryView, ToolError> {
+pub async fn list(server: &NeptuneVideoServer) -> Result<HistoryView, ToolError> {
     server
         .on(|workspace| {
             let mut snapshot = workspace.snapshot()?;
@@ -77,7 +77,7 @@ fn file_of(path: Option<PathBuf>) -> Result<PathBuf, ToolError> {
 }
 
 #[tool_router(router = history_tools, vis = "pub(crate)")]
-impl AsterServer {
+impl NeptuneVideoServer {
     #[tool(
         description = "History labels and object/field diffs; changes_since returns a bounded \
                           revision journal including human edits, undo and redo. Undo takes \

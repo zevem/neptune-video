@@ -58,7 +58,7 @@ impl AiRuntime {
         });
         let owned = shared.clone();
         let worker = thread::Builder::new()
-            .name("aster-ai".into())
+            .name("neptune-video-ai".into())
             .spawn(move || run(owned, wake))
             .map_err(|_| AiError::WorkerStopped)?;
         Ok(Self {
@@ -320,9 +320,9 @@ mod tests {
              project_doc_max_bytes=0) docs=yes;; \
              'project_doc_fallback_filenames=[]') fallback=yes;; \
              'notify=[]') notify=yes;; \
-             model_instructions_file=\\\"*aster-model-instructions.txt\\\") model_file=yes;; esac; done; \
+             model_instructions_file=\\\"*neptune-video-model-instructions.txt\\\") model_file=yes;; esac; done; \
              [ \"$docs$fallback$notify$model_file\" = yesyesyesyes ] || exit 7; \
-             [ -f ./aster-model-instructions.txt ] && [ -s ./aster-model-instructions.txt ] || exit 8; ",
+             [ -f ./neptune-video-model-instructions.txt ] && [ -s ./neptune-video-model-instructions.txt ] || exit 8; ",
         );
         for frame in frames {
             // Fixture frames contain only our ASCII literals, never apostrophes
@@ -427,7 +427,7 @@ mod tests {
         runtime
             .request(
                 AiConfig {
-                    executable: Some(PathBuf::from("/aster-no-such-native-provider")),
+                    executable: Some(PathBuf::from("/neptune-video-no-such-native-provider")),
                     ..AiConfig::default()
                 },
                 AiContext::capture(&editor, &[], Time::ZERO),

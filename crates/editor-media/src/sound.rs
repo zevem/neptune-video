@@ -373,12 +373,12 @@ impl SoundService {
         let (state, waker) = (Arc::clone(&shared), Arc::clone(&wake));
         let find = Arc::clone(&runners.beats);
         thread::Builder::new()
-            .name("aster-sound".into())
+            .name("neptune-video-sound".into())
             .spawn(move || worker(state, runners, waker))
             .map_err(|error| io("Cannot start sound worker", error))?;
         let state = Arc::clone(&shared);
         let started = thread::Builder::new()
-            .name("aster-sound-load".into())
+            .name("neptune-video-sound-load".into())
             .spawn(move || loader(state, find, wake));
         if let Err(error) = started {
             // The worker that did start is told to end.

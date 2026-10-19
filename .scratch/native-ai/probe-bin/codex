@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 
-destination = Path(os.environ["ASTER_AI_DIAGNOSTICS"])
+destination = Path(os.environ["NEPTUNE_VIDEO_AI_DIAGNOSTICS"])
 lock = threading.Lock()
 process = subprocess.Popen(["/home/biggabo/.local/bin/codex", *sys.argv[1:]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr.buffer)
 

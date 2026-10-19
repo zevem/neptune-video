@@ -101,8 +101,8 @@ On macOS 26.5.2 (arm64, Apple M1), Rust 1.97.1, Homebrew FFmpeg and ffprobe
 8.1.2 (`scripts/check-media-tools.py` passed), 2026-10-13. No test was
 skipped.
 
-- `cargo test --locked --bin aster`: 616 passed. `cargo test --locked --bin
-  aster -- peaks:: timeline::tests`: 30 passed, five runs in a row.
+- `cargo test --locked --bin neptune-video`: 616 passed. `cargo test --locked --bin
+  neptune-video -- peaks:: timeline::tests`: 30 passed, five runs in a row.
   `cargo clippy --locked --all-targets -- -D warnings` and `cargo fmt --
   --check` on the desktop crate are clean; `scripts/check-architecture.py`
   passes. `editor-media` was not changed.
@@ -131,7 +131,7 @@ skipped.
   bucket; one real egui pass draws no mesh before the peaks are held and
   then one mesh a tile, a column for each point in view and none beyond the
   lanes, inside the tile under the name, silence a point high.
-- Native captures of the release build (`target/release/aster`, sha256
+- Native captures of the release build (`target/release/neptune-video`, sha256
   `eafe389e101c6753…`), each run with its own settings, session, cache and
   project under `artifacts/audio-editing/04-waveforms/<run>/`, on owned
   fixtures made by FFmpeg (a 12 s tone with a tremolo, a 6 s video with
@@ -231,9 +231,9 @@ and to look at the captures. Maximum zoom is not captured.
   acceptance item is unmet until a person takes the capture or the owner
   waives it.
 
-Tests after review, same host: `cargo test --locked --bin aster -- peaks::
+Tests after review, same host: `cargo test --locked --bin neptune-video -- peaks::
 timeline::tests`, 36 passed, none skipped.
 
-2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/aster` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `aster-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
+2026-10-14 (native acceptance): Resolved. The captures this ticket waited for are taken and look right. Release build `target/release/neptune-video` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `neptune-video-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
 
 `normal-01`/`narrow-01` waveforms in every audio tile at rest; `normal-11`/`narrow-11` zoomed in; `normal-45`/`narrow-42` the timeline zoomed in to the slider's end (frame ticks in the ruler), the clicks drawn as waveforms with no gaps or seams; minimum zoom was captured earlier under `artifacts/audio-editing/`. The zoom was reached by 25 clicks of the zoom-in button with the slider at its end; the zoom value itself was not read out.

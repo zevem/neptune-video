@@ -22,9 +22,9 @@ input-to-display and decode performance.
 
 ## Comments
 
-2026-10-12: Neptune's measurements do not transfer to Aster.
+2026-10-12: Neptune's measurements do not transfer to Neptune Video.
 
-2026-10-12: Aster now has a full-timeline 5,000-clip metadata run and one release
+2026-10-12: Neptune Video now has a full-timeline 5,000-clip metadata run and one release
 software-decoder/worker run of 120 synthetic H.264 frames. The metadata run
 averaged 421.812 µs per move/undo and 2.451 µs per active query over 0–499.9
 seconds. Optimized H.264 worker preview measured 517.815 frames/s and GIF

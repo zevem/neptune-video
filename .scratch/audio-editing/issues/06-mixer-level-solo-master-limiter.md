@@ -8,7 +8,7 @@ Blocked by: 05a
 ## Scope
 
 Make fades, track volume and solo heard, and stop loud mixes from
-hard-clipping. All of it on the `aster-audio` worker; the CPAL callback is
+hard-clipping. All of it on the `neptune-video-audio` worker; the CPAL callback is
 not touched.
 
 - `crates/editor-media/src/audio.rs`, the sum loop (`:1019-1032`): the level

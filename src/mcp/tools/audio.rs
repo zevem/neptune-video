@@ -2,7 +2,7 @@
 //! video's sound, noise reduction, and normalizing to a measured loudness.
 use super::{Guard, batch, clip, refused};
 use crate::{
-    mcp::{errors::ToolError, server::AsterServer, time::TimeSpec, workspace::Edited},
+    mcp::{errors::ToolError, server::NeptuneVideoServer, time::TimeSpec, workspace::Edited},
     normalize,
     ui::fades::{self, Asked, FadeEdge},
 };
@@ -55,7 +55,7 @@ pub struct AudioParams {
 }
 
 #[tool_router(router = audio_tools, vis = "pub(crate)")]
-impl AsterServer {
+impl NeptuneVideoServer {
     #[tool(
         description = "Sound: set clip volume (gain or dB), fades, a track's volume, mute \
                           or solo, lay background music, detach a video's sound, reduce noise, \

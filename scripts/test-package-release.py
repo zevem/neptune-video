@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 
-SPEC = importlib.util.spec_from_file_location("aster_packager", Path(__file__).with_name("package-release.py"))
+SPEC = importlib.util.spec_from_file_location("neptune_video_packager", Path(__file__).with_name("package-release.py"))
 PACKAGER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PACKAGER)
 TARGET = "x86_64-unknown-linux-gnu"
@@ -32,13 +32,13 @@ def elf(machine=62):
 
 class PackageTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="aster-package-guards-")
+        temporary = tempfile.TemporaryDirectory(prefix="neptune-video-package-guards-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         for name in ("src", "crates", ".cargo", "target/release", "assets/fonts", "assets/icons/tabler", "artifacts", "registry/fixture-dep"):
             (self.root / name).mkdir(parents=True)
-        (self.root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.1.0"\n[package]\nname = "aster-editor"\nversion = "0.1.0"\n')
-        (self.root / "Cargo.lock").write_text('version = 4\n[[package]]\nname = "aster-editor"\nversion = "0.1.0"\n[[package]]\nname = "fixture-dep"\nversion = "1.0.0"\nsource = "registry+https://example.invalid/index"\n')
+        (self.root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.1.0"\n[package]\nname = "neptune-video"\nversion = "0.1.0"\n')
+        (self.root / "Cargo.lock").write_text('version = 4\n[[package]]\nname = "neptune-video"\nversion = "0.1.0"\n[[package]]\nname = "fixture-dep"\nversion = "1.0.0"\nsource = "registry+https://example.invalid/index"\n')
         for name in ("src/main.rs", ".cargo/config.toml", "rust-toolchain.toml"):
             (self.root / name).write_text("owned source fixture\n")
         (self.root / "assets/fonts/Geist-LICENSE.txt").write_text("font notice fixture\n")
@@ -57,12 +57,12 @@ class PackageTests(unittest.TestCase):
             self.record["source_files"][name] = hashlib.sha256(data).hexdigest()
             aggregate.update(name.encode() + b"\0" + data + b"\0")
         self.record.update(source_sha256=aggregate.hexdigest(), source_files_count=5)
-        for name in ("aster", "aster-agent", "aster-mcp"):
+        for name in ("neptune-video", "neptune-video-agent", "neptune-video-mcp"):
             binary = self.root / "target/release" / name
             binary.write_bytes(elf())
             self.record["binaries"][name] = {"path": str(binary), "bytes": binary.stat().st_size, "sha256": PACKAGER.digest(binary)}
         self.metadata = {"workspace_root": str(self.root), "packages": [
-            {"id": "root", "name": "aster-editor", "version": "0.1.0", "source": None,
+            {"id": "root", "name": "neptune-video", "version": "0.1.0", "source": None,
              "manifest_path": str(self.root / "Cargo.toml"), "license": None, "license_file": None},
             {"id": "dependency", "name": "fixture-dep", "version": "1.0.0", "source": "registry+https://example.invalid/index",
              "manifest_path": str(dependency / "Cargo.toml"), "license": "MIT", "license_file": None}],
@@ -84,7 +84,7 @@ class PackageTests(unittest.TestCase):
         (folder / "ffmpeg").write_bytes(elf(machine))
         (folder / "ffprobe").write_bytes(elf(machine) + b"probe")
         (folder / "LICENSE.txt").write_text("GPL fixture\n")
-        record = {"schema": "aster-media-tools-v1", "platform": platform, "version": "8.1.3", "license": "GPL-3.0-or-later",
+        record = {"schema": "neptune-video-media-tools-v1", "platform": platform, "version": "8.1.3", "license": "GPL-3.0-or-later",
                   "source": "fixture", "downloads": [{"url": "https://example.invalid/ffmpeg.tar.xz", "sha256": "0" * 64}],
                   "files": {name: PACKAGER.digest(folder / name) for name in ("ffmpeg", "ffprobe", "LICENSE.txt")}}
         (folder / "media-tools.json").write_text(json.dumps(record))
@@ -109,7 +109,7 @@ class PackageTests(unittest.TestCase):
             self.assertTrue(all(m.isfile() or m.isdir() for m in members))
             self.assertTrue(all(m.uid == m.gid == m.mtime == 0 for m in members))
             binaries = [m for m in members if "/bin/" in m.name and m.isfile()]
-            self.assertEqual({Path(m.name).name for m in binaries}, {"aster", "aster-agent", "aster-mcp"})
+            self.assertEqual({Path(m.name).name for m in binaries}, {"neptune-video", "neptune-video-agent", "neptune-video-mcp"})
             self.assertTrue(all(m.mode == 0o755 for m in binaries))
             self.assertFalse(any("personal" in m.name or "ffmpeg" in m.name for m in members))
             notice = next(m for m in members if m.name.endswith("/notices/icons/Tabler-LICENSE.txt"))
@@ -119,7 +119,7 @@ class PackageTests(unittest.TestCase):
             self.assertIn("external ffmpeg", manifest["runtime_dependencies"]["codecs"])
             self.assertEqual(manifest["frontend_assets"], [])
 
-    def test_fetched_media_tools_ship_beside_aster_with_their_license(self):
+    def test_fetched_media_tools_ship_beside_neptune_video_with_their_license(self):
         result = self.run_package(media=self.media_tools())
         with tarfile.open(self.output / result["archive"], "r:gz") as archive:
             names = {m.name.split("/", 1)[1]: m for m in archive.getmembers() if "/" in m.name}
@@ -155,24 +155,24 @@ class PackageTests(unittest.TestCase):
         self.assertEqual((self.output / "sentinel").read_text(), "keep")
 
     def test_proprietary_project_notice_is_identified_and_copied_exactly(self):
-        notice = "SPDX-License-Identifier: LicenseRef-Aster-Proprietary\nOwned private source notice.\n"
+        notice = "SPDX-License-Identifier: LicenseRef-Example-Proprietary\nOwned private source notice.\n"
         (self.root / "LICENSE").write_text(notice)
         (self.root / "THIRD-PARTY-NOTICES.md").write_text("Separate third-party rights.\n")
         result = self.run_package()
         stage = next(path for path in self.output.iterdir() if path.is_dir())
-        self.assertEqual(result["project_license"], "LicenseRef-Aster-Proprietary")
+        self.assertEqual(result["project_license"], "LicenseRef-Example-Proprietary")
         self.assertEqual((stage / "notices/PROJECT-LICENSE").read_text(), notice)
         self.assertEqual((stage / "notices/THIRD-PARTY-NOTICES.md").read_text(), "Separate third-party rights.\n")
 
     def test_wrong_native_machine_is_refused_even_with_matching_hash(self):
-        path = Path(self.record["binaries"]["aster"]["path"])
+        path = Path(self.record["binaries"]["neptune-video"]["path"])
         path.write_bytes(elf(183))
-        self.record["binaries"]["aster"]["sha256"] = PACKAGER.digest(path)
+        self.record["binaries"]["neptune-video"]["sha256"] = PACKAGER.digest(path)
         self.write_inputs()
         self.assert_failure("Wrong native ELF")
 
     def test_build_binary_mutation_is_refused(self):
-        Path(self.record["binaries"]["aster"]["path"]).write_bytes(elf() + b"changed")
+        Path(self.record["binaries"]["neptune-video"]["path"]).write_bytes(elf() + b"changed")
         self.assert_failure("Verified binary changed")
 
     def test_new_source_file_invalidates_inventory(self):
@@ -186,7 +186,7 @@ class PackageTests(unittest.TestCase):
             PACKAGER.relative_name("/absolute")
 
     def test_symlink_binary_is_refused(self):
-        path = Path(self.record["binaries"]["aster"]["path"])
+        path = Path(self.record["binaries"]["neptune-video"]["path"])
         real = path.with_name("original")
         path.rename(real)
         path.symlink_to(real)
@@ -196,6 +196,11 @@ class PackageTests(unittest.TestCase):
         self.metadata["packages"][1]["version"] = "2.0.0"
         self.write_inputs()
         self.assert_failure("Dependency is not in")
+
+    def test_a_build_script_outside_the_record_is_refused(self):
+        (self.root / "build.rs").write_text("owned build script fixture\n")
+        self.write_inputs()
+        self.assert_failure("Build source inventory does not match")
 
     def test_private_frontend_file_is_refused(self):
         assets = self.root / "frontend"
@@ -207,21 +212,29 @@ class PackageTests(unittest.TestCase):
         assets = self.root / "frontend"
         (assets / "icons").mkdir(parents=True)
         (assets / "AppRun").write_text("owned launcher fixture; never executed")
-        (assets / "Aster.desktop.in").write_text("owned desktop template fixture")
-        (assets / "aster.svg").write_text("owned root icon fixture")
-        (assets / "icons/aster.svg").write_text("owned icon fixture")
+        (assets / "neptune-video.desktop.in").write_text("owned desktop template fixture")
+        (assets / "icons/neptune-video.svg").write_text("owned icon fixture")
+        (self.root / "assets/icons/neptune-video-256.png").write_bytes(b"exported icon fixture")
         result = self.run_package(assets=assets)
         stage = next(p for p in self.output.iterdir() if p.is_dir())
         self.assertEqual((stage / "AppRun").stat().st_mode & 0o777, 0o755)
-        self.assertEqual((stage / "Aster.desktop.in").stat().st_mode & 0o777, 0o644)
-        self.assertEqual(set(result["frontend_assets"]), {"AppRun", "Aster.desktop.in", "aster.svg", "icons/aster.svg"})
+        self.assertEqual((stage / "neptune-video.desktop.in").stat().st_mode & 0o777, 0o644)
+        self.assertEqual((stage / "neptune-video.png").read_bytes(), b"exported icon fixture")
+        self.assertEqual((stage / "neptune-video.png").stat().st_mode & 0o777, 0o644)
+        self.assertEqual(set(result["frontend_assets"]), {"AppRun", "neptune-video.desktop.in", "icons/neptune-video.svg", "neptune-video.png"})
+
+    def test_a_retired_svg_icon_is_refused(self):
+        assets = self.root / "frontend"
+        assets.mkdir()
+        (assets / "neptune-video.svg").write_text("retired icon fixture")
+        self.assert_failure("Unexpected frontend asset", assets)
 
     def test_mutation_during_archive_retains_failure_instead_of_success(self):
         original = PACKAGER.archive
 
         def mutate(stage, destination):
             original(stage, destination)
-            Path(self.record["binaries"]["aster"]["path"]).write_bytes(b"mutated after archive")
+            Path(self.record["binaries"]["neptune-video"]["path"]).write_bytes(b"mutated after archive")
 
         with patch.object(PACKAGER, "archive", side_effect=mutate):
             self.assert_failure("Packaging input changed")

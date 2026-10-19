@@ -1,9 +1,9 @@
 //! Projects: create, open, save, look at, change settings, close; and the
-//! Aster windows a project can be edited in.
+//! Neptune Video windows a project can be edited in.
 use super::{Guard, batch, clip_view, frame_rate, stamp};
 use crate::mcp::{
     errors::ToolError,
-    server::AsterServer,
+    server::NeptuneVideoServer,
     time::{Stamp, TimeSpec},
     workspace::Workspace,
 };
@@ -22,7 +22,7 @@ const MOST_FULL_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateParams {
-    /// Where to make the project file (.aster), inside the server's roots.
+    /// Where to make the project file (.nvp), inside the server's roots.
     /// Without a path the project is in memory until project_save.
     #[serde(default)]
     pub path: Option<String>,
@@ -42,7 +42,7 @@ pub struct CreateParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OpenParams {
-    /// The project file (.aster), inside the server's roots.
+    /// The project file (.nvp), inside the server's roots.
     pub path: String,
     /// Open the recovery copy beside the file instead: unsaved work a
     /// window or a server left after a crash.
@@ -52,7 +52,7 @@ pub struct OpenParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SaveParams {
-    /// Save as a new file here (.aster). Without it the project is saved to
+    /// Save as a new file here (.nvp). Without it the project is saved to
     /// its own file. A server's project is saved after every edit already;
     /// a window's is saved when this is called.
     #[serde(default)]
@@ -131,9 +131,9 @@ pub struct CloseParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DesktopParams {
-    /// `list`: the Aster windows that answer. `attach`: edit the project
+    /// `list`: the Neptune Video windows that answer. `attach`: edit the project
     /// open in a window from now on. `open`: open the project's file (or
-    /// `path`) in a new Aster window and edit it there.
+    /// `path`) in a new Neptune Video window and edit it there.
     pub op: String,
     /// The window to attach to, from `list`; needed when several are open.
     #[serde(default)]
@@ -174,7 +174,7 @@ impl SettingsView {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Status {
     /// `none`, `local` (this server edits and saves the file after every
-    /// edit) or `desktop` (edits go to an open Aster window).
+    /// edit) or `desktop` (edits go to an open Neptune Video window).
     pub authority: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<Uuid>,
@@ -269,8 +269,8 @@ fn status_of(workspace: &mut Workspace) -> Result<Status, ToolError> {
     })
 }
 
-/// The status, for the `aster://project` resource too.
-pub async fn status(server: &AsterServer) -> Result<Status, ToolError> {
+/// The status, for the `neptune-video://project` resource too.
+pub async fn status(server: &NeptuneVideoServer) -> Result<Status, ToolError> {
     server.on(status_of).await
 }
 
@@ -309,23 +309,24 @@ fn canvas(
     Ok(settings)
 }
 
-fn project_file(server: &AsterServer, given: &str, overwrite: bool) -> Result<PathBuf, ToolError> {
+fn project_file(
+    server: &NeptuneVideoServer,
+    given: &str,
+    overwrite: bool,
+) -> Result<PathBuf, ToolError> {
     let path = server
         .roots()
         .destination(std::path::Path::new(given), overwrite)?;
-    if path
-        .extension()
-        .is_none_or(|extension| extension != "aster")
-    {
-        return Err(ToolError::invalid("A project file ends in .aster"));
+    if path.extension().is_none_or(|extension| extension != "nvp") {
+        return Err(ToolError::invalid("A project file ends in .nvp"));
     }
     Ok(path)
 }
 
 #[tool_router(router = project_tools, vis = "pub(crate)")]
-impl AsterServer {
+impl NeptuneVideoServer {
     #[tool(
-        description = "Where the project is (this server, or an Aster window), its revision, \
+        description = "Where the project is (this server, or a Neptune Video window), its revision, \
                        file, settings, save state and size. Start here.",
         annotations(read_only_hint = true)
     )]
@@ -334,7 +335,7 @@ impl AsterServer {
     }
 
     #[tool(
-        description = "Make a new project, in a new .aster file (saved after every edit) or in \
+        description = "Make a new project, in a new .nvp file (saved after every edit) or in \
                        memory. Replaces the open project, which must hold no unsaved work.",
         annotations(destructive_hint = false)
     )]
@@ -363,7 +364,7 @@ impl AsterServer {
     }
 
     #[tool(
-        description = "Open a .aster project. If an Aster window has the same file open, edits \
+        description = "Open a .nvp project. If a Neptune Video window has the same file open, edits \
                        go to the window. recover: true opens the crash recovery copy.",
         annotations(destructive_hint = false)
     )]
@@ -381,7 +382,7 @@ impl AsterServer {
     }
 
     #[tool(
-        description = "Save the project to its file, or as a new .aster file (destination). \
+        description = "Save the project to its file, or as a new .nvp file (destination). \
                        In a window this is the window's save; read project_status for \
                        last_save when it is done."
     )]
@@ -474,7 +475,7 @@ impl AsterServer {
     }
 
     #[tool(
-        description = "Aster windows: list those running, attach to one so edits appear in \
+        description = "Neptune Video windows: list those running, attach to one so edits appear in \
                           it at once, or open the project in a new window."
     )]
     async fn desktop(

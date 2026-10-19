@@ -22,8 +22,8 @@ and feature 10 has only `CenterCut`.
 
 Then:
 
-- Finding the tool: `ASTER_SEPARATOR`, else the tool's name on `PATH`, as
-  `tool_command` does for `ASTER_FFMPEG` (`process.rs:270-277`). Probed
+- Finding the tool: `NEPTUNE_VIDEO_SEPARATOR`, else the tool's name on `PATH`, as
+  `tool_command` does for `NEPTUNE_VIDEO_FFMPEG` (`process.rs:270-277`). Probed
   once per session on a worker by a run that exits at once (its version or
   help flag, from step 1). "Separate stems" is disabled with the words
   "Needs a stem separator; see the documentation" when it is absent.
@@ -68,10 +68,10 @@ decision 10 was decided on the owner's behalf: Demucs (Comments, step 1).
 - `crates/editor-media/src/sound/separate.rs` (new). `Separator`, made only
   by `Separator::probe(program)`: `<program> --help` must end well within
   60 s and name `--two-stems`; a missing program is "No stem separator was
-  found: … Install Demucs so that demucs is on PATH, or set ASTER_SEPARATOR
+  found: … Install Demucs so that demucs is on PATH, or set NEPTUNE_VIDEO_SEPARATOR
   …" (`separator_absent` tells it from a broken tool), a tool that fails is
   its last line. `look_for_separator(wake)` starts the session's probe once
-  on `aster-separator-probe`; `stem_separator()` reads the answer, `None`
+  on `neptune-video-separator-probe`; `stem_separator()` reads the answer, `None`
   until it comes, and never waits. `SeparateJob { project, asset, to,
   separator }`; `STEMS` is `vocals` → Vocals, `no_vocals` → Instruments.
   The job makes `to`, then `<to>/<media> (stems).part` with `create_dir`
@@ -86,7 +86,7 @@ decision 10 was decided on the owner's behalf: Demucs (Comments, step 1).
   goes with whatever is in it however the job ends; a failure after a stem
   was placed names what was kept.
 - `crates/editor-media/src/process.rs`: `tool_program(tool)`, `demucs` named
-  by `ASTER_SEPARATOR`. `import.rs`: `probe` is `pub(crate)`.
+  by `NEPTUNE_VIDEO_SEPARATOR`. `import.rs`: `probe` is `pub(crate)`.
 - `crates/editor-media/src/sound.rs`: `Work::Separate`, target
   `Separate(asset)`; `SoundService::separate(job) -> Extracting`;
   `SoundEvent::Separated { request, project, asset_id, source, result:
@@ -128,8 +128,8 @@ No native window was opened and nothing was listened to.
 
 - `cargo test --locked -p editor-media`: 327 passed (14 in
   `sound::separate`, of them 9 through the stand-in on Unix);
-  `cargo test --locked -p aster-editor`: 827 and 12 passed. `cargo clippy
-  --locked -p editor-media -p aster-editor --all-targets -- -D warnings`,
+  `cargo test --locked -p neptune-video`: 827 and 12 passed. `cargo clippy
+  --locked -p editor-media -p neptune-video --all-targets -- -D warnings`,
   `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
   --locked` and `scripts/check-architecture.py` pass.
 - Media, with a stand-in (`separate_tests.rs`, Unix: a `sh` script that
@@ -168,7 +168,7 @@ No native window was opened and nothing was listened to.
   `src/agent.rs` `stems_are_asked_of_the_one_selected_clip_that_is_heard`.
 - The real tool: Demucs 4.1.0 (torch 2.14.1, Python 3.12, through `uvx
   --with numpy` from a task-owned cache, model `htdemucs` `955717e8` fetched
-  from Hugging Face by the tool), set as `ASTER_SEPARATOR_TEST` for
+  from Hugging Face by the tool), set as `NEPTUNE_VIDEO_SEPARATOR_TEST` for
   `the_persons_separator_splits_twenty_seconds_into_two_stems`: a 20 s
   stereo 44.1 kHz WAV of two tones FFmpeg made; probe 1.24 to 1.87 s;
   separated through the lane in 15.72 s (model fetched), 5.65 s and 6.04 s;
@@ -240,7 +240,7 @@ filesystem work, done off the frame loop.
 
 2026-10-14 (step 1, decided on the owner's behalf): Owner decision 10 is
 taken, the owner having delegated it. The tool is the Demucs command line,
-installed by the person; nothing is bundled or fetched by Aster.
+installed by the person; nothing is bundled or fetched by Neptune Video.
 
 - *Tool and version.* `adefossez/demucs`, which its README calls the
   officially maintained Demucs, fork of `facebookresearch/demucs` (archived
@@ -303,6 +303,6 @@ now `"<document> media/<media> (stems).part"`, and stated a Hugging Face
 MIT tag as fact; it now says the model card's text names no licence and an
 unanswered discussion there reports the tag, unchecked.
 
-2026-10-14 (native acceptance): Still `ready-for-human`. Release build `target/release/aster` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `aster-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
+2026-10-14 (native acceptance): Still `ready-for-human`. Release build `target/release/neptune-video` (sha256 fadbe5aa8244d800b2d9b16bf86bf121a6e9157af7e8067402761d40318e5763, `cargo build --release --locked`) on macOS 26.5.2 (25F84), Apple M1, Rust 1.97.1, Homebrew FFmpeg 8.1.2, built-in Retina display at scale 2. Fresh task-owned projects (made by `neptune-video-agent` over ffmpeg-generated media: a 12 s testsrc2 interview with a speech-like tone, 30 s of 120 BPM clicks, a 0.8 s whoosh) and fresh `--settings` per run. Driven by real pointer and key events into the running window; the normal window (asked 1440x900) came up at 1280x709 points, the narrow one at 760x620 (and 760x560 for ticket 13). Captures are in `artifacts/audio-editing/captures/`. Every capture was looked at against `docs/design.md`. Dark theme only; Linux, Windows and the light theme were not run; nothing was listened to.
 
 Taken: `normal-08`/`narrow-08` Separate stems disabled; `normal-09`/`narrow-09` its reason "Needs a stem separator; see the documentation". Still missing: the progress card, a finished separation and the placed stems, normal and narrow. No stem separator is installed on this host.

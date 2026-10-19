@@ -1,7 +1,7 @@
 //! Exports: the timeline drawn and encoded to a file, off the interface.
 //!
 //! [`queue`] is the service the application and the agent talk to: jobs
-//! wait, render one at a time on the `aster-render` thread and stay listed
+//! wait, render one at a time on the `neptune-video-render` thread and stay listed
 //! when finished. [`engine`] runs one job: the sound, the pictures drawn by
 //! [`frame`] at the output's size from the original media, FFmpeg fed
 //! through a short pipeline, and the checked file moved into place.

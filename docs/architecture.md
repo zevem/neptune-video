@@ -1,6 +1,6 @@
 # Architecture
 
-Aster is a native Rust desktop editor. Its desktop stack follows Neptune's
+Neptune Video is a native Rust desktop editor. Its desktop stack follows Neptune Terminal's
 `eframe`/`egui` and `wgpu` approach, keeping the domain model independent of the
 window system. Native platform acceptance and playback throughput require
 the evidence in
@@ -14,13 +14,13 @@ the evidence in
 | `editor-store` | Versioned documents, protected document sessions, atomic replacement, autosave, recovery bindings and the project's media folder for takes and stems | Immutable project/history snapshots and explicit destination ownership in, load/save/conflict results out |
 | `editor-media` | File/folder import, source probing, image/GIF/video decoding, cached frames, PCM audio mixing with the voice filter chain and its probe, voiceover capture to WAV, `.cube` table reading, the analysis lane (region tracking, camera-motion measurement and its on-disk cache), the sound lane (peaks and their on-disk cache, loudness, beats, a sound written to a file, stem separation), the text renderer and title lane (fonts, shaping, title pictures), the speech lane (model downloads, offline 16 kHz mix, whisper.cpp), export encoding (encoder probe, FFmpeg arguments, the stdin-fed encoder, output check), the export source reader, the offline sound render for export, and the proxy lane and cache | Owned metadata, frame/audio results, title pictures, words, analysis results and proxy answers carrying project, request and source identity; codec, font and live worker details remain private. The export calls block and run on a thread the desktop owns |
 | Desktop composition | Controller integration, worker scheduling, clipboard, file dialogs, input, playback clock, title textures, the preset file and subtitle file reads and writes, preview quality and which proxies the viewer reads | Converts UI actions and completions into targeted commands |
-| Render queue (`src/export`) | `RenderQueue`, the `aster-render` thread, the job runner and `FrameRenderer` | Takes immutable project snapshots; publishes job reports and finished events; never edits a project |
+| Render queue (`src/export`) | `RenderQueue`, the `neptune-video-render` thread, the job runner and `FrameRenderer` | Takes immutable project snapshots; publishes job reports and finished events; never edits a project |
 | Compositor (`src/compose`) | Off-screen wgpu passes, WGSL pixel math, `ComposeBudget`, lookup-table textures, the layer assembly the viewer and export share, readback | Draws a render plan's non-plain runs into one canvas texture while the interface is drawn, never asking for a repaint and falling back to the mesh path; draws every layer of an export frame on the render thread at the output size, with no fallback |
 | Native UI | Media library with text, captions, effects, transitions and looks tabs, preview, timeline with keyframe lane and graph editor, sectioned inspector, export dialog, render queue panel, Agent panel, dialogs and accessible controls | Draws prepared state and emits actions |
 | `editor-agent` | Command/schema discovery, guarded local transport, native provider processes, captured planning context, edit proposals, the Agent panel's `Conversation` and the render job operations | A planning provider returns data; a conversation's provider edits only through the MCP server it is handed, as guarded requests. Both reach the same validated reducer as the UI |
 
-The root desktop package is `aster-editor`, with `aster`, `aster-agent` and
-`aster-mcp` binaries. Consult the manifests and
+The root desktop package is `neptune-video`, with `neptune-video`, `neptune-video-agent` and
+`neptune-video-mcp` binaries. Consult the manifests and
 [backend contract](../.scratch/core-editor/backend-contract.md) for current APIs.
 The [user guide](usage.md) and [verification record](verification.md) distinguish
 implemented features, runtime limits and accepted observations.
@@ -61,7 +61,7 @@ belonging to another project identity.
 The Agent panel's Ask mode sends a request to the Claude Code or Codex CLI the
 person has signed in to. Settings › Agent ("Edits") and the panel's menu
 choose how it is answered. **Made as it works**, the default, is a
-conversation in which the provider edits through Aster's MCP server.
+conversation in which the provider edits through Neptune Video's MCP server.
 **Proposed for review** is the planner, which returns one proposal and changes
 nothing until it is applied (`AiSettings.review`, false by default). Caption
 translation always uses the planner; Command mode runs the local command
@@ -69,8 +69,8 @@ language. Both runtimes belong to `editor-agent`, independent of the desktop
 drawing loop, and [src/ai.rs](../src/ai.rs) is the only place the application
 touches either. They reuse the person's CLI sign-in and expose no credential
 fields in `AiConfig`.
-[ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md)
-records why the panel's agent edits through `aster-mcp`, and
+[ADR 0011](adr/0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md)
+records why the panel's agent edits through `neptune-video-mcp`, and
 [ADR 0004](adr/0004-native-ai-produces-reviewed-edit-proposals.md) the
 planner.
 
@@ -79,8 +79,8 @@ planner.
 ```text
 Agent panel → App::agent_converse (drafts committed, window note prefixed)
     → ai::Agent → editor_agent::Conversation (one worker thread, one provider process)
-    → provider CLI: claude (stream-json) or codex app-server, its only tools Aster's
-    → aster-mcp --window <session file> --tag aster-tab-<instance>
+    → provider CLI: claude (stream-json) or codex app-server, its only tools Neptune Video's
+    → neptune-video-mcp --window <session file> --tag neptune-video-tab-<instance>
       --roots-file <session>.roots
       (the provider's child)
     → the window's AgentHost session → editor_agent::handle on the window's thread
@@ -109,13 +109,13 @@ project in it.
 arguments as text, and passes it to the provider. It links nothing of the root
 package, `editor-store` or `editor-media`, and
 `scripts/check-architecture.py` holds that. The window builds the server in
-`App::tool_server`. The program is `ASTER_MCP`, else `aster-mcp` beside the
-running `aster`; without either the request fails with a message.
+`App::tool_server`. The program is `NEPTUNE_VIDEO_MCP`, else `neptune-video-mcp` beside the
+running `neptune-video`; without either the request fails with a message.
 
 The window passes no `--root`. It names a roots file, `--roots-file`: the
 agent session file with the extension `.roots`, a JSON object
 `{"roots": [DIR, …]}` readable by its owner only on Unix and written whole (a
-part file renamed over it). A thread of its own, `aster-agent-roots`, writes
+part file renamed over it). A thread of its own, `neptune-video-agent-roots`, writes
 it, and the file is removed when the window closes. The wanted folders are the
 project file's folder, the folder of every asset, the folders the person added
 in Settings › Agent › Folders (`AiSettings.folders`) and the person's Videos
@@ -134,11 +134,11 @@ conversation can use it at the next call. `project_status` lists the current
 roots.
 
 `provider::converse` launches the provider on the conversation's worker with
-Aster's server as its only tools: Claude Code as `claude --print` with
+Neptune Video's server as its only tools: Claude Code as `claude --print` with
 stream-json input and output, built-in tools off and one strict MCP server,
-`aster`, in a private config file; Codex as `codex app-server` with the shell
+`neptune-video`, in a private config file; Codex as `codex app-server` with the shell
 tool off and the person's own MCP servers disabled for the thread beside one
-server, `aster_window`. Claude runs without the planner's `--safe-mode`, which
+server, `neptune_video_window`. Claude runs without the planner's `--safe-mode`, which
 in 2.1.300 drops every MCP server, and Codex keeps `code_mode_host`, through
 which 0.162.1 calls MCP tools. [Launching the agent](native-ai.md#launching-the-agent)
 gives the exact arguments.
@@ -155,7 +155,7 @@ follows a window that is gone, and for `attach` naming no window, it answers
 `desktop_closed`. The agent's undo takes back only its own entries since it
 last attached, as for any MCP client, so after it leaves and comes back
 earlier entries need `allow_person` or the person's own undo. Its request
-ids are `aster-tab-<instance>-N` (`--tag`), `<instance>` being the window's
+ids are `neptune-video-tab-<instance>-N` (`--tag`), `<instance>` being the window's
 agent session instance id, and a window claims only requests with its own
 tag. By that tag the window counts the request's changes for the panel
 and leaves out the "Agent: …" rows it shows for outside MCP clients; tool
@@ -374,8 +374,8 @@ holds the binding rules. This section says where things live.
 | `SetText`, `SetTextStyle`, `SetTextAnimation`, `SetWords`, `SetGraphic`, `SetTrackLanguage`, `CopyCaptions`; split, trim and rate rebasing of words and animations | The reducer in [editor.rs](../crates/editor-core/src/editor.rs) |
 | Motions and karaoke word state in the plan (`LayerSource::Text`, `LayerSource::Graphic`) | [render.rs](../crates/editor-core/src/render.rs) |
 | Font book, shaping, layout, the picture, graphic elements | [editor-media/src/text](../crates/editor-media/src/text) |
-| The title lane (`aster-titles`) | [text/lane.rs](../crates/editor-media/src/text/lane.rs) |
-| Model catalog, downloads through `curl`, the offline mix, whisper.cpp and the speech lane (`aster-speech`) | [editor-media/src/speech.rs](../crates/editor-media/src/speech.rs) |
+| The title lane (`neptune-video-titles`) | [text/lane.rs](../crates/editor-media/src/text/lane.rs) |
+| Model catalog, downloads through `curl`, the offline mix, whisper.cpp and the speech lane (`neptune-video-speech`) | [editor-media/src/speech.rs](../crates/editor-media/src/speech.rs) |
 | Title textures the window holds | [src/titles.rs](../src/titles.rs) |
 | Speech choices, the one command captions become, and when they wait | [src/speech.rs](../src/speech.rs) |
 | Kept looks and brand colours | [src/presets.rs](../src/presets.rs) |
@@ -430,12 +430,12 @@ things live.
 | `ExportSettings`, containers and codecs, `Capabilities` data, the `VIDEO_ENCODERS` table, `plan` into an `ExportPlan`, `FrameSpan`, `sample_count`, `Geometry`, `range_cues`, `render_project`, `builtin_presets`, `RenderJobInfo` | [export.rs](../crates/editor-core/src/export.rs) |
 | `source_frame`, shared by the viewer and the export | [render.rs](../crates/editor-core/src/render.rs) |
 | Encoder probe, FFmpeg arguments, the stdin-fed `Encoder`, the export sound render, `SourceReader`, `verify_output` | [editor-media/src/export](../crates/editor-media/src/export/mod.rs) (`caps`, `args`, `encoder`, `audio`, `reader`, `verify`) |
-| `ProxyService` and the proxy cache (`aster-proxy`) | [proxy.rs](../crates/editor-media/src/proxy.rs) |
+| `ProxyService` and the proxy cache (`neptune-video-proxy`) | [proxy.rs](../crates/editor-media/src/proxy.rs) |
 | Layer assembly the viewer and the export share; stacked drawing and non-blocking readback | [compose/assemble.rs](../src/compose/assemble.rs), [compose/gpu.rs](../src/compose/gpu.rs) |
 | `FrameRenderer`, the headless device | [src/export/frame.rs](../src/export/frame.rs) |
-| The export dialog's poster (`aster-poster`) | [src/export/poster.rs](../src/export/poster.rs) |
+| The export dialog's poster (`neptune-video-poster`) | [src/export/poster.rs](../src/export/poster.rs) |
 | Saved presets file; the window's export decisions and agent answers | [src/export/presets.rs](../src/export/presets.rs), [src/export/wiring.rs](../src/export/wiring.rs) |
-| `RenderQueue` (`aster-render`), the job runner | [src/export/queue.rs](../src/export/queue.rs), [src/export/engine.rs](../src/export/engine.rs) |
+| `RenderQueue` (`neptune-video-render`), the job runner | [src/export/queue.rs](../src/export/queue.rs), [src/export/engine.rs](../src/export/engine.rs) |
 | Export dialog; render queue panel | [src/ui/export_sheet.rs](../src/ui/export_sheet.rs), [src/ui/render_queue.rs](../src/ui/render_queue.rs) |
 | Which proxies are asked for; which one a layer reads; preview quality | [src/proxies.rs](../src/proxies.rs), [src/textures.rs](../src/textures.rs), [src/settings.rs](../src/settings.rs) |
 | Render operations on the wire | [editor-agent](../crates/editor-agent/src/lib.rs), [agent protocol](agent-protocol.md#render-jobs) |
@@ -448,7 +448,7 @@ project, drafts committed → Arc<Project> snapshot + project id, context, revis
       (output frames, sample span, geometry, encoders, caption cues)
     → render_project (output frame rate; caption tracks hidden unless burned in)
 sound:   OfflineMix over the sample span → raw f32le file in the job's
-         working folder, .aster-render-<job> beside the destination
+         working folder, .neptune-video-render-<job> beside the destination
 picture: each output frame n → resolve(render_project, frame_time(n))
          → SourceReader (originals, the preview's source frame)
          → FrameRenderer (one accumulator, linear light, runs on their own
@@ -477,16 +477,16 @@ link), fails the job with the same `EnqueueError` text. It then removes
 what stopped exports left in the destination folder: part files and
 working folders unchanged for an hour (`STALE_AFTER`) whose UUID names no
 listed job, symbolic links skipped. When the queue starts it does the same
-for `aster-render-<id>` folders in the system's temporary folder.
+for `neptune-video-render-<id>` folders in the system's temporary folder.
 
-**Running.** One `aster-render` thread runs the first runnable job in list
+**Running.** One `neptune-video-render` thread runs the first runnable job in list
 order. The queue's lock is taken briefly and never held across job work; the
 job reports through a handle. A job plans again with the capabilities of the
 moment. It then builds its `FrameRenderer`, on the window's device or one it
 opens itself, renders the sound and writes any caption stream into its
-working folder (`.aster-render-<id>` beside the destination, or the system's
+working folder (`.neptune-video-render-<id>` beside the destination, or the system's
 temporary folder when that cannot be made), starts the encoder and feeds
-frames. Frames go to an `aster-render-writer` thread
+frames. Frames go to an `neptune-video-render-writer` thread
 through two recycled buffers, so drawing the next frame overlaps encoding the
 last and at most three output frames exist. Every allocation and submit on
 the render thread runs inside `Gpu::checked`. Readback maps a staging buffer
@@ -504,7 +504,7 @@ unreadable lookup table is left out. Both add a warning to the job instead of
 failing it. Unlike the viewer, the export draws titles through the
 compositor, laid over with Normal blending.
 
-**Finishing.** `Encoder::finish` runs on a scoped `aster-render-finish`
+**Finishing.** `Encoder::finish` runs on a scoped `neptune-video-render-finish`
 thread watched by `FinishWatch`: FFmpeg is given at least `FINISH_DEADLINE`
 plus the part file's size at `FINISH_PACE`, then as long as the part file's
 length or modified time keeps changing, and is killed after `FINISH_STALL`
@@ -536,7 +536,7 @@ the agent's render operations from the queue without blocking; the headless
 `handle` answers them `unsupported`.
 
 **Poster.** The export dialog's picture is drawn by `PosterService` on an
-`aster-poster` thread that owns a `FrameRenderer` and a `SourceReader` of its
+`neptune-video-poster` thread that owns a `FrameRenderer` and a `SourceReader` of its
 own, from the originals, at the output's shape scaled to at most
 `POSTER_SIDE` (640) on the long side. A request is keyed by context,
 revision, geometry, rate, burn-in and the output frame's time (the playhead,
@@ -546,7 +546,7 @@ dropped. The thread stops when the dialog closes.
 
 ### Proxies and preview quality
 
-The proxy lane is one `aster-proxy` thread with its own FFmpeg process,
+The proxy lane is one `neptune-video-proxy` thread with its own FFmpeg process,
 separate from preview, import, analysis and export. It writes one proxy at a
 time from a bounded queue. Each finished proxy gets a manifest beside it, and
 the lane keeps the cache directory within its budget, least recently used
@@ -593,8 +593,8 @@ decoder pipe.
 
 ## MCP server
 
-`aster-mcp` ([guide](mcp.md), [ADR 0010](adr/0010-mcp-reaches-the-editor-through-the-agent-protocol.md),
-[ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md))
+`neptune-video-mcp` ([guide](mcp.md), [ADR 0010](adr/0010-mcp-reaches-the-editor-through-the-agent-protocol.md),
+[ADR 0011](adr/0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md))
 lives in `src/mcp/` of the root package's library and depends on the same
 crates as the desktop; the core gains nothing for it. Outside MCP clients start
 it, and so does the provider of the window's Agent panel, as its child (see
@@ -602,7 +602,7 @@ it, and so does the provider of the window's Agent panel, as its child (see
 
 ```text
 MCP client or the Agent panel's provider
-    ── stdio or loopback HTTP (rmcp) ──▶ AsterServer (tools, resources)
+    ── stdio or loopback HTTP (rmcp) ──▶ NeptuneVideoServer (tools, resources)
     │ typed tools build Commands with the window's rules (rules.rs, titles,
     │ captions, fades, effects) from a fresh snapshot
     ▼
@@ -639,7 +639,7 @@ jobs: transcription, model installs, scenes, loudness (≤ 4 running, 64 kept);
   snapshot's revision.
 - **Jobs** (`jobs.rs`) run on their own threads with progress and a cancel
   flag. They read snapshots and never edit.
-- **Server** (`server.rs`) routes tools, serves the `aster://` resources and
+- **Server** (`server.rs`) routes tools, serves the `neptune-video://` resources and
   polls them twice a second while a client is subscribed, to notify changes.
 - **HTTP** (`http.rs`) wraps rmcp's `StreamableHttpService` in axum with
   bearer authentication, `Host` and `Origin` checks and a body limit.
@@ -675,17 +675,17 @@ membership set while document traversal determines the first error.
 
 ## Persistence and source media
 
-The initial `.aster` project file stores the current project, not the undo/redo
-session. A sibling `.aster.recovery` file stores the current state and complete
+The initial `.nvp` project file stores the current project, not the undo/redo
+session. A sibling `.nvp.recovery` file stores the current state and complete
 undo/redo chains with interned shared document roots. Recovery through that
 sidecar retains session history; opening only the ordinary project starts a new
 history. Named checkpoints are project snapshots in a sibling
-`.aster.checkpoints` directory. Keep these distinctions visible in recovery
+`.nvp.checkpoints` directory. Keep these distinctions visible in recovery
 guidance and completion claims.
 
 Checkpoint restoration uses `RestoreProject` through the reducer as one history
 entry. It preserves the current project identity, destination and live context,
-so it can be undone. A recovery lease uses an adjacent `.aster.lock` OS lock;
+so it can be undone. A recovery lease uses an adjacent `.nvp.lock` OS lock;
 active owners suppress recovery offers in another editor, and lease lifetime
 extends through queued recovery writes. Lease-file existence or a PID is not
 ownership evidence. This lease protects recovery; ordinary writes use an
@@ -696,10 +696,10 @@ The [protected document API](../crates/editor-store/src/document.rs)
 from the same open file. Each independently opened editing context owns its own
 `DocumentSession`; queued saves within that context share its advancing baseline.
 `save_project_with_session` serializes and syncs a temporary file before taking
-the adjacent `.aster.write-lock`, rechecking the original destination and
+the adjacent `.nvp.write-lock`, rechecking the original destination and
 atomically replacing it. A successful durable save advances that baseline;
 an observed change, deletion or independently created destination returns a
-conflict. The lock makes the check/replacement indivisible for cooperating Aster
+conflict. The lock makes the check/replacement indivisible for cooperating Neptune Video
 writers. An external writer that ignores it can still race the final check and
 rename; this is not a global filesystem compare-and-swap.
 
@@ -869,7 +869,7 @@ device, at its own rate, one or two channels as delivered (more are refused),
 written to a 32-bit float WAV at a path the desktop chose (ticket 17's
 `editor_store::new_take`). The input callback only copies into a bounded
 lock-free ring of two seconds, or counts the frames that found it full; one
-thread, `aster-record`, opens the device and the file, drains the ring every
+thread, `neptune-video-record`, opens the device and the file, drains the ring every
 20 ms and rewrites the header's two sizes and syncs once a second of sound, so
 a crash leaves a file that plays to within a second of its end. `start`,
 `stop` and `poll` return at once: opening, writing and closing are the
@@ -908,11 +908,11 @@ cache. Its bounds are in [performance](performance.md#analysis-lane-and-stabiliz
 Sound for a clip with a time map plays on straight forward stretches only.
 
 Export opens its own FFmpeg processes, apart from the preview's: an
-`aster-render-probe` thread that test-encodes each known encoder at start (at
+`neptune-video-render-probe` thread that test-encodes each known encoder at start (at
 most four at once), one decode pipe per clip, picture and size in the
 `SourceReader`, the mixer's decoders for the sound render, and the encoder.
 They belong to the job and are killed when it is cancelled. The dialog's
-poster has its own `SourceReader` on the `aster-poster` thread while the
+poster has its own `SourceReader` on the `neptune-video-poster` thread while the
 dialog is open. Proxies are
 written by their own lane, described under
 [proxies and preview quality](#proxies-and-preview-quality). The bounds are in
@@ -927,7 +927,7 @@ without alpha, at a constant frame rate. Packaging, format coverage, native
 audio/device-clock integration and licensing require the evidence in
 [verification](verification.md).
 
-## Neptune reference
+## Neptune Terminal reference
 
 The read-only reference is
 `/home/biggabo/Documents/Projects/rust-terminal/rust-terminal`, inspected on
@@ -936,13 +936,13 @@ The read-only reference is
 the patterns adapted here: pure model/controller ownership, stable targets,
 generation checks, worker-owned storage, bounded resources, quiet idle and
 honest native acceptance evidence. Terminal/PTY semantics, browser helpers and
-Neptune's release history do not transfer to the editor.
+Neptune Terminal's release history do not transfer to the editor.
 
-Neptune's `src/runtime/project_lead.rs` and Claude/Codex drivers also provide the
+Neptune Terminal's `src/runtime/project_lead.rs` and Claude/Codex drivers also provide the
 reference for worker-owned provider processes and pure protocol state machines.
-Aster adapts that ownership to tool-disabled edit proposals and to the Agent
-panel's conversation, whose only tools are Aster's own MCP server, with
-authenticated loopback TCP for external editing clients; Neptune's Unix shell/MCP adapters
+Neptune Video adapts that ownership to tool-disabled edit proposals and to the Agent
+panel's conversation, whose only tools are Neptune Video's own MCP server, with
+authenticated loopback TCP for external editing clients; Neptune Terminal's Unix shell/MCP adapters
 are not evidence of Windows integration. The
 [read-only source audit](../.scratch/production-readiness/audit.md#how-neptune-integrates-ai)
 records the specific source seams and installed protocol schemas.

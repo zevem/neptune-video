@@ -25,7 +25,7 @@ carry the final pass/fail verdict and limitations.
 ## Answer
 
 Performance measurements and owning-seam fixes are complete for source
-`b09ea17e` / optimized Linux `aster` `9b9ff3f0`. The
+`b09ea17e` / optimized Linux `neptune-video` `9b9ff3f0`. The
 [audited results](../../artifacts/performance-acceptance/round1/acceptance.json)
 pass metadata/query, exact history/gesture reversal, finite memory/decoder/GPU
 budgets and repeated visible/minimized idle. Two 120-second playback runs and

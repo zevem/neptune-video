@@ -96,10 +96,10 @@ nothing was listened to.
   stack-order test is now the speed stage).
 - `cargo test -p editor-core --locked`: all pass; one new test in
   `tests/sound.rs`.
-- `cargo test --locked --bin aster`: 699 passed; new tests in
+- `cargo test --locked --bin neptune-video`: 699 passed; new tests in
   `src/speed.rs` (3), `src/agent.rs` (1) and
   `src/ui/inspector/speed_tests.rs` (3).
-- `cargo clippy -p editor-core -p editor-media -p aster-editor --all-targets
+- `cargo clippy -p editor-core -p editor-media -p neptune-video --all-targets
   --locked -- -D warnings`, `cargo fmt --all -- --check`, `cargo check
   --locked --workspace --all-targets` and `scripts/check-architecture.py`
   pass.

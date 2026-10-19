@@ -5,7 +5,7 @@ Progress: implemented; native acceptance on macOS recorded, Linux and Windows no
 Type: task
 
 Phase 8: any MCP client (Claude Code, Codex, others) creates, inspects,
-edits, analyses, previews and exports Aster projects through typed tools
+edits, analyses, previews and exports Neptune Video projects through typed tools
 that reach the same validated commands, history and project state as the
 desktop. A person can open the project the agent made, or the one the agent
 is editing in the running desktop, and continue in the window.
@@ -17,8 +17,8 @@ feasibility); the review's findings are folded into the decisions.
 
 ## Decisions
 
-1. **One server program, two transports.** `aster-mcp` (a binary of the
-   root package, a thin shim over `aster_editor::mcp::run`) serves MCP with
+1. **One server program, two transports.** `neptune-video-mcp` (a binary of the
+   root package, a thin shim over `neptune_video::mcp::run`) serves MCP with
    the official Rust SDK `rmcp` 3.5 over stdio (default) or Streamable HTTP
    on a loopback address (`--http [ADDR]`). One server process edits one
    project at a time; every HTTP client of one server shares it.
@@ -27,7 +27,7 @@ feasibility); the review's findings are folded into the decisions.
    lives in `src/mcp/` and reuses the desktop's pure builders (placement
    rules, transitions, audio presets, fades, speed, the title catalog,
    caption builders, speech-to-captions) and its export and frame renderer
-   instead of copying them. The headless document code of `aster-agent`
+   instead of copying them. The headless document code of `neptune-video-agent`
    moves into the library (`src/headless.rs`) and both binaries share it.
    No new crate; the `desktop → core/media/store/agent` edges are
    unchanged. The exported surface stays `app`, `settings`, `headless`,
@@ -36,7 +36,7 @@ feasibility); the review's findings are folded into the decisions.
    project is edited in exactly one place at a time:
    - **Local**: the server's own `Editor` with a protected
      `DocumentSession`, saved after every changing mutation exactly as
-     `aster-agent --project` does (the shared `headless` code). A project
+     `neptune-video-agent --project` does (the shared `headless` code). A project
      without a file is in memory until `project_save`. Opening or creating
      a file takes its `RecoveryLease` and refuses `project_busy` when
      another writer holds it. After a `storage_conflict` the project is
@@ -83,7 +83,7 @@ feasibility); the review's findings are folded into the decisions.
    - more than one live window has the file → `desktop_conflict`.
    A desktop that exits makes the next call answer `desktop_closed`; the
    server never reopens the file behind the person's back. `desktop`
-   `open` saves, releases the Local project and launches the `aster` beside
+   `open` saves, releases the Local project and launches the `neptune-video` beside
    the server with null standard streams, detached, with only
    `--agent-session` and the canonical file, at most one at a time.
 7. **The protocol grows three operations.** `history` (past and future
@@ -137,7 +137,7 @@ feasibility); the review's findings are folded into the decisions.
     new server code; typed tools are conveniences over it. `edit_apply`
     takes core microseconds; typed tools take `TimeSpec`.
 12. **Files stay inside allowed roots.** The server reads and writes only
-    under its roots: `--root DIR` (repeatable) or `ASTER_MCP_ROOTS`; with
+    under its roots: `--root DIR` (repeatable) or `NEPTUNE_VIDEO_MCP_ROOTS`; with
     neither, the working directory, unless it is `/`, a drive root, the home
     folder or a system folder, in which case it refuses to start. Paths are
     resolved by canonicalizing the deepest existing ancestor and refusing
@@ -155,7 +155,7 @@ feasibility); the review's findings are folded into the decisions.
 13. **Loopback HTTP is authenticated.** `--http` accepts only a loopback IP
     literal. Every request (POST, GET stream, DELETE) needs
     `Authorization: Bearer <token>`, compared in constant time; the token
-    is `ASTER_MCP_TOKEN` or 256 random bits. rmcp's Host check stays on,
+    is `NEPTUNE_VIDEO_MCP_TOKEN` or 256 random bits. rmcp's Host check stays on,
     Origin validation is enforced with no allowed browser origin, bodies
     are capped at 4 MiB. The address and token are written to a connection
     file in the per-user data folder, created owner-only (0600 on Unix),
@@ -171,8 +171,8 @@ feasibility); the review's findings are folded into the decisions.
     failure after a mutation was sent is `indeterminate`: the agent reads
     `history` to learn whether it landed. JSON-RPC errors are kept for
     malformed requests.
-15. **Changes are announced.** Resources `aster://project`,
-    `aster://history` and `aster://jobs` can be read and subscribed. While
+15. **Changes are announced.** Resources `neptune-video://project`,
+    `neptune-video://history` and `neptune-video://jobs` can be read and subscribed. While
     a client is subscribed, the server polls `document` (at most twice a
     second, answered without waking the window) and sends
     `notifications/resources/updated` when the change key moves:
@@ -254,7 +254,7 @@ or settles what they left open (decided on the owner's behalf):
   `-protocol_whitelist file`. A format sniff was not added: `supported()`
   already admits only media extensions, so playlists, concat lists and
   text formats never reach a probe.
-- `project_open` on a file an Aster window has open attaches to that
+- `project_open` on a file a Neptune Video window has open attaches to that
   window, whatever the window's unsaved state, before any local open is
   tried. A failed open keeps the project that was open.
 - A recovery copy that differs from its file (an editor stopped with
@@ -264,7 +264,7 @@ or settles what they left open (decided on the owner's behalf):
 - A server stopped by SIGTERM, SIGHUP or Ctrl-C lets go of its project
   (lock and recovery copy) as when its client closes stdin; Claude Code
   and Codex stop their servers with a signal.
-- No `mcp` cargo feature: `aster-mcp` is always built, as `aster-agent`
+- No `mcp` cargo feature: `neptune-video-mcp` is always built, as `neptune-video-agent`
   is.
 - Model installs rely on the download's SHA-256 check; two servers
   installing the same model at once are not serialised across processes.

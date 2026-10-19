@@ -1,9 +1,10 @@
 /target/
 /.tools/
-*.aster.recovery
-*.aster.checkpoints/
+*.nvp.recovery
+*.nvp.checkpoints/
 artifacts/
 *.tmp
+__pycache__/
 
 # Recovery archives written by an older build, kept as schema fixtures.
-!crates/editor-store/tests/fixtures/*.aster.recovery
+!crates/editor-store/tests/fixtures/*.nvp.recovery

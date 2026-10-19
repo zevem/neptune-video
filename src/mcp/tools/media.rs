@@ -3,7 +3,7 @@
 use super::{Guard, blocking, refused, stamp};
 use crate::mcp::{
     errors::{ToolError, codes},
-    server::AsterServer,
+    server::NeptuneVideoServer,
     workspace::Edited,
 };
 use editor_core::{Command, MediaFolder};
@@ -114,7 +114,7 @@ fn asset_view(
 }
 
 #[tool_router(router = media_tools, vis = "pub(crate)")]
-impl AsterServer {
+impl NeptuneVideoServer {
     #[tool(
         description = "Import media files or folders (video, audio, images, GIFs, fonts, \
                           .cube LUTs) into the project as one undoable edit. Files already in \
@@ -294,7 +294,7 @@ impl AsterServer {
                 let path = self.roots().file(std::path::Path::new(given))?;
                 if !editor_media::inspect::importable(&path) {
                     return Err(ToolError::invalid(format!(
-                        "{given} is not a kind of media Aster imports"
+                        "{given} is not a kind of media Neptune Video imports"
                     )));
                 }
                 (path, None)
@@ -336,7 +336,10 @@ impl AsterServer {
                 out.insert("error".into(), error.message.clone().into());
             }
             (None, None) => {
-                out.insert("error".into(), "Not a media file Aster reads".into());
+                out.insert(
+                    "error".into(),
+                    "Not a media file Neptune Video reads".into(),
+                );
             }
         }
         if let Some(details) = details {

@@ -4,7 +4,7 @@
 //! signed in to. It is answered one of two ways:
 //!
 //! - **As it works** (`Agent`): the provider edits this window's project
-//!   with the tools of `aster-mcp`, the same tools an outside agent has,
+//!   with the tools of `neptune-video-mcp`, the same tools an outside agent has,
 //!   started in this window. Every edit lands here at once, through the same
 //!   guarded requests an outside agent sends, as one step of the history.
 //!   `editor_agent::Conversation` owns the provider's process.
@@ -176,7 +176,7 @@ impl AiSettings {
 
 /// Request ids of this window's own agent begin with this, so its edits
 /// are told apart from those of an agent that connected from outside.
-pub const TAG: &str = "aster-tab";
+pub const TAG: &str = "neptune-video-tab";
 
 /// The tag this window's agent begins its request ids with: the window's
 /// own, since another window's agent may also edit the project shown here.
@@ -264,7 +264,7 @@ impl RootsFile {
         let (writer, asked) = mpsc::channel::<(Vec<PathBuf>, Option<mpsc::SyncSender<()>>)>();
         let file = path.clone();
         std::thread::Builder::new()
-            .name("aster-agent-roots".into())
+            .name("neptune-video-agent-roots".into())
             .spawn(move || {
                 while let Ok((roots, done)) = asked.recv() {
                     let _ = write_roots(&file, &roots);
@@ -477,29 +477,29 @@ impl Agent {
     }
 }
 
-/// `aster-mcp`: named by `ASTER_MCP`, else the one installed beside this
-/// program (links followed, so a linked `aster` finds its own).
+/// `neptune-video-mcp`: named by `NEPTUNE_VIDEO_MCP`, else the one installed beside this
+/// program (links followed, so a linked `neptune-video` finds its own).
 pub fn tool_program() -> Result<PathBuf, String> {
-    if let Some(named) = std::env::var_os("ASTER_MCP").filter(|named| !named.is_empty()) {
+    if let Some(named) = std::env::var_os("NEPTUNE_VIDEO_MCP").filter(|named| !named.is_empty()) {
         let named = PathBuf::from(named);
         return if named.is_file() {
             Ok(named)
         } else {
             Err(format!(
-                "ASTER_MCP names {}, which is not a program",
+                "NEPTUNE_VIDEO_MCP names {}, which is not a program",
                 named.display()
             ))
         };
     }
     let exe = std::env::current_exe()
         .and_then(std::fs::canonicalize)
-        .map_err(|error| format!("Cannot find where Aster is installed: {error}"))?;
-    let beside = exe.with_file_name(format!("aster-mcp{}", std::env::consts::EXE_SUFFIX));
+        .map_err(|error| format!("Cannot find where Neptune Video is installed: {error}"))?;
+    let beside = exe.with_file_name(format!("neptune-video-mcp{}", std::env::consts::EXE_SUFFIX));
     if beside.is_file() {
         Ok(beside)
     } else {
         Err(format!(
-            "The agent's editing tools, {}, are missing. Reinstall Aster, or build them with \
+            "The agent's editing tools, {}, are missing. Reinstall Neptune Video, or build them with \
              cargo build --bins.",
             beside.display()
         ))
@@ -919,7 +919,7 @@ mod tests {
         let tag = window_tag(here);
         assert!(own_request(&tag, &format!("{tag}-3")));
         assert!(!own_request(&tag, &format!("{}-3", window_tag(there))));
-        assert!(!own_request(&tag, "aster-tab-3"));
+        assert!(!own_request(&tag, "neptune-video-tab-3"));
         assert!(!own_request(&tag, "mcp-3"));
         assert!(!own_request(&tag, &format!("{tag}3")));
     }
@@ -1204,7 +1204,7 @@ mod tests {
     fn planned(editor: &Editor, commands: &str) -> (Planner, Plan) {
         use std::{os::unix::fs::PermissionsExt, time::Duration};
 
-        let dir = std::env::temp_dir().join(format!("aster-test-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("neptune-video-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let executable = dir.join("provider");
         let answer = format!(

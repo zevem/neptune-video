@@ -1,4 +1,4 @@
-# aster-mcp started in its window
+# neptune-video-mcp started in its window
 
 Status: ready-for-human
 Progress: resolved
@@ -7,7 +7,7 @@ Blocked by: none
 
 ## Scope
 
-`aster-mcp --window FILE` and `--tag TAG` in `src/mcp/mod.rs`, the home
+`neptune-video-mcp --window FILE` and `--tag TAG` in `src/mcp/mod.rs`, the home
 window in `src/mcp/workspace.rs` (`pin` and `following`), `usable_roots`,
 and the window side in `src/app.rs` and `src/ai.rs`: `tool_program`,
 `tool_server`, `agent_roots`, the per-window tag (`window_tag`) and
@@ -27,9 +27,9 @@ and the window side in `src/app.rs` and `src/ai.rs`: `tool_program`,
   project attached, the next call attaches again. Closing, opening or
   launching a project by choice ends following; attaching back to the
   window starts it again.
-- The window starts the program named by `ASTER_MCP`, else `aster-mcp`
-  beside the running `aster`, with `--window`,
-  `--tag aster-tab-<instance>` (the window's agent session instance ID in
+- The window starts the program named by `NEPTUNE_VIDEO_MCP`, else `neptune-video-mcp`
+  beside the running `neptune-video`, with `--window`,
+  `--tag neptune-video-tab-<instance>` (the window's agent session instance ID in
   32 hex digits, from `ai::window_tag`), `--roots-file` (its session file with extension `.roots`),
   `--desktop-settings` and `--models`. It no longer passes `--root`.
 - Roots: the project file's folder, the folder of every asset, the
@@ -39,10 +39,10 @@ and the window side in `src/app.rs` and `src/ai.rs`: `tool_program`,
   the server keeps them in order with `usable_roots` as canonical
   directories without too-wide or nested roots, and reads the file again
   when it changes.
-- For requests with its own tag, `aster-tab-<instance>-N`, the window
+- For requests with its own tag, `neptune-video-tab-<instance>-N`, the window
   counts the turn's changes and adds no "Agent: …" rows; outside clients,
   another window's agent included, keep theirs.
-- First round, `ASTER_TEST_DESKTOP=1 cargo test --locked --test mcp`: 11
+- First round, `NEPTUNE_VIDEO_TEST_DESKTOP=1 cargo test --locked --test mcp`: 11
   passed, three runs in a row. Its two pinned-server tests were replaced
   in [issue 06](06-same-reach-as-an-outside-agent.md), where the file now
   has 12 cases.

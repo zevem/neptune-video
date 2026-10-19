@@ -7,7 +7,7 @@ Proposed for review) choose between them. The setting is
 `AiSettings.review`, false by default.
 
 - **Made as it works**, the default. A conversation with the provider whose
-  only tools are Aster's MCP server, `aster-mcp`: the same program and the
+  only tools are Neptune Video's MCP server, `neptune-video-mcp`: the same program and the
   same 39 tools that outside MCP clients use, with nothing refused. The
   server starts in this window, so an edit to the window's project enters
   its authenticated agent session and goes through the same command
@@ -15,8 +15,8 @@ Proposed for review) choose between them. The setting is
   edit appears in the window at once as one undo step. Like any MCP agent,
   it may also create, open, save and close other projects.
   See [Made as it works](#made-as-it-works) and
-  [ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md).
-- **Proposed for review**. Aster's Rust backend invokes the CLI with every
+  [ADR 0011](adr/0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md).
+- **Proposed for review**. Neptune Video's Rust backend invokes the CLI with every
   tool and MCP server disabled to propose typed edits to the captured
   project. The person reviews the proposal before applying it through the
   same reducer and history as manual editing
@@ -46,19 +46,19 @@ Linux and Windows windows are not verified for it.
 Decided on the owner's behalf (2026-10-14): the in-app agent is an MCP agent.
 Ask defaults to it, and the earlier proposal path stays as the **Proposed for
 review** setting. The decision is recorded in
-[ADR 0011](adr/0011-the-agent-tab-edits-through-aster-mcp-started-in-its-window.md);
+[ADR 0011](adr/0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md);
 the feature folder is [.scratch/in-app-agent](../.scratch/in-app-agent/).
 
 ### Launching the agent
 
-The window runs the program the `ASTER_MCP` environment variable names, else
-the `aster-mcp` beside the running `aster` executable, found through its
-canonical path. If `ASTER_MCP` names something that is not a file, or no
-`aster-mcp` is beside `aster`, the request fails with a message in the
+The window runs the program the `NEPTUNE_VIDEO_MCP` environment variable names, else
+the `neptune-video-mcp` beside the running `neptune-video` executable, found through its
+canonical path. If `NEPTUNE_VIDEO_MCP` names something that is not a file, or no
+`neptune-video-mcp` is beside `neptune-video`, the request fails with a message in the
 panel. Its arguments are:
 
 ```text
---window <this window's session file> --tag aster-tab-<instance>
+--window <this window's session file> --tag neptune-video-tab-<instance>
 --roots-file <session file with extension .roots>
 --desktop-settings <settings file> --models <models dir>
 ```
@@ -67,7 +67,7 @@ panel. Its arguments are:
 file: it attaches at once, or at its first call if the window is not
 answering yet, and goes back to that window when `desktop {op: attach}`
 names no window. It does not lock the server to the window. `--tag` names
-its request IDs `aster-tab-<instance>-N`, where `<instance>` is the window's
+its request IDs `neptune-video-tab-<instance>-N`, where `<instance>` is the window's
 agent session instance ID in 32 hex digits, so the window can tell its own
 agent's requests from an outside client's and from another window's agent.
 With one shared tag, a window that an agent opened with `desktop {op: open}`
@@ -83,38 +83,38 @@ it on stdin, never in its arguments.
 
 ```text
 claude --print --verbose --input-format stream-json --output-format stream-json
-  --tools "" --strict-mcp-config --mcp-config <aster-tools.json>
-  --allowedTools "mcp__aster__*" --permission-mode dontAsk
+  --tools "" --strict-mcp-config --mcp-config <neptune-video-tools.json>
+  --allowedTools "mcp__neptune-video__*" --permission-mode dontAsk
   --setting-sources "" --disable-slash-commands --no-session-persistence
   --max-turns 400 --system-prompt <instructions> [--model …] [--effort …]
 ```
 
-`aster-tools.json` is a private file, created with mode 0600 on Unix in the
+`neptune-video-tools.json` is a private file, created with mode 0600 on Unix in the
 conversation's private working directory, that names one stdio server,
-`aster`.
+`neptune-video`.
 The server's path and arguments are therefore not on Claude's command line. Built-in
-tools are off. The stream's first `init` line must report the `aster` server
+tools are off. The stream's first `init` line must report the `neptune-video` server
 as `connected`, or the request fails. A conversation does not use
-`--safe-mode`: in 2.1.300 it drops every MCP server, Aster's included
+`--safe-mode`: in 2.1.300 it drops every MCP server, Neptune Video's included
 (probed). The planner still uses it.
 
 **Codex** (verified with codex-cli 0.162.1): `codex app-server` with the
 planner's disabled features except `code_mode_host`, web search disabled,
 `project_doc_max_bytes=0`, empty project-doc fallback names and `notify=[]`.
 `thread/start` sets every MCP server the person's configuration names to
-`enabled: false`, by name only, and adds one server, `aster_window`, with
+`enabled: false`, by name only, and adds one server, `neptune_video_window`, with
 `startup_timeout_sec` 30, `tool_timeout_sec` 300 and
 `default_tools_approval_mode` `approve`. The thread uses approval policy
 `never`, a read-only sandbox without network access, the shell tool off and
-Aster's instructions as both base and developer instructions. Codex 0.162.1
+Neptune Video's instructions as both base and developer instructions. Codex 0.162.1
 calls MCP tools through its code-mode host: with `code_mode_host` off it
-answered "I couldn't call aster_window.project_status because the tool host
+answered "I couldn't call neptune_video_window.project_status because the tool host
 is disabled". Any request from the server to the client (an approval), a
 call to another server's tool or a failed server start ends the request as an
 error. Follow-ups are new turns on the same thread.
 
-The instructions are Aster's own text and carry no person data. They say that
-the aster tools are the agent's only tools; that every edit appears at once
+The instructions are Neptune Video's own text and carry no person data. They say that
+the neptune-video tools are the agent's only tools; that every edit appears at once
 and is one undo step shared with the person; to look before changing
 (`project_inspect`, `media_inspect`, `frame_render`, `contact_sheet`); to pass
 `expected_revision`; to wait and retry on `person_editing` or `desktop_busy`;
@@ -150,7 +150,7 @@ did.
 | `Conversation::stop` | Kills the provider process and ends the conversation. |
 | `Conversation::end` | Ends the conversation; the next request starts a new one. |
 | `Conversation::poll` | Returns `TurnEvent`s without waiting: `Started {fresh}` first, then `Said`, `Called {tool, op}` and `Returned {ok, detail}`, and exactly one of `Finished {model}`, `Failed` or `Cancelled` last. |
-| `INSTRUCTIONS` | Aster's system text for the provider, above. |
+| `INSTRUCTIONS` | Neptune Video's system text for the provider, above. |
 
 A conversation continues while the provider, executable, model, effort and
 the server's command and arguments stay the same. A change to any of them
@@ -185,7 +185,7 @@ After each request a note names the provider, the model and the changes:
 "Claude · claude-opus-5-5 · 3 changes; undo and redo take them back"
 ("1 change, which undo or redo takes back"; "no changes"). The panel counts
 changes rather than edits because the agent's own undo is one too. It counts
-this window's changes by their `aster-tab-<instance>-N` requests, and the
+this window's changes by their `neptune-video-tab-<instance>-N` requests, and the
 tool results that report a change; any more than this window saw are changes
 in other projects, which this window's undo does not reach. The note then ends
 " · 1 change in another project" or " · N changes in other projects", and
@@ -214,13 +214,13 @@ whatever the tools the agent calls return: the project's editing data,
 rendered frames and contact sheets as PNG or JPEG images, transcripts, level
 and loudness measurements, and file names and paths inside the folders it
 may use. This includes other projects it opens or creates. It goes to
-Anthropic or OpenAI under the person's own CLI sign-in and terms. Aster does
+Anthropic or OpenAI under the person's own CLI sign-in and terms. Neptune Video does
 not upload source media files; the provider receives tool results only.
 
 The agent cannot read files outside the folders it may use, run shell
-commands, browse the web or use other MCP servers. Aster's instructions are
+commands, browse the web or use other MCP servers. Neptune Video's instructions are
 visible in the provider's process arguments to other users of the computer
-(`ps`); they are Aster's own text. The person's words, the server's path and
+(`ps`); they are Neptune Video's own text. The person's words, the server's path and
 the folders are not in the arguments.
 
 ### Folders
@@ -249,7 +249,7 @@ another. With a roots file and no `--root`, the working directory is not a
 folder it may use. A missing, unreadable or over-256-KiB file names no folder.
 `project_status.roots` lists the current folders. A path outside them is
 refused `outside_roots`, whose message ends "the person can add one with
---root, or for Aster's own agent in Settings › Agent › Folders".
+--root, or for Neptune Video's own agent in Settings › Agent › Folders".
 
 Importing media from a new folder adds that folder to the file, and the
 conversation continues.
@@ -361,8 +361,8 @@ keep each request. Linux and Windows windows are not verified.
   ([run notes](../.scratch/in-app-agent/evidence/native-runs-2026-10-15.md),
   [verification](verification.md#in-app-agent)); Linux and Windows windows
   are not verified.
-- Aster's instructions are visible in the provider's process arguments.
-  They are Aster's own text; the person's words go on stdin.
+- Neptune Video's instructions are visible in the provider's process arguments.
+  They are Neptune Video's own text; the person's words go on stdin.
 - Outside MCP clients and the in-app agent can edit the same window at once.
   The window takes their requests one at a time; only typed tools given
   `expected_revision` refuse a project the other changed first.
@@ -454,7 +454,7 @@ The live agent sends more; see [what reaches the provider](#what-reaches-the-pro
 The worker sends the person's request, selected IDs, playhead and serialized
 project metadata. That metadata includes names, local source paths, text clips,
 canvas settings, timing, transforms, track state and available source metadata.
-Aster sends no source video, image or audio bytes, decoded frames or waveform
+Neptune Video sends no source video, image or audio bytes, decoded frames or waveform
 samples to this planner. Requests requiring scene understanding, transcription,
 beat detection or semantic media selection are beyond this implementation; ask
 for edits expressible from metadata and explicit targets.
@@ -528,10 +528,10 @@ This section describes the planner's launch. The live agent's launch is in
 resolution, credential handling and process ownership below, with the
 conversation limits in its own table.
 
-Install and sign in with the selected provider CLI separately. Aster resolves
+Install and sign in with the selected provider CLI separately. Neptune Video resolves
 its executable on the planning worker before entering a private temporary
 working directory; an explicit configured path is relative to the application's
-launch directory. `AiConfig` stores no credential values, and Aster does not
+launch directory. `AiConfig` stores no credential values, and Neptune Video does not
 open or copy credential files. The provider CLI retains responsibility for its
 own sign-in and account configuration. Requests use that provider's configured
 model unless a model override is supplied; recorded resolved models are
@@ -553,8 +553,8 @@ MCP names individually, native tools, search, plugins, hooks and delegation;
 also sets `project_doc_max_bytes=0`, empty instruction fallback names and
 `notify=[]` at process and thread levels. Supplied instruction sources must be
 empty. Before starting, it points `model_instructions_file` to an owned file
-containing only Aster's planner instructions inside the private working
-directory, then supplies Aster's explicit
+containing only Neptune Video's planner instructions inside the private working
+directory, then supplies Neptune Video's explicit
 `baseInstructions` and `developerInstructions` for the thread. This keeps an
 inherited custom model-instruction file out of startup and the model prompt.
 It preserves configured provider/authentication settings; verifies the returned
@@ -680,7 +680,7 @@ Acceptance caught and corrected two integration problems: Codex rejected the
 original `oneOf` schema on some requests, and its loader rejected a zero-byte
 instruction file. The
 [owned no-model startup comparison](../artifacts/production-readiness/codex-owned-prompt-startup-fq9txewt/classification.json)
-confirms the latter; the override now contains only Aster's known nonempty
+confirms the latter; the override now contains only Neptune Video's known nonempty
 instructions. Two subsequent model responses described a split but proposed
 an unchanged transform; explicit operation semantics then produced the correct
 split above. These observations reinforce review of command intent as well as

@@ -42,7 +42,7 @@ Whisper translate-to-English option; Translate captions through the native AI pr
   - Faults found and fixed:
     1. A menu that changes into the language list kept its old height of about two rows. The list now asks for its own height.
     2. The request bubble showed the prompt with raw IDs.
-- Tests: `cargo test --bin aster` 671 passed. `cargo test -p editor-agent` with `ASTER_PROVIDER_TEST_FIXTURE` set: 72 and 14 passed. `cargo clippy --workspace --tests -- -D warnings` and `cargo fmt --check` are clean.
+- Tests: `cargo test --bin neptune-video` 671 passed. `cargo test -p editor-agent` with `NEPTUNE_VIDEO_PROVIDER_TEST_FIXTURE` set: 72 and 14 passed. `cargo clippy --workspace --tests -- -D warnings` and `cargo fmt --check` are clean.
   - New desktop tests: `a_translation_asks_for_one_copy_with_a_text_for_each_caption`, `the_track_menu_translates_into_a_language_chosen_or_typed`, `titles_are_animated_in_and_out_by_name_as_one_step_each`, `captions_are_translated_from_the_selected_track_or_the_one_shown` and `captions_from_speech_are_asked_for_in_the_captions_tab`.
   - The two track-menu tests click Spanish and German directly; they fail without the list height fix.
 - Not verified:

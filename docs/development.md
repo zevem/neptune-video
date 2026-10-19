@@ -1,7 +1,7 @@
 # Development
 
 Use `rustup` with the repository's `rust-toolchain.toml` (Rust 1.97.1, edition
-2024). The desktop uses Neptune's native `eframe`/`egui` 0.36.2 stack with `wgpu`,
+2024). The desktop uses Neptune Terminal's native `eframe`/`egui` 0.36.2 stack with `wgpu`,
 X11/Wayland and accessibility integration. The application runs on a graphical
 desktop with a working graphics driver.
 
@@ -11,7 +11,7 @@ Follow [source installation](installation.md) for Linux, macOS and Windows
 prerequisites and FFmpeg/ffprobe configuration, then run:
 
 ```sh
-cargo run --release --locked --bin aster
+cargo run --release --locked --bin neptune-video
 ```
 
 Rust controls the editor and worker adapters; FFmpeg supplies native codecs.
@@ -53,7 +53,7 @@ Native design and media acceptance are separate in
 
 [test-workspace.py](../scripts/test-workspace.py) builds the owned native
 provider-fault example first, takes its absolute executable path from Cargo's
-artifact event, and supplies `ASTER_PROVIDER_TEST_FIXTURE` for the subsequent
+artifact event, and supplies `NEPTUNE_VIDEO_PROVIDER_TEST_FIXTURE` for the subsequent
 locked tests. Missing fixture configuration fails explicitly. `--package` and
 `--filter` select focused checks; `--target` and Cargo's environment retain
 normal target configuration. No fixture ships in the application binaries.
@@ -74,8 +74,8 @@ possible; real desktop portals, file drops and sound devices need their own
 native acceptance. Track child processes and clean up their exact handles.
 
 ```sh
-target/release/aster --settings /absolute/run/settings.json \
-  --agent-session /absolute/run/session.json /absolute/run/film.aster
+target/release/neptune-video --settings /absolute/run/settings.json \
+  --agent-session /absolute/run/session.json /absolute/run/film.nvp
 ```
 
 Retain screenshots, test logs and measurements under `artifacts/` or another
@@ -85,23 +85,28 @@ keep headless correctness checks on the reusable CI profile.
 
 ## Continuous integration
 
-CI is paused: branches, pull requests and pushes to `main` start no runs. Start
-the workflow by hand from the Actions tab (`workflow_dispatch`) when a hosted
-run is wanted; until then, run the workspace checks above locally.
+CI runs on every pull request and on pushes to `main`. A preflight job
+classifies the change: documentation, `.scratch/` and `artifacts/` changes skip
+compilation but still report every job. The `main` ruleset requires a pull
+request and the aggregate `Check` status, which passes only when every job
+passed.
 
 [CI](../.github/workflows/ci.yml) declares explicit Linux x86-64, macOS ARM64,
 macOS Intel and Windows x86-64 MSVC Rust build/test/lint jobs plus formatting
 and dependency-boundary validation. The versioned runner labels follow
 [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners);
 they identify CI environments, not minimum supported OS versions. The Linux
-job installs window/audio build dependencies and FFmpeg. Other jobs install
-FFmpeg for media tests.
+job installs window/audio build dependencies and Mesa's lavapipe, the software
+adapter export renders on where a runner has no GPU. Every native job fetches the
+pinned FFmpeg that packages ship with
+[fetch-media-tools.py](../scripts/fetch-media-tools.py), so media tests run
+against the shipped tools rather than the runner's own.
 
 Before headless correctness, every native CI job runs
 [check-media-tools.py](../scripts/check-media-tools.py). It requires both
 `ffmpeg` and `ffprobe` to complete `-version` successfully within ten seconds
 each, and records their resolved executable paths and actual version banners.
-Explicit `ASTER_FFMPEG` / `ASTER_FFPROBE` overrides select those executables;
+Explicit `NEPTUNE_VIDEO_FFMPEG` / `NEPTUNE_VIDEO_FFPROBE` overrides select those executables;
 otherwise it takes the build `scripts/fetch-media-tools.py` placed in
 `.tools/media/<os>-<arch>`, as a build in the checkout does, and then `PATH`. Missing, broken or empty overrides fail the
 preflight instead of falling back to another tool. Run the same preflight
@@ -131,8 +136,7 @@ logs, the source digest before and after, test counts, and application paths and
 hashes from Cargo's artifact events. A failed check stops later checks and
 retains its evidence. These use the CI profile, not a performance build.
 
-The workflow includes a manual trigger and uploads the native backend reports
-for 14 days. [test-native-test-runner.py](../scripts/test-native-test-runner.py)
+The workflow uploads the native backend reports for 14 days. [test-native-test-runner.py](../scripts/test-native-test-runner.py)
 checks reporting and refusal with fake tools and temporary files; it never
 launches Rust, media, devices or the editor. Its checks do not establish native
 acceptance.

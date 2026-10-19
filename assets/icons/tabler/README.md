@@ -1,11 +1,11 @@
-# Aster Tabler icon subset
+# Neptune Video Tabler icon subset
 
 These SVGs are unmodified official Tabler Icons 3.49.0 source assets, pinned
 to commit `a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d`. They retain `currentColor`, the
 24×24 viewBox and upstream comments. Outline assets use Tabler's rounded
 2-point strokes; playback assets use the official filled style.
 
-`mapping.json` records the complete Aster `Icon` mapping, each source URL,
+`mapping.json` records the complete Neptune Video `Icon` mapping, each source URL,
 upstream icon version, font Unicode code point and SHA-256 of the exact
 source bytes. The upstream MIT notice is preserved in `LICENSE.txt`.
 
@@ -25,7 +25,7 @@ controls use `aspect-ratio` and the corresponding `align-box` corner or
 side glyphs. These are all upstream glyphs, with no bespoke paths.
 
 The native UI embeds `outline.ttf` and `filled.ttf`, containing only the 76
-glyphs used by Aster's 78 `Icon` variants. They are generated from the official
+glyphs used by Neptune Video's 78 `Icon` variants. They are generated from the official
 `@tabler/icons-webfont` package at the same pinned version. `font-source.json`
 records the verified archive and font hashes, retained glyph counts and font
 metrics; `glyphs.rs` supplies the exhaustive Rust mapping.

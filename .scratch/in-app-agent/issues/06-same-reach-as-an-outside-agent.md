@@ -7,17 +7,17 @@ Blocked by: 02, 03
 
 ## Scope
 
-- Leave and return to the window. `aster-mcp --window FILE` starts in the
+- Leave and return to the window. `neptune-video-mcp --window FILE` starts in the
   window and goes back to it when `desktop {op: attach}` names no window.
   `project_create`, `project_open`, `project_close` and `desktop {op:
   open}` work as for any MCP client; `check_unpinned` is removed.
   `Workspace.following` in `src/mcp/workspace.rs` decides whether the
   server looks for its window again.
-- Live roots file. `aster-mcp --roots-file FILE` reads `{"roots": [DIR,
+- Live roots file. `neptune-video-mcp --roots-file FILE` reads `{"roots": [DIR,
   …]}` again whenever the file changes (modified time, length and, on
   Unix, inode), at most 256 KiB, filtered by `usable_roots`. The window
   writes its session file with extension `.roots` from the thread
-  `aster-agent-roots` when the project's revision, path or the person's
+  `neptune-video-agent-roots` when the project's revision, path or the person's
   folders change, and no longer passes `--root`. Roots are no longer part
   of the conversation's identity.
 - Settings folders. Settings › Agent › Folders with "Add folder…" and
@@ -40,7 +40,7 @@ Blocked by: 02, 03
   since it last attached.
 - With a roots file and no `--root`, the working directory is not a root;
   with no roots at all every path is refused `outside_roots`, whose
-  message now ends "the person can add one with --root, or for Aster's own
+  message now ends "the person can add one with --root, or for Neptune Video's own
   agent in Settings › Agent › Folders". `project_status.roots` lists the
   current roots.
 - The roots file is 0600 on Unix, written whole (a part file renamed over
@@ -58,7 +58,7 @@ Blocked by: 02, 03
   projects changed; Stop: "Stopped. … · N changes in other projects" or
   "Stopped. Nothing was changed here.". The window still ends the
   conversation when the person replaces its project.
-- Tests on macOS 26.5.2 arm64: `ASTER_TEST_DESKTOP=1 cargo test --locked
+- Tests on macOS 26.5.2 arm64: `NEPTUNE_VIDEO_TEST_DESKTOP=1 cargo test --locked
   --test mcp`, 12 passed.
   `a_server_started_for_a_closed_window_still_makes_projects_of_its_own`
   replaces
@@ -76,9 +76,9 @@ Blocked by: 02, 03
   in Settings › Agent › Folders was used in the same conversation; Codex
   exported and saved in a narrow window; Stop with Codex mid-request and
   early; Codex and then Claude edited a project in a second window and came
-  back. Defect 12, the shared `aster-tab` tag that hid the second window's
+  back. Defect 12, the shared `neptune-video-tab` tag that hid the second window's
   "Agent: Edit text" row, was found and fixed: each window now tags its
-  agent's requests `aster-tab-<instance>`.
+  agent's requests `neptune-video-tab-<instance>`.
 
 ## Comments
 
@@ -96,6 +96,6 @@ builds are unverified, as in
 builds E and F, both providers
 ([evidence](../evidence/native-runs-2026-10-15.md)). Defect 12 was found
 and fixed in the runs: each window now starts its agent's server with its
-own tag, `aster-tab-<instance>`, and claims only its own requests. Linux
+own tag, `neptune-video-tab-<instance>`, and claims only its own requests. Linux
 and Windows windows remain unverified
 ([issue 04](04-linux-and-windows-acceptance.md)).

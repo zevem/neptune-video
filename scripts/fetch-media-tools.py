@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Fetch the pinned FFmpeg build Aster ships for one platform.
+"""Fetch the pinned FFmpeg build Neptune Video ships for one platform.
 
 Every download is checked against a pinned SHA-256 digest before anything is
 read from it, and only the named files are taken out. The result -- `ffmpeg`,
 `ffprobe`, the build's license and `media-tools.json` recording where they
-came from -- goes to `.tools/media/<os>-<arch>`, where an Aster built in this
+came from -- goes to `.tools/media/<os>-<arch>`, where a Neptune Video built in this
 checkout finds it, or to `--output`. `package-release.py --media-tools` copies
-that folder into a package, so an installed Aster needs no FFmpeg of its own.
+that folder into a package, so an installed Neptune Video needs no FFmpeg of its own.
 
 The builds are static GPL builds: export needs libx264 and libx265.
 """
@@ -14,6 +14,8 @@ The builds are static GPL builds: export needs libx264 and libx265.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+import contextlib
 import hashlib
 import io
 import json
@@ -96,7 +98,7 @@ def digest(path: Path) -> str:
 
 
 def download(url: str, expected: str, destination: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "aster-fetch-media-tools"})
+    request = urllib.request.Request(url, headers={"User-Agent": "neptune-video-fetch-media-tools"})
     hasher = hashlib.sha256()
     with urllib.request.urlopen(request, timeout=60) as response, destination.open("xb") as output:
         while chunk := response.read(CHUNK):
@@ -106,19 +108,26 @@ def download(url: str, expected: str, destination: Path) -> None:
         raise ValueError(f"{url} has SHA-256 {hasher.hexdigest()}, expected {expected}")
 
 
-def take(archive: Path, member: str) -> io.BufferedIOBase:
-    """Open one regular file, by its exact name, inside a verified archive."""
+@contextlib.contextmanager
+def take(archive: Path, member: str) -> Iterator[io.BufferedIOBase]:
+    """Open one regular file, by its exact name, inside a verified archive.
+
+    The archive closes with the file, so Windows can delete it afterwards.
+    """
     if archive.name.endswith(".zip"):
-        bundle = zipfile.ZipFile(archive)
-        info = bundle.getinfo(member)
-        if info.is_dir():
-            raise ValueError(f"{member} is not a file in {archive.name}")
-        return bundle.open(info)
-    bundle = tarfile.open(archive, "r:*")
-    info = bundle.getmember(member)
-    if not info.isfile():
-        raise ValueError(f"{member} is not a regular file in {archive.name}")
-    return bundle.extractfile(info)
+        with zipfile.ZipFile(archive) as bundle:
+            info = bundle.getinfo(member)
+            if info.is_dir():
+                raise ValueError(f"{member} is not a file in {archive.name}")
+            with bundle.open(info) as source:
+                yield source
+        return
+    with tarfile.open(archive, "r:*") as bundle:
+        info = bundle.getmember(member)
+        if not info.isfile():
+            raise ValueError(f"{member} is not a regular file in {archive.name}")
+        with bundle.extractfile(info) as source:
+            yield source
 
 
 def fetch(key: str, output: Path) -> dict:
@@ -146,7 +155,7 @@ def fetch(key: str, output: Path) -> dict:
                         shutil.copyfileobj(source, target, CHUNK)
                 destination.chmod(0o644 if name == "LICENSE.txt" else 0o755)
                 files[name] = digest(destination)
-        record = {"schema": "aster-media-tools-v1", "platform": key, "version": pin["version"],
+        record = {"schema": "neptune-video-media-tools-v1", "platform": key, "version": pin["version"],
                   "license": pin["license"], "source": pin["source"],
                   "downloads": [{"url": d["url"], "sha256": d["sha256"]} for d in pin["downloads"]],
                   "files": files}
