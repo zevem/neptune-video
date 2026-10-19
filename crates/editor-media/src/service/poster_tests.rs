@@ -1,8 +1,10 @@
 //! Posters are decoded on their own worker: one that is slow, or never ends,
 //! does not hold back a picture the viewer waits for.
 use super::*;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 fn still(path: PathBuf) -> Asset {
     let mut asset = Asset::new(path, MediaKind::Image, Time(1_000_000));
     asset.width = 32;
@@ -24,6 +26,7 @@ fn piped_video(path: PathBuf) -> Asset {
 }
 
 /// A live service's next event, waiting at most `seconds`.
+#[cfg(unix)]
 fn next_event(service: &MediaService, seconds: u64) -> Option<MediaEvent> {
     let until = Instant::now() + Duration::from_secs(seconds);
     loop {
