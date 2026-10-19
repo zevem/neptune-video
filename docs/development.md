@@ -96,8 +96,10 @@ macOS Intel and Windows x86-64 MSVC Rust build/test/lint jobs plus formatting
 and dependency-boundary validation. The versioned runner labels follow
 [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners);
 they identify CI environments, not minimum supported OS versions. The Linux
-job installs window/audio build dependencies and FFmpeg. Other jobs install
-FFmpeg for media tests.
+job installs window/audio build dependencies. Every native job fetches the
+pinned FFmpeg that packages ship with
+[fetch-media-tools.py](../scripts/fetch-media-tools.py), so media tests run
+against the shipped tools rather than the runner's own.
 
 Before headless correctness, every native CI job runs
 [check-media-tools.py](../scripts/check-media-tools.py). It requires both

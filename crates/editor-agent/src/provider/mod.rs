@@ -669,7 +669,8 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    // macOS file systems hold only UTF-8 names, so the path cannot arise there.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn an_unrepresentable_native_path_is_refused_before_creating_an_instruction_file() {
         use std::os::unix::ffi::OsStrExt;
