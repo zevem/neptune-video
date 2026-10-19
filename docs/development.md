@@ -96,7 +96,8 @@ macOS Intel and Windows x86-64 MSVC Rust build/test/lint jobs plus formatting
 and dependency-boundary validation. The versioned runner labels follow
 [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners);
 they identify CI environments, not minimum supported OS versions. The Linux
-job installs window/audio build dependencies. Every native job fetches the
+job installs window/audio build dependencies and Mesa's lavapipe, the software
+adapter export renders on where a runner has no GPU. Every native job fetches the
 pinned FFmpeg that packages ship with
 [fetch-media-tools.py](../scripts/fetch-media-tools.py), so media tests run
 against the shipped tools rather than the runner's own.

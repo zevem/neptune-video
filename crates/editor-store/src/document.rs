@@ -433,6 +433,9 @@ mod tests {
         assert_eq!(binding.baseline, Baseline::Missing);
     }
 
+    // Windows refuses to replace a file that is open, so the save below cannot
+    // set up the replacement this guards against there.
+    #[cfg(not(windows))]
     #[test]
     fn atomic_replacement_during_open_cannot_pair_old_contents_with_a_new_baseline() {
         let dir = tempfile::tempdir().unwrap();

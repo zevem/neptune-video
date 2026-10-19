@@ -108,11 +108,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check dependency boundaries on this platform
         run: python3 scripts/check-architecture.py
-      - name: Install Linux window/audio dependencies
+      # Hosted Linux runners have no GPU: Mesa's lavapipe is the software adapter
+      # that export and the compositor tests render on there.
+      - name: Install Linux window/audio dependencies and a software GPU
         if: needs.preflight.outputs.code == 'true' && runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y pkg-config libxkbcommon-dev libwayland-dev libasound2-dev
+          sudo apt-get install --no-install-recommends -y pkg-config libxkbcommon-dev libwayland-dev libasound2-dev mesa-vulkan-drivers
       # Media tests run against the pinned FFmpeg that packages ship, not whichever
       # version the runner's package manager has.
       - name: Fetch the shipped FFmpeg

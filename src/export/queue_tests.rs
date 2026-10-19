@@ -460,8 +460,16 @@ fn a_cancelled_job_retried_renders_again() {
     assert!(rig.queue.cancel(a));
     rig.wait_state(a, RenderState::Cancelled);
     assert!(rig.queue.retry(a));
+    // The queue may start it again at once; no permit lets it draw a frame.
     let retried = rig.info(a);
-    assert_eq!(retried.state, RenderState::Queued);
+    assert!(
+        matches!(
+            retried.state,
+            RenderState::Queued | RenderState::Preparing | RenderState::Rendering
+        ),
+        "a retried job is back in line, not {:?}",
+        retried.state
+    );
     assert_eq!(retried.frames_done, 0, "progress starts over");
     assert_eq!(rig.next_started(), a);
     rig.permits.open();
