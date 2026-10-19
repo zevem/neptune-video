@@ -3,7 +3,6 @@
 //! stems. No Python and no model; the stems are probed by the real ffprobe.
 use super::*;
 use crate::{SoundEvent, SoundService, process::tool_command};
-use std::process::Stdio;
 
 #[test]
 fn the_tools_progress_and_last_words_are_read_from_its_error_pipe() {
@@ -97,6 +96,7 @@ mod fake {
     use super::*;
     use crate::sound::Cancel;
     use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
 
     /// What the stand-in does once it has read its arguments as Demucs
     /// takes them: `$out` is the folder after `-o`, `$src` the media.

@@ -712,6 +712,13 @@ mod tests {
         Time::from_seconds(value)
     }
 
+    /// Media where a saved project keeps it: at a path absolute here, which on
+    /// Windows starts with a drive.
+    fn media(name: &str) -> std::path::PathBuf {
+        let folder = if cfg!(windows) { r"C:\media" } else { "/media" };
+        std::path::Path::new(folder).join(name)
+    }
+
     /// A project whose first track holds text clips at the given spans.
     fn project_with(spans: &[(f64, f64)]) -> (Project, Vec<ClipId>) {
         let mut project = Project::new("Test");
@@ -802,8 +809,7 @@ mod tests {
 
     /// A project whose first track holds one clip of a ten second video.
     fn project_of_video(change: impl FnOnce(&mut Clip)) -> Project {
-        let asset =
-            editor_core::Asset::new("/media/shot.mp4".into(), MediaKind::Video, seconds(10.0));
+        let asset = editor_core::Asset::new(media("shot.mp4"), MediaKind::Video, seconds(10.0));
         let mut clip = Clip::from_asset(&asset, seconds(20.0));
         change(&mut clip);
         let mut project = Project::new("Test");
@@ -889,7 +895,7 @@ mod tests {
     /// An editor whose first video track holds a four second clip of a ten
     /// second video with sound, from two seconds into the source.
     fn editor_with_shot(change: impl FnOnce(&mut Clip)) -> (editor_core::Editor, ClipId) {
-        let mut asset = Asset::new("/media/shot.mp4".into(), MediaKind::Video, seconds(10.0));
+        let mut asset = Asset::new(media("shot.mp4"), MediaKind::Video, seconds(10.0));
         asset.has_audio = true;
         let mut clip = Clip::from_asset(&asset, seconds(1.0));
         clip.source_in = seconds(2.0);
@@ -1035,7 +1041,7 @@ mod tests {
     fn detached_audio_takes_a_free_lane_or_makes_one() {
         // Something else is on the only audio track over the clip's span.
         let (mut editor, id) = editor_with_shot(|_| {});
-        let mut music = Asset::new("/media/song.wav".into(), MediaKind::Audio, seconds(30.0));
+        let mut music = Asset::new(media("song.wav"), MediaKind::Audio, seconds(30.0));
         music.has_audio = true;
         let bed = Clip::from_asset(&music, Time::ZERO);
         let audio = editor.project().tracks[1].id;
@@ -1124,7 +1130,7 @@ mod tests {
 
         // A link to sound of other media owns nothing of this clip.
         let (mut editor, id) = editor_with_shot(|_| {});
-        let mut music = Asset::new("/media/song.wav".into(), MediaKind::Audio, seconds(30.0));
+        let mut music = Asset::new(media("song.wav"), MediaKind::Audio, seconds(30.0));
         music.has_audio = true;
         let bed = Clip::from_asset(&music, Time::ZERO);
         let (audio, bed_id) = (editor.project().tracks[1].id, bed.id);
@@ -1255,7 +1261,7 @@ mod tests {
     /// An editor whose project is `length` seconds long (one title) and
     /// whose library holds a sound of `sound` seconds.
     fn editor_with_sound(length: f64, sound: f64) -> (editor_core::Editor, AssetId) {
-        let music = Asset::new("/media/song.wav".into(), MediaKind::Audio, seconds(sound));
+        let music = Asset::new(media("song.wav"), MediaKind::Audio, seconds(sound));
         let id = music.id;
         let mut editor = editor_core::Editor::default();
         editor

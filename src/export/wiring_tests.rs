@@ -236,25 +236,37 @@ fn the_file_is_named_after_the_project_in_a_folder_that_is_there() {
     assert_eq!(file_stem(""), UNTITLED);
     assert_eq!(file_stem(&"a".repeat(500)).chars().count(), 120);
 
-    let there = |folders: &'static [&'static str]| {
-        move |folder: &Path| folders.iter().any(|f| Path::new(f) == folder)
+    // Folders absolute here, which on Windows means on a drive.
+    let at = |path: &str| match cfg!(windows) {
+        true => PathBuf::from(format!("C:{path}")),
+        false => PathBuf::from(path),
     };
-    let last = Path::new("/films/out");
-    let project = Path::new("/work/Film.nvp");
-    let videos = Some(PathBuf::from("/home/me/Videos"));
-    let home = Some(PathBuf::from("/home/me"));
+    let there = |folders: &[&str]| {
+        let folders: Vec<PathBuf> = folders.iter().map(|folder| at(folder)).collect();
+        move |folder: &Path| folders.iter().any(|f| f == folder)
+    };
+    let last = at("/films/out");
+    let project = at("/work/Film.nvp");
+    let videos = Some(at("/home/me/Videos"));
+    let home = Some(at("/home/me"));
     let all = there(&["/films/out", "/work", "/home/me/Videos", "/home/me"]);
-    let chosen = initial_folder(Some(last), Some(project), videos.clone(), home.clone(), all);
-    assert_eq!(chosen.as_deref(), Some(last));
+    let chosen = initial_folder(
+        Some(&last),
+        Some(&project),
+        videos.clone(),
+        home.clone(),
+        all,
+    );
+    assert_eq!(chosen, Some(last.clone()));
     let gone = there(&["/work", "/home/me/Videos", "/home/me"]);
     let chosen = initial_folder(
-        Some(last),
-        Some(project),
+        Some(&last),
+        Some(&project),
         videos.clone(),
         home.clone(),
         gone,
     );
-    assert_eq!(chosen.as_deref(), Some(Path::new("/work")));
+    assert_eq!(chosen, Some(at("/work")));
     let unsaved = there(&["/home/me/Videos", "/home/me"]);
     let chosen = initial_folder(None, None, videos.clone(), home.clone(), unsaved);
     assert_eq!(chosen, videos);

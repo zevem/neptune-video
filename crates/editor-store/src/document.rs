@@ -433,9 +433,6 @@ mod tests {
         assert_eq!(binding.baseline, Baseline::Missing);
     }
 
-    // Windows refuses to replace a file that is open, so the save below cannot
-    // set up the replacement this guards against there.
-    #[cfg(not(windows))]
     #[test]
     fn atomic_replacement_during_open_cannot_pair_old_contents_with_a_new_baseline() {
         let dir = tempfile::tempdir().unwrap();
@@ -446,7 +443,18 @@ mod tests {
         // replaces its pathname; both its parse and baseline must stay old.
         let opened = File::open(&path).unwrap();
         let after = Project::new("Intervening replacement");
-        crate::save_project(&path, &after).unwrap();
+        match crate::save_project(&path, &after) {
+            Ok(()) => {}
+            // Windows may refuse to replace a file that is open; then the race
+            // cannot happen, and the file stays as the loader reads it.
+            Err(_) if cfg!(windows) => {
+                let (value, _) = read_document_file(opened).unwrap();
+                assert_eq!(crate::decode_project(value, &path).unwrap(), before);
+                assert_eq!(crate::load_project(&path).unwrap(), before);
+                return;
+            }
+            Err(error) => panic!("the replacement is made: {error}"),
+        }
         let (value, version) = read_document_file(opened).unwrap();
         let project = crate::decode_project(value, &path).unwrap();
         assert_eq!(project, before);

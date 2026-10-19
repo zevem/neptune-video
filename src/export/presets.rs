@@ -229,10 +229,15 @@ impl ExportPresets {
         };
         let bytes = self.to_bytes()?;
         let temporary = path.with_file_name(format!(".{FILE_NAME}.{}.tmp", Uuid::new_v4()));
-        let written = std::fs::write(&temporary, bytes).and_then(|()| {
-            std::fs::File::open(&temporary)?.sync_all()?;
+        // Synced through the handle that wrote it: Windows flushes only a
+        // file opened for writing.
+        let written = (|| {
+            let mut file = std::fs::File::create(&temporary)?;
+            std::io::Write::write_all(&mut file, &bytes)?;
+            file.sync_all()?;
+            drop(file);
             std::fs::rename(&temporary, path)
-        });
+        })();
         if written.is_err() {
             let _ = std::fs::remove_file(&temporary);
         }

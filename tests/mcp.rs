@@ -1146,7 +1146,6 @@ async fn an_agent_takes_back_and_redoes_its_own_edits_one_after_another() {
 async fn links_and_lists_inside_the_roots_cannot_reach_outside_them() {
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path().canonicalize().unwrap();
-    let outside = tempfile::tempdir().unwrap();
     let media = media(&dir);
     let project = dir.join("p.nvp");
     let (client, _) = stdio(&dir).await;
@@ -1190,6 +1189,7 @@ async fn links_and_lists_inside_the_roots_cannot_reach_outside_them() {
 
     #[cfg(unix)]
     {
+        let outside = tempfile::tempdir().unwrap();
         // A link that leads nowhere yet would be followed by a write.
         let target = outside.path().join("new.png");
         std::os::unix::fs::symlink(&target, dir.join("shot.png")).unwrap();

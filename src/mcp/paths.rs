@@ -409,18 +409,16 @@ pub(super) fn too_wide(canonical: &Path) -> bool {
 #[cfg(windows)]
 fn odd_windows_name(path: &Path) -> bool {
     use std::path::Prefix;
-    let text = path.to_string_lossy();
-    let prefix = path
-        .components()
-        .next()
-        .and_then(|component| match component {
-            Component::Prefix(prefix) => Some(prefix.kind()),
-            _ => None,
-        });
-    matches!(
-        prefix,
-        Some(Prefix::UNC(..) | Prefix::VerbatimUNC(..) | Prefix::DeviceNS(..))
-    ) || text.get(2..).is_some_and(|rest| rest.contains(':'))
+    path.components().any(|component| match component {
+        Component::Prefix(prefix) => matches!(
+            prefix.kind(),
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) | Prefix::DeviceNS(..)
+        ),
+        // A drive's colon is in the prefix, `C:` or `\\?\C:`; one in a name
+        // names a stream of the file.
+        Component::Normal(name) => name.to_string_lossy().contains(':'),
+        _ => false,
+    })
 }
 
 #[cfg(test)]
@@ -507,6 +505,19 @@ mod tests {
         roots.create_parent(&place).unwrap();
         write_new(&place, b"picture").unwrap();
         assert_eq!(std::fs::read(&place).unwrap(), b"picture");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_is_not_taken_for_a_stream_but_streams_shares_and_devices_are_refused() {
+        // Canonical paths are verbatim, with the drive after `\\?\`.
+        assert!(!odd_windows_name(Path::new(r"C:\films\a.nvp")));
+        assert!(!odd_windows_name(Path::new(r"\\?\C:\films\a.nvp")));
+        assert!(odd_windows_name(Path::new(r"C:\films\a.nvp:hidden")));
+        assert!(odd_windows_name(Path::new(r"\\?\C:\films\a.nvp:hidden")));
+        assert!(odd_windows_name(Path::new(r"\\server\share\a.nvp")));
+        assert!(odd_windows_name(Path::new(r"\\?\UNC\server\share\a.nvp")));
+        assert!(odd_windows_name(Path::new(r"\\.\COM1")));
     }
 
     #[cfg(unix)]

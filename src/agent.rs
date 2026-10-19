@@ -138,7 +138,12 @@ pub const EXAMPLES: [(&str, &str); 34] = [
         "Keep a named checkpoint, or go back to one",
     ),
     (
-        "duplicate project /path/Film copy.nvp",
+        // A full path, as the command asks, in the system's own form.
+        if cfg!(windows) {
+            r"duplicate project C:\path\Film copy.nvp"
+        } else {
+            "duplicate project /path/Film copy.nvp"
+        },
         "Carry on in a copy; this file stays as it is",
     ),
     (
@@ -1168,9 +1173,14 @@ pub fn interpret(line: &str, context: &Context) -> Result<Vec<Action>, String> {
             } else if let Some(rest) = after("duplicate project ").filter(|rest| !rest.is_empty()) {
                 let path = std::path::PathBuf::from(rest);
                 if !path.is_absolute() {
-                    return Err(
-                        "Give the duplicate a full path, such as /films/Copy.nvp.".to_owned()
-                    );
+                    let example = if cfg!(windows) {
+                        r"C:\films\Copy.nvp"
+                    } else {
+                        "/films/Copy.nvp"
+                    };
+                    return Err(format!(
+                        "Give the duplicate a full path, such as {example}."
+                    ));
                 }
                 vec![Action::DuplicateTo(path)]
             } else if let Some(rest) = after("rename project ") {
@@ -2478,9 +2488,14 @@ mod tests {
             run("Restore Rough cut", &project, &none).unwrap().as_slice(),
             [Action::RestoreCheckpoint(name)] if name == "Rough cut"
         ));
+        let copy = if cfg!(windows) {
+            r"C:\films\B.nvp"
+        } else {
+            "/films/B.nvp"
+        };
         assert!(matches!(
-            run("duplicate project /films/B.nvp", &project, &none).unwrap().as_slice(),
-            [Action::DuplicateTo(path)] if path == std::path::Path::new("/films/B.nvp")
+            run(&format!("duplicate project {copy}"), &project, &none).unwrap().as_slice(),
+            [Action::DuplicateTo(path)] if path == std::path::Path::new(copy)
         ));
         assert!(run("duplicate project B.nvp", &project, &none).is_err());
         assert!(matches!(

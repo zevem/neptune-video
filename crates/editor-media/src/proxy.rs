@@ -812,10 +812,11 @@ impl Drop for ProxyService {
     }
 }
 
-/// What the worker does next.
+/// What the worker does next. A job is boxed: its paths make it large where
+/// paths are wide, as on Windows.
 enum Work {
     Tidy,
-    Make(Job, Arc<AtomicBool>),
+    Make(Box<Job>, Arc<AtomicBool>),
 }
 
 fn worker(shared: Arc<Shared>, dir: PathBuf, run: Runner, wake: Wake) {
@@ -859,7 +860,7 @@ fn worker(shared: Arc<Shared>, dir: PathBuf, run: Runner, wake: Wake) {
                         done: 0.0,
                         cancel: Arc::clone(&cancel),
                     });
-                    break Work::Make(job, cancel);
+                    break Work::Make(Box::new(job), cancel);
                 }
                 let Ok(next) = shared.ready.wait(lane) else {
                     return;
@@ -874,7 +875,7 @@ fn worker(shared: Arc<Shared>, dir: PathBuf, run: Runner, wake: Wake) {
                 }
             }
             Work::Make(job, cancel) => {
-                if !make(&shared, &dir, &run, &wake, job, &cancel) {
+                if !make(&shared, &dir, &run, &wake, *job, &cancel) {
                     return;
                 }
             }

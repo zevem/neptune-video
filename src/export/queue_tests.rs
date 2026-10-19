@@ -111,7 +111,9 @@ struct Rig {
     /// Cancellers the fake registered that were called.
     killed: Arc<AtomicUsize>,
     project: Arc<Project>,
-    /// The source media's path.
+    /// The source media's path, which the tests link to where links are
+    /// made: on Unix.
+    #[cfg(unix)]
     source: PathBuf,
     dir: Scratch,
 }
@@ -161,6 +163,7 @@ fn rig_with(probe: Probe) -> Rig {
         permits,
         killed,
         project: Arc::new(project),
+        #[cfg(unix)]
         source,
         dir,
     }
@@ -877,15 +880,31 @@ fn held_jobs_are_counted_apart_and_resumed_together() {
     rig.wait_state(c, RenderState::Done);
 }
 
+/// Sets when a file or folder was last changed.
+fn backdate(path: &Path, when: SystemTime) {
+    #[cfg(not(windows))]
+    let file = fs::File::open(path);
+    // Windows changes the time only through a handle that may write
+    // attributes, and opens a folder only with backup semantics.
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        fs::File::options()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+    };
+    file.unwrap().set_modified(when).unwrap();
+}
+
 #[test]
 fn a_starting_job_removes_what_stopped_exports_left_in_its_folder() {
     let rig = rig();
     rig.permits.open();
     let hour_ago = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
-    let age = |path: &Path| {
-        let file = fs::File::open(path).unwrap();
-        file.set_modified(hour_ago).unwrap();
-    };
+    let age = |path: &Path| backdate(path, hour_ago);
     // A part file and a working folder of an export that stopped long ago.
     let stale_part = rig.dir.join(&format!(".Old.mp4.{}.part", Uuid::new_v4()));
     fs::write(&stale_part, b"half a film").unwrap();
@@ -931,18 +950,12 @@ fn stale_working_folders_in_the_temporary_folder_are_removed() {
     let hour_ago = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
     let old = dir.join(&format!("neptune-video-render-{}", Uuid::new_v4()));
     fs::create_dir(&old).unwrap();
-    fs::File::open(&old)
-        .unwrap()
-        .set_modified(hour_ago)
-        .unwrap();
+    backdate(&old, hour_ago);
     let recent = dir.join(&format!("neptune-video-render-{}", Uuid::new_v4()));
     fs::create_dir(&recent).unwrap();
     let other = dir.join("neptune-video-render-notes");
     fs::create_dir(&other).unwrap();
-    fs::File::open(&other)
-        .unwrap()
-        .set_modified(hour_ago)
-        .unwrap();
+    backdate(&other, hour_ago);
     assert_eq!(engine::sweep_temp(&dir.0, SystemTime::now()), 1);
     assert!(!old.exists());
     assert!(recent.exists());
