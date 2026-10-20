@@ -58,7 +58,9 @@ pub fn icon_button(ui: &mut Ui, p: &Palette, icon: Icon, label: &str) -> Respons
 /// As [`icon_button`], with the glyph in `tint`, a state such as record. A
 /// state that is merely on, which its callers give as the accent, is a
 /// pressed surface, not an accent glyph. A control that is on or off is
-/// better made with [`icon_toggle`], which says so.
+/// better made with [`icon_toggle`], which says so: under the Red accent the
+/// accent is record's red, and a caller giving it to mean "on" is drawn as
+/// record is.
 pub fn icon_button_tinted(
     ui: &mut Ui,
     p: &Palette,
@@ -155,6 +157,7 @@ pub fn button(ui: &mut Ui, p: &Palette, icon: Option<Icon>, text: &str, kind: Ki
     };
     let solid = matches!(kind, Kind::Primary | Kind::Destructive);
     let radius = metrics::CONTROL_RADIUS;
+    let hover = kit::hover_amount(ui, &response);
     let painter = ui.painter();
     // An action that cannot be taken keeps its kind at half strength; the
     // disabled interface fades it, so it is not drawn fainter again here.
@@ -169,21 +172,20 @@ pub fn button(ui: &mut Ui, p: &Palette, icon: Option<Icon>, text: &str, kind: Ki
                 p.pressed
             },
         );
-    } else if enabled && response.hovered() {
-        painter.rect_filled(
-            rect,
-            radius,
-            if solid {
-                Color32::from_white_alpha(26)
-            } else {
-                p.hover
-            },
-        );
+    } else if hover > 0.0 {
+        let lift = if solid {
+            Color32::from_white_alpha(26)
+        } else {
+            p.hover
+        };
+        painter.rect_filled(rect, radius, lift.gamma_multiply(hover));
     }
     if response.has_focus() {
         controls::focus_ring(painter, rect, radius, *p);
     }
-    let ink = if enabled || solid { ink } else { p.muted };
+    // Its ink is the one every control that cannot be used takes (F12),
+    // whatever its kind.
+    let ink = if enabled { ink } else { p.muted };
     let mut x = rect.left() + lead;
     if let Some(icon) = icon {
         let glyph = Rect::from_center_size(pos2(x + 7.0, rect.center().y), Vec2::splat(14.0));
@@ -316,6 +318,13 @@ pub fn menu_style(ui: &mut Ui, width: f32) {
     ui.set_min_width(width);
     ui.set_max_width(width);
     ui.spacing_mut().button_padding = vec2(8.0, 5.0);
+}
+
+/// The break between two groups of a menu: Terminal's, a 9-point band with
+/// a hairline set in 8 from either side.
+#[allow(dead_code, reason = "offered to the menus as they are laid out again")]
+pub fn menu_separator(ui: &mut Ui, p: &Palette) {
+    controls::menu_separator(ui, *p);
 }
 
 /// A menu row with its shortcut at the trailing edge.
@@ -583,7 +592,7 @@ pub fn disclosure(ui: &mut Ui, p: &Palette, open: bool, text: &str, dim: bool) -
 /// available, filled in `fill`, named `name` with its value for those who do
 /// not see it.
 pub fn progress(ui: &mut Ui, p: &Palette, done: f32, fill: Color32, name: &str) -> Response {
-    kit::progress_bar(ui, p, done, fill, name)
+    kit::progress_bar(ui, p, Some(done), fill, name)
 }
 
 /// A pill that picks one of several named choices, such as a preset. It is
@@ -821,7 +830,17 @@ mod tests {
         };
         frame(&ctx, Vec::new(), &mut add);
         let at = target.get().center();
-        let hovered = frame(&ctx, vec![Event::PointerMoved(at)], &mut add);
+        // Spec §3.7: the hover fill eases in over 0.12 s, so it is not
+        // whole on the first frame and is once the ease has run.
+        let first = frame(&ctx, vec![Event::PointerMoved(at)], &mut add);
+        assert!(
+            !rects(&first).any(|rect| rect.fill == p.hover),
+            "the hover eases in"
+        );
+        let mut hovered = first;
+        for _ in 0..12 {
+            hovered = frame(&ctx, Vec::new(), &mut add);
+        }
         assert!(
             rects(&hovered).any(|rect| rect.fill == p.hover),
             "the hovered control lies under the hover fill"
@@ -838,6 +857,155 @@ mod tests {
             "the pressed control lies under the pressed fill"
         );
         assert!(!rects(&pressed).any(|rect| rect.fill == p.hover));
+    }
+
+    #[test]
+    fn under_reduce_motion_a_hover_lights_at_once() {
+        let ctx = context();
+        kit::set_reduced_motion(&ctx, true);
+        let p = palette();
+        let target = std::cell::Cell::new(Rect::NOTHING);
+        let mut add = |ui: &mut Ui| {
+            target.set(button(ui, &p, None, "Keep", Kind::Plain).rect);
+        };
+        frame(&ctx, Vec::new(), &mut add);
+        let hovered = frame(
+            &ctx,
+            vec![Event::PointerMoved(target.get().center())],
+            &mut add,
+        );
+        assert!(rects(&hovered).any(|rect| rect.fill == p.hover));
+    }
+
+    #[test]
+    fn an_icon_button_is_drawn_from_its_palette_whatever_the_interface_style() {
+        // Spec V1: the transport is drawn with the stage palette, which is
+        // dark, while the interface may be light.
+        let light = Palette::new(Appearance::Light, Accent::default());
+        let stage = Palette::stage_palette(Accent::default());
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &light);
+        let target = std::cell::Cell::new(Rect::NOTHING);
+        let mut add = |ui: &mut Ui| {
+            target.set(icon_button(ui, &stage, Icon::Undo, "Back").rect);
+        };
+        frame(&ctx, Vec::new(), &mut add);
+        let glyph = |shapes: &[Shape]| {
+            shapes.iter().find_map(|shape| match shape {
+                Shape::Text(text) => Some(text.fallback_color),
+                _ => None,
+            })
+        };
+        let resting = frame(&ctx, Vec::new(), &mut add);
+        assert_eq!(glyph(&resting), Some(stage.secondary), "at rest");
+        frame(
+            &ctx,
+            vec![Event::PointerMoved(target.get().center())],
+            &mut add,
+        );
+        let mut hovered = Vec::new();
+        for _ in 0..12 {
+            hovered = frame(&ctx, Vec::new(), &mut add);
+        }
+        assert_eq!(glyph(&hovered), Some(stage.fg), "under the pointer");
+        assert!(rects(&hovered).any(|rect| rect.fill == stage.hover));
+        assert!(!rects(&hovered).any(|rect| rect.fill == light.hover));
+    }
+
+    #[test]
+    fn work_that_has_not_said_how_far_it_has_got_reads_out_no_value() {
+        // Spec §4.3.5, §3.10 Busy: an indeterminate bar has no value.
+        let ctx = context();
+        let p = palette();
+        ctx.enable_accesskit();
+        let values = |done: Option<f32>| {
+            let run = || {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(480.0, 320.0))),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        kit::progress_bar(ui, &p, done, p.accent, "Downloading");
+                    },
+                );
+                output.textures_delta.clear();
+                output
+            };
+            // A new context repaints at once for its first frames, whatever
+            // they hold.
+            for _ in 0..3 {
+                run();
+            }
+            let output = run();
+            let update = output.platform_output.accesskit_update.expect("a tree");
+            let repaint = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            let value = (update.nodes.iter())
+                .find(|(_, node)| node.label() == Some("Downloading"))
+                .map(|(_, node)| node.numeric_value());
+            (value, repaint)
+        };
+        assert_eq!(values(Some(0.25)).0, Some(Some(0.25)));
+        let (value, repaint) = values(None);
+        assert_eq!(value, Some(None), "named, with no value");
+        assert!(repaint.as_secs() > 3600, "and it does not move");
+    }
+
+    #[test]
+    fn a_spinner_in_view_repaints_at_most_thirty_times_a_second() {
+        // Spec §3.7: indeterminate progress runs at 30 Hz or less.
+        let ctx = context();
+        let p = palette();
+        let run = || {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(480.0, 320.0))),
+                    ..Default::default()
+                },
+                |ui| {
+                    let mark = Rect::from_min_size(pos2(8.0, 8.0), Vec2::splat(16.0));
+                    kit::spinner(ui, mark, p.fg);
+                },
+            );
+            output.textures_delta.clear();
+            output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+        };
+        // A new context repaints at once for its first frames, whatever
+        // they hold.
+        for _ in 0..3 {
+            run();
+        }
+        let repaint = run();
+        assert!(repaint.as_secs_f32() >= 1.0 / 30.0 - 1e-3, "{repaint:?}");
+        assert!(repaint.as_secs_f32() < 1.0, "{repaint:?}");
+    }
+
+    #[test]
+    fn a_keyed_row_takes_the_height_a_row_with_a_field_took() {
+        // Spec §4.2: only the key column is new; what follows the row stays
+        // where it was.
+        let ctx = context();
+        let p = palette();
+        let heights = std::cell::Cell::new((0.0, 0.0));
+        let mut add = |ui: &mut Ui| {
+            let gap = ui.spacing().item_spacing.y;
+            let before = ui.cursor().top();
+            row(ui, &p, "Scale", |ui| {
+                number(ui, &mut 1.0, 0.0..=10.0, 0.1, " %", 0)
+            });
+            let plain = ui.cursor().top() - before - gap;
+            let before = ui.cursor().top();
+            keyed_row(ui, &p, "Scale", "scale", KeyState::Off, |ui| {
+                number(ui, &mut 1.0, 0.0..=10.0, 0.1, " %", 0);
+            });
+            heights.set((plain, ui.cursor().top() - before - gap));
+        };
+        for _ in 0..3 {
+            frame(&ctx, Vec::new(), &mut add);
+        }
+        let (plain, keyed) = heights.get();
+        assert!((plain - keyed).abs() < 0.05, "{plain} and {keyed}");
     }
 
     #[test]

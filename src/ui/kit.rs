@@ -160,10 +160,24 @@ fn is_chord(text: &str) -> bool {
         && controls::chord_keys(text).into_iter().all(key)
 }
 
+/// How far a control's hover has come in, from nought to one: eased over
+/// 0.12 s, and at once under Reduce motion. A control that cannot be used is
+/// never hovered.
+// Neptune Video: Terminal lights a hover at once; the spec eases it.
+pub fn hover_amount(ui: &Ui, response: &Response) -> f32 {
+    controls::animate(
+        ui.ctx(),
+        response.id.with("hover"),
+        ui.is_enabled() && response.hovered(),
+        theme::motion::HOVER,
+    )
+}
+
 /// The look of an icon button: Terminal's surface, ring and glyph over a
 /// response the caller made. `on` holds the surface pressed, as a toggle
 /// that is on does; `tint` recolours the glyph for a state that is not on or
-/// off, such as record.
+/// off, such as record. Every state is drawn from `p`, so a button on the
+/// stage takes the stage's palette in either appearance.
 pub fn paint_icon_button(
     ui: &Ui,
     p: &Palette,
@@ -176,39 +190,35 @@ pub fn paint_icon_button(
     if !ui.is_rect_visible(rect) {
         return;
     }
+    let painter = ui.painter();
     let surface = rect.shrink(1.0);
-    if on {
-        ui.painter().rect_filled(surface, 7, p.pressed);
-    }
     if !ui.is_enabled() {
-        icons::paint(
-            ui.painter(),
-            rect.shrink(6.0),
-            icon,
-            tint.unwrap_or(p.muted),
-        );
-        return;
-    }
-    if tint.is_none() && !on {
-        icons::paint_button(ui, response, icon);
+        if on {
+            painter.rect_filled(surface, 7, p.pressed);
+        }
+        icons::paint(painter, rect.shrink(6.0), icon, tint.unwrap_or(p.muted));
         return;
     }
     let down = response.is_pointer_button_down_on();
-    if down {
-        ui.painter().rect_filled(surface, 7, p.pressed);
-    } else if response.hovered() {
-        ui.painter().rect_filled(surface, 7, p.hover);
+    let hover = hover_amount(ui, response);
+    if on || down {
+        painter.rect_filled(surface, 7, p.pressed);
+    } else if hover > 0.0 {
+        painter.rect_filled(surface, 7, p.hover.gamma_multiply(hover));
     }
     if response.has_focus() {
-        ui.painter().rect_stroke(
-            surface,
-            7,
-            ui.visuals().selection.stroke,
-            StrokeKind::Inside,
-        );
+        painter.rect_stroke(surface, 7, Stroke::new(1.5, p.accent), StrokeKind::Inside);
     }
+    // The glyph rests quieter than the label ink and comes up to it as the
+    // pointer arrives, as Terminal's icon buttons do.
+    let ink = match tint {
+        Some(tint) => tint,
+        None if on || down || response.has_focus() => p.fg,
+        None => theme::mix(p.secondary, p.fg, hover),
+    };
+    // Pressing settles the glyph slightly, like a physical key.
     let inset = if down { 6.5 } else { 6.0 };
-    icons::paint(ui.painter(), rect.shrink(inset), icon, tint.unwrap_or(p.fg));
+    icons::paint(painter, rect.shrink(inset), icon, ink);
 }
 
 /// The look of a small icon button: a 22-point target whose whole surface
@@ -220,20 +230,21 @@ pub fn paint_small_icon_button(ui: &Ui, p: &Palette, response: &Response, icon: 
     }
     let painter = ui.painter();
     let enabled = ui.is_enabled();
+    let hover = hover_amount(ui, response);
     if on || (enabled && response.is_pointer_button_down_on()) {
         painter.rect_filled(rect, 6, p.pressed);
-    } else if enabled && response.hovered() {
-        painter.rect_filled(rect, 6, p.hover);
+    } else if hover > 0.0 {
+        painter.rect_filled(rect, 6, p.hover.gamma_multiply(hover));
     }
     if response.has_focus() {
         focus_ring(painter, rect, 6, *p);
     }
     let ink = if !enabled {
         p.muted
-    } else if on || response.hovered() || response.has_focus() {
+    } else if on || response.has_focus() {
         p.fg
     } else {
-        p.secondary
+        theme::mix(p.secondary, p.fg, hover)
     };
     icons::paint(
         painter,
@@ -496,7 +507,9 @@ pub fn number_field_in(
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if let Some(prefix) = number.prefix {
-            let axis = painter.layout_no_wrap(prefix.to_owned(), theme::medium(11.0), p.muted);
+            // The axis is all that tells twin fields apart, so it is set in
+            // `secondary`, which reads on the field, rather than `muted`.
+            let axis = painter.layout_no_wrap(prefix.to_owned(), theme::medium(11.0), p.secondary);
             galley_at(painter, pos2(rect.left() + 8.0, rect.center().y), axis);
         }
         // While it is typed in, the field holds only the number.
@@ -705,7 +718,17 @@ pub fn keyed_row(
     // where the label and the key column are.
     let known: Option<(Vec2, f32)> = ui.data(|data| data.get_temp(id));
     let controls = known.map_or(86.0, |(known, _)| known.x);
-    let tall = known.map_or(fit.height, |(known, _)| known.y.max(fit.height));
+    // A legacy row reserves the height the old row reached: its field had
+    // a 24-point room in the middle of the line and grew past the room's
+    // foot, so what follows the row stays where it was.
+    let tall = known.map_or(fit.height, |(known, _)| {
+        let reached = if fit == RowFit::LEGACY {
+            0.5 * fit.height - 12.0 + known.y
+        } else {
+            known.y
+        };
+        reached.max(fit.height)
+    });
     let lift = known.map_or(0.0, |(_, below)| below);
     let width = ui.available_width();
     let text = row_label(label, p);
@@ -1069,14 +1092,17 @@ pub fn paint_chip(
         return;
     }
     let painter = ui.painter();
+    let hover = hover_amount(ui, response);
     painter.rect_filled(rect, 13, if selected { p.pressed } else { p.control });
     if enabled && response.is_pointer_button_down_on() {
         painter.rect_filled(rect, 13, p.pressed);
-    } else if enabled && response.hovered() {
-        painter.rect_filled(rect, 13, p.hover);
+    } else if hover > 0.0 {
+        painter.rect_filled(rect, 13, p.hover.gamma_multiply(hover));
     }
     if selected && !check {
-        painter.rect_stroke(rect, 13, Stroke::new(1.0, p.border), StrokeKind::Inside);
+        // The ring carries the choice on its own, so it is drawn in an ink
+        // that stands about 3:1 from the chip, not in a hairline's.
+        painter.rect_stroke(rect, 13, Stroke::new(1.5, p.secondary), StrokeKind::Inside);
     }
     if response.has_focus() {
         focus_ring(painter, rect, 13, *p);
@@ -1141,23 +1167,33 @@ pub fn badge(painter: &Painter, p: &Palette, left_center: Pos2, text: &str, on: 
 
 /// How far a piece of background work has got: a 4-point bar over the width
 /// available, filled in `fill` (the accent while it runs, red once it has
-/// failed), named `name` with its value for those who do not see it.
-pub fn progress_bar(ui: &mut Ui, p: &Palette, done: f32, fill: Color32, name: &str) -> Response {
-    let done = if done.is_finite() {
-        done.clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+/// failed), named `name` with its value for those who do not see it. Work
+/// that has not said how far it has got is `None`: the bar is its bare
+/// track, has no value to read out, and does not move.
+pub fn progress_bar(
+    ui: &mut Ui,
+    p: &Palette,
+    done: Option<f32>,
+    fill: Color32,
+    name: &str,
+) -> Response {
+    let done = done.map(|done| {
+        if done.is_finite() {
+            done.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    });
     let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
     response.widget_info(|| {
         let mut info = WidgetInfo::labeled(WidgetType::ProgressIndicator, true, name);
-        info.value = Some(f64::from(done));
+        info.value = done.map(f64::from);
         info
     });
     if ui.is_rect_visible(bar) {
         let painter = ui.painter();
         painter.rect_filled(bar, 2, p.control);
-        if done > 0.0 {
+        if let Some(done) = done.filter(|done| *done > 0.0) {
             let mut filled = bar;
             // A started bar shows at least its rounded end.
             filled.set_width((bar.width() * done).max(4.0).min(bar.width()));
@@ -1195,12 +1231,18 @@ pub fn progress_ring(painter: &Painter, p: &Palette, center: Pos2, done: f32) {
 
 /// Terminal's loading mark: the Tabler loader turning once a second, as
 /// wide as `rect` allows. A mark out of view does not keep the window
-/// repainting.
+/// repainting, and one in view repaints it at most 30 times a second.
 pub fn spinner(ui: &Ui, rect: Rect, color: Color32) {
     if !ui.is_rect_visible(rect) {
         return;
     }
-    ui.request_repaint();
+    // Neptune Video: Terminal repaints every frame; the turn is read from
+    // the clock, so a capped rate keeps its speed. egui takes what it
+    // expects a pass to take off the wait, which is added back so the
+    // window is woken a thirtieth of a second on, as `pacing` does.
+    let predicted = ui.input(|input| input.predicted_dt);
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_secs_f32(1.0 / 30.0 + predicted));
     let angle = (ui.input(|input| input.time) * std::f64::consts::TAU) as f32;
     // Tabler's 24-point cell has a 20-point ring, which is made as wide as
     // the rect less a point.

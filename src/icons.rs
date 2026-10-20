@@ -298,7 +298,7 @@ pub fn hint(response: Response, label: &str, shortcut: &str) -> Response {
     response.on_hover_ui(|ui| {
         ui.horizontal(|ui| {
             ui.label(label);
-            ui.add_space(3.0);
+            ui.add_space(4.0);
             let ink = ui.visuals().text_color();
             // The caps are as `keycaps` sets them: each at least 20 wide,
             // 3 apart.

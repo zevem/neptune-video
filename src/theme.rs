@@ -600,9 +600,10 @@ impl Palette {
         }
     }
 
-    /// The keyline round the picture.
+    /// The keyline round the picture: the stage palette's separator, since
+    /// the stage is dark in both appearances.
     pub fn canvas_edge(&self) -> Color32 {
-        self.separator
+        Color32::from_white_alpha(20)
     }
 
     /// A canvas transform handle: its fill and its rim.
@@ -851,6 +852,11 @@ mod tests {
         let stage = Palette::stage_palette(Accent::Blue);
         assert!(stage.dark);
         assert_eq!(stage.bg, color(0x101012));
+        // The keyline round the picture is drawn on the stage, so it is the
+        // stage palette's in either appearance.
+        let dark = Palette::new(Appearance::Dark, Accent::Blue);
+        assert_eq!(light.canvas_edge(), stage.separator);
+        assert_eq!(dark.canvas_edge(), stage.separator);
         // The aliases a migrating area still reads are the content surface.
         for p in [light, stage] {
             assert_eq!(p.surface, p.bg);
