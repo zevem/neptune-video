@@ -815,12 +815,12 @@ pub fn show(
     let line = |top: f32| {
         Rect::from_min_size(
             pos2(area.left(), top),
-            vec2(area.width(), metrics::CONTROL_HEIGHT),
+            vec2(area.width(), metrics::legacy::CONTROL_HEIGHT),
         )
     };
     let first = line(top);
     let eye = Rect::from_min_max(
-        pos2(first.right() - metrics::CONTROL_HEIGHT, first.top()),
+        pos2(first.right() - metrics::legacy::CONTROL_HEIGHT, first.top()),
         first.max,
     );
     let picker = Rect::from_min_max(first.min, pos2(eye.left() - 4.0, first.bottom()));
@@ -1000,7 +1000,10 @@ pub fn show(
 
     // The cues, and a new one at the playhead.
     let foot = Rect::from_min_max(
-        pos2(area.left(), rect.bottom() - metrics::CONTROL_HEIGHT - 10.0),
+        pos2(
+            area.left(),
+            rect.bottom() - metrics::legacy::CONTROL_HEIGHT - 10.0,
+        ),
         pos2(area.right(), rect.bottom() - 10.0),
     );
     let list = Rect::from_min_max(pos2(rect.left(), top), pos2(rect.right(), foot.top() - 6.0));

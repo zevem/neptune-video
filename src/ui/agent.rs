@@ -245,7 +245,7 @@ pub fn show(
         .hline(rect.x_range(), composer.top(), p.hairline());
     let bar = Rect::from_min_size(
         pos2(composer.left() + 12.0, composer.top() + 8.0),
-        vec2(composer.width() - 24.0, metrics::CONTROL_HEIGHT),
+        vec2(composer.width() - 24.0, metrics::legacy::CONTROL_HEIGHT),
     );
     mode_bar(ui, bar, input, actions);
 
@@ -766,7 +766,7 @@ fn step_row(ui: &mut Ui, p: &Palette, step: &Step) {
 /// The request in flight: that it is, for how long, and the way to stop it.
 fn waiting_row(ui: &mut Ui, p: &Palette, waiting: &WaitingInput, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        ui.set_min_height(metrics::CONTROL_HEIGHT);
+        ui.set_min_height(metrics::legacy::CONTROL_HEIGHT);
         ui.spacing_mut().item_spacing.x = 8.0;
         ui.add(egui::Spinner::new().size(12.0).color(p.muted));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -797,7 +797,7 @@ fn waiting_row(ui: &mut Ui, p: &Palette, waiting: &WaitingInput, actions: &mut V
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 let galley = widgets::truncated(ui, &text, theme::regular(12.5), p.secondary, room);
                 let (rect, _) = ui.allocate_exact_size(
-                    vec2(room.max(0.0), metrics::CONTROL_HEIGHT),
+                    vec2(room.max(0.0), metrics::legacy::CONTROL_HEIGHT),
                     Sense::hover(),
                 );
                 ui.painter().galley(

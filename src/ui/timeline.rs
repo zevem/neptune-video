@@ -62,7 +62,7 @@ use eframe::egui::{
     Vec2, pos2, vec2,
 };
 
-const STRIP: f32 = metrics::PANEL_HEADER;
+const STRIP: f32 = metrics::legacy::PANEL_HEADER;
 const RULER: f32 = 26.0;
 const HEAD_WIDTH: f32 = 156.0;
 /// The side of a toggle in a track head, and how far one stands from the

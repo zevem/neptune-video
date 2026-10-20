@@ -957,7 +957,7 @@ fn footer(
     answer: &mut Option<ExportAnswer>,
 ) {
     ui.horizontal(|ui| {
-        ui.set_min_height(metrics::CONTROL_HEIGHT);
+        ui.set_min_height(metrics::legacy::CONTROL_HEIGHT);
         let ready = matches!(input.caps, CapabilityView::Ready(_));
         if let Some(name) = state.naming.as_mut() {
             let typed = field(ui, p, name, 150.0, "Preset name", "Preset name");
@@ -1623,7 +1623,7 @@ impl Sheet<'_, '_> {
                     // Laid out in reading order, which is the order Tab
                     // walks: width, then height.
                     ui.allocate_ui_with_layout(
-                        vec2(160.0, metrics::CONTROL_HEIGHT),
+                        vec2(160.0, metrics::legacy::CONTROL_HEIGHT),
                         Layout::left_to_right(Align::Center),
                         |ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
@@ -2122,7 +2122,7 @@ fn trim(value: f64) -> String {
 /// whole path for accessibility.
 fn folder_button(ui: &mut Ui, p: &Palette, text: &str, folder: Option<&Path>) -> egui::Response {
     let missing = folder.is_none();
-    let size = vec2(ui.available_width(), metrics::CONTROL_HEIGHT);
+    let size = vec2(ui.available_width(), metrics::legacy::CONTROL_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| {
         let name = match folder {

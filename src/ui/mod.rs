@@ -3,11 +3,14 @@
 pub mod agent;
 pub mod browser;
 pub mod captions_tab;
+pub mod controls;
 pub mod export_sheet;
 pub mod fades;
 pub mod inspector;
 pub mod keyframes;
+pub mod kit;
 pub mod library;
+pub mod panel;
 pub mod render_queue;
 pub mod sheets;
 pub mod text_tab;

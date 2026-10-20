@@ -2067,12 +2067,13 @@ fn a_keyed_row_is_walked_in_reading_order_and_keeps_its_name_whole() {
     });
     bench.frame(Vec::new());
     bench.frame(Vec::new());
+    // Spec §4.3.3: the key column trails the fields, at a fixed place.
     let row = [
+        "Position X",
+        "Position Y",
         "Previous position keyframe",
         "Add position keyframe",
         "Next position keyframe",
-        "Position X",
-        "Position Y",
     ];
     // Left to right on one line, and Tab takes them in that order.
     let rects: Vec<Rect> = row

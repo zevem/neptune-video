@@ -17,7 +17,9 @@ The supplied originals have distinct uses:
 - [`icons/tabler/`](icons/tabler/README.md) contains the pinned Tabler native UI
   font subsets, official SVGs, mapping and MIT notice. The supplied branding is
   not part of that set.
-- `fonts/` contains the bundled Geist typefaces and their license.
+- `fonts/` contains the bundled Geist typefaces and their license, and
+  JetBrains Mono Regular with its license, byte-identical copies of Neptune
+  Terminal's `assets/fonts/` files.
 
 Regenerate the icons from the repository root; the originals are never written:
 

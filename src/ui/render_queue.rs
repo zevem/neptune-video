@@ -486,7 +486,7 @@ fn job_row(
     sheets::group(ui, p, |ui| {
         ui.spacing_mut().item_spacing.y = 3.0;
         ui.horizontal(|ui| {
-            ui.set_min_height(metrics::CONTROL_HEIGHT);
+            ui.set_min_height(metrics::legacy::CONTROL_HEIGHT);
             let (glyph, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
             let (icon, tint) = match job.state {
                 RenderState::Done => (Icon::Check, p.green),
@@ -628,7 +628,7 @@ fn job_row(
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let galley = widgets::truncated(ui, name, theme::medium(12.5), p.fg, room);
                     let (rect, response) = ui.allocate_exact_size(
-                        vec2(room.max(0.0), metrics::CONTROL_HEIGHT),
+                        vec2(room.max(0.0), metrics::legacy::CONTROL_HEIGHT),
                         Sense::hover(),
                     );
                     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, name));

@@ -6545,7 +6545,10 @@ impl App {
     ) {
         let p = self.palette;
         widgets::panel(ui, rect, &p);
-        let header = Rect::from_min_size(rect.min, vec2(rect.width(), metrics::PANEL_HEADER + 6.0));
+        let header = Rect::from_min_size(
+            rect.min,
+            vec2(rect.width(), metrics::legacy::PANEL_HEADER + 6.0),
+        );
         let mut tabs = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(header.shrink2(vec2(10.0, 0.0)))

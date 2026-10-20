@@ -810,6 +810,227 @@
       "upstream_icon_version": "2.22",
       "unicode": "facf",
       "meaning": "Picture-in-picture right half: right-aligned stretch glyph."
+    },
+    {
+      "icon": "Dots",
+      "style": "outline",
+      "name": "dots",
+      "file": "outline/dots.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/dots.svg",
+      "sha256": "798ff2bd35fdb045535872ed5d5e93e39a289c6fd0faaf01639ae84180e54dae",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea95"
+    },
+    {
+      "icon": "Keyboard",
+      "style": "outline",
+      "name": "keyboard",
+      "file": "outline/keyboard.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/keyboard.svg",
+      "sha256": "9e290c3ff26878fad5fcf338eb5c8dc203651a20cc1806fd6d6f40625668c90b",
+      "upstream_icon_version": "1.6",
+      "unicode": "ebd6"
+    },
+    {
+      "icon": "Palette",
+      "style": "outline",
+      "name": "palette",
+      "file": "outline/palette.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/palette.svg",
+      "sha256": "d9c39bf1ce00d10694015d9d736ae6006a7e7b2f0df776dd206e1058a9a700a7",
+      "upstream_icon_version": "1.1",
+      "unicode": "eb01"
+    },
+    {
+      "icon": "Pencil",
+      "style": "outline",
+      "name": "pencil",
+      "file": "outline/pencil.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/pencil.svg",
+      "sha256": "422796681dab2177b958836952b0a581025013a78d8a8c9df9c1af43f62d0e97",
+      "upstream_icon_version": "1.1",
+      "unicode": "eb04"
+    },
+    {
+      "icon": "Disc",
+      "style": "filled",
+      "name": "circle",
+      "file": "filled/circle.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/filled/circle.svg",
+      "sha256": "c802ae8a2aa74414fd86d3f85ab70991a0ac56f6aff66ece2db9b90233ce78cb",
+      "upstream_icon_version": "2.0",
+      "unicode": "f671",
+      "meaning": "Record disc and status dots: the official filled circle."
+    },
+    {
+      "icon": "Headphones",
+      "style": "outline",
+      "name": "headphones",
+      "file": "outline/headphones.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/headphones.svg",
+      "sha256": "3ad34acfba12316c3fd9e7930b344522e135d18089d86d798ad55198920b3f22",
+      "upstream_icon_version": "1.0",
+      "unicode": "eabd",
+      "meaning": "Solo: hear this track alone."
+    },
+    {
+      "icon": "Adjustments",
+      "style": "outline",
+      "name": "adjustments-horizontal",
+      "file": "outline/adjustments-horizontal.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/adjustments-horizontal.svg",
+      "sha256": "51c876babc598cf69ad1146f0fb621919a975758df0cc7abf45052006358a353",
+      "upstream_icon_version": "1.11",
+      "unicode": "ec38",
+      "meaning": "Library view options."
+    },
+    {
+      "icon": "Info",
+      "style": "outline",
+      "name": "info-circle",
+      "file": "outline/info-circle.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/info-circle.svg",
+      "sha256": "48b7dddf34a6b87e93843a42b14781ce01794cf69274c458249ed8bfc01b6e4d",
+      "upstream_icon_version": "1.0",
+      "unicode": "eac5"
+    },
+    {
+      "icon": "AlertCircle",
+      "style": "outline",
+      "name": "alert-circle",
+      "file": "outline/alert-circle.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/alert-circle.svg",
+      "sha256": "7aff9be6b14daf212f982513de43ad7784752c021995719d00006cad8a75bef0",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea05"
+    },
+    {
+      "icon": "CircleCheck",
+      "style": "outline",
+      "name": "circle-check",
+      "file": "outline/circle-check.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/circle-check.svg",
+      "sha256": "c4cb2e026be5f4c217c3ff9b0ccefb9a26b7a135bc82eef28a8bead0cc02a958",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea67"
+    },
+    {
+      "icon": "CaretLeft",
+      "style": "filled",
+      "name": "caret-left",
+      "file": "filled/caret-left.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/filled/caret-left.svg",
+      "sha256": "e17d87fa4e5956a4c3d58fb6437d4000c40e2777fc876c3a84238c3ca6bafdaf",
+      "upstream_icon_version": "2.26",
+      "unicode": "fb2b",
+      "meaning": "Previous frame, filled like the other transport controls."
+    },
+    {
+      "icon": "CaretRight",
+      "style": "filled",
+      "name": "caret-right",
+      "file": "filled/caret-right.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/filled/caret-right.svg",
+      "sha256": "6e59cdfdcfad8d1736912d3eb18460864fee361a44164950ec1435de7b2fe5a3",
+      "upstream_icon_version": "2.26",
+      "unicode": "fb2c",
+      "meaning": "Next frame, filled like the other transport controls."
+    },
+    {
+      "icon": "ColorSwatch",
+      "style": "outline",
+      "name": "color-swatch",
+      "file": "outline/color-swatch.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/color-swatch.svg",
+      "sha256": "ab730657da2575a05de020abea617ce36d9b51db5f9aa7b8b0395bb35917e743",
+      "upstream_icon_version": "1.2",
+      "unicode": "eb61",
+      "meaning": "Looks."
+    },
+    {
+      "icon": "Wand",
+      "style": "outline",
+      "name": "wand",
+      "file": "outline/wand.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/wand.svg",
+      "sha256": "e03ed04a7160a1db83ba1007868be4a9124b9ae9a8e283d0281c7ce6fd1a0348",
+      "upstream_icon_version": "1.5",
+      "unicode": "ebcb",
+      "meaning": "Effects; sparkles stay the agent's."
+    },
+    {
+      "icon": "FilePlus",
+      "style": "outline",
+      "name": "file-plus",
+      "file": "outline/file-plus.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/file-plus.svg",
+      "sha256": "fb1afebc6cdfe0679ed76018d2d2dbb96d927dddb093857e0c6a992d06cf38df",
+      "upstream_icon_version": "1.0",
+      "unicode": "eaa0",
+      "meaning": "Save as, distinct from Save."
+    },
+    {
+      "icon": "Snowflake",
+      "style": "outline",
+      "name": "snowflake",
+      "file": "outline/snowflake.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/snowflake.svg",
+      "sha256": "a500f1a5e87a0b1c17f9b4b2d1e4dd55ef91805c10b9c2d1295bf4d9b737c4b6",
+      "upstream_icon_version": "1.8",
+      "unicode": "ec0b",
+      "meaning": "Freeze frame."
+    },
+    {
+      "icon": "ChartLine",
+      "style": "outline",
+      "name": "chart-line",
+      "file": "outline/chart-line.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/chart-line.svg",
+      "sha256": "91ae4d96cfc8926df2c715438bd539da2703dc158828336c227ce23e62ca7cb4",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea5c"
+    },
+    {
+      "icon": "MessagePlus",
+      "style": "outline",
+      "name": "message-plus",
+      "file": "outline/message-plus.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/message-plus.svg",
+      "sha256": "cea07155370087becafc086b3ea21e366d702d93ce937020206a708c875017e1",
+      "upstream_icon_version": "1.16",
+      "unicode": "ec9a",
+      "meaning": "New conversation."
+    },
+    {
+      "icon": "Sun",
+      "style": "outline",
+      "name": "sun",
+      "file": "outline/sun.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/sun.svg",
+      "sha256": "6677490605af8987d55d6e4185b1f6c241eced65b63ccfece68cadb7ce90fbb5",
+      "upstream_icon_version": "1.0",
+      "unicode": "eb30"
+    },
+    {
+      "icon": "Moon",
+      "style": "outline",
+      "name": "moon",
+      "file": "outline/moon.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/moon.svg",
+      "sha256": "7cabaae40eea65310da478d3cad30b23cf1d7e99adad56378f82824338079668",
+      "upstream_icon_version": "1.0",
+      "unicode": "eaf8"
+    },
+    {
+      "icon": "DeviceDesktop",
+      "style": "outline",
+      "name": "device-desktop",
+      "file": "outline/device-desktop.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/device-desktop.svg",
+      "sha256": "2fdd2150904a844185250f26453a02f31ee9d77a1f936a1df9c2ecd77cfc788d",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea89",
+      "meaning": "Match the system appearance."
     }
   ]
 }

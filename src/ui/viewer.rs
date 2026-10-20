@@ -1928,7 +1928,7 @@ const TRANSPORT_LEADING: f32 = 16.0;
 const TRANSPORT_TRAILING: f32 = 10.0;
 /// The speed control: wide enough for `0.25×`, and as tall as egui makes any
 /// button, which would otherwise hang below a shorter place.
-const SPEED: Vec2 = vec2(48.0, metrics::CONTROL_HEIGHT);
+const SPEED: Vec2 = vec2(48.0, metrics::legacy::CONTROL_HEIGHT);
 
 /// The widths of what a transport shows as text.
 #[derive(Clone, Copy, Debug)]

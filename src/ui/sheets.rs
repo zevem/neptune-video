@@ -399,7 +399,7 @@ pub fn settings(
                             let actual = ui
                                 .add_enabled_ui(scale != 1.0, |ui| {
                                     ui.add_sized(
-                                        [48.0, metrics::CONTROL_HEIGHT],
+                                        [48.0, metrics::legacy::CONTROL_HEIGHT],
                                         egui::Button::new(
                                             egui::RichText::new(size)
                                                 .font(theme::regular(12.0))
@@ -1070,7 +1070,7 @@ fn checkpoint_row(
     ready: bool,
 ) -> bool {
     ui.horizontal(|ui| {
-        ui.set_min_height(metrics::CONTROL_HEIGHT + 6.0);
+        ui.set_min_height(metrics::legacy::CONTROL_HEIGHT + 6.0);
         let (glyph, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
         icons::paint(ui.painter(), glyph, Icon::History, p.secondary);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1098,7 +1098,7 @@ fn checkpoint_row(
                 let name =
                     widgets::truncated(ui, &checkpoint.label, theme::medium(12.5), p.fg, room);
                 let (rect, _) = ui.allocate_exact_size(
-                    vec2(room.max(0.0), metrics::CONTROL_HEIGHT),
+                    vec2(room.max(0.0), metrics::legacy::CONTROL_HEIGHT),
                     Sense::hover(),
                 );
                 ui.painter().galley(
@@ -1365,7 +1365,7 @@ pub fn drop_target(ctx: &egui::Context, p: &Palette) {
     painter.rect_filled(screen, CornerRadius::ZERO, theme::tint(p.accent, 0.12));
     painter.rect_stroke(
         screen.shrink(6.0),
-        CornerRadius::same(metrics::PANEL_RADIUS),
+        CornerRadius::same(metrics::legacy::PANEL_RADIUS),
         Stroke::new(2.0, p.accent),
         StrokeKind::Inside,
     );

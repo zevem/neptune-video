@@ -614,7 +614,7 @@ pub fn show(
         state.folder = None;
     }
 
-    let header = Rect::from_min_size(rect.min, vec2(rect.width(), metrics::PANEL_HEADER));
+    let header = Rect::from_min_size(rect.min, vec2(rect.width(), metrics::legacy::PANEL_HEADER));
     let mut head = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(header.shrink2(vec2(10.0, 0.0)))
@@ -744,7 +744,7 @@ pub fn show(
 
     let switch = Rect::from_min_size(
         pos2(rect.left() + 10.0, header.bottom()),
-        vec2(rect.width() - 20.0, metrics::CONTROL_HEIGHT),
+        vec2(rect.width() - 20.0, metrics::legacy::CONTROL_HEIGHT),
     );
     tabs(ui, p, switch, &mut state.tab);
     let media = state.tab == Tab::Media;
@@ -752,7 +752,7 @@ pub fn show(
     // Search.
     let search = Rect::from_min_size(
         pos2(rect.left() + 10.0, switch.bottom() + 6.0),
-        vec2(rect.width() - 20.0, metrics::CONTROL_HEIGHT),
+        vec2(rect.width() - 20.0, metrics::legacy::CONTROL_HEIGHT),
     );
     ui.painter().rect_filled(
         search,
@@ -903,7 +903,7 @@ pub fn show(
     if let Some(name) = &mut state.new_folder {
         let row = Rect::from_min_size(
             pos2(rect.left() + 10.0, top),
-            vec2(rect.width() - 20.0, metrics::CONTROL_HEIGHT),
+            vec2(rect.width() - 20.0, metrics::legacy::CONTROL_HEIGHT),
         );
         ui.painter()
             .rect_filled(row, CornerRadius::same(metrics::CONTROL_RADIUS), p.control);
