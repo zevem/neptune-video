@@ -121,6 +121,8 @@ pub enum Icon {
     Sun,
     Moon,
     DeviceDesktop,
+    /// An open ring that turns while work goes on.
+    Loader2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

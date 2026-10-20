@@ -275,10 +275,9 @@ pub fn segmented<T: PartialEq + Copy>(
     let (_, rect) = ui.allocate_space(vec2(width, 28.0));
     let id = ui.id().with(("segmented", name));
     let segment = (rect.width() - 4.0) / options.len().max(1) as f32;
-    let selected = options
-        .iter()
-        .position(|(option, _)| option == value)
-        .unwrap_or(0);
+    // Neptune Video: a value none of the options holds selects none. No
+    // option is shown or announced as chosen, and every one can be taken.
+    let selected = options.iter().position(|(option, _)| option == value);
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 8, p.control);
     // Neptune Video: with Reduce motion on, the thumb moves at once.
@@ -287,27 +286,29 @@ pub fn segmented<T: PartialEq + Copy>(
     } else {
         0.14
     };
-    let thumb_x = ui
-        .ctx()
-        .animate_value_with_time(id.with("thumb"), selected as f32, slide);
-    let thumb = Rect::from_min_size(
-        Pos2::new(rect.left() + 2.0 + thumb_x * segment, rect.top() + 2.0),
-        vec2(segment, rect.height() - 4.0),
-    );
-    painter.rect_filled(
-        thumb.translate(vec2(0.0, 1.0)),
-        6,
-        Color32::from_black_alpha(if p.dark { 50 } else { 22 }),
-    );
-    painter.rect_filled(
-        thumb,
-        6,
-        if p.dark {
-            theme::mix(p.elevated, Color32::WHITE, 0.16)
-        } else {
-            Color32::WHITE
-        },
-    );
+    if let Some(selected) = selected {
+        let thumb_x = ui
+            .ctx()
+            .animate_value_with_time(id.with("thumb"), selected as f32, slide);
+        let thumb = Rect::from_min_size(
+            Pos2::new(rect.left() + 2.0 + thumb_x * segment, rect.top() + 2.0),
+            vec2(segment, rect.height() - 4.0),
+        );
+        painter.rect_filled(
+            thumb.translate(vec2(0.0, 1.0)),
+            6,
+            Color32::from_black_alpha(if p.dark { 50 } else { 22 }),
+        );
+        painter.rect_filled(
+            thumb,
+            6,
+            if p.dark {
+                theme::mix(p.elevated, Color32::WHITE, 0.16)
+            } else {
+                Color32::WHITE
+            },
+        );
+    }
     let mut changed = false;
     for (index, (option, label)) in options.iter().enumerate() {
         let cell = Rect::from_min_size(
@@ -315,7 +316,7 @@ pub fn segmented<T: PartialEq + Copy>(
             vec2(segment, rect.height()),
         );
         let response = ui.interact(cell, id.with(*label), Sense::click());
-        let active = index == selected;
+        let active = Some(index) == selected;
         response.widget_info(|| {
             WidgetInfo::selected(WidgetType::RadioButton, ui.is_enabled(), active, *label)
         });
@@ -548,7 +549,30 @@ pub fn search_field(
     label: &str,
     width: f32,
 ) -> Response {
-    let (_, rect) = ui.allocate_space(vec2(width, metrics::CONTROL_HEIGHT));
+    search_field_sized(
+        ui,
+        p,
+        id,
+        text,
+        hint,
+        label,
+        vec2(width, metrics::CONTROL_HEIGHT),
+    )
+}
+
+/// As [`search_field`], `size` large.
+// Neptune Video: the library's search row is 28 points tall and
+// Preferences' 30, so the field is drawn at the height it is given.
+pub fn search_field_sized(
+    ui: &mut Ui,
+    p: Palette,
+    id: Id,
+    text: &mut String,
+    hint: &str,
+    label: &str,
+    size: Vec2,
+) -> Response {
+    let (_, rect) = ui.allocate_space(size);
     field_frame(ui, p, rect, id, true);
     icons::paint(
         ui.painter(),

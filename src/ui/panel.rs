@@ -110,6 +110,9 @@ pub fn toggle(
 ) -> Response {
     let surface = ui.painter().add(egui::Shape::Noop);
     let response = icons::button_with_hint(ui, icon, label, hint);
+    // Neptune Video: it says whether it is on, as a check box does.
+    response
+        .widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), open, label));
     if open {
         ui.painter().set(
             surface,

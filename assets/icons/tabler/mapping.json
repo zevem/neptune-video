@@ -1031,6 +1031,17 @@
       "upstream_icon_version": "1.0",
       "unicode": "ea89",
       "meaning": "Match the system appearance."
+    },
+    {
+      "icon": "Loader2",
+      "style": "outline",
+      "name": "loader-2",
+      "file": "outline/loader-2.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/loader-2.svg",
+      "sha256": "82639ca5a04efc951caef3d274c9e302f1c09dcdaa9a1b8e094c16890bfd1d41",
+      "upstream_icon_version": "1.72",
+      "unicode": "f226",
+      "meaning": "Official open circular loader; the spinner rotates this unmodified glyph around its design-cell center."
     }
   ]
 }

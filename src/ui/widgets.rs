@@ -56,7 +56,9 @@ pub fn icon_button(ui: &mut Ui, p: &Palette, icon: Icon, label: &str) -> Respons
 }
 
 /// As [`icon_button`], with the glyph in `tint`, a state such as record. A
-/// state that is merely on is a pressed surface, not an accent glyph.
+/// state that is merely on, which its callers give as the accent, is a
+/// pressed surface, not an accent glyph. A control that is on or off is
+/// better made with [`icon_toggle`], which says so.
 pub fn icon_button_tinted(
     ui: &mut Ui,
     p: &Palette,
@@ -66,7 +68,8 @@ pub fn icon_button_tinted(
 ) -> Response {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::splat(metrics::ICON_BUTTON), Sense::click());
-    let on = tint == Some(p.accent);
+    // Red is a state of its own, record, even where it is also the accent.
+    let on = tint == Some(p.accent) && tint != Some(p.red);
     let tint = tint.filter(|_| !on);
     paint_icon_button(ui, p, rect, &response, icon, tint, on);
     name(&response, ui.is_enabled(), label);
@@ -247,9 +250,10 @@ pub fn splitter(ui: &mut Ui, p: &Palette, rect: Rect, id: Id, vertical: bool) ->
     kit::splitter(ui, p, rect, id, vertical)
 }
 
-/// The quiet statement an empty panel makes: an icon, a line and a hint.
+/// The quiet statement an empty panel makes: an icon, a line and a hint. It
+/// stands where it stood, since a caller may set an action under it.
 pub fn empty_state(ui: &mut Ui, p: &Palette, rect: Rect, icon: Icon, title: &str, hint: &str) {
-    kit::empty_state(ui, p, rect, icon, title, hint, None);
+    kit::empty_state_as_before(ui, p, rect, icon, title, hint);
 }
 
 /// A number that is dragged or typed, styled as a field.
@@ -265,10 +269,28 @@ pub fn number(
     let number = kit::Number {
         range: &range,
         speed,
+        prefix: None,
         suffix,
         decimals,
     };
-    kit::number_field(ui, &p, value, number, vec2(78.0, 24.0), None)
+    let height = field_height(ui);
+    kit::number_field_in(ui, &p, value, number, vec2(78.0, 24.0), height, None)
+}
+
+/// The height a number field took before: egui's, which is its 13-point
+/// text and padding, or a control's height where that is more.
+fn field_height(ui: &Ui) -> f32 {
+    let spacing = ui.spacing();
+    let text = ui
+        .painter()
+        .layout_no_wrap(
+            "0".to_owned(),
+            FontId::proportional(13.0),
+            Color32::PLACEHOLDER,
+        )
+        .size()
+        .y;
+    (text + 2.0 * spacing.button_padding.y).max(spacing.interact_size.y)
 }
 
 /// The palette a control without one is drawn from, read back from the
@@ -372,10 +394,20 @@ pub fn named_number(
     let number = kit::Number {
         range: &range,
         speed,
+        prefix: None,
         suffix,
         decimals,
     };
-    kit::number_field(ui, &p, value, number, vec2(width, 24.0), Some(label))
+    let height = field_height(ui);
+    kit::number_field_in(
+        ui,
+        &p,
+        value,
+        number,
+        vec2(width, 24.0),
+        height,
+        Some(label),
+    )
 }
 
 /// A value from nought to one on a track, dragged or stepped with the up and
@@ -523,9 +555,12 @@ pub fn disclosure(ui: &mut Ui, p: &Palette, open: bool, text: &str, dim: bool) -
         if response.has_focus() {
             controls::focus_ring(painter, rect, 6, *p);
         }
+        // Terminal sets the chevron 20 points in from a card's edge; here
+        // the row is already inside the card's padding, so it stands under
+        // the labels of the rows beside it.
         icons::paint(
             painter,
-            Rect::from_center_size(pos2(rect.left() + 20.0, rect.center().y), Vec2::splat(14.0)),
+            Rect::from_center_size(pos2(rect.left() + 8.0, rect.center().y), Vec2::splat(14.0)),
             if open {
                 Icon::ChevronDown
             } else {
@@ -534,8 +569,8 @@ pub fn disclosure(ui: &mut Ui, p: &Palette, open: bool, text: &str, dim: bool) -
             p.secondary,
         );
         let ink = if dim { p.muted } else { p.fg };
-        let galley = truncated(ui, text, theme::medium(12.5), ink, rect.width() - 40.0);
-        controls::galley_at(painter, pos2(rect.left() + 36.0, rect.center().y), galley);
+        let galley = truncated(ui, text, theme::medium(12.5), ink, rect.width() - 28.0);
+        controls::galley_at(painter, pos2(rect.left() + 24.0, rect.center().y), galley);
     }
     if enabled {
         response.on_hover_cursor(CursorIcon::PointingHand)
@@ -559,8 +594,8 @@ pub fn chip(ui: &mut Ui, p: &Palette, text: &str, selected: bool) -> Response {
             .layout_no_wrap(text.to_owned(), theme::medium(12.0), Color32::PLACEHOLDER);
     let size = vec2(galley.size().x + 22.0, 26.0);
     let (_, response) = ui.allocate_exact_size(size, Sense::click());
-    // The chip keeps the width it had; the check comes with the area's
-    // final layout, which leaves room for it.
+    // The chip keeps the width it had, so the one chosen is ringed; the
+    // check comes with the area's final layout, which leaves room for it.
     kit::paint_chip(ui, p, &response, galley, selected, false);
     if ui.is_enabled() {
         response.on_hover_cursor(CursorIcon::PointingHand)
@@ -715,10 +750,61 @@ mod tests {
                 ),
                 vec2(150.0, 28.0),
             ));
+            // What the rest took is read from where the next thing starts.
+            let gap = ui.spacing().item_spacing.y;
+            let width = ui.available_width();
+            let mut took = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui), was: Vec2| {
+                let before = ui.cursor().top();
+                add(ui);
+                sizes.push((vec2(width, ui.cursor().top() - before - gap), was));
+            };
+            // A row was a label and egui's drag value, grown past the 24
+            // points it was given, in a line at least a control tall.
+            let before = ui.cursor().top();
+            ui.horizontal(|ui| {
+                ui.set_min_height(28.0);
+                ui.label(egui::RichText::new("Scale").font(theme::regular(12.5)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    bare(ui, 78.0);
+                });
+            });
+            let field = ui.cursor().top() - before - gap;
+            took(
+                ui,
+                &mut |ui| {
+                    row(ui, &p, "Scale", |ui| {
+                        number(ui, &mut 1.0, 0.0..=10.0, 0.1, " s", 1)
+                    });
+                },
+                vec2(width, field),
+            );
+            took(
+                ui,
+                &mut |ui| {
+                    fitted_row(ui, &p, "Scale", |ui| {
+                        number(ui, &mut 1.0, 0.0..=10.0, 0.1, " s", 1)
+                    });
+                },
+                vec2(width, field),
+            );
+            let heading = ui.fonts_mut(|fonts| fonts.row_height(&theme::medium(11.5)));
+            took(
+                ui,
+                &mut |ui| section(ui, &p, "Video"),
+                vec2(width, 2.0 + heading),
+            );
+            took(ui, &mut |ui| hairline(ui, &p), vec2(width, 1.0));
+            took(
+                ui,
+                &mut |ui| {
+                    progress(ui, &p, 0.5, p.accent, "Export");
+                },
+                vec2(width, 4.0),
+            );
         });
         for (index, (size, before)) in sizes.into_iter().enumerate() {
             assert!(
-                (size - before).length() < 0.5,
+                (size - before).length() < 0.05,
                 "adapter {index}: {size:?}, was {before:?}"
             );
         }
@@ -783,5 +869,202 @@ mod tests {
         );
         assert_eq!(kit::name_and_keys("Render queue"), ("Render queue", ""));
         assert_eq!(kit::name_and_keys("Odd ()"), ("Odd ()", ""));
+        assert_eq!(
+            kit::name_and_keys("Snapping is on (N)"),
+            ("Snapping is on", "N")
+        );
+        assert_eq!(kit::name_and_keys("Zoom in (Cmd+=)"), ("Zoom in", "Cmd+="));
+        assert_eq!(kit::name_and_keys("Redo (⌘⇧Z)"), ("Redo", "⌘⇧Z"));
+        // Words in brackets that are not keys stay in the name.
+        for name in [
+            "Render queue (2 jobs)",
+            "Render queue (1 job)",
+            "Show Face (left)",
+            "Codec (HEVC)",
+        ] {
+            assert_eq!(kit::name_and_keys(name), (name, ""));
+        }
+    }
+
+    /// Runs one frame and returns the accessible nodes it made, by name:
+    /// their role and whether they are on.
+    fn nodes(
+        ctx: &egui::Context,
+        events: Vec<Event>,
+        add: &mut dyn FnMut(&mut Ui),
+    ) -> Vec<(String, egui::accesskit::Role, Option<bool>, Option<String>)> {
+        ctx.enable_accesskit();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(480.0, 320.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| add(ui),
+        );
+        output.textures_delta.clear();
+        let update = output.platform_output.accesskit_update.expect("a tree");
+        update
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| {
+                Some((
+                    node.label()?.to_owned(),
+                    node.role(),
+                    (node.toggled()).map(|on| on == egui::accesskit::Toggled::True),
+                    node.value().map(str::to_owned),
+                ))
+            })
+            .collect()
+    }
+
+    fn click(at: Pos2) -> Vec<Event> {
+        let press = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        vec![Event::PointerMoved(at), press(true), press(false)]
+    }
+
+    #[test]
+    fn a_value_none_of_the_choices_holds_chooses_none_and_any_can_be_taken() {
+        // A clip at 1.5×, or with a ramp, is at none of the named speeds.
+        let ctx = context();
+        let p = palette();
+        let options = [(0, "0.25×"), (1, "0.5×"), (2, "1×")];
+        let value = std::cell::Cell::new(usize::MAX);
+        let first = std::cell::Cell::new(Rect::NOTHING);
+        let mut add = |ui: &mut Ui| {
+            let top = ui.cursor().min;
+            let mut chosen = value.get();
+            segmented(ui, &p, &mut chosen, &options, 150.0);
+            value.set(chosen);
+            first.set(Rect::from_min_size(top, vec2(50.0, 28.0)));
+        };
+        let seen = nodes(&ctx, Vec::new(), &mut add);
+        let radios: Vec<_> = (seen.iter())
+            .filter(|(_, role, ..)| *role == egui::accesskit::Role::RadioButton)
+            .collect();
+        assert_eq!(radios.len(), 3);
+        assert!(
+            radios.iter().all(|(_, _, on, _)| *on != Some(true)),
+            "{radios:?}"
+        );
+        nodes(&ctx, click(first.get().center()), &mut add);
+        assert_eq!(value.get(), 0, "the first choice can be taken");
+        let seen = nodes(&ctx, Vec::new(), &mut add);
+        assert!(seen.contains(&(
+            "0.25×".to_owned(),
+            egui::accesskit::Role::RadioButton,
+            Some(true),
+            None
+        )));
+    }
+
+    #[test]
+    fn the_record_control_keeps_its_red_under_the_red_accent() {
+        // Spec §3.3: with the Red accent, record keeps `red`.
+        let p = Palette::new(Appearance::Dark, Accent::Red);
+        assert_eq!(p.accent, p.red, "the case this guards");
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &p);
+        let mut add = |ui: &mut Ui| {
+            icon_button_tinted(ui, &p, Icon::Speech, "Record voiceover (R)", Some(p.red));
+        };
+        frame(&ctx, Vec::new(), &mut add);
+        let shapes = frame(&ctx, Vec::new(), &mut add);
+        assert!(
+            !rects(&shapes).any(|rect| rect.fill == p.pressed),
+            "at rest it is not held"
+        );
+        let red_glyph = shapes.iter().any(|shape| match shape {
+            Shape::Text(text) => text.fallback_color == p.red,
+            _ => false,
+        });
+        assert!(red_glyph, "its glyph is red");
+    }
+
+    #[test]
+    fn a_number_reads_out_with_its_unit_and_paints_it_apart() {
+        let ctx = context();
+        let p = palette();
+        let mut value = 2.0;
+        let mut add = |ui: &mut Ui| {
+            named_number(ui, &mut value, 0.0..=10.0, 0.1, " s", 1, 78.0, "Fade in");
+        };
+        nodes(&ctx, Vec::new(), &mut add);
+        let seen = nodes(&ctx, Vec::new(), &mut add);
+        let field = (seen.iter()).find(|(name, ..)| name == "Fade in");
+        assert_eq!(
+            field.and_then(|(.., value)| value.as_deref()),
+            Some("2.0 s"),
+            "{seen:?}"
+        );
+        // The unit is painted in its own quieter ink.
+        let shapes = frame(&ctx, Vec::new(), &mut add);
+        let unit = shapes.iter().any(|shape| match shape {
+            Shape::Text(text) => {
+                text.galley.text() == " s" && text.galley.job.sections[0].format.color == p.muted
+            }
+            _ => false,
+        });
+        assert!(unit, "the unit is muted");
+    }
+
+    #[test]
+    fn a_panel_toggle_says_whether_it_is_on() {
+        // Spec §7.1: "Inspector and agent" keeps its Checkbox role.
+        let ctx = context();
+        let p = palette();
+        for open in [false, true] {
+            let seen = nodes(&ctx, Vec::new(), &mut |ui| {
+                super::super::panel::toggle(
+                    ui,
+                    p,
+                    Icon::PanelRight,
+                    "Inspector and agent",
+                    "",
+                    open,
+                    false,
+                );
+            });
+            assert!(
+                seen.contains(&(
+                    "Inspector and agent".to_owned(),
+                    egui::accesskit::Role::CheckBox,
+                    Some(open),
+                    None
+                )),
+                "{seen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn what_follows_a_keyed_row_keeps_its_identity_when_the_row_is_animated() {
+        let ctx = context();
+        let p = palette();
+        let mut ids = Vec::new();
+        for state in [
+            KeyState::Off,
+            KeyState::Animated {
+                on_key: false,
+                previous: true,
+                next: true,
+            },
+        ] {
+            let after = std::cell::Cell::new(None);
+            frame(&ctx, Vec::new(), &mut |ui| {
+                keyed_row(ui, &p, "Scale", "scale", state, |ui| {
+                    number(ui, &mut 1.0, 0.0..=10.0, 0.1, " %", 0);
+                });
+                after.set(Some(ui.next_auto_id()));
+            });
+            ids.push(after.get());
+        }
+        assert_eq!(ids[0], ids[1], "the steps came in and moved what follows");
     }
 }

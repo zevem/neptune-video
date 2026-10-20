@@ -3,7 +3,8 @@
 //! field, the keyframe controls of a row, the select list, chips, badges,
 //! progress and the quiet statement an empty region makes. Each is drawn from
 //! the same tokens and primitives as [`super::controls`], so it reads as one
-//! of them.
+//! of them. Terminal's spinner and rich tooltip, which it keeps among its
+//! helpers rather than its controls, are ported here too.
 #![allow(dead_code)] // The areas move onto these as they are laid out again.
 
 use super::controls::{self, ButtonKind, elided, focus_ring, galley_at};
@@ -109,13 +110,54 @@ pub fn scroll_fade(painter: &Painter, rect: Rect, edge: Edge, ground: Color32) {
 // ---- Icon buttons --------------------------------------------------------
 
 /// Splits a control's name into what it does and the shortcut it gives in
-/// a trailing "(…)", so that the tooltip can set the keys as keycaps.
+/// a trailing "(…)", so that the tooltip can set the keys as keycaps. Words
+/// in brackets that are not keys, such as a count, stay in the name.
 pub fn name_and_keys(label: &str) -> (&str, &str) {
     label
         .strip_suffix(')')
         .and_then(|rest| rest.rsplit_once(" ("))
-        .filter(|(_, keys)| !keys.is_empty())
+        .filter(|(_, keys)| is_chord(keys))
         .unwrap_or((label, ""))
+}
+
+/// Whether `text` is a shortcut as the interface writes one: keys joined
+/// by "+", or led by the macOS modifier marks, with no spaces.
+fn is_chord(text: &str) -> bool {
+    const NAMED: [&str; 20] = [
+        "Ctrl",
+        "Cmd",
+        "Shift",
+        "Alt",
+        "Option",
+        "Super",
+        "Enter",
+        "Return",
+        "Space",
+        "Tab",
+        "Esc",
+        "Escape",
+        "Delete",
+        "Backspace",
+        "Home",
+        "End",
+        "PageUp",
+        "PageDown",
+        "Insert",
+        "Fn",
+    ];
+    let key = |key: &str| {
+        let key = key.trim_start_matches(['⌘', '⇧', '⌥', '⌃']);
+        key.is_empty()
+            || key.chars().count() == 1
+            || NAMED.contains(&key)
+            || key
+                .strip_prefix('F')
+                .and_then(|number| number.parse::<u8>().ok())
+                .is_some_and(|number| (1..=24).contains(&number))
+    };
+    !text.is_empty()
+        && !text.contains(char::is_whitespace)
+        && controls::chord_keys(text).into_iter().all(key)
 }
 
 /// The look of an icon button: Terminal's surface, ring and glyph over a
@@ -246,6 +288,13 @@ impl RowFit {
         lead: 12.0,
         trail: 8.0,
     };
+    /// A row of an inspector card that also holds keyed rows: its controls
+    /// stop where the keyed rows' fields do, clear of the key column.
+    pub const INSPECTOR_BESIDE_KEYS: Self = Self {
+        height: metrics::INSPECTOR_ROW,
+        lead: 12.0,
+        trail: 8.0 + metrics::KEY_COLUMN + 8.0,
+    };
     /// A row as rows were before cards: as tall as a control was, and from
     /// edge to edge.
     pub const LEGACY: Self = Self {
@@ -324,14 +373,19 @@ pub fn fitted_row<R>(
 pub struct Number<'a> {
     pub range: &'a RangeInclusive<f32>,
     pub speed: f64,
+    /// The axis, set before the value where the row's label says it: "X",
+    /// "Y", "W", "H".
+    pub prefix: Option<&'a str>,
     /// The unit, as written after the value: " %", " s", "°".
     pub suffix: &'a str,
     pub decimals: usize,
 }
 
-/// A number that is dragged or typed, `size` large, in a filled field. It is
-/// egui's drag value inside the surface, so its identity, typing and
-/// scrubbing are egui's; `label` names it beside its row.
+/// A number that is dragged or typed, in a 26-point field that takes `size`.
+/// It is egui's drag value inside the surface, so its identity, typing and
+/// scrubbing are egui's; `label` names it beside its row. The axis and the
+/// unit are painted quieter than the value, which stands right-aligned
+/// before the unit.
 pub fn number_field(
     ui: &mut Ui,
     p: &Palette,
@@ -340,12 +394,43 @@ pub fn number_field(
     size: Vec2,
     label: Option<&str>,
 ) -> Response {
+    number_field_in(ui, p, value, number, size, size.y, label)
+}
+
+/// As [`number_field`], `height` tall in the room `size` asks for. egui
+/// grows a field taller than its room past the room's foot, which is how
+/// the fields the adapters make took their place before.
+pub fn number_field_in(
+    ui: &mut Ui,
+    p: &Palette,
+    value: &mut f32,
+    number: Number,
+    size: Vec2,
+    height: f32,
+    label: Option<&str>,
+) -> Response {
     let surface = ui.painter().add(Shape::Noop);
+    let unit_font = theme::regular(12.5);
+    let unit = ui
+        .painter()
+        .layout_no_wrap(number.suffix.to_owned(), unit_font.clone(), p.muted);
+    let enabled = ui.is_enabled();
     let response = ui
         .scope(|ui| {
             // The drag value draws no surface of its own: this one is drawn
             // beneath it.
-            let visuals = ui.visuals_mut();
+            let style = ui.style_mut();
+            style
+                .text_styles
+                .insert(style.drag_value_text_style.clone(), theme::regular(12.5));
+            // The field is as large as it is asked to be, and the value
+            // ends 8 points in from the unit.
+            style.spacing.interact_size = vec2(size.x, height);
+            style.spacing.button_padding = vec2(8.0, 0.0);
+            let visuals = &mut style.visuals;
+            if !enabled {
+                visuals.override_text_color = Some(p.muted);
+            }
             visuals.text_edit_bg_color = Some(Color32::TRANSPARENT);
             visuals.selection.stroke = Stroke::NONE;
             for widget in [
@@ -359,23 +444,37 @@ pub fn number_field(
                 widget.bg_stroke = Stroke::NONE;
                 widget.corner_radius = CornerRadius::same(7);
             }
-            ui.add_sized(
-                size,
-                egui::DragValue::new(value)
-                    .range(number.range.clone())
-                    .speed(number.speed)
-                    .suffix(number.suffix)
-                    .fixed_decimals(number.decimals),
-            )
+            // The unit is laid out unseen after the value, which keeps the
+            // value clear of it and its text in the value read out; it is
+            // painted over that place below.
+            let drag = egui::DragValue::new(value)
+                .range(number.range.clone())
+                .speed(number.speed)
+                .suffix(
+                    egui::RichText::new(number.suffix)
+                        .font(unit_font.clone())
+                        .color(Color32::TRANSPARENT),
+                )
+                .fixed_decimals(number.decimals);
+            let layout =
+                Layout::centered_and_justified(ui.layout().main_dir()).with_main_align(Align::Max);
+            ui.allocate_ui_with_layout(size, layout, |ui| ui.add(drag))
+                .inner
         })
         .inner;
     if let Some(label) = label {
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::DragValue, ui.is_enabled(), label));
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::DragValue, enabled, label));
     }
-    let rect = response.rect;
+    let rect = Rect::from_center_size(
+        response.rect.center(),
+        vec2(
+            response.rect.width(),
+            metrics::INSPECTOR_CONTROL.min(response.rect.height()),
+        ),
+    );
     let mut shapes = vec![Shape::rect_filled(rect, 7, p.control)];
     let editing = response.has_focus();
-    if ui.is_enabled() && response.hovered() && !editing {
+    if enabled && response.hovered() && !editing {
         shapes.push(Shape::rect_filled(rect, 7, p.hover));
     }
     if editing {
@@ -394,6 +493,18 @@ pub fn number_field(
         ));
     }
     ui.painter().set(surface, Shape::Vec(shapes));
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if let Some(prefix) = number.prefix {
+            let axis = painter.layout_no_wrap(prefix.to_owned(), theme::medium(11.0), p.muted);
+            galley_at(painter, pos2(rect.left() + 8.0, rect.center().y), axis);
+        }
+        // While it is typed in, the field holds only the number.
+        if !editing && !number.suffix.is_empty() {
+            let at = pos2(rect.right() - 8.0 - unit.size().x, rect.center().y);
+            galley_at(painter, at, unit);
+        }
+    }
     response
 }
 
@@ -448,7 +559,9 @@ pub fn key_toggle(ui: &mut Ui, p: &Palette, state: KeyState, label: &str) -> Res
         } else if animated || response.hovered() {
             p.fg
         } else {
-            theme::tint(p.muted, 0.55)
+            // Quiet, but as plain as a control that can be pressed must be:
+            // about 3:1 on a card in either appearance.
+            p.muted
         };
         let on_key = matches!(state, KeyState::Animated { on_key: true, .. });
         icons::paint(
@@ -526,39 +639,36 @@ pub fn key_cluster(
         KeyState::Off => (None, None),
         KeyState::Animated { previous, next, .. } => (Some(previous), Some(next)),
     };
-    let salt = |part: &'static str| (id, "key-cluster", part);
+    // Each control is the row's by name, not by how many came before it:
+    // the diamond keeps the keyboard when the steps come in beside it.
+    let mut place = |rect: Rect, part: &'static str, add: &mut dyn FnMut(&mut Ui) -> Response| {
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .id(id.with(("key-cluster", part)))
+                .max_rect(rect)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        add(&mut child)
+    };
     let previous = previous.map(|there| {
         let label = format!("Previous {what} keyframe");
-        let rect = slot(0.0, 18.0);
-        controls::place(
-            ui,
-            rect,
-            Layout::left_to_right(Align::Center),
-            salt("previous"),
-            |ui| key_step(ui, p, Icon::ChevronLeft, there, &label),
-        )
+        place(slot(0.0, 18.0), "previous", &mut |ui| {
+            key_step(ui, p, Icon::ChevronLeft, there, &label)
+        })
     });
     let label = match state {
         KeyState::Off => format!("Animate {what}"),
         KeyState::Animated { on_key: true, .. } => format!("Remove {what} keyframe"),
         KeyState::Animated { .. } => format!("Add {what} keyframe"),
     };
-    let toggle = controls::place(
-        ui,
-        slot(20.0, 22.0),
-        Layout::left_to_right(Align::Center),
-        salt("diamond"),
-        |ui| key_toggle(ui, p, state, &label),
-    );
+    let toggle = place(slot(20.0, 22.0), "diamond", &mut |ui| {
+        key_toggle(ui, p, state, &label)
+    });
     let next = next.map(|there| {
         let label = format!("Next {what} keyframe");
-        controls::place(
-            ui,
-            slot(44.0, 18.0),
-            Layout::left_to_right(Align::Center),
-            salt("next"),
-            |ui| key_step(ui, p, Icon::ChevronRight, there, &label),
-        )
+        place(slot(44.0, 18.0), "next", &mut |ui| {
+            key_step(ui, p, Icon::ChevronRight, there, &label)
+        })
     });
     KeyRow {
         toggle,
@@ -589,11 +699,14 @@ pub fn keyed_row(
     // frame before, and a row whose controls changed width is laid out again
     // before it is shown.
     let id = ui.next_auto_id().with("keyed-row");
-    // What the controls took the frame before: their width, and their
-    // height, which a row grows to as a row of controls always has.
-    let known: Option<Vec2> = ui.data(|data| data.get_temp(id));
-    let controls = known.map_or(86.0, |known| known.x);
-    let tall = known.map_or(fit.height, |known| known.y.max(fit.height));
+    // What the controls took the frame before: their width and height, and
+    // how far below the middle of their place they stood. A field egui grows
+    // past its room grows downward, and the row lifts it back to the middle,
+    // where the label and the key column are.
+    let known: Option<(Vec2, f32)> = ui.data(|data| data.get_temp(id));
+    let controls = known.map_or(86.0, |(known, _)| known.x);
+    let tall = known.map_or(fit.height, |(known, _)| known.y.max(fit.height));
+    let lift = known.map_or(0.0, |(_, below)| below);
     let width = ui.available_width();
     let text = row_label(label, p);
     let whole = ui
@@ -604,6 +717,15 @@ pub fn keyed_row(
     let wraps = fit.lead + whole + 8.0 + controls + 8.0 + metrics::KEY_COLUMN + fit.trail > width;
     let height = tall + if wraps { 20.0 } else { 0.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    // The whole row is one child of a fixed identity, so what comes after it
+    // keeps its own whether or not this row shows its steps.
+    let mut ui = ui.new_child(
+        UiBuilder::new()
+            .id(id.with("row"))
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    let ui = &mut ui;
     let line = Rect::from_min_max(pos2(rect.left(), rect.bottom() - tall), rect.max);
     let label_line = if wraps {
         Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + 20.0))
@@ -630,7 +752,8 @@ pub fn keyed_row(
             line.top(),
         ),
         pos2(column.left() - 8.0, line.bottom()),
-    );
+    )
+    .translate(vec2(0.0, -lift));
     let mut row = ui.new_child(
         UiBuilder::new()
             .id_salt((id, "controls"))
@@ -645,8 +768,12 @@ pub fn keyed_row(
     // field from then on: it would lose the keyboard part way through.
     row.scope_builder(UiBuilder::new().id(id.with("fields")), add);
     let used = vec2(row.min_rect().right() - from, row.min_rect().height());
-    if known.is_none_or(|known| (known - used).abs().max_elem() > 0.5) {
-        ui.data_mut(|data| data.insert_temp(id, used));
+    let below = row.min_rect().center().y - fields.center().y;
+    let moved = |(known, lifted): (Vec2, f32)| {
+        (known - used).abs().max_elem() > 0.5 || (lifted - below).abs() > 0.5
+    };
+    if known.is_none_or(moved) {
+        ui.data_mut(|data| data.insert_temp(id, (used, below)));
         ui.ctx()
             .request_discard("a keyed row's controls changed size");
     }
@@ -922,7 +1049,8 @@ pub fn chip(ui: &mut Ui, p: &Palette, text: &str, selected: bool) -> Response {
 }
 
 /// Paints a chip over `response`, with the check before the name when
-/// `check` leaves it room.
+/// `check` leaves it room. A chosen chip without that room is ringed
+/// instead, so it is told from the others by more than its fill.
 pub fn paint_chip(
     ui: &Ui,
     p: &Palette,
@@ -947,16 +1075,13 @@ pub fn paint_chip(
     } else if enabled && response.hovered() {
         painter.rect_filled(rect, 13, p.hover);
     }
+    if selected && !check {
+        painter.rect_stroke(rect, 13, Stroke::new(1.0, p.border), StrokeKind::Inside);
+    }
     if response.has_focus() {
         focus_ring(painter, rect, 13, *p);
     }
-    let ink = if !enabled {
-        p.muted
-    } else if selected || response.hovered() {
-        p.fg
-    } else {
-        p.secondary
-    };
+    let ink = if enabled { p.fg } else { p.muted };
     if selected && check {
         icons::paint(
             painter,
@@ -1066,6 +1191,59 @@ pub fn progress_ring(painter: &Painter, p: &Palette, center: Pos2, done: f32) {
     painter.add(Shape::line(points, Stroke::new(2.5, p.accent)));
 }
 
+// ---- Spinner and rich tooltip -------------------------------------------
+
+/// Terminal's loading mark: the Tabler loader turning once a second, as
+/// wide as `rect` allows. A mark out of view does not keep the window
+/// repainting.
+pub fn spinner(ui: &Ui, rect: Rect, color: Color32) {
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    ui.request_repaint();
+    let angle = (ui.input(|input| input.time) * std::f64::consts::TAU) as f32;
+    // Tabler's 24-point cell has a 20-point ring, which is made as wide as
+    // the rect less a point.
+    let side = (rect.width().min(rect.height()) - 1.0).max(0.0) * 24.0 / 20.0;
+    icons::paint_rotated(
+        ui.painter(),
+        Rect::from_center_size(rect.center(), Vec2::splat(side)),
+        Icon::Loader2,
+        color,
+        angle,
+    );
+}
+
+/// A tooltip that says more than a name, as Terminal's pull request chip
+/// does: a title, lines of detail under it, and a quiet hint of what a click
+/// does, at most 300 points wide.
+pub fn rich_tooltip(
+    response: Response,
+    p: &Palette,
+    title: &str,
+    lines: &[&str],
+    hint: Option<&str>,
+) -> Response {
+    response.on_hover_ui(|ui| {
+        ui.set_max_width(300.0);
+        ui.spacing_mut().item_spacing.y = 3.0;
+        let label = |ui: &mut Ui, text: &str, font, color| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(text).font(font).color(color))
+                    .wrap()
+                    .selectable(false),
+            );
+        };
+        label(ui, title, theme::medium(12.5), p.fg);
+        for line in lines {
+            label(ui, line, theme::regular(11.5), p.secondary);
+        }
+        if let Some(hint) = hint {
+            label(ui, hint, theme::regular(11.0), p.muted);
+        }
+    })
+}
+
 // ---- Empty state -----------------------------------------------------------
 
 /// The quiet statement an empty region makes: a glyph, a title and a hint,
@@ -1080,6 +1258,37 @@ pub fn empty_state(
     title: &str,
     hint: &str,
     action: Option<&str>,
+) -> bool {
+    let words = (icon, title, hint);
+    statement(ui, p, rect, words, action, |block| {
+        rect.top() + rect.height() * 0.4 - block * 0.5
+    })
+}
+
+/// As [`empty_state`] without an action, with the glyph where an empty
+/// panel had it before its area was laid out again: 30 points above the
+/// middle. Its callers set their own action at a fixed place under it.
+pub fn empty_state_as_before(
+    ui: &mut Ui,
+    p: &Palette,
+    rect: Rect,
+    icon: Icon,
+    title: &str,
+    hint: &str,
+) {
+    statement(ui, p, rect, (icon, title, hint), None, |_| {
+        rect.center().y - 30.0 - 14.0
+    });
+}
+
+/// An empty state whose block starts where `top` puts it, given its height.
+fn statement(
+    ui: &mut Ui,
+    p: &Palette,
+    rect: Rect,
+    (icon, title, hint): (Icon, &str, &str),
+    action: Option<&str>,
+    top: impl FnOnce(f32) -> f32,
 ) -> bool {
     let painter = ui.painter_at(rect);
     let width = (rect.width() - 32.0).clamp(40.0, 260.0);
@@ -1102,7 +1311,7 @@ pub fn empty_state(
             4.0 + hint_galley.size().y
         }
         + action_height;
-    let top = rect.top() + rect.height() * 0.4 - block * 0.5;
+    let top = top(block);
     let x = rect.center().x;
     let glyph = Rect::from_center_size(pos2(x, top + 14.0), Vec2::splat(28.0));
     icons::paint(&painter, glyph, icon, p.muted);

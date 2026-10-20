@@ -256,6 +256,8 @@ pub fn tint(color: Color32, alpha: f32) -> Color32 {
     )
 }
 
+/// Perceived brightness, nought to 255.
+#[cfg(test)]
 fn luminance(color: Color32) -> f32 {
     0.299 * color.r() as f32 + 0.587 * color.g() as f32 + 0.114 * color.b() as f32
 }
@@ -294,7 +296,16 @@ impl Palette {
         .color(dark);
         let accent_choice = accent;
         let accent = accent.color(dark);
-        let on_accent = if luminance(accent) > 170.0 {
+        // Dark ink on the bright accents, where white would be faint:
+        // Yellow in both appearances, Orange and Green in the dark one.
+        // Terminal reckons this from the accent's brightness; the light
+        // Yellow and the dark Green fall on the wrong side of its line.
+        let dark_ink = match accent_choice {
+            Accent::Yellow => true,
+            Accent::Orange | Accent::Green => dark,
+            _ => false,
+        };
+        let on_accent = if dark_ink {
             color(0x1d1d1f)
         } else {
             Color32::WHITE
@@ -754,6 +765,18 @@ mod tests {
                 let p = Palette::new(appearance, accent);
                 let contrast = (luminance(p.accent) - luminance(p.on_accent)).abs();
                 assert!(contrast > 70.0, "{appearance:?}/{name} label contrast");
+                // Spec §3.3: the ink each accent is given.
+                let dark_ink = match accent {
+                    Accent::Yellow => true,
+                    Accent::Orange | Accent::Green => appearance == Appearance::Dark,
+                    _ => false,
+                };
+                let ink = if dark_ink {
+                    color(0x1d1d1f)
+                } else {
+                    Color32::WHITE
+                };
+                assert_eq!(p.on_accent, ink, "{appearance:?}/{name} label ink");
                 // A count or a waiting agent is never taken for focus.
                 assert_ne!(p.attention, p.accent, "{appearance:?}/{name}");
                 assert_eq!(p.on_red(), Color32::WHITE);
