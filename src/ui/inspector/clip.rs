@@ -11,7 +11,7 @@
 use super::{
     InspectorInput, InspectorState, PAIRED_GAP, ProjectDraft, SWITCH, Section, Thumb, button,
     button_row, card, fact, keyed_card, keyed_row, note, number, number_with, object_header,
-    paired_width, row, section, section_switch, select_list, tall_row,
+    paired_width, row, section, section_switch, select_list, tall_row, time_fact,
 };
 use crate::{
     icons::Icon,
@@ -440,9 +440,9 @@ pub(super) fn rows(
 fn section_timing(ui: &mut Ui, p: &Palette, clip: &Clip, rate: editor_core::FrameRate) {
     section(ui, p, "Timing");
     card(ui, p, |ui| {
-        fact(ui, p, "Start", timefmt::timecode(clip.start, rate));
-        fact(ui, p, "End", timefmt::timecode(clip.end(), rate));
-        fact(ui, p, "Duration", timefmt::timecode(clip.duration, rate));
+        time_fact(ui, p, "Start", timefmt::timecode(clip.start, rate));
+        time_fact(ui, p, "End", timefmt::timecode(clip.end(), rate));
+        time_fact(ui, p, "Duration", timefmt::timecode(clip.duration, rate));
         if clip.linked_id.is_some() {
             fact(ui, p, "Linked", "Yes");
         }

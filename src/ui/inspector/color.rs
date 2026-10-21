@@ -19,7 +19,7 @@ use super::{
     clip::Pane,
     curve, fitted_row, head_button, keyed_card, keyed_row,
     look::{KEY_COLOUR, is_default, percent, set_param, slider_width},
-    note, section, select_menu,
+    named_button, note, select_menu,
     speed::well_row,
     tall_row, well,
 };
@@ -505,8 +505,20 @@ impl Pane<'_> {
                     }
                 }
                 ui.add_enabled_ui(!full, |ui| {
-                    let plus = kit::small_icon_button(ui, p, Icon::Plus, "Add hue band")
-                        .on_disabled_hover_text("A clip holds sixteen effects at most");
+                    // Alone, the add is a labelled button as every other is;
+                    // after the bands' chips, a small one.
+                    let plus = if bands().next().is_none() {
+                        named_button(
+                            ui,
+                            p,
+                            Some(Icon::Plus),
+                            ("Add band", "Add hue band"),
+                            Kind::Plain,
+                        )
+                    } else {
+                        kit::small_icon_button(ui, p, Icon::Plus, "Add hue band")
+                    }
+                    .on_disabled_hover_text("A clip holds sixteen effects at most");
                     egui::Popup::menu(&plus).show(|ui| {
                         widgets::menu_style(ui, 150.0);
                         for (name, hue) in HUES {
@@ -901,8 +913,9 @@ impl Pane<'_> {
         let p = self.p;
         let project = self.project;
         let clip = self.clip;
-        section(ui, p, "Background");
+        // Headed in its card, as the section's other groups are.
         card(ui, p, |ui| {
+            card_head(ui, p, "Background", None, false, (0, |_: &mut Ui| {}));
             fitted_row(ui, p, "Behind this clip", |ui| {
                 let add = button(ui, p, Some(Icon::Plus), "Add", Kind::Plain)
                     .on_hover_text("Put a picture or a video on a track under this clip");

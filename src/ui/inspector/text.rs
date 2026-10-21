@@ -7,8 +7,8 @@
 //! project keeps in ems (outline, shadow, padding, spacing) are shown in
 //! canvas pixels at the title's size, which is how they look.
 use super::{
-    FIELD, LEAD, PAIRED_GAP, button, card, clip::Pane, controls, fact, number, row, section,
-    select_list, select_menu, tall_row, text_field, well,
+    FIELD, LEAD, LIST_HEIGHT, PAIRED_GAP, button, card, clip::Pane, controls, fact, number, row,
+    section, select_list, select_popup, tall_row, text_field, well,
 };
 use crate::{
     theme::{self, Palette, metrics},
@@ -85,7 +85,8 @@ pub(super) fn kind_name(kind: TextAnimationKind) -> &'static str {
     }
 }
 
-/// The width of a select of a title's card.
+/// The width of a select of a title's card: the span of a pair of fields,
+/// so that a card's values start at one place.
 const SELECT: f32 = 132.0;
 
 /// A select of named values in a row, named by the row.
@@ -276,7 +277,7 @@ fn keep_card(
                         field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     ui.add_space(6.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let keep = button(ui, p, None, "Keep", Kind::Plain);
+                        let keep = button(ui, p, None, "Keep", Kind::Primary);
                         if keep.clicked() || returned {
                             kept = Some(name.clone());
                             ui.close();
@@ -365,13 +366,15 @@ pub(super) fn font_rows(
     salt: &str,
 ) {
     tall_row(ui, p, "Font", |ui| {
-        let width = ui.available_width().min(160.0);
-        let (_, picked) = select_menu(
+        let width = ui.available_width().min(SELECT);
+        // The search stays in view over the families, which scroll.
+        let (_, picked) = select_popup(
             ui,
             p,
             (("family", salt), "Font"),
             font.family.as_str(),
             width,
+            false,
             |ui| {
                 let id = ui.id().with(("font-search", salt));
                 controls::search_field_sized(
@@ -392,7 +395,7 @@ pub(super) fn font_rows(
                 let mut picked = None;
                 let mut shown = 0;
                 egui::ScrollArea::vertical()
-                    .max_height(280.0)
+                    .max_height(LIST_HEIGHT)
                     .show(ui, |ui| {
                         for name in
                             (all.iter()).filter(|name| name.to_lowercase().contains(&wanted))
@@ -479,7 +482,7 @@ fn style_cards(
                 &mut style.line_height,
                 0.5..=4.0,
                 0.01,
-                " ×",
+                "×",
                 2,
                 FIELD,
                 "Line height",
@@ -579,12 +582,13 @@ fn animation_card(
             let mut picked = None;
             ui.add_enabled_ui(fits || animation.is_some(), |ui| {
                 // Every style is listed: none is under a scroll.
-                let (_, chosen) = select_menu(
+                let (_, chosen) = select_popup(
                     ui,
                     p,
                     (("animation", salt), label),
                     kind.map_or(none, kind_name),
                     width,
+                    false,
                     |ui| {
                         let mut chosen = None;
                         if kit::menu_row(ui, p, None, none, "", false, Some(kind.is_none()))
@@ -689,6 +693,7 @@ fn karaoke_card(
     timed: bool,
     brand: &[[u8; 4]],
 ) {
+    section(ui, p, "Karaoke");
     card(ui, p, |ui| {
         switched(ui, p, "Highlight words", highlight, || Highlight {
             mode: HighlightMode::Box,

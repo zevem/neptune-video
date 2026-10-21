@@ -16,8 +16,8 @@
 //! worker as an [`Action::Track`], and the path comes back as one tracker.
 //! Following, renaming and removing are the project's own commands.
 use super::{
-    FIELD, LEAD, button, button_row, card, clip::Pane, fitted_row, keyed_card, look::set_param,
-    number, row, section, select_menu, tall_row, text_field, wide_row,
+    FIELD, LEAD, button, button_row, card, clip::Pane, fitted_row, look::set_param, number, row,
+    section, select_menu, tall_row, text_field, wide_row,
 };
 use crate::{
     icons::Icon,
@@ -32,7 +32,7 @@ use editor_core::{
     AnimTarget, Clip, Command, Effect, EffectKind, Follow, MediaKind, ParamKey, Time, Tracker,
     look, render,
 };
-use eframe::egui::{self, Ui, WidgetInfo, WidgetType};
+use eframe::egui::{self, Rect, Ui, WidgetInfo, WidgetType, vec2};
 use uuid::Uuid;
 
 /// What a tracker is called until it is renamed: the first free "Tracker n".
@@ -94,6 +94,11 @@ pub(super) fn bar(ui: &mut Ui, p: &theme::Palette, title: &str, name: &str, done
             bottom: 10,
         })
         .show(ui, |ui| {
+            // The bar's own track is the card's fill, which would not show
+            // on a card: its end is drawn pressed, under it, to be read
+            // against.
+            let track = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 4.0));
+            ui.painter().rect_filled(track, 2, p.pressed);
             kit::progress_bar(ui, p, Some(done), p.accent, name)
         });
 }
@@ -133,7 +138,9 @@ impl Pane<'_> {
             .filter(|shown| shown.clip == clip.id && shown.asset == asset.id);
         let suggested = shown.as_ref().and_then(|shown| shown.suggested);
         let mut edited: Option<Vec<Effect>> = None;
-        keyed_card(ui, p, |ui| {
+        // Its keyed rows are there only with the effect: without it, the
+        // switch ends at the card's edge as other switches do.
+        super::card_of(ui, p, found.is_some(), |ui| {
             let on = found.is_some_and(|index| list[index].enabled);
             let full = found.is_none() && list.len() >= look::MAX_EFFECTS;
             let mut removed = false;
@@ -273,11 +280,17 @@ impl Pane<'_> {
         state.widget_info(|| {
             WidgetInfo::labeled(WidgetType::Label, true, format!("Stabilization: {line}"))
         });
-        // Nothing is the accent at rest: measuring is a plain button even
-        // when a steadied clip waits for it.
-        let label = if again { "Analyse again" } else { "Analyse" };
+        // Measuring is the one thing to do when a steadied clip waits for
+        // it; measuring again never is.
+        let (label, kind) = if again {
+            ("Analyse again", Kind::Plain)
+        } else if on {
+            ("Analyse", Kind::Primary)
+        } else {
+            ("Analyse", Kind::Plain)
+        };
         button_row(ui, p, |ui| {
-            let analyse = button(ui, p, None, label, Kind::Plain).on_hover_text(
+            let analyse = button(ui, p, None, label, kind).on_hover_text(
                 "Measure the camera's motion through the whole video, in the background",
             );
             if analyse.clicked() {
@@ -349,7 +362,7 @@ impl Pane<'_> {
         let p = self.p;
         note(ui, p, &format!("{name} is ready. {why}"));
         button_row(ui, p, |ui| {
-            if button(ui, p, None, "Add tracker", Kind::Plain).clicked() {
+            if button(ui, p, None, "Add tracker", Kind::Primary).clicked() {
                 self.actions.push(Action::AddTracked);
             }
             let discard = button(ui, p, None, "Discard", Kind::Plain)
@@ -417,7 +430,7 @@ impl Pane<'_> {
         let until = shown_until(clip, self.playhead);
         button_row(ui, p, |ui| {
             ui.add_enabled_ui(on_clip && !backwards && from < until, |ui| {
-                let track = button(ui, p, None, "Track", Kind::Plain)
+                let track = button(ui, p, None, "Track", Kind::Primary)
                     .on_hover_text(
                         "Follow the box from the frame at the playhead through what the clip shows after it",
                     )

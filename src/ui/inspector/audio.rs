@@ -49,7 +49,9 @@ impl Pane<'_> {
     fn ducking(&mut self, ui: &mut Ui) {
         let p = self.p;
         section(ui, p, "Ducking");
-        card(ui, p, |ui| {
+        // Under the keyed Playback card, its value column holds down the
+        // pane: its fields end where the keyed rows' do.
+        keyed_card(ui, p, |ui| {
             let under_way = (self.state.ducking.as_ref())
                 .filter(|run| run.clips.contains(&self.clip.id))
                 .cloned();

@@ -8,8 +8,8 @@
 //! the project would refuse is not held: the last one that it takes stays,
 //! and a line says why.
 use super::{
-    FIELD, button, button_row, card, choice, clip::Pane, controls, fact, number, row, rule,
-    section, select_menu, tall_row,
+    FIELD, button, button_row, card, choice, clip::Pane, controls, number, row, rule, section,
+    select_menu, tall_row, time_fact,
 };
 use crate::{
     icons::Icon,
@@ -299,7 +299,9 @@ fn graph(
             Stroke::new(1.0, p.separator),
             StrokeKind::Inside,
         );
-        let grid = Stroke::new(1.0, theme::tint(p.separator, 0.6));
+        // The separator at six tenths of its own strength: it is a
+        // translucent ink, which `tint` would make solid.
+        let grid = Stroke::new(1.0, p.separator.gamma_multiply(0.6));
         // The speeds the plot is read against: four even lines to its top,
         // each named, and normal speed, which is the stronger line.
         let level = |speed: f64| plot.bottom() - height(speed, top) * plot.height();
@@ -355,6 +357,10 @@ fn graph(
             begins += span;
         }
         painter.add(Shape::line(line, Stroke::new(1.5, ink)));
+        // The point last taken hold of is marked only while the person is
+        // at the graph: holding a point, or with one at the keyboard.
+        let picked = (responses.iter())
+            .any(|r| r.has_focus() || r.dragged() || r.is_pointer_button_down_on());
         // Drawn where they are held now; the targets follow a frame later.
         let mut capsule = None;
         for index in 0..shown.points() {
@@ -363,12 +369,16 @@ fn graph(
             let grabbed = response.is_some_and(|r| r.dragged() || r.is_pointer_button_down_on());
             let hovered = response.is_some_and(Response::hovered);
             let size = if grabbed || hovered { 5.0 } else { 4.0 };
-            let chosen = index == state.point;
+            let chosen = picked && index == state.point;
             let fill = if chosen && enabled { p.accent } else { p.bg };
             painter.circle_filled(centre, size, fill);
             painter.circle_stroke(centre, size, Stroke::new(1.5, ink));
             if response.is_some_and(Response::has_focus) {
-                painter.circle_stroke(centre, RADIUS + 3.5, Stroke::new(1.5, p.accent));
+                painter.circle_stroke(
+                    centre,
+                    RADIUS + 3.5,
+                    Stroke::new(2.0, theme::tint(p.accent, 0.55)),
+                );
             }
             if grabbed {
                 capsule = Some((centre, speed::times(shown.speed(index))));
@@ -589,7 +599,7 @@ impl Pane<'_> {
                 Some((_, duration)) => *duration,
                 None => clip.duration.scaled(clip.playback_rate / self.next.rate),
             };
-            fact(ui, p, "Duration", timefmt::timecode(duration, rate));
+            time_fact(ui, p, "Duration", timefmt::timecode(duration, rate));
             row(ui, p, "Reverse", |ui| {
                 let on = curve.reversed();
                 if widgets::switch(ui, p, on, "Reverse").clicked() {
@@ -641,7 +651,7 @@ impl Pane<'_> {
             });
         });
 
-        section(ui, p, "Curve");
+        section(ui, p, "Ramp");
         let on_clip = (clip.start <= self.playhead && self.playhead <= clip.end())
             .then_some(self.local)
             .filter(|_| self.next.retime.is_none() && self.next.rate == clip.playback_rate);

@@ -382,27 +382,23 @@ impl Pane<'_> {
 
         section(ui, p, "Looks");
         card(ui, p, |ui| {
-            button_row(ui, p, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                for (preset, name) in PRESETS {
-                    let chosen = given.is_some_and(|given| given.preset == preset);
-                    let chip = kit::chip(ui, p, name, chosen).on_hover_text(if chosen {
-                        "The look the clip has"
-                    } else if given.is_some() {
-                        "Give the clip this look in place of the one it has"
-                    } else {
-                        "Give the clip this look: its effects are added below"
-                    });
-                    if chip.clicked() && !chosen {
-                        // One look at a time: this one's effects take the
-                        // place of the last one's in the stack, as strong as
-                        // that one was.
-                        let strength = given.map_or(self.state.strength, |given| given.strength);
-                        let effects = look::with_look(stack, Some((preset, strength)));
-                        self.actions.push(look_command("Apply look", effects));
-                    }
+            let given_preset = given.map(|given| given.preset);
+            let picked = look_cards(ui, p, given_preset, |chosen| {
+                if chosen {
+                    "The look the clip has"
+                } else if given.is_some() {
+                    "Give the clip this look in place of the one it has"
+                } else {
+                    "Give the clip this look: its effects are added below"
                 }
             });
+            if let Some(preset) = picked.filter(|preset| Some(*preset) != given_preset) {
+                // One look at a time: this one's effects take the place of
+                // the last one's in the stack, as strong as that one was.
+                let strength = given.map_or(self.state.strength, |given| given.strength);
+                let effects = look::with_look(stack, Some((preset, strength)));
+                self.actions.push(look_command("Apply look", effects));
+            }
             fitted_row(ui, p, "Strength", |ui| {
                 // Of the look the clip has, how much of it that is; with no
                 // look, how much of one the next brings.
@@ -430,8 +426,11 @@ impl Pane<'_> {
                     }
                 }
             });
-            if given.is_some() {
-                button_row(ui, p, |ui| {
+            if let Some(given) = given {
+                let name = (PRESETS.iter())
+                    .find(|(preset, _)| *preset == given.preset)
+                    .map_or("look", |(_, name)| name);
+                fitted_row(ui, p, name, |ui| {
                     if button(ui, p, None, "Remove look", Kind::Plain).clicked() {
                         let effects = look::with_look(stack, None);
                         self.actions.push(look_command("Remove look", effects));
@@ -695,13 +694,141 @@ impl Pane<'_> {
     }
 }
 
+/// The two colours a look leaves in the shadows and in the lights, as the
+/// library's look cards show them (`browser::look_colours`).
+fn look_colours(preset: LookPreset) -> (egui::Color32, egui::Color32) {
+    let rgb = egui::Color32::from_rgb;
+    match preset {
+        LookPreset::Cinematic => (rgb(18, 32, 40), rgb(226, 196, 150)),
+        LookPreset::TealOrange => (rgb(12, 74, 84), rgb(244, 150, 72)),
+        LookPreset::Vintage => (rgb(72, 50, 34), rgb(232, 212, 160)),
+        LookPreset::Faded => (rgb(70, 74, 84), rgb(214, 212, 204)),
+        LookPreset::Noir => (rgb(10, 10, 10), rgb(236, 236, 236)),
+        LookPreset::Warm => (rgb(92, 42, 20), rgb(255, 204, 138)),
+        LookPreset::Cool => (rgb(20, 40, 86), rgb(170, 214, 255)),
+    }
+}
+
+/// The narrowest a look card is: room for its name under its swatch.
+const LOOK_CARD: f32 = 76.0;
+const LOOK_GAP: f32 = 6.0;
+
+/// The looks as the library shows them, a swatch over a name, as many to a
+/// row as fit, at most four. The one the clip has is pressed, with a check
+/// on its swatch. Each is a button named by its look, said to be chosen or
+/// not, and `hint` is its tooltip. Hands back the look clicked.
+fn look_cards(
+    ui: &mut egui::Ui,
+    p: &theme::Palette,
+    given: Option<LookPreset>,
+    hint: impl Fn(bool) -> &'static str,
+) -> Option<LookPreset> {
+    use egui::{Rect, Sense, Stroke, Vec2, WidgetInfo, WidgetType, pos2, vec2};
+    super::rule(ui, p);
+    let inner = ui.available_width() - 2.0 * super::LEAD;
+    let columns = (((inner + LOOK_GAP) / (LOOK_CARD + LOOK_GAP)).floor() as usize).clamp(2, 4);
+    let cell = (inner - LOOK_GAP * (columns - 1) as f32) / columns as f32;
+    let swatch = vec2(cell - 8.0, ((cell - 8.0) * 32.0 / 56.0).round());
+    let cell_height = 4.0 + swatch.y + 4.0 + 16.0 + 4.0;
+    let rows = PRESETS.len().div_ceil(columns);
+    let height = 8.0 + rows as f32 * cell_height + (rows - 1) as f32 * LOOK_GAP + 8.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let enabled = ui.is_enabled();
+    let mut picked = None;
+    for (index, (preset, name)) in PRESETS.into_iter().enumerate() {
+        let (row, column) = (index / columns, index % columns);
+        let min = pos2(
+            rect.left() + super::LEAD + column as f32 * (cell + LOOK_GAP),
+            rect.top() + 8.0 + row as f32 * (cell_height + LOOK_GAP),
+        );
+        let cell_rect = Rect::from_min_size(min, vec2(cell, cell_height));
+        let chosen = given == Some(preset);
+        let response = ui.interact(cell_rect, ui.id().with(("look-card", name)), Sense::click());
+        response.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, chosen, name));
+        if ui.is_rect_visible(cell_rect) {
+            let painter = ui.painter();
+            let hover = kit::hover_amount(ui, &response);
+            if chosen || (enabled && response.is_pointer_button_down_on()) {
+                painter.rect_filled(cell_rect, 8, p.pressed);
+            } else if hover > 0.0 {
+                painter.rect_filled(cell_rect, 8, p.hover.gamma_multiply(hover));
+            }
+            if response.has_focus() {
+                super::controls::focus_ring(painter, cell_rect, 8, *p);
+            }
+            let tile = Rect::from_min_size(cell_rect.min + vec2(4.0, 4.0), swatch);
+            look_swatch(painter, tile, preset);
+            if chosen {
+                // Over a picture, as a badge is: white on a dark disc.
+                let centre = pos2(tile.right() - 10.0, tile.top() + 10.0);
+                painter.circle_filled(centre, 8.0, egui::Color32::from_black_alpha(150));
+                crate::icons::paint(
+                    painter,
+                    Rect::from_center_size(centre, Vec2::splat(12.0)),
+                    Icon::Check,
+                    egui::Color32::WHITE,
+                );
+            }
+            painter.rect_stroke(
+                tile,
+                6,
+                Stroke::new(1.0, p.canvas_edge()),
+                egui::StrokeKind::Inside,
+            );
+            let ink = if enabled { p.fg } else { p.muted };
+            let galley = super::controls::elided(
+                painter,
+                name,
+                theme::regular(11.5),
+                ink,
+                cell_rect.width() - 8.0,
+            );
+            super::controls::galley_at(
+                painter,
+                pos2(tile.left(), tile.bottom() + 4.0 + 8.0),
+                galley,
+            );
+        }
+        let response = response
+            .on_hover_text(hint(chosen))
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.clicked() {
+            picked = Some(preset);
+        }
+    }
+    picked
+}
+
+/// A look's swatch: its shadows' colour running into its lights'.
+fn look_swatch(painter: &egui::Painter, rect: egui::Rect, preset: LookPreset) {
+    const STEPS: usize = 8;
+    let (dark, light) = look_colours(preset);
+    for step in 0..STEPS {
+        let from = rect.left() + rect.width() * step as f32 / STEPS as f32;
+        let to = rect.left() + rect.width() * (step + 1) as f32 / STEPS as f32;
+        let radius = egui::CornerRadius {
+            nw: if step == 0 { 6 } else { 0 },
+            sw: if step == 0 { 6 } else { 0 },
+            ne: if step + 1 == STEPS { 6 } else { 0 },
+            se: if step + 1 == STEPS { 6 } else { 0 },
+        };
+        // Half a point over the next, so no seam shows between two.
+        let stripe = egui::Rect::from_min_max(
+            egui::pos2(from, rect.top()),
+            egui::pos2((to + 0.5).min(rect.right()), rect.bottom()),
+        );
+        let amount = step as f32 / (STEPS - 1) as f32;
+        painter.rect_filled(stripe, radius, theme::mix(dark, light, amount));
+    }
+}
+
 /// A part of a whole in hundredths, read beside the slider that sets it.
 pub(super) fn percent(ui: &mut Ui, p: &theme::Palette, value: f32) {
     ui.add_sized(
         [40.0, 18.0],
         egui::Label::new(
             egui::RichText::new(format!("{:.0} %", value * 100.0))
-                .font(theme::mono(11.0))
+                .font(theme::regular(12.5))
                 .color(p.secondary),
         ),
     );

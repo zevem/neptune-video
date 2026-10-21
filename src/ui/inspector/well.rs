@@ -8,7 +8,7 @@
 //! picker did: the inspector's draft makes the whole drag one step.
 use super::controls;
 use crate::{
-    theme::{self, Palette},
+    theme::{self, Palette, metrics},
     ui::text_tab,
 };
 use eframe::egui::{
@@ -185,12 +185,26 @@ fn handle(painter: &Painter, centre: Pos2, radius: f32, fill: Color32) {
     );
 }
 
+/// Where the frame in which a part of a picker last had the keyboard is
+/// kept, for [`had_keys`].
+fn keys_id() -> egui::Id {
+    egui::Id::new("colour-well-keys")
+}
+
+/// The frame in which a part of a colour well's picker last had the
+/// keyboard: the arrows are then its own, and not the application's.
+pub(super) fn had_keys(ctx: &egui::Context) -> Option<u64> {
+    ctx.data(|data| data.get_temp(keys_id()))
+}
+
 /// The arrows on a part of the picker that has the keyboard: a hundredth a
 /// press, a tenth with Shift. Across and up.
 fn arrows(ui: &Ui, response: &Response) -> Vec2 {
     if !response.has_focus() {
         return Vec2::ZERO;
     }
+    let frame = ui.ctx().cumulative_frame_nr();
+    ui.data_mut(|data| data.insert_temp(keys_id(), frame));
     ui.memory_mut(|memory| {
         memory.set_focus_lock_filter(
             response.id,
@@ -226,12 +240,11 @@ fn arrows(ui: &Ui, response: &Response) -> Vec2 {
     })
 }
 
-/// Where the pointer holds a part of the picker, across and down from
-/// nought to one.
-fn held(response: &Response) -> Option<Vec2> {
+/// Where the pointer holds a part of the picker drawn in `rect`, across and
+/// down from nought to one.
+fn held(response: &Response, rect: Rect) -> Option<Vec2> {
     let pos = response.interact_pointer_pos()?;
     (response.dragged() || response.is_pointer_button_down_on()).then(|| {
-        let rect = response.rect;
         vec2(
             ((pos.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0),
             ((pos.y - rect.top()) / rect.height().max(1.0)).clamp(0.0, 1.0),
@@ -239,9 +252,9 @@ fn held(response: &Response) -> Option<Vec2> {
     })
 }
 
-/// The edge of a part of the picker, and its ring while it has the keyboard.
-fn frame(painter: &Painter, p: &Palette, response: &Response, radius: u8) {
-    let rect = response.rect;
+/// The edge of a part of the picker drawn in `rect`, and its ring while it
+/// has the keyboard.
+fn frame(painter: &Painter, p: &Palette, response: &Response, rect: Rect, radius: u8) {
     painter.rect_stroke(rect, radius, p.hairline(), StrokeKind::Inside);
     if response.has_focus() {
         controls::focus_ring(painter, rect, radius, *p);
@@ -259,7 +272,7 @@ fn field(ui: &mut Ui, p: &Palette, hsv: &mut Hsv) -> bool {
         info
     });
     let before = *hsv;
-    if let Some(at) = held(&response) {
+    if let Some(at) = held(&response, rect) {
         hsv.s = at.x;
         hsv.v = 1.0 - at.y;
     }
@@ -278,7 +291,7 @@ fn field(ui: &mut Ui, p: &Palette, hsv: &mut Hsv) -> bool {
             .solid()
         }));
         round_corners(painter, rect, f32::from(SWATCH_RADIUS), p.elevated);
-        frame(painter, p, &response, SWATCH_RADIUS);
+        frame(painter, p, &response, rect, SWATCH_RADIUS);
         let at = pos2(
             rect.left() + hsv.s * rect.width(),
             rect.top() + (1.0 - hsv.v) * rect.height(),
@@ -289,9 +302,20 @@ fn field(ui: &mut Ui, p: &Palette, hsv: &mut Hsv) -> bool {
     *hsv != before
 }
 
+/// A strip's place: drawn `STRIP` tall, in the middle of a target as tall
+/// as a small button, which the pointer takes. The rect is the drawn one.
+fn strip(ui: &mut Ui) -> (Rect, Response) {
+    let (target, response) = ui.allocate_exact_size(
+        vec2(FIELD.x, metrics::SMALL_BUTTON),
+        Sense::click_and_drag(),
+    );
+    let rect = Rect::from_center_size(target.center(), vec2(FIELD.x, STRIP));
+    (rect, response)
+}
+
 /// The hues, red round to red, across a strip.
 fn hues(ui: &mut Ui, p: &Palette, hsv: &mut Hsv) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(FIELD.x, STRIP), Sense::click_and_drag());
+    let (rect, response) = strip(ui);
     let enabled = ui.is_enabled();
     response.widget_info(|| {
         let mut info = WidgetInfo::labeled(WidgetType::Slider, enabled, "Hue");
@@ -299,7 +323,7 @@ fn hues(ui: &mut Ui, p: &Palette, hsv: &mut Hsv) -> bool {
         info
     });
     let before = *hsv;
-    if let Some(at) = held(&response) {
+    if let Some(at) = held(&response, rect) {
         hsv.h = at.x;
     }
     hsv.h = (hsv.h + arrows(ui, &response).x).clamp(0.0, 1.0);
@@ -315,7 +339,7 @@ fn hues(ui: &mut Ui, p: &Palette, hsv: &mut Hsv) -> bool {
             .solid()
         }));
         round_corners(painter, rect, STRIP * 0.5, p.elevated);
-        frame(painter, p, &response, 6);
+        frame(painter, p, &response, rect, 6);
         let at = pos2(rect.left() + hsv.h * rect.width(), rect.center().y);
         let pure = Hsv {
             s: 1.0,
@@ -331,7 +355,7 @@ fn hues(ui: &mut Ui, p: &Palette, hsv: &mut Hsv) -> bool {
 
 /// The colour from clear to whole across a strip, over the checkerboard.
 fn opacity(ui: &mut Ui, p: &Palette, hsv: &mut Hsv) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(FIELD.x, STRIP), Sense::click_and_drag());
+    let (rect, response) = strip(ui);
     let enabled = ui.is_enabled();
     response.widget_info(|| {
         let mut info = WidgetInfo::labeled(WidgetType::Slider, enabled, "Opacity");
@@ -339,7 +363,7 @@ fn opacity(ui: &mut Ui, p: &Palette, hsv: &mut Hsv) -> bool {
         info
     });
     let before = *hsv;
-    if let Some(at) = held(&response) {
+    if let Some(at) = held(&response, rect) {
         hsv.a = at.x;
     }
     hsv.a = (hsv.a + arrows(ui, &response).x).clamp(0.0, 1.0);
@@ -349,7 +373,7 @@ fn opacity(ui: &mut Ui, p: &Palette, hsv: &mut Hsv) -> bool {
         let solid = hsv.solid();
         painter.add(gradient(rect, 1, 1, |x, _| solid.gamma_multiply(x)));
         round_corners(painter, rect, STRIP * 0.5, p.elevated);
-        frame(painter, p, &response, 6);
+        frame(painter, p, &response, rect, 6);
         let at = pos2(rect.left() + hsv.a * rect.width(), rect.center().y);
         handle(painter, at, 7.0, shown(hsv.srgba()));
     }
@@ -377,10 +401,13 @@ fn swatch(ui: &Ui, p: &Palette, response: &Response, color: [u8; 4], open: bool)
             StrokeKind::Inside,
         );
     } else {
+        // Neptune Video: the spec rims the swatch in `border`, which a
+        // colour near the card's own ink swallows. The label ink at three
+        // tenths, laid over the colour, stands off both it and the card.
         let edge = if enabled && response.hovered() {
             theme::tint(p.fg, 0.6)
         } else {
-            p.border
+            p.fg.gamma_multiply(0.3)
         };
         painter.rect_stroke(
             rect,
@@ -435,13 +462,22 @@ pub(super) fn well(
         .show(|ui| {
             ui.set_width(FIELD.x);
             ui.spacing_mut().item_spacing = vec2(6.0, 10.0);
+            // A strip's target reaches 5 past what is drawn above and
+            // under it, so the room after a part is set as it is laid out:
+            // the gaps between what is drawn stay 10.
+            ui.spacing_mut().item_spacing.y = 5.0;
             let mut moved = field(ui, p, &mut hsv);
+            if alpha {
+                ui.spacing_mut().item_spacing.y = 0.0;
+            }
             moved |= hues(ui, p, &mut hsv);
             if alpha {
+                ui.spacing_mut().item_spacing.y = 5.0;
                 moved |= opacity(ui, p, &mut hsv);
             } else {
                 hsv.a = f32::from(color[3]) / 255.0;
             }
+            ui.spacing_mut().item_spacing.y = 10.0;
             if moved {
                 *color = hsv.srgba();
             }

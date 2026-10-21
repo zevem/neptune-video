@@ -1936,6 +1936,7 @@ fn every_control_is_named_and_fits_a_narrow_panel() {
                     continue;
                 }
                 controls += 1;
+                // Spec §5.4, §4.3.3: cards span the panel; the key column ends 8 in.
                 assert!(
                     fits_cards(seen, panel),
                     "{:?} at {width}: \"{}\" is at {:?}",
@@ -1953,15 +1954,20 @@ fn every_control_is_named_and_fits_a_narrow_panel() {
 /// Whether a control keeps inside the panel's cards (spec §5.4, §4.3.3): the
 /// section switch spans the panel inside its 2-point thumb inset, a curve
 /// frame's well is 4 in from its card (§5.4.1) with the targets of its edge
-/// points over the well's rim, and every other control ends no further out
-/// than the key column, 8 in from a card's edge.
+/// points over the well's rim. Every other control starts at a card's lead,
+/// 12 in, or on the cards' edge itself (a card heading's disclosure, a row
+/// of buttons under the cards), and ends no further out than the key
+/// column, 8 in from a card's edge.
 fn fits_cards(seen: &Seen, panel: Rect) -> bool {
     let switch = seen.role == Role::RadioButton && seen.rect.bottom() <= panel.top() + 80.0;
     let well = seen.name.ends_with(" curve")
         || seen.name.contains(" curve point ")
         || seen.name.starts_with("Speed point ");
-    let inset = if switch || well { 1.0 } else { 8.0 };
-    seen.rect.left() >= panel.left() + inset && seen.rect.right() <= panel.right() - inset
+    if switch || well {
+        return seen.rect.left() >= panel.left() + 1.0 && seen.rect.right() <= panel.right() - 1.0;
+    }
+    let left = seen.rect.left() - panel.left();
+    (left.abs() < 0.5 || left >= 11.0) && seen.rect.right() <= panel.right() - 8.0
 }
 
 fn key_of(at: f64, value: f32) -> Keyframe {
@@ -2271,4 +2277,79 @@ fn a_card_heading_s_actions_follow_its_name_by_tab() {
             .effects
             .is_empty()
     );
+}
+
+#[test]
+fn a_heading_action_that_cannot_be_used_does_not_fold_its_card() {
+    // Spec §5.4 effect cards, F12: a greyed action senses nothing, and a
+    // click on it does not fall through to the card's name.
+    let (mut bench, _, effect) = with_effect(EffectKind::Glow);
+    bench.frame(Vec::new());
+    for name in ["Move Glow up", "Move Glow down"] {
+        assert!(bench.find(name).expect("named").disabled, "{name}");
+        bench.click(name);
+        assert_eq!(bench.state.effect, Some(effect.id), "{name}");
+    }
+    // The name itself still folds and opens it.
+    bench.click("Glow");
+    assert_eq!(bench.state.effect, None);
+}
+
+#[test]
+fn a_colour_well_s_picker_keeps_the_arrows_it_moves_with() {
+    // Spec §7.3, §5.4 colour well: an arrow a control owns is never the
+    // application's, so the playhead and the selection do not move with it.
+    let (mut bench, clip, _) = with_effect(EffectKind::ChromaKey);
+    bench.size = vec2(300.0, 2400.0);
+    bench.click("Key colour");
+    assert!(!bench.state.owns_keys(&bench.ctx));
+    bench.focus("Saturation and brightness");
+    assert!(
+        bench.state.owns_keys(&bench.ctx),
+        "the arrows are the picker's, not the timeline's"
+    );
+    let before = bench.layer(clip).effects[0].clone();
+    bench.key(Key::ArrowLeft, Modifiers::NONE);
+    bench.frame(Vec::new());
+    assert_ne!(bench.layer(clip).effects[0], before, "the colour moved");
+}
+
+#[test]
+fn a_text_field_takes_a_click_anywhere_on_it() {
+    // Spec §4.3.2, §7.4: the whole 26-point field is the target, not only
+    // the line of text inside it.
+    let (mut bench, _) = Bench::new();
+    bench.selection = Selection::default();
+    bench.frame(Vec::new());
+    let field = bench.find("Project name").expect("named").rect;
+    // Its top edge, over the padding above the line.
+    let at = Pos2::new(field.center().x, field.center().y - 11.0);
+    bench.press(at);
+    bench.release(at);
+    let focused = bench.ctx.memory(|memory| memory.focused());
+    let node = bench.find("Project name").expect("named").node;
+    assert_eq!(focused.map(|id| id.value()), Some(node.0));
+}
+
+#[test]
+fn a_short_header_says_its_detail_whole_or_not_at_all() {
+    // Spec §5.4: under 300 points of panel the header is one line. A time
+    // cut short says nothing, and the name and the detail are read apart.
+    for width in [300.0, 160.0] {
+        let (mut bench, _) = Bench::new();
+        bench.size = vec2(width, 280.0);
+        bench.frame(Vec::new());
+        bench.frame(Vec::new());
+        let name = bench.clip(bench.selection.single().unwrap()).name.clone();
+        let line = (bench.seen.iter())
+            .find(|seen| Bench::is_text(seen) && seen.name.starts_with(&name))
+            .expect("the header's line");
+        let detail = line.name[name.len()..].to_owned();
+        assert!(!detail.contains('…'), "at {width}: {:?}", line.name);
+        assert!(
+            detail.is_empty() || detail.starts_with(' '),
+            "at {width}: {:?}",
+            line.name
+        );
+    }
 }

@@ -337,9 +337,13 @@ impl InspectorState {
 
     /// Whether a control of the inspector that moves with the arrows and
     /// removes with Delete had the keyboard when the last frame was drawn:
-    /// those keys are then its own, and not the timeline's.
+    /// those keys are then its own, and not the timeline's. A colour well's
+    /// picker is one: its field and strips move with the arrows.
     pub fn owns_keys(&self, ctx: &egui::Context) -> bool {
-        (self.keys).is_some_and(|frame| frame + 1 >= ctx.cumulative_frame_nr())
+        let now = ctx.cumulative_frame_nr();
+        (self.keys.into_iter())
+            .chain(well::had_keys(ctx))
+            .any(|frame| frame + 1 >= now)
     }
 
     /// How long a frame frozen now is held: what the Speed section's field
@@ -616,14 +620,15 @@ fn segmented<T: PartialEq + Copy>(
 }
 
 /// A row of buttons at the card's leading edge, wrapped where the card is
-/// narrow. Outside a card, the same row under the cards.
+/// narrow. Outside a card, the same row under the cards, on their edge.
 fn button_row<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
     rule(ui, p);
     let carded = in_card(ui);
+    let lead = if carded { LEAD as i8 } else { 0 };
     let inner = egui::Frame::NONE
         .inner_margin(egui::Margin {
-            left: LEAD as i8,
-            right: LEAD as i8,
+            left: lead,
+            right: lead,
             top: if carded { 5 } else { 0 },
             bottom: if carded { 5 } else { 0 },
         })
@@ -644,14 +649,18 @@ fn button_row<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R 
 
 /// A labelled value that is read, not edited.
 fn fact(ui: &mut Ui, p: &Palette, label: &str, value: impl Into<String>) {
+    fact_in(ui, p, label, value.into(), theme::regular(12.5));
+}
+
+/// As [`fact`], for a time: set in the timecode's face, as the header's is.
+fn time_fact(ui: &mut Ui, p: &Palette, label: &str, value: impl Into<String>) {
+    fact_in(ui, p, label, value.into(), theme::mono(11.0));
+}
+
+fn fact_in(ui: &mut Ui, p: &Palette, label: &str, value: String, font: egui::FontId) {
     fitted_row(ui, p, label, |ui| {
         ui.add(
-            egui::Label::new(
-                egui::RichText::new(value.into())
-                    .font(theme::regular(12.5))
-                    .color(p.secondary),
-            )
-            .truncate(),
+            egui::Label::new(egui::RichText::new(value).font(font).color(p.secondary)).truncate(),
         );
     });
 }
@@ -665,8 +674,8 @@ fn note(ui: &mut Ui, p: &Palette, text: &str) -> Response {
         .inner_margin(egui::Margin {
             left: if carded { LEAD as i8 } else { 4 },
             right: if carded { LEAD as i8 } else { 4 },
-            top: if carded { 8 } else { 0 },
-            bottom: if carded { 9 } else { 0 },
+            top: if carded { 10 } else { 0 },
+            bottom: if carded { 10 } else { 0 },
         })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -750,10 +759,14 @@ fn card_head(
         Sense::hover(),
     );
     let surface = ui.painter().add(egui::Shape::Noop);
-    // The disclosure is made first, under the buttons, which take the
-    // pointer where they are: Tab reaches it, then them.
+    let start = rect.right() - HEAD_TRAIL - count as f32 * metrics::SMALL_BUTTON;
+    let end = if count > 0 { start - 4.0 } else { start };
+    // The disclosure is made first, so that Tab reaches it and then the
+    // buttons. It stops short of them: a button that cannot be used senses
+    // nothing, and a click on it must not fall through to the name.
     let header = open.map(|open| {
-        let response = ui.interact(rect, ui.id().with(("card-head", name)), Sense::click());
+        let name_area = Rect::from_min_max(rect.min, pos2(end, rect.bottom()));
+        let response = ui.interact(name_area, ui.id().with(("card-head", name)), Sense::click());
         response.widget_info(|| {
             let mut info = WidgetInfo::labeled(WidgetType::CollapsingHeader, ui.is_enabled(), name);
             info.selected = Some(open);
@@ -764,7 +777,6 @@ fn card_head(
         });
         response
     });
-    let start = rect.right() - HEAD_TRAIL - count as f32 * metrics::SMALL_BUTTON;
     controls::place(
         ui,
         Rect::from_min_max(pos2(start, rect.top()), rect.max),
@@ -775,14 +787,17 @@ fn card_head(
             trailing(ui);
         },
     );
-    let end = if count > 0 { start - 4.0 } else { start };
     let ink = if dim || !ui.is_enabled() {
         p.muted
     } else {
         p.fg
     };
+    // Neptune Video: Terminal's disclosure puts its chevron at +20 and its
+    // name at +36 from a 14-point lead. A card's lead is 12, so the chevron
+    // sits at +18, its glyph's edge on the rows' labels, and the name keeps
+    // Terminal's 16 points from it.
     let text_left = if open.is_some() {
-        rect.left() + 32.0
+        rect.left() + 34.0
     } else {
         rect.left() + LEAD
     };
@@ -867,6 +882,17 @@ fn head_button(ui: &mut Ui, p: &Palette, icon: Icon, enabled: bool, label: &str)
 /// A compact button for the inside of a card, 26 tall, led by an icon where
 /// it has one. `controls::button_sized` is the same button without an icon.
 fn button(ui: &mut Ui, p: &Palette, icon: Option<Icon>, text: &str, kind: Kind) -> Response {
+    named_button(ui, p, icon, (text, text), kind)
+}
+
+/// As [`button`], read out by a `name` longer than what it shows.
+fn named_button(
+    ui: &mut Ui,
+    p: &Palette,
+    icon: Option<Icon>,
+    (text, name): (&str, &str),
+    kind: Kind,
+) -> Response {
     let galley =
         ui.painter()
             .layout_no_wrap(text.to_owned(), theme::medium(12.5), Color32::PLACEHOLDER);
@@ -878,7 +904,7 @@ fn button(ui: &mut Ui, p: &Palette, icon: Option<Icon>, text: &str, kind: Kind) 
     let (rect, response) =
         ui.allocate_exact_size(vec2(width, metrics::INSPECTOR_CONTROL), Sense::click());
     let enabled = ui.is_enabled();
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -1002,13 +1028,30 @@ fn select_list<T: PartialEq + Copy>(
 }
 
 /// A select whose list the caller lays out: the field, and the list it
-/// opens, which `rows` fills with menu rows. Closed by a choice.
+/// opens, which `rows` fills with menu rows. Closed by a choice. A list of
+/// no fixed length scrolls once it is taller than 260 points, so its last
+/// rows are in reach in any window.
 fn select_menu<R>(
+    ui: &mut Ui,
+    p: &Palette,
+    named: (impl std::hash::Hash + std::fmt::Debug, &str),
+    value: &str,
+    width: f32,
+    rows: impl FnOnce(&mut Ui) -> R,
+) -> (Response, Option<R>) {
+    select_popup(ui, p, named, value, width, true, rows)
+}
+
+/// As [`select_menu`]; unless `scrolled`, the list is shown whole, as a
+/// list of a fixed few choices is, or `rows` scrolls what it has to itself,
+/// as a list under a search field that stays in view does.
+fn select_popup<R>(
     ui: &mut Ui,
     p: &Palette,
     (salt, label): (impl std::hash::Hash + std::fmt::Debug, &str),
     value: &str,
     width: f32,
+    scrolled: bool,
     rows: impl FnOnce(&mut Ui) -> R,
 ) -> (Response, Option<R>) {
     let id = ui.make_persistent_id(salt);
@@ -1016,10 +1059,20 @@ fn select_menu<R>(
     let response = kit::select(ui, p, id, value, label, size);
     let list = egui::Popup::menu(&response).show(|ui| {
         controls::menu_layout(ui, width.max(240.0));
-        rows(ui)
+        if scrolled {
+            egui::ScrollArea::vertical()
+                .max_height(LIST_HEIGHT)
+                .show(ui, rows)
+                .inner
+        } else {
+            rows(ui)
+        }
     });
     (response, list.map(|list| list.inner))
 }
+
+/// The height past which a select's list scrolls.
+const LIST_HEIGHT: f32 = 260.0;
 
 /// A one-line text field of a card, 26 tall: Terminal's text field at the
 /// inspector's size.
@@ -1031,7 +1084,8 @@ fn text_field(
     label: &str,
     width: f32,
 ) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(width, metrics::INSPECTOR_CONTROL), Sense::hover());
+    let (rect, surface) =
+        ui.allocate_exact_size(vec2(width, metrics::INSPECTOR_CONTROL), Sense::hover());
     controls::field_surface(ui, *p, rect, id, (true, 7));
     let inner = rect.shrink2(vec2(8.0, 0.0));
     let response = controls::place(
@@ -1042,6 +1096,16 @@ fn text_field(
         |ui| controls::bare_text_edit(ui, id, text, "", 12.5, inner.width()),
     );
     response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, label));
+    // The whole field takes the pointer, not only the line of text in it:
+    // a click on its padding puts the caret in it too. The surface is no
+    // stop of its own for Tab.
+    if ui.is_enabled() && surface.contains_pointer() && !response.contains_pointer() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        if ui.input(|i| i.pointer.primary_clicked()) {
+            let edit = controls::viewport_id(ui.ctx(), id);
+            ui.memory_mut(|memory| memory.request_focus(edit));
+        }
+    }
     response
 }
 
@@ -1093,13 +1157,38 @@ fn object_header(
             glyph.0,
             glyph.1,
         );
+        // The detail follows the name only where it fits whole: a time cut
+        // short says nothing. Without the time, the words go on their own
+        // where they fit.
+        let left = rect.left() + 26.0;
+        let width = |text: &str, font: egui::FontId| {
+            (ui.painter())
+                .layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER)
+                .size()
+                .x
+        };
+        let room = rect.right() - left - width(name, theme::medium(12.5)) - 8.0;
+        let bare = words.trim_end_matches(" · ");
+        let (words, time) =
+            if width(words, theme::regular(11.5)) + width(time, theme::mono(11.0)) <= room {
+                (words, time)
+            } else if width(bare, theme::regular(11.5)) <= room {
+                (bare, "")
+            } else {
+                ("", "")
+            };
         let mut job = egui::text::LayoutJob::default();
         job.append(name, 0.0, format(theme::medium(12.5), p.fg));
-        job.append(words, 8.0, format(theme::regular(11.5), p.secondary));
+        if !words.is_empty() || !time.is_empty() {
+            // A space of its own, so that the name and the detail are read
+            // out as two runs of words; the gap makes up the 8 points.
+            job.append(" ", 5.0, format(theme::regular(11.5), p.secondary));
+        }
+        job.append(words, 0.0, format(theme::regular(11.5), p.secondary));
         job.append(time, 0.0, format(theme::mono(11.0), p.secondary));
         controls::place(
             ui,
-            Rect::from_min_max(pos2(rect.left() + 26.0, rect.top()), rect.max),
+            Rect::from_min_max(pos2(left, rect.top()), rect.max),
             egui::Layout::left_to_right(egui::Align::Center),
             "object-header",
             |ui| ui.add(egui::Label::new(job).truncate()),
@@ -1492,6 +1581,11 @@ fn scrolled(
             }
         });
     let shown = output.inner_rect;
+    // A fade on each side that rows run on past, so that one cut there is
+    // read as more, not as a sliver.
+    if output.state.offset.y > 0.5 {
+        kit::scroll_fade(&ui.painter_at(shown), shown, kit::Edge::Top, p.chrome);
+    }
     if output.state.offset.y + shown.height() < output.content_size.y - 1.0 {
         kit::scroll_fade(&ui.painter_at(shown), shown, kit::Edge::Bottom, p.chrome);
     }
@@ -1522,8 +1616,8 @@ fn several_pane(
         let start = chosen.iter().map(|(_, clip)| clip.start).min();
         let end = chosen.iter().map(|(_, clip)| clip.end()).max();
         if let (Some(start), Some(end)) = (start, end) {
-            fact(ui, p, "Start", timefmt::timecode(start, rate));
-            fact(ui, p, "End", timefmt::timecode(end, rate));
+            time_fact(ui, p, "Start", timefmt::timecode(start, rate));
+            time_fact(ui, p, "End", timefmt::timecode(end, rate));
         }
         let duration = match chosen.first() {
             Some((_, first))
@@ -1535,7 +1629,7 @@ fn several_pane(
             }
             _ => mixed.to_owned(),
         };
-        fact(ui, p, "Duration", duration);
+        time_fact(ui, p, "Duration", duration);
     });
     section(ui, p, "Arrange");
     card(ui, p, |ui| {
@@ -1704,7 +1798,7 @@ fn asset_pane(
     card(ui, p, |ui| {
         fact(ui, p, "Kind", kind);
         if timed {
-            fact(ui, p, "Duration", timefmt::short(asset.duration));
+            time_fact(ui, p, "Duration", timefmt::short(asset.duration));
         }
         if table {
             let edge = asset.width;
@@ -1737,7 +1831,9 @@ fn project_pane(ui: &mut Ui, p: &Palette, project: &Project, draft: &mut Project
         row(ui, p, "Name", |ui| {
             let mut name = draft.name.clone().unwrap_or_else(|| project.name.clone());
             let id = egui::Id::new("project-name");
-            let width = (ui.available_width() - 4.0).clamp(96.0, 168.0);
+            // As wide as the canvas's pair of fields and its rate under it,
+            // so that the card's values start at one place.
+            let width = (2.0 * paired_width(ui) + PAIRED_GAP).min(ui.available_width() - 4.0);
             if text_field(ui, p, id, &mut name, "Project name", width).changed() {
                 draft.name = Some(name);
             }
@@ -1797,6 +1893,7 @@ fn project_pane(ui: &mut Ui, p: &Palette, project: &Project, draft: &mut Project
                 canvas.width = wide.round() as u32;
             }
         });
+        let wide = 2.0 * paired_width(ui) + PAIRED_GAP;
         tall_row(ui, p, "Frame rate", |ui| {
             let mut rate = canvas.frame_rate;
             let named: Vec<(FrameRate, String)> = RATES
@@ -1817,7 +1914,7 @@ fn project_pane(ui: &mut Ui, p: &Palette, project: &Project, draft: &mut Project
             if !options.iter().any(|(listed, _)| *listed == rate) {
                 let shown = format!("{} fps", trim_number(rate.fps()));
                 let (_, list) =
-                    select_menu(ui, p, ("frame-rate", "Frame rate"), &shown, 120.0, |ui| {
+                    select_menu(ui, p, ("frame-rate", "Frame rate"), &shown, wide, |ui| {
                         options.iter().find_map(|(listed, label)| {
                             kit::menu_row(ui, p, None, label, "", false, Some(false))
                                 .clicked()
@@ -1828,15 +1925,7 @@ fn project_pane(ui: &mut Ui, p: &Palette, project: &Project, draft: &mut Project
                     rate = listed;
                 }
             } else {
-                select_list(
-                    ui,
-                    p,
-                    "frame-rate",
-                    "Frame rate",
-                    &mut rate,
-                    &options,
-                    120.0,
-                );
+                select_list(ui, p, "frame-rate", "Frame rate", &mut rate, &options, wide);
             }
             canvas.frame_rate = rate;
         });

@@ -240,7 +240,9 @@ pub(super) fn editor(
             Stroke::new(1.0, p.separator),
             StrokeKind::Inside,
         );
-        let grid = Stroke::new(1.0, theme::tint(p.separator, 0.6));
+        // The separator at six tenths of its own strength: it is a
+        // translucent ink, which `tint` would make solid.
+        let grid = Stroke::new(1.0, p.separator.gamma_multiply(0.6));
         for quarter in 1..4 {
             let at = quarter as f32 * 0.25;
             painter.line_segment([to_screen([at, 0.0]), to_screen([at, 1.0])], grid);
@@ -262,6 +264,12 @@ pub(super) fn editor(
             })
             .collect();
         painter.add(Shape::line(line, Stroke::new(1.5, ink)));
+        // The point last taken hold of is marked only while the person is
+        // at the curve: holding it, or with a point at the keyboard. At
+        // rest, in a clip no one has touched, no point is chosen.
+        let picked = plot_response.dragged()
+            || plot_response.is_pointer_button_down_on()
+            || (responses.iter()).any(|r| r.has_focus() || r.dragged());
         // Drawn where they are held now; the targets follow a frame later.
         let mut capsule = None;
         for (index, point) in shown.iter().enumerate() {
@@ -270,13 +278,17 @@ pub(super) fn editor(
             let held = response.is_some_and(|r| r.dragged() || r.is_pointer_button_down_on());
             let hovered = response.is_some_and(egui::Response::hovered);
             let size = if held || hovered { 5.0 } else { 4.0 };
-            let chosen = index == *selected;
+            let chosen = picked && index == *selected;
             let fill = if chosen && enabled { p.accent } else { p.bg };
             painter.circle_filled(centre, size, fill);
             let rim = if enabled { p.fg } else { p.muted };
             painter.circle_stroke(centre, size, Stroke::new(1.5, rim));
             if response.is_some_and(egui::Response::has_focus) {
-                painter.circle_stroke(centre, RADIUS + 3.5, Stroke::new(1.5, p.accent));
+                painter.circle_stroke(
+                    centre,
+                    RADIUS + 3.5,
+                    Stroke::new(2.0, theme::tint(p.accent, 0.55)),
+                );
             }
             if held {
                 let text = format!("{:.0} → {:.0}", point[0] * 100.0, point[1] * 100.0);

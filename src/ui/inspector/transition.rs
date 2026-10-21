@@ -6,7 +6,7 @@
 //! and keeping it as its kind's default are [`Action`]s.
 use super::{
     FIELD, InspectorInput, InspectorState, Thumb, button, button_row, card, look::is_default, note,
-    number, object_header, row, section, select_list, select_menu, tall_row,
+    number, object_header, row, section, select_list, select_popup, tall_row,
 };
 use crate::{
     icons::Icon,
@@ -146,12 +146,13 @@ pub(super) fn pane(
             tall_row(ui, p, "Kind", |ui| {
                 let width = ui.available_width().min(SELECT);
                 // Every kind is listed: none is under a scroll.
-                let (_, chosen) = select_menu(
+                let (_, chosen) = select_popup(
                     ui,
                     p,
                     ("transition-kind", "Transition kind"),
                     transitions::name(shown.kind),
                     width,
+                    false,
                     |ui| {
                         let mut chosen = None;
                         for listed in transitions::KINDS {
@@ -211,12 +212,13 @@ pub(super) fn pane(
                     );
                 } else {
                     // An easing the list does not name is shown as custom.
-                    let (_, chosen) = select_menu(
+                    let (_, chosen) = select_popup(
                         ui,
                         p,
                         ("transition-easing", "Transition easing"),
                         ease_name(ease),
                         width,
+                        false,
                         |ui| {
                             let mut chosen = None;
                             for (listed, name) in &offered {
