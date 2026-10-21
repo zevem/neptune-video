@@ -374,6 +374,25 @@ pub fn segmented<T: PartialEq + Copy>(
 /// Neptune Video: the room a segmented label keeps on each side of it.
 const SEGMENT_ROOM: f32 = 8.0;
 
+/// Neptune Video: the narrowest a segmented control of `labels` may be,
+/// where each label at 11.5 still keeps [`SEGMENT_ROOM`] on both sides.
+pub fn segmented_fit(ui: &Ui, labels: &[&str]) -> f32 {
+    (labels.iter())
+        .map(|label| {
+            (ui.painter())
+                .layout_no_wrap(
+                    (*label).to_owned(),
+                    theme::medium(11.5),
+                    Color32::PLACEHOLDER,
+                )
+                .size()
+                .x
+                + SEGMENT_ROOM * 2.0
+        })
+        .sum::<f32>()
+        + 4.0
+}
+
 /// Neptune Video: the cells of a segmented control in `rect`, inside its
 /// 2-point track, and the size their labels are written at: equal cells at
 /// Medium 12, or at 11.5, while every label has [`SEGMENT_ROOM`] on both
@@ -1417,6 +1436,14 @@ mod tests {
             assert!(room >= SEGMENT_ROOM, "Command has {room} on each side");
             let other = (cells[0].width() - label(ui, "Ask", 11.5)) / 2.0;
             assert!((room - other).abs() < 0.01, "the same room on both");
+
+            // At its fit, each label keeps exactly its room.
+            let fit = segmented_fit(ui, &["Ask", "Command"]);
+            let rect = Rect::from_min_size(Pos2::ZERO, vec2(fit, 28.0));
+            let (cells, size) = segment_cells(ui, rect, &options);
+            assert_eq!(size, 11.5);
+            let room = (cells[1].width() - label(ui, "Command", 11.5)) / 2.0;
+            assert!((room - SEGMENT_ROOM).abs() < 0.01, "Command has {room}");
         });
     }
 

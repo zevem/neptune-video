@@ -57,7 +57,8 @@ const GAP: f32 = 4.0;
 /// The most lines the field shows before it scrolls.
 const LINES: f32 = 6.0;
 /// The round button that sends, and the switch between asking and commands:
-/// as narrow as it may be, and as wide as it takes where the row has room.
+/// its own width, narrowed toward its labels' fit only to keep who answers
+/// whole, and as wide as it takes where the row has room.
 const ROUND: f32 = 28.0;
 const MODE: f32 = 136.0;
 const ROOMY_MODE: f32 = 152.0;
@@ -1188,13 +1189,21 @@ fn take_enter(ui: &Ui) -> bool {
 fn foot(ui: &mut Ui, row: Rect, input: &AgentInput, actions: &mut Vec<Action>) -> bool {
     let p = input.p;
     // The switch gives "Command" room round it where the row also holds the
-    // whole of who answers, and is no narrower than its least where it does
-    // not. Its width is the same in either mode.
+    // whole of who answers. Where it does not, the switch narrows as far as
+    // its labels' fit to keep the whole of it, and where even that is not
+    // enough it keeps its own width and who answers gives way. Its width is
+    // the same in either mode.
     let described = input.ai.describe();
-    let wide = row.width() - 4.0 - pill_width(ui, &described);
+    let wide = (row.width() - 4.0 - pill_width(ui, &described)).floor();
+    let fit = controls::segmented_fit(ui, &["Ask", "Command"]).ceil();
+    let switch = if wide >= fit.min(MODE) {
+        wide.min(ROOMY_MODE)
+    } else {
+        MODE
+    };
     let mode = Rect::from_min_size(
         pos2(row.left(), row.center().y - 14.0),
-        vec2(wide.clamp(MODE, ROOMY_MODE).min(row.width()), 28.0),
+        vec2(switch.min(row.width()), 28.0),
     );
     let mut keyed = false;
     place(
@@ -2013,9 +2022,9 @@ mod tests {
         assert_eq!(bench.state.input, "Now the ending");
     }
 
-    // §4.1 and §5.6: who answers keeps the effort in view where the row
-    // has room for more than the provider, and the switch widens only where
-    // the whole description still fits beside it.
+    // §4.1 and §5.6: who answers keeps the effort in view at the default
+    // window, the switch narrowing toward its labels' fit to leave it room,
+    // and widens only where the whole description still fits beside it.
     #[test]
     fn who_answers_keeps_the_effort_in_view() {
         let described = AiSettings::default().describe();
@@ -2035,12 +2044,17 @@ mod tests {
         let mut bench = Bench::new();
         bench.body = Rect::from_min_size(pos2(400.0, 78.0), vec2(286.0, 255.0));
         bench.settle();
-        let shown = pill(&bench);
-        assert!(
-            shown.starts_with("Claude · H") && shown.ends_with('…'),
-            "{shown}"
-        );
-        assert_eq!(switch(&bench), MODE);
+        assert_eq!(pill(&bench), described);
+        // Narrower than its own width, with room still round "Command".
+        assert!(switch(&bench) < MODE, "{}", switch(&bench));
+        let ctx = bench.ctx.clone();
+        let command = ctx.fonts_mut(|fonts| {
+            (fonts.layout_no_wrap("Command".to_owned(), theme::medium(11.5), Color32::WHITE))
+                .size()
+                .x
+        });
+        let cell = bench.get("Command", Role::RadioButton).rect.width();
+        assert!(cell >= command + 16.0 - 0.01, "{cell} for {command}");
         // A wider panel.
         bench.body = Rect::from_min_size(pos2(300.0, 78.0), vec2(400.0, 255.0));
         bench.settle();
@@ -2050,6 +2064,7 @@ mod tests {
         bench.body = BODY;
         bench.settle();
         assert_eq!(pill(&bench), "Claude");
+        assert_eq!(switch(&bench), MODE);
         bench.get(&format!("Model: {described}"), Role::ComboBox);
     }
 
