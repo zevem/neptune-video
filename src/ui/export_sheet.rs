@@ -10,7 +10,7 @@
 //! sheet's one accent.
 use super::{
     controls::{self, ButtonKind, Group},
-    kit, widgets, window,
+    kit, widgets,
 };
 use crate::{
     icons::{self, Icon},
@@ -28,8 +28,8 @@ use editor_core::{
     },
 };
 use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Stroke, Ui,
-    UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2,
+    self, Align, Align2, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Ui, UiBuilder,
+    Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -695,58 +695,9 @@ pub(super) fn scaffold<R>(
     width: f32,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> egui::ModalResponse<R> {
-    // Painted first into the sheet's own layer: under the sheet, and over
-    // everything it covers, menus included.
-    let layer = egui::LayerId::new(egui::Order::Foreground, id);
-    controls::scrim(
-        &ctx.layer_painter(layer),
-        ctx.content_rect(),
-        window::corner_radius(ctx),
-        *p,
-        scrim_opacity(ctx),
-    );
-    let frame = egui::Frame::new()
-        .fill(p.elevated)
-        .corner_radius(metrics::SHEET_RADIUS)
-        .stroke(Stroke::new(1.0, p.border))
-        .shadow(p.sheet_shadow());
-    let modal = egui::Modal::new(id)
-        .frame(frame)
-        .backdrop_color(Color32::TRANSPARENT)
-        .show(ctx, |ui| {
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing = Vec2::ZERO;
-            add(ui)
-        });
-    modal
-        .response
-        .widget_info(|| WidgetInfo::labeled(WidgetType::Window, true, title));
-    modal
-}
-
-/// How far the scrim has come in: from nothing as the export sheet or the
-/// render queue first shows, over the sheet's 0.16 s, and at once under
-/// Reduce motion. Going from one of the two to the other it stays.
-fn scrim_opacity(ctx: &egui::Context) -> f32 {
-    let id = Id::new("export-scrim");
-    let pass = ctx.cumulative_pass_nr();
-    let now = ctx.input(|input| input.time);
-    let since = ctx.data_mut(|data| {
-        // Shown in this pass or the one before: the same showing.
-        let since = (data.get_temp::<(u64, f64)>(id))
-            .filter(|(shown, _)| shown + 1 >= pass)
-            .map_or(now, |(_, since)| since);
-        data.insert_temp(id, (pass, since));
-        since
-    });
-    if kit::reduced_motion(ctx) {
-        return 1.0;
-    }
-    let t = ((now - since) as f32 / theme::motion::SHEET).clamp(0.0, 1.0);
-    if t < 1.0 {
-        ctx.request_repaint();
-    }
-    egui::emath::easing::cubic_out(t)
+    // Going from Export to the render queue or back, the scrim stays.
+    kit::sheet_scrim(ctx, p, id, Id::new("export-scrim"));
+    controls::sheet(ctx, *p, id, title, width, add)
 }
 
 /// A part of a sheet's body that scrolls: `width` of content at the leading

@@ -20,6 +20,8 @@ struct Bench {
     cache: Cache,
     seen: Vec<Seen>,
     painted: Vec<String>,
+    /// The rectangles painted this frame, filled or outlined.
+    rects: Vec<egui::epaint::RectShape>,
     actions: Vec<Action>,
 }
 
@@ -37,6 +39,7 @@ impl Bench {
             cache,
             seen: Vec::new(),
             painted: Vec::new(),
+            rects: Vec::new(),
             actions: Vec::new(),
         };
         for _ in 0..3 {
@@ -85,8 +88,9 @@ impl Bench {
                 .collect();
         }
         self.painted.clear();
+        self.rects.clear();
         for clipped in &output.shapes {
-            collect(&clipped.shape, &mut self.painted);
+            collect(&clipped.shape, &mut self.painted, &mut self.rects);
         }
         output.drop_without_applying_deltas();
     }
@@ -126,10 +130,11 @@ impl Bench {
     }
 }
 
-fn collect(shape: &egui::Shape, into: &mut Vec<String>) {
+fn collect(shape: &egui::Shape, into: &mut Vec<String>, rects: &mut Vec<egui::epaint::RectShape>) {
     match shape {
-        egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, into)),
+        egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, into, rects)),
         egui::Shape::Text(text) => into.push(text.galley.text().to_owned()),
+        egui::Shape::Rect(rect) => rects.push(rect.clone()),
         _ => {}
     }
 }
@@ -440,6 +445,52 @@ fn the_keyboard_pane_says_each_action_and_its_keys_apart() {
         !labels.iter().any(|label| label.contains(": ")),
         "{labels:?}"
     );
+}
+
+// §3.10 and §9.12: a pane in the source list lies on `hover` under the
+// pointer and on `pressed` while held or chosen, and rings with the
+// keyboard.
+#[test]
+fn a_source_row_lies_on_hover_and_pressed_and_rings_with_the_keyboard() {
+    let mut bench = Bench::new(Settings::default(), cache(0, 0));
+    let p = bench.palette;
+    let row = bench.get("Keyboard").rect;
+    let near = |a: Rect, b: Rect| (a.min - b.min).length() + (a.max - b.max).length() < 0.1;
+    let lies = |bench: &Bench, fill: Color32| {
+        (bench.rects.iter()).any(|shape| near(shape.rect, row) && shape.fill == fill)
+    };
+    let ringed = |bench: &Bench| {
+        let ring = theme::tint(p.accent, 0.55);
+        (bench.rects.iter()).any(|shape| near(shape.rect, row) && shape.stroke.color == ring)
+    };
+    assert!(
+        !lies(&bench, p.hover) && !lies(&bench, p.pressed),
+        "at rest"
+    );
+    assert!(!ringed(&bench));
+    bench.frame(vec![Event::PointerMoved(row.center())]);
+    assert!(lies(&bench, p.hover), "under the pointer");
+    let button = |at, pressed| Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    bench.frame(vec![button(row.center(), true)]);
+    assert!(lies(&bench, p.pressed), "held");
+    // Let go beside it, so the pane stays as it was.
+    let beside = pos2(row.right() + 200.0, row.center().y);
+    bench.frame(vec![Event::PointerMoved(beside)]);
+    bench.frame(vec![button(beside, false), Event::PointerGone]);
+    assert_eq!(bench.get("Keyboard").selected, Some(false));
+    assert!(!lies(&bench, p.hover) && !lies(&bench, p.pressed));
+    let id = Id::new(("preferences-pane", "Keyboard"));
+    bench.ctx.memory_mut(|memory| memory.request_focus(id));
+    bench.frame(Vec::new());
+    assert!(ringed(&bench), "with the keyboard");
+    // The chosen pane stays pressed.
+    let chosen = bench.get("Preview").rect;
+    assert!((bench.rects.iter()).any(|shape| near(shape.rect, chosen) && shape.fill == p.pressed));
 }
 
 #[test]

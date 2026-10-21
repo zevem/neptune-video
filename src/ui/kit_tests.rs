@@ -1,6 +1,7 @@
-//! The kit's controls in real egui passes: how a select and a menu row light
-//! under the pointer and with the keyboard (spec §3.10 and §9.12), and how
-//! an empty state sets its hint.
+//! The kit's controls in real egui passes: how a select, a menu row, a chip
+//! and a switch light under the pointer and with the keyboard (spec §3.10
+//! and §9.12), how a disabled button writes its words, and how an empty
+//! state sets its hint.
 use super::*;
 use crate::theme::{Accent, Appearance};
 use eframe::egui::{Event, Modifiers, PointerButton, epaint::RectShape};
@@ -158,6 +159,108 @@ fn a_menu_row_lies_on_the_accent_under_the_pointer_and_with_the_keyboard() {
         assert!(bench.filled(rect, fill), "with the keyboard");
         bench.frame(Vec::new(), &mut add);
         assert_eq!(bench.wait, Duration::MAX, "and it rests");
+    }
+}
+
+#[test]
+fn a_chip_lies_on_hover_and_pressed_and_the_chosen_one_is_checked() {
+    // §3.10: `hover` eased in under the pointer, `pressed` while held and
+    // when chosen, the check before a chosen one's name, and the ring with
+    // the keyboard.
+    let p = palette();
+    for selected in [false, true] {
+        let mut bench = Bench::new();
+        let chip = std::cell::Cell::new((Rect::NOTHING, Id::NULL));
+        let mut add = |ui: &mut Ui| {
+            let response = super::chip(ui, &p, "Selected clips", selected);
+            chip.set((response.rect, response.id));
+        };
+        bench.frame(Vec::new(), &mut add);
+        let (rect, id) = chip.get();
+        assert_eq!(bench.filled(rect, p.pressed), selected, "at rest");
+        assert!(!bench.filled(rect, p.hover));
+        assert!(!bench.ringed(rect));
+        // The check is a glyph, which is painted as words are.
+        let checked = (bench.shapes.iter()).any(|shape| match shape {
+            Shape::Text(shape) => shape.galley.text() != "Selected clips",
+            _ => false,
+        });
+        assert_eq!(checked, selected, "the check");
+        bench.frame(vec![Event::PointerMoved(rect.center())], &mut add);
+        for _ in 0..30 {
+            bench.frame(Vec::new(), &mut add);
+        }
+        assert!(bench.filled(rect, p.hover), "under the pointer");
+        bench.frame(vec![press(rect.center(), true)], &mut add);
+        assert!(bench.filled(rect, p.pressed), "pressed");
+        bench.frame(
+            vec![press(rect.center(), false), Event::PointerGone],
+            &mut add,
+        );
+        for _ in 0..30 {
+            bench.frame(Vec::new(), &mut add);
+        }
+        assert!(!bench.filled(rect, p.hover), "the pointer has gone");
+        bench.ctx.memory_mut(|memory| memory.request_focus(id));
+        bench.frame(Vec::new(), &mut add);
+        assert!(bench.ringed(rect), "with the keyboard");
+        bench.frame(Vec::new(), &mut add);
+        assert_eq!(bench.wait, Duration::MAX, "and it rests");
+    }
+}
+
+#[test]
+fn a_switch_rings_with_the_keyboard() {
+    let p = palette();
+    let mut bench = Bench::new();
+    let switch = std::cell::Cell::new((Rect::NOTHING, Id::NULL));
+    let mut on = false;
+    let mut add = |ui: &mut Ui| {
+        let response = controls::toggle(ui, p, &mut on, "Reduce motion");
+        switch.set((response.rect, response.id));
+    };
+    bench.frame(Vec::new(), &mut add);
+    let (rect, id) = switch.get();
+    assert!(!bench.ringed(rect), "a ring at rest");
+    bench.ctx.memory_mut(|memory| memory.request_focus(id));
+    bench.frame(Vec::new(), &mut add);
+    assert!(bench.ringed(rect), "with the keyboard");
+}
+
+#[test]
+fn a_disabled_button_writes_its_words_muted_as_a_disabled_chip_does() {
+    // F12: one disabled strength. Secondary and Quiet words are `muted`, as
+    // a disabled chip's are; a solid button keeps its ink on its fill.
+    let p = palette();
+    for (kind, label, enabled) in [
+        (ButtonKind::Secondary, "Clear proxies", p.fg),
+        (ButtonKind::Quiet, "Show all", p.secondary),
+        (ButtonKind::Primary, "Export", p.on_accent),
+    ] {
+        let mut bench = Bench::new();
+        for disabled in [false, true] {
+            bench.frame(Vec::new(), &mut |ui: &mut Ui| {
+                if disabled {
+                    ui.disable();
+                }
+                controls::button(ui, p, label, kind);
+                super::chip(ui, &p, "Selected clips", false);
+            });
+            // The disabled painter halves whatever it is given.
+            let halved = |ink: Color32| {
+                ink.gamma_multiply(bench.ctx.global_style().visuals.disabled_alpha())
+            };
+            let muted = disabled && kind != ButtonKind::Primary;
+            let ink = match (muted, disabled) {
+                (true, _) => halved(p.muted),
+                (false, true) => halved(enabled),
+                (false, false) => enabled,
+            };
+            assert_eq!(bench.ink(label), Some(ink), "{label}, disabled {disabled}");
+            if disabled {
+                assert_eq!(bench.ink("Selected clips"), Some(halved(p.muted)));
+            }
+        }
     }
 }
 

@@ -4676,7 +4676,7 @@ impl App {
                 self.overlay = Overlay::Settings;
             }
             // The command line, or the request to the model, as Ctrl+K and
-            // Shift+Ctrl+K open them.
+            // Ctrl+Shift+K open them.
             Action::OpenAgent { ask } => {
                 self.settings.show_inspector = true;
                 self.library_first = false;
@@ -7818,7 +7818,7 @@ fn choice_takes(choosing: bool, key: Key) -> bool {
 }
 
 /// The chords that show and hide the side panels: Terminal's sidebar chord
-/// for the library, Shift+Ctrl+B or Cmd+B, and Shift+Ctrl+O or Option+Cmd+O
+/// for the library, Ctrl+Shift+B or Cmd+B, and Ctrl+Shift+O or Option+Cmd+O
 /// for the inspector. A field that has the keyboard keeps them.
 fn panel_chords(input: &mut egui::InputState, typing: bool) -> Option<Action> {
     if typing {

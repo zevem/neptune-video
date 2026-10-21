@@ -213,40 +213,6 @@ pub(crate) fn column<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R)
 /// none of their own. It is still open, and toasts keep clear of both.
 const ASKED_OVER_A_SHEET: [(&str, &str); 1] = [("replace-export-sheet", "export-sheet")];
 
-/// Dims the window under the sheet `id`, in the window's own rounded shape,
-/// painted first into the sheet's own layer: under the sheet, and over
-/// everything the sheet covers, the cards over the viewer included. It
-/// fades in as the sheet first shows, at once under Reduce motion.
-fn scrim(ctx: &egui::Context, p: &Palette, id: Id) {
-    let key = id.with("scrim");
-    let pass = ctx.cumulative_pass_nr();
-    let now = ctx.input(|input| input.time);
-    let since = ctx.data_mut(|data| {
-        // Shown in this pass or the one before: the same showing.
-        let since = (data.get_temp::<(u64, f64)>(key))
-            .filter(|(shown, _)| shown + 1 >= pass)
-            .map_or(now, |(_, since)| since);
-        data.insert_temp(key, (pass, since));
-        since
-    });
-    let dim = if kit::reduced_motion(ctx) {
-        1.0
-    } else {
-        let t = ((now - since) as f32 / motion::SHEET).clamp(0.0, 1.0);
-        if t < 1.0 {
-            ctx.request_repaint();
-        }
-        egui::emath::easing::cubic_out(t)
-    };
-    controls::scrim(
-        &ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, id)),
-        ctx.content_rect(),
-        super::window::corner_radius(ctx),
-        *p,
-        dim,
-    );
-}
-
 /// What a sheet heard in one frame besides its own controls.
 struct Heard<R> {
     inner: R,
@@ -296,27 +262,10 @@ fn scaffold<R>(
     let was_typing = ctx.data(|data| data.get_temp::<bool>(typing_id)) == Some(true);
     let focused = ctx.memory(|memory| memory.focused()).is_some();
     let (fresh, carried) = kit::enters(ctx, opening);
-    let screen = ctx.content_rect();
-    let frame = egui::Frame::new()
-        .fill(p.elevated)
-        .corner_radius(metrics::SHEET_RADIUS)
-        .stroke(Stroke::new(1.0, p.border))
-        .shadow(p.sheet_shadow());
     if !ASKED_OVER_A_SHEET.iter().any(|(asked, _)| *asked == name) {
-        scrim(ctx, p, id);
+        kit::sheet_scrim(ctx, p, id, id.with("scrim"));
     }
-    let modal = egui::Modal::new(id)
-        .frame(frame)
-        // The rounded scrim stands in for egui's square one.
-        .backdrop_color(Color32::TRANSPARENT)
-        .show(ctx, |ui| {
-            ui.set_width(width.min(screen.width() - 24.0).max(120.0));
-            ui.spacing_mut().item_spacing = Vec2::ZERO;
-            add(ui)
-        });
-    modal
-        .response
-        .widget_info(|| WidgetInfo::labeled(WidgetType::Window, true, title));
+    let modal = controls::sheet(ctx, *p, id, title, width, add);
     let typing = ctx
         .memory(|memory| memory.focused())
         .is_some_and(|focused| egui::text_edit::TextEditState::load(ctx, focused).is_some());
@@ -2418,6 +2367,12 @@ fn keys(painter: &egui::Painter, right_center: Pos2, keys: &str, ink: Color32) -
         for (step, chord) in held_over(chords).iter().rev().enumerate() {
             if step > 0 {
                 right -= 8.0;
+            }
+            // Elsewhere Ctrl leads the keys held with it, as Terminal writes
+            // them; on macOS ⇧⌘ is Apple's order.
+            let mut chord = chord.clone();
+            if !mac {
+                chord.sort_by_key(|key| *key != "Cmd");
             }
             let joined = (chord.iter().copied())
                 .map(cap)

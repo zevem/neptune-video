@@ -1276,7 +1276,7 @@ fn section_switch(
                 theme::medium(size),
                 Color32::PLACEHOLDER,
             );
-            galley.size().x + 12.0 <= segment
+            galley.size().x + controls::SEGMENT_SNUG * 2.0 <= segment
         })
     };
     let font = if room(12.0) {

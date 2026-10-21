@@ -77,23 +77,36 @@ pub enum Edge {
     Bottom,
 }
 
-/// Says that content runs on past `edge` of `rect`: two flat 6-point bands of
-/// the ground the region sits on, the outer the denser. Show it only while
-/// something is clipped there.
+/// How far a clipped edge of a scrolled region fades: Terminal's.
+pub const SCROLL_FADE: f32 = 18.0;
+
+/// Says that content runs on past `edge` of `rect`: what is under its last
+/// [`SCROLL_FADE`] points fades into the ground the region sits on, as
+/// Terminal's clipped edges do. Show it only while something is clipped
+/// there.
+// Neptune Video: Terminal's `project::fade`, turned to run down the edge.
 pub fn scroll_fade(painter: &Painter, rect: Rect, edge: Edge, ground: Color32) {
-    for (offset, alpha) in [(0.0, 0.6), (6.0, 0.3)] {
-        let band = match edge {
-            Edge::Top => Rect::from_min_size(
-                pos2(rect.left(), rect.top() + offset),
-                vec2(rect.width(), 6.0),
-            ),
-            Edge::Bottom => Rect::from_min_size(
-                pos2(rect.left(), rect.bottom() - offset - 6.0),
-                vec2(rect.width(), 6.0),
-            ),
-        };
-        painter.rect_filled(band, 0, theme::tint(ground, alpha));
-    }
+    let deep = SCROLL_FADE.min(rect.height());
+    let (band, top, bottom) = match edge {
+        Edge::Top => (
+            Rect::from_min_size(rect.left_top(), vec2(rect.width(), deep)),
+            ground,
+            Color32::TRANSPARENT,
+        ),
+        Edge::Bottom => (
+            Rect::from_min_max(pos2(rect.left(), rect.bottom() - deep), rect.right_bottom()),
+            Color32::TRANSPARENT,
+            ground,
+        ),
+    };
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(band.left_top(), top);
+    mesh.colored_vertex(band.right_top(), top);
+    mesh.colored_vertex(band.right_bottom(), bottom);
+    mesh.colored_vertex(band.left_bottom(), bottom);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(Shape::mesh(mesh));
 }
 
 /// The scroll fades of what a scroll area shows: one into `ground` at each
@@ -1373,7 +1386,7 @@ fn balanced(painter: &Painter, hint: &str, ink: Color32, width: f32) -> Arc<Gall
     lay(wide)
 }
 
-// ---- Painted words and sheets' keys -------------------------------------
+// ---- Painted words, sheets' keys and scrim ------------------------------
 
 /// Tells assistive tools of words that are only painted: `text` over
 /// `rect`, where it is drawn, read as the label it stands for.
@@ -1415,6 +1428,41 @@ pub fn enters(ctx: &egui::Context, opening: bool) -> (bool, bool) {
             _ => (fresh, carried),
         })
     })
+}
+
+/// Dims the window under a sheet, in the window's own rounded shape, painted
+/// first into the sheet's layer `layer`: under the sheet, and over
+/// everything it covers, menus and the cards over the viewer included. It
+/// fades in over the sheet's 0.16 s as the sheet first shows, and at once
+/// under Reduce motion. Sheets that share `key` share one showing, so going
+/// from one to the other the scrim stays.
+pub fn sheet_scrim(ctx: &egui::Context, p: &Palette, layer: Id, key: Id) {
+    let pass = ctx.cumulative_pass_nr();
+    let now = ctx.input(|input| input.time);
+    let since = ctx.data_mut(|data| {
+        // Shown in this pass or the one before: the same showing.
+        let since = (data.get_temp::<(u64, f64)>(key))
+            .filter(|(shown, _)| shown + 1 >= pass)
+            .map_or(now, |(_, since)| since);
+        data.insert_temp(key, (pass, since));
+        since
+    });
+    let dim = if reduced_motion(ctx) {
+        1.0
+    } else {
+        let t = ((now - since) as f32 / theme::motion::SHEET).clamp(0.0, 1.0);
+        if t < 1.0 {
+            ctx.request_repaint();
+        }
+        egui::emath::easing::cubic_out(t)
+    };
+    controls::scrim(
+        &ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, layer)),
+        ctx.content_rect(),
+        super::window::corner_radius(ctx),
+        *p,
+        dim,
+    );
 }
 
 // ---- Splitter --------------------------------------------------------------

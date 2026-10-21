@@ -1500,6 +1500,10 @@ mod tests {
         focused: Option<String>,
         /// The rectangles painted this frame, with their fills.
         fills: Vec<(Rect, Color32)>,
+        /// The outlines painted this frame, with their colours.
+        rings: Vec<(Rect, Color32)>,
+        /// The gradients painted this frame, with the ground they fade into.
+        fades: Vec<(Rect, Color32)>,
         painted: Vec<String>,
         copied: Vec<String>,
         actions: Vec<Action>,
@@ -1529,6 +1533,8 @@ mod tests {
                 seen: Vec::new(),
                 focused: None,
                 fills: Vec::new(),
+                rings: Vec::new(),
+                fades: Vec::new(),
                 painted: Vec::new(),
                 copied: Vec::new(),
                 actions: Vec::new(),
@@ -1590,9 +1596,11 @@ mod tests {
                     .collect();
             }
             self.fills.clear();
+            self.rings.clear();
+            self.fades.clear();
             self.painted.clear();
             for clipped in &output.shapes {
-                collect(&clipped.shape, &mut self.fills, &mut self.painted);
+                collect(&clipped.shape, self);
             }
             self.copied.extend(
                 (output.platform_output.commands.iter()).filter_map(|command| match command {
@@ -1671,9 +1679,11 @@ mod tests {
 
         /// Whether the conversation's lower edge is faded, or its upper.
         fn faded(&self, below: bool) -> bool {
-            let band = theme::tint(self.p.chrome, 0.6);
-            (self.fills.iter())
-                .any(|(rect, fill)| *fill == band && (rect.center().y > BODY.center().y) == below)
+            (self.fades.iter()).any(|(rect, ground)| {
+                *ground == self.p.chrome
+                    && (rect.height() - kit::SCROLL_FADE).abs() < 0.01
+                    && (rect.center().y > BODY.center().y) == below
+            })
         }
 
         fn filled(&self, color: Color32) -> bool {
@@ -1681,25 +1691,39 @@ mod tests {
         }
     }
 
-    fn collect(shape: &Shape, fills: &mut Vec<(Rect, Color32)>, painted: &mut Vec<String>) {
+    fn collect(shape: &Shape, bench: &mut Bench) {
         match shape {
             Shape::Vec(shapes) => {
                 for shape in shapes {
-                    collect(shape, fills, painted);
+                    collect(shape, bench);
                 }
             }
-            Shape::Rect(rect) => fills.push((rect.rect, rect.fill)),
-            Shape::Circle(circle) => fills.push((
+            Shape::Rect(rect) => {
+                bench.fills.push((rect.rect, rect.fill));
+                if rect.stroke.width > 0.0 {
+                    bench.rings.push((rect.rect, rect.stroke.color));
+                }
+            }
+            Shape::Circle(circle) => bench.fills.push((
                 Rect::from_center_size(circle.center, Vec2::splat(2.0 * circle.radius)),
                 circle.fill,
             )),
+            // A scroll fade: a band from its ground to nothing.
+            Shape::Mesh(mesh) if mesh.vertices.len() == 4 => {
+                let ground = (mesh.vertices.iter())
+                    .map(|vertex| vertex.color)
+                    .find(|color| color.a() == 255);
+                if let Some(ground) = ground {
+                    bench.fades.push((mesh.calc_bounds(), ground));
+                }
+            }
             // Words cut short are what is seen of them.
-            Shape::Text(text) if text.galley.elided => painted.push(
+            Shape::Text(text) if text.galley.elided => bench.painted.push(
                 (text.galley.rows.iter())
                     .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
                     .collect(),
             ),
-            Shape::Text(text) => painted.push(text.galley.text().to_owned()),
+            Shape::Text(text) => bench.painted.push(text.galley.text().to_owned()),
             _ => {}
         }
     }
@@ -1804,6 +1828,57 @@ mod tests {
         bench.settle();
         assert!(bench.get("Stop the request", Role::Button).disabled);
         assert!(bench.painted.iter().any(|text| text == "Cancelling…"));
+    }
+
+    // §3.10 and §9.12: the send lies on `hover` under the pointer and on
+    // `pressed` while it is held, and rings with the keyboard.
+    #[test]
+    fn the_send_button_lights_under_the_pointer_and_rings_with_the_keyboard() {
+        let mut bench = Bench::new();
+        bench.state.input = "Tighten the opening".into();
+        bench.settle();
+        let send = bench.get("Ask (Enter)", Role::Button).rect;
+        let near = |a: Rect, b: Rect| (a.min - b.min).length() + (a.max - b.max).length() < 0.1;
+        let lies = |bench: &Bench, fill: Color32| {
+            (bench.fills.iter()).any(|(rect, painted)| near(*rect, send) && *painted == fill)
+        };
+        let ringed = |bench: &Bench| {
+            let ring = theme::tint(bench.p.accent, 0.55);
+            (bench.rings.iter())
+                .any(|(rect, color)| near(*rect, send.expand(2.0)) && *color == ring)
+        };
+        assert!(!lies(&bench, bench.p.hover) && !lies(&bench, bench.p.pressed));
+        assert!(!ringed(&bench), "a ring at rest");
+        bench.frame(vec![Event::PointerMoved(send.center())]);
+        assert!(lies(&bench, bench.p.hover), "under the pointer");
+        let button = |pressed| Event::PointerButton {
+            pos: send.center(),
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        bench.frame(vec![button(true)]);
+        assert!(lies(&bench, bench.p.pressed), "held");
+        // Let go beside it, so nothing is sent.
+        let beside = send.left_center() - vec2(80.0, 0.0);
+        bench.frame(vec![Event::PointerMoved(beside)]);
+        bench.frame(vec![Event::PointerButton {
+            pos: beside,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        bench.frame(vec![Event::PointerGone]);
+        assert!(bench.actions.is_empty(), "{:?}", bench.actions);
+        assert!(!lies(&bench, bench.p.hover) && !lies(&bench, bench.p.pressed));
+        for _ in 0..8 {
+            if bench.focused.as_deref() == Some("Ask (Enter)") {
+                break;
+            }
+            bench.key(Key::Tab);
+        }
+        assert_eq!(bench.focused.as_deref(), Some("Ask (Enter)"));
+        assert!(ringed(&bench), "with the keyboard");
     }
 
     // §5.6 and A2: at 760 × 560 the introduction keeps every word, runs on

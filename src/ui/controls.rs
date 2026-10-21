@@ -202,10 +202,19 @@ pub fn button_sized(
             ButtonKind::Secondary => (p.control, p.fg),
             ButtonKind::Quiet => (Color32::TRANSPARENT, p.secondary),
         };
+        // Neptune Video: a disabled Secondary or Quiet button's words are
+        // `muted`, as a disabled chip's and menu row's are, so every
+        // disabled control reads at one strength once the disabled painter
+        // halves it (spec F12). A solid button keeps its ink on its fill.
+        let solid = matches!(kind, ButtonKind::Primary | ButtonKind::Destructive);
+        let text = if ui.is_enabled() || solid {
+            text
+        } else {
+            p.muted
+        };
         let radius = metrics::CONTROL_RADIUS;
         let painter = ui.painter();
         painter.rect_filled(rect, radius, fill);
-        let solid = matches!(kind, ButtonKind::Primary | ButtonKind::Destructive);
         if down {
             painter.rect_filled(
                 rect,
@@ -374,6 +383,11 @@ pub fn segmented<T: PartialEq + Copy>(
 /// Neptune Video: the room a segmented label keeps on each side of it.
 const SEGMENT_ROOM: f32 = 8.0;
 
+/// Neptune Video: the least room on each side of a label at 11.5 that still
+/// keeps a segmented control's cells equal, as the inspector's section
+/// switch keeps its own. Below it the cells share the width by label.
+pub const SEGMENT_SNUG: f32 = 6.0;
+
 /// Neptune Video: the narrowest a segmented control of `labels` may be,
 /// where each label at 11.5 still keeps [`SEGMENT_ROOM`] on both sides.
 pub fn segmented_fit(ui: &Ui, labels: &[&str]) -> f32 {
@@ -396,8 +410,9 @@ pub fn segmented_fit(ui: &Ui, labels: &[&str]) -> f32 {
 /// Neptune Video: the cells of a segmented control in `rect`, inside its
 /// 2-point track, and the size their labels are written at: equal cells at
 /// Medium 12, or at 11.5, while every label has [`SEGMENT_ROOM`] on both
-/// sides; otherwise at 11.5 in cells as wide as their labels, the width
-/// left over shared out evenly.
+/// sides, or at 11.5 while each still has [`SEGMENT_SNUG`]; otherwise at
+/// 11.5 in cells as wide as their labels, the width left over shared out
+/// evenly.
 fn segment_cells<T>(ui: &Ui, rect: Rect, options: &[(T, &str)]) -> (Vec<Rect>, f32) {
     let inner = Rect::from_min_max(rect.min + vec2(2.0, 2.0), rect.max - vec2(2.0, 2.0));
     let count = options.len().max(1) as f32;
@@ -421,11 +436,12 @@ fn segment_cells<T>(ui: &Ui, rect: Rect, options: &[(T, &str)]) -> (Vec<Rect>, f
         *lefts += wide;
         cell
     };
-    for size in [12.0, 11.5] {
-        if widths(size)
-            .iter()
-            .all(|label| label + SEGMENT_ROOM * 2.0 <= equal)
-        {
+    for (size, room) in [
+        (12.0, SEGMENT_ROOM),
+        (11.5, SEGMENT_ROOM),
+        (11.5, SEGMENT_SNUG),
+    ] {
+        if widths(size).iter().all(|label| label + room * 2.0 <= equal) {
             let mut left = inner.left();
             return (
                 (0..options.len()).map(|_| at(&mut left, equal)).collect(),
@@ -768,6 +784,42 @@ pub fn scrim(painter: &Painter, bounds: Rect, radius: u8, p: Palette, opacity: f
     if opacity > 0.0 {
         painter.rect_filled(bounds, radius, p.scrim.gamma_multiply(opacity));
     }
+}
+
+/// A modal surface. Keyboard focus stays inside it, and it is exposed to
+/// assistive tools as a window named `title`.
+// Neptune Video: Terminal's `sheet`, centred, under the id the editor has
+// always given each sheet, which its tests and notices find it by. It hands
+// back egui's whole response, so that each sheet answers Escape, Enter and a
+// click beside it as it always has; `kit::sheet_scrim` dims the window.
+pub fn sheet<R>(
+    ctx: &egui::Context,
+    p: Palette,
+    id: Id,
+    title: &str,
+    width: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::ModalResponse<R> {
+    let screen = ctx.content_rect();
+    let width = width.min(screen.width() - 24.0).max(120.0);
+    let frame = Frame::new()
+        .fill(p.elevated)
+        .corner_radius(metrics::SHEET_RADIUS)
+        .stroke(Stroke::new(1.0, p.border))
+        .shadow(p.sheet_shadow());
+    let modal = egui::Modal::new(id)
+        .frame(frame)
+        // The window paints its own rounded scrim.
+        .backdrop_color(Color32::TRANSPARENT)
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            add_contents(ui)
+        });
+    modal
+        .response
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Window, true, title));
+    modal
 }
 
 /// The title row of a sheet. Returns true when its close control is activated.
@@ -1444,6 +1496,24 @@ mod tests {
             assert_eq!(size, 11.5);
             let room = (cells[1].width() - label(ui, "Command", 11.5)) / 2.0;
             assert!((room - SEGMENT_ROOM).abs() < 0.01, "Command has {room}");
+
+            // P10: the Speed card's rates at 760 stay equal, as the section
+            // switch over them does, while each keeps its snug room.
+            let rect = Rect::from_min_size(Pos2::ZERO, vec2(233.0, 28.0));
+            let options = [(0u8, "0.25×"), (1, "0.5×"), (2, "1×"), (3, "2×"), (4, "4×")];
+            let (cells, size) = segment_cells(ui, rect, &options);
+            assert_eq!(size, 11.5);
+            assert!(
+                cells
+                    .iter()
+                    .all(|cell| (cell.width() - 229.0 / 5.0).abs() < 0.01),
+                "{cells:?}"
+            );
+            let room = (cells[0].width() - label(ui, "0.25×", 11.5)) / 2.0;
+            assert!(
+                (SEGMENT_SNUG..SEGMENT_ROOM).contains(&room),
+                "0.25× has {room}"
+            );
         });
     }
 

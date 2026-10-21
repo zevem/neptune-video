@@ -1093,7 +1093,11 @@ pub fn shortcut(keys: &str) -> String {
             .replace("Shift+", "⇧")
             .replace("Alt+", "⌥")
     } else {
-        keys.replace("Cmd+", "Ctrl+")
+        // Ctrl comes first among held keys, as Terminal and the other
+        // platforms write them: Ctrl+Shift+E, not Shift+Ctrl+E.
+        keys.replace("Shift+Cmd+", "Ctrl+Shift+")
+            .replace("Alt+Cmd+", "Ctrl+Alt+")
+            .replace("Cmd+", "Ctrl+")
     }
 }
 
@@ -1154,5 +1158,28 @@ mod tests {
             ctx.data(|data| data.get_temp(egui::Id::new("preferences-pane"))),
             Some(PreferencesPane::Agent)
         );
+    }
+
+    // Terminal writes Ctrl first among the keys held with it, and so do the
+    // toolbar's panel chords; macOS keeps Apple's ⇧⌘.
+    #[test]
+    fn a_shortcut_writes_ctrl_first_off_macos() {
+        let written = [
+            super::shortcut("Shift+Cmd+E"),
+            super::shortcut("Alt+Cmd+O"),
+            super::shortcut("Cmd+G, Shift+Cmd+G"),
+        ];
+        if cfg!(target_os = "macos") {
+            assert_eq!(written, ["⇧⌘E", "⌥⌘O", "⌘G, ⇧⌘G"]);
+        } else {
+            assert_eq!(
+                written,
+                ["Ctrl+Shift+E", "Ctrl+Alt+O", "Ctrl+G, Ctrl+Shift+G"]
+            );
+            assert_eq!(
+                super::shortcut("Shift+Cmd+B"),
+                super::toolbar::library_keys()
+            );
+        }
     }
 }
