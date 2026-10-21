@@ -97,6 +97,10 @@ const MARK_HANDLE: f32 = 10.0;
 const FADE_TILE: f32 = 40.0;
 /// How tall the handle of a fade is.
 const FADE_HANDLE: f32 = 12.0;
+/// How far in from a tile's edge the handle of a fade may stand: past the
+/// grip, and two points past it, so some of the sound shows between the
+/// handle and the trim bar beside it and the two never read as one.
+const FADE_GRIP: f32 = EDGE_GRIP + 2.0;
 /// How far apart the points of a fade's curve are drawn.
 const FADE_STEP: f32 = 2.0;
 /// How much of the height of a tile's sound a volume of 100% stands at, and
@@ -121,8 +125,9 @@ const ADD_BADGE: f32 = 16.0;
 const NAME_ROW: f32 = 18.0;
 /// How much further than eight points in a tile's name starts with no
 /// chevron before it: clear of the trim bar at the tile's start, with room
-/// between them for a selected name's capsule.
-const NAME_STEP: f32 = 4.0;
+/// between them for a selected name's capsule and some of the tile beside
+/// it, so the capsule never meets the bar.
+const NAME_STEP: f32 = 6.0;
 /// How far the pointer travels before a press on the badge is a drag of the
 /// clip under it.
 const OFFER_TRAVEL: f32 = 3.0;
@@ -2331,11 +2336,11 @@ fn marking(tile: Rect, zoom: f32, edge: TransitionEdge, duration: Time) -> Rect 
     }
 }
 
-/// The handle at a marking's inner end, kept clear of the grips that trim
-/// the clip at either edge however short or long the transition is, and so
-/// of the clip beside it.
-fn mark_handle(tile: Rect, mark: Rect, edge: TransitionEdge) -> Rect {
-    let clear = EDGE_GRIP.min(tile.width() / 3.0) + MARK_HANDLE * 0.5;
+/// The handle at a marking's inner end, kept `grip` clear of either edge of
+/// the tile, and so of the grips that trim the clip, however short or long
+/// the transition is, and of the clip beside it.
+fn mark_handle(tile: Rect, mark: Rect, edge: TransitionEdge, grip: f32) -> Rect {
+    let clear = grip.min(tile.width() / 3.0) + MARK_HANDLE * 0.5;
     let (low, high) = (tile.left() + clear, tile.right() - clear);
     let inner = match edge {
         TransitionEdge::In => mark.right(),
@@ -2381,9 +2386,9 @@ fn fade_end_time(clip: &Clip, edge: FadeEdge, length: Time) -> Time {
 }
 
 /// The handles of the two fades of a clip's sound, the fade in first: at the
-/// top corners of the tile's sound, each where its fade ends, clear of the
-/// grips that trim the clip as the handle of a transition is and of one
-/// another. A tile too narrow for them has none.
+/// top corners of the tile's sound, each where its fade ends, [`FADE_GRIP`]
+/// clear of the tile's edges and so of the grips and bars that trim the
+/// clip, and clear of one another. A tile too narrow for them has none.
 fn fade_handles(tile: Rect, zoom: f32, fade_in: Time, fade_out: Time) -> Option<[Rect; 2]> {
     if tile.width() < FADE_TILE {
         return None;
@@ -2394,16 +2399,18 @@ fn fade_handles(tile: Rect, zoom: f32, fade_in: Time, fade_out: Time) -> Option<
         tile,
         band.with_max_x(fade_end(tile, zoom, FadeEdge::In, fade_in)),
         TransitionEdge::In,
+        FADE_GRIP,
     );
     let mut end = mark_handle(
         tile,
         band.with_min_x(fade_end(tile, zoom, FadeEdge::Out, fade_out)),
         TransitionEdge::Out,
+        FADE_GRIP,
     );
     // Fades that meet, or nearly, keep a handle each: side by side about
     // where they meet, and still clear of the grips.
     if end.left() < start.right() {
-        let clear = EDGE_GRIP + MARK_HANDLE;
+        let clear = FADE_GRIP + MARK_HANDLE;
         let middle = ((start.center().x + end.center().x) * 0.5)
             .clamp(tile.left() + clear, tile.right() - clear);
         start = start.translate(vec2(middle - start.right(), 0.0));
@@ -2998,6 +3005,10 @@ fn draw_lanes(
         egui::WidgetInfo::labeled(egui::WidgetType::Other, true, label)
     });
     let painter = ui.painter_at(lanes);
+    // What a held drag says in a capsule stands above the tile or row it
+    // speaks of, over the ruler when that is the first, so it never covers
+    // what is being trimmed or dropped.
+    let above = ui.painter_at(lanes.with_min_y(lanes.top() - RULER));
     let pointer = ui.input(|i| i.pointer.latest_pos());
     let over = pointer.filter(|pos| lanes.contains(*pos) && response.contains_pointer());
     let modifiers = ui.input(|i| i.modifiers);
@@ -3110,7 +3121,7 @@ fn draw_lanes(
                 .filter(|held| (held.0, held.1) == (clip.id, edge))
                 .map_or(transition.duration, |held| held.2);
             let mark = marking(tile, geometry.zoom, edge, duration);
-            handles.push((clip.id, edge, mark_handle(tile, mark, edge)));
+            handles.push((clip.id, edge, mark_handle(tile, mark, edge, EDGE_GRIP)));
         }
     }
     // The edge under the pointer that could be given a transition. Asked of
@@ -3992,7 +4003,7 @@ fn draw_lanes(
             Edge::Start => tile.left(),
             Edge::End => tile.right(),
         };
-        time_capsule(&painter, p, x, tile.top() - 4.0, &text);
+        time_capsule(&above, p, x, tile.top() - 4.0, &text);
     }
 
     if let Some(rect) = marquee_rect {
@@ -4044,7 +4055,7 @@ fn draw_lanes(
                 StrokeKind::Inside,
             );
             drop_caret(
-                &painter,
+                (&painter, &above),
                 p,
                 row,
                 rect.left(),
@@ -4164,7 +4175,7 @@ fn draw_lanes(
                 painter.rect_filled(rect, radius, theme::tint(tone, 0.35));
                 painter.rect_stroke(rect, radius, Stroke::new(1.5, tone), StrokeKind::Inside);
                 drop_caret(
-                    &painter,
+                    (&painter, &above),
                     p,
                     row,
                     rect.left(),
@@ -4794,7 +4805,10 @@ fn paint_clip(
     // rising from the cut it is at and an edge where it ends. It lies over a
     // picture as often as over the body, so it is drawn in the stage's
     // inks, light on a dark shade, in either appearance. A chosen one is
-    // washed with the accent, and its ring waits for the clip's own.
+    // ringed with the accent and washed with it inside the ring, and the
+    // ring waits for the clip's own: a selected clip is ringed and barred
+    // at its edges too, so this ring stands clear of them, inside the bars
+    // and the keyline and a little under the name's band.
     let mut chosen = None;
     for edge in transitions::EDGES {
         let Some(transition) = transitions::of(clip, edge) else {
@@ -4810,22 +4824,42 @@ fn paint_clip(
             Color32::from_black_alpha(80).gamma_multiply(opacity),
         );
         clipped.rect_filled(mark, 4, shade);
-        if marks.selected == Some(edge) {
-            clipped.rect_filled(mark, 4, p.accent.gamma_multiply(0.45 * opacity));
-            chosen = Some(mark);
+        // The wash fills the ring, or a marking too small for one.
+        let selected = marks.selected == Some(edge);
+        let ring = selected
+            .then(|| {
+                Rect::from_x_y_ranges(
+                    mark.left().max(rect.left() + 7.5)..=mark.right().min(rect.right() - 7.5),
+                    (mark.top() + 2.0)..=(mark.bottom() - 3.0),
+                )
+            })
+            .filter(|ring| ring.width() >= 6.0 && ring.height() >= 6.0);
+        if selected {
+            let (washed, round) = ring.map_or((mark, 4), |ring| (ring, 3));
+            clipped.rect_filled(washed, round, p.accent.gamma_multiply(0.45 * opacity));
+            chosen = ring;
         }
         let (rising, end) = match edge {
             TransitionEdge::In => ([mark.left_bottom(), mark.right_top()], mark.right() - 0.5),
             TransitionEdge::Out => ([mark.right_bottom(), mark.left_top()], mark.left() + 0.5),
         };
-        // The line runs through the marking's centre, where its glyph
-        // stands when there is room for one: it breaks there, two points
-        // clear of the glyph's square, so the glyph is never struck through.
-        let glyph = mark.width() >= 24.0 && mark.height() >= 14.0;
+        // The line runs through where its glyph stands when there is room
+        // for one: the marking's centre, or within a ring the point of the
+        // line nearest the ring's, with a point to spare inside the ring.
+        // The line breaks there, two points clear of the glyph's square, so
+        // the glyph is never struck through.
+        let along = (rising[1] - rising[0]).normalized();
+        let center = ring.map_or(mark.center(), |ring| {
+            rising[0] + along * (ring.center() - rising[0]).dot(along)
+        });
+        let glyph = mark.width() >= 24.0
+            && mark.height() >= 14.0
+            && ring.is_none_or(|ring| {
+                let room = ring.shrink(3.0);
+                room.contains_rect(Rect::from_center_size(center, Vec2::splat(12.0)))
+            });
         let (parts, count) = if glyph {
-            let along = (rising[1] - rising[0]).normalized();
             let gap = (6.0 + 2.0) / along.x.abs().max(along.y.abs());
-            let center = mark.center();
             let parts = [
                 [rising[0], center - along * gap],
                 [center + along * gap, rising[1]],
@@ -4847,7 +4881,7 @@ fn paint_clip(
             );
         }
         if glyph {
-            let at = Rect::from_center_size(mark.center(), Vec2::splat(12.0));
+            let at = Rect::from_center_size(center, Vec2::splat(12.0));
             icons::paint(
                 &clipped,
                 at.translate(vec2(0.0, 1.0)),
@@ -5008,17 +5042,9 @@ fn paint_clip(
             painter.rect_filled(bar, 2, shade.gamma_multiply(opacity.max(0.6)));
         }
     }
-    // The chosen transition's ring, over the clip's: a selected clip is
-    // ringed and barred at its edges too, so this one stands clear of them,
-    // inside the bars and the keyline and a little under the name's band.
-    if let Some(mark) = chosen {
-        let ring = Rect::from_x_y_ranges(
-            mark.left().max(rect.left() + 7.5)..=mark.right().min(rect.right() - 7.5),
-            (mark.top() + 2.0)..=(mark.bottom() - 3.0),
-        );
-        if ring.width() >= 6.0 && ring.height() >= 6.0 {
-            clipped.rect_stroke(ring, 3, Stroke::new(2.0, p.accent), StrokeKind::Inside);
-        }
+    // The chosen transition's ring, over the clip's.
+    if let Some(ring) = chosen {
+        clipped.rect_stroke(ring, 3, Stroke::new(2.0, p.accent), StrokeKind::Inside);
     }
 }
 
@@ -5055,16 +5081,23 @@ fn time_capsule(painter: &egui::Painter, p: &Palette, x: f32, bottom: f32, text:
     painter.galley(at, galley, p.fg);
 }
 
-/// Where a drop would land on `row`: a caret of the accent at `x`, and the
-/// time it would land at in a capsule above it.
-fn drop_caret(painter: &egui::Painter, p: &Palette, row: &Row, x: f32, time: &str) {
-    let x = painter.round_to_pixel_center(x);
-    painter.vline(
+/// Where a drop would land on `row`: a caret of the accent at `x` in the
+/// lanes, and the time it would land at in a capsule above it, which may
+/// stand over the ruler.
+fn drop_caret(
+    (lanes, above): (&egui::Painter, &egui::Painter),
+    p: &Palette,
+    row: &Row,
+    x: f32,
+    time: &str,
+) {
+    let x = lanes.round_to_pixel_center(x);
+    lanes.vline(
         x,
         row.top..=(row.top + row.height),
         Stroke::new(2.0, p.accent),
     );
-    time_capsule(painter, p, x, row.top - 3.0, time);
+    time_capsule(above, p, x, row.top - 3.0, time);
 }
 
 #[cfg(test)]

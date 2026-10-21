@@ -770,10 +770,12 @@ fn a_handle_never_overlaps_a_trim_grip_at_any_width_that_shows_it() {
                 shown += 1;
                 let said = format!("{width}: {fade_in:?} {fade_out:?}: {start:?} {end:?}");
                 // The grips are seven points of each edge, as `hit` has
-                // them: no point of a handle trims the clip.
+                // them: no point of a handle trims the clip. Each stands two
+                // points further in, so some of the sound shows between it
+                // and the trim bar in the grip.
                 for handle in [start, end] {
-                    assert!(handle.left() >= tile.left() + EDGE_GRIP - 0.01, "{said}");
-                    assert!(handle.right() <= tile.right() - EDGE_GRIP + 0.01, "{said}");
+                    assert!(handle.left() >= tile.left() + FADE_GRIP - 0.01, "{said}");
+                    assert!(handle.right() <= tile.right() - FADE_GRIP + 0.01, "{said}");
                     for corner in [handle.left_top(), handle.right_bottom(), handle.center()] {
                         // Inside by a hair: an edge shared with the grip is
                         // the grip's.
@@ -798,7 +800,7 @@ fn a_handle_never_overlaps_a_trim_grip_at_any_width_that_shows_it() {
                     fade_end(tile, width, FadeEdge::In, fade_in),
                     fade_end(tile, width, FadeEdge::Out, fade_out),
                 ];
-                let clear = EDGE_GRIP + MARK_HANDLE * 0.5;
+                let clear = FADE_GRIP + MARK_HANDLE * 0.5;
                 let free = ends[1] - ends[0] >= MARK_HANDLE
                     && ends[0] >= tile.left() + clear
                     && ends[1] <= tile.right() - clear;

@@ -1,4 +1,5 @@
-//! The beats of music on its tiles, and edits that land on them.
+//! The beats of music on its tiles, edits that land on them, and what a
+//! held trim or library item says about where it would land.
 //!
 //! [`Bench`] paints the timeline in a real egui pass, with the peaks and
 //! beats it holds kept from frame to frame as the application keeps them,
@@ -47,6 +48,10 @@ struct Bench {
     /// four corners a tick: no peaks are held and no clip fades, so every
     /// such mesh is a tile's beats.
     ticks: Vec<usize>,
+    /// Every line of text the last frame painted, and where.
+    texts: Vec<(String, Rect)>,
+    /// Every straight line the last frame drew, and its stroke.
+    lines: Vec<([Pos2; 2], Stroke)>,
     refused: Vec<String>,
     said: Vec<String>,
 }
@@ -96,6 +101,8 @@ impl Bench {
             time: 0.0,
             seen: Vec::new(),
             ticks: Vec::new(),
+            texts: Vec::new(),
+            lines: Vec::new(),
             refused: Vec::new(),
             said: Vec::new(),
         };
@@ -160,11 +167,18 @@ impl Bench {
 
     /// One frame of the application with these events in it.
     fn frame(&mut self, events: Vec<Event>) {
-        fn meshes(shape: &egui::Shape, found: &mut Vec<usize>) {
+        fn painted(shape: &egui::Shape, bench: &mut Bench) {
             match shape {
-                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| meshes(shape, found)),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| painted(shape, bench)),
                 egui::Shape::Mesh(mesh) if mesh.texture_id == egui::TextureId::default() => {
-                    found.push(mesh.vertices.len() / 4);
+                    bench.ticks.push(mesh.vertices.len() / 4);
+                }
+                egui::Shape::Text(text) => bench.texts.push((
+                    text.galley.text().to_owned(),
+                    Rect::from_min_size(text.pos, text.galley.size()),
+                )),
+                egui::Shape::LineSegment { points, stroke } => {
+                    bench.lines.push((*points, *stroke));
                 }
                 _ => {}
             }
@@ -203,8 +217,10 @@ impl Bench {
         });
         output.textures_delta.clear();
         self.ticks.clear();
+        self.texts.clear();
+        self.lines.clear();
         for clipped in &output.shapes {
-            meshes(&clipped.shape, &mut self.ticks);
+            painted(&clipped.shape, self);
         }
         if let Some(update) = &output.platform_output.accesskit_update {
             self.seen = (update.nodes.iter())
@@ -505,6 +521,85 @@ fn with_its_beats_hidden_nothing_lands_on_them() {
     bench.move_by(voice, 3.27 - 7.0);
     assert_ne!(bench.clip(voice).start, seconds(3.25));
     assert!(bench.refused.is_empty(), "{:?}", bench.refused);
+}
+
+// ---- What a held drag says -----------------------------------------------
+
+// §4.4.6 item 9 and §9.12: a held trim says how far its edge has gone, in a
+// capsule above the tile at that edge, and says nothing once let go.
+#[test]
+fn a_held_trim_says_how_far_its_edge_has_gone_above_the_tile() {
+    let (mut bench, [song, _]) = Bench::new();
+    bench.selection.only(song);
+    let rate = bench.editor.project().settings.frame_rate;
+    let tile = bench.tile(song);
+    let from = pos2(tile.right() - 2.0, tile.top() + 8.0);
+    // Half a second further out, and held there.
+    let to = from + vec2(bench.timeline.zoom * 0.5, 0.0);
+    bench.carry(from, to);
+    let Some(Drag::Trim {
+        edge: Edge::End,
+        delta,
+        ..
+    }) = bench.timeline.drag
+    else {
+        panic!("no end is held");
+    };
+    assert!(delta > Time::ZERO, "{delta:?}");
+    let said = format!("+{}", timefmt::timecode(delta, rate));
+    assert!(said.starts_with("+00:00:00:"), "{said}");
+    let (_, at) = (bench.texts.iter())
+        .find(|(text, _)| *text == said)
+        .unwrap_or_else(|| panic!("{said} is not said: {:?}", bench.texts));
+    let edge = bench.x(6.5 + delta.as_seconds());
+    assert!(
+        (at.center().x - edge).abs() < 1.0,
+        "{at:?} is not over {edge}"
+    );
+    assert!(at.bottom() < tile.top(), "{at:?} is not above {tile:?}");
+    bench.release(to);
+    assert!(bench.texts.iter().all(|(text, _)| !text.starts_with('+')));
+    assert!(bench.refused.is_empty(), "{:?}", bench.refused);
+}
+
+// §5.5.7 and §9.12: an item of the library held over a lane shows where it
+// would land with a caret of the accent, and when in a capsule above it.
+#[test]
+fn a_library_item_held_over_a_lane_shows_where_and_when_it_would_land() {
+    let (mut bench, [song, _]) = Bench::new();
+    let asset = bench.asset("song.wav");
+    let rate = bench.editor.project().settings.frame_rate;
+    let lane = bench.tile(song);
+    // Over the song's lane, after the song and clear of every edge.
+    egui::DragAndDrop::set_payload(&bench.ctx, AssetDrag(asset.id));
+    bench.move_to(pos2(bench.x(7.5), lane.center().y));
+    let x = bench.x(7.5);
+    let accent = bench.palette.accent;
+    let caret = (bench.lines.iter())
+        .find(|([from, to], stroke)| {
+            stroke.width == 2.0
+                && stroke.color == accent
+                && from.x == to.x
+                && (from.x - x).abs() <= 0.5
+        })
+        .map(|([from, to], _)| from.y.min(to.y)..=from.y.max(to.y))
+        .unwrap_or_else(|| panic!("no caret at {x}: {:?}", bench.lines));
+    assert!(caret.start() <= &lane.top() && caret.end() >= &lane.bottom());
+    let said = timefmt::timecode(seconds(7.5), rate);
+    let (_, at) = (bench.texts.iter())
+        .find(|(text, _)| *text == said)
+        .unwrap_or_else(|| panic!("{said} is not said: {:?}", bench.texts));
+    assert!((at.center().x - x).abs() < 1.0, "{at:?} is not over {x}");
+    assert!(
+        at.bottom() < *caret.start(),
+        "{at:?} is not above the caret"
+    );
+    // Put down elsewhere, it says nothing more and nothing was placed.
+    egui::DragAndDrop::clear_payload(&bench.ctx);
+    let steps = bench.steps();
+    bench.frame(Vec::new());
+    assert!(bench.texts.iter().all(|(text, _)| *text != said));
+    assert_eq!(bench.steps(), steps);
 }
 
 // ---- The clip menu --------------------------------------------------------

@@ -31,6 +31,14 @@ recordings show the interface's feedback on a software renderer. They do
 not show real-time playback on a GPU, sound output, frame pacing, other
 platforms or the person's 1.5× display.
 
+Two kinds of drag feedback were not recorded. A held trim's "+00:00:00:NN"
+capsule, and the accent caret and timecode capsule of a library item held
+over a lane, are covered by
+`ui::timeline::beating::a_held_trim_says_how_far_its_edge_has_gone_above_the_tile`
+and `…::a_library_item_held_over_a_lane_shows_where_and_when_it_would_land`.
+These tests paint the timeline in an egui pass and read back the shapes it
+painted. Neither was seen in a native window.
+
 ## Playback right after opening (2026-10-19)
 
 The [task report](../artifacts/startup-playback-2026-10-19/REPORT.md) records
