@@ -408,8 +408,10 @@ impl Placement {
 /// Left and Right are a choice's own while a cell of one has the keyboard:
 /// a tab of a strip, or an option of a segmented control. They move the
 /// keyboard among its cells (and, where the strip asks [`arrow_choice`],
-/// the choice with it), and do not also step the playhead. Up and Down,
-/// Delete and the rest are still the application's.
+/// the choice with it), and do not also step the playhead. So are they the
+/// own of a control that moves with them while it has the keyboard, such as
+/// the timeline's zoom, which says so with [`ChoiceArrows::hold`]. Up and
+/// Down, Delete and the rest are still the application's.
 ///
 /// A cell is known to be one as it gains the keyboard from Tab, when it says
 /// what it is. egui says nothing of the cell an arrow moves the keyboard to,
@@ -420,6 +422,9 @@ pub struct ChoiceArrows {
     focused: Option<eframe::egui::Id>,
     /// The pass in which an arrow was pressed on it.
     stepped: Option<u64>,
+    /// A control that moves with Left and Right, and the pass in which it
+    /// last had the keyboard.
+    held: Option<(eframe::egui::Id, u64)>,
 }
 
 impl ChoiceArrows {
@@ -444,6 +449,8 @@ impl ChoiceArrows {
             state.focused = focused;
         }
         let owned = focused.is_some() && focused == state.focused;
+        // A control that held them in the pass before still has the keyboard.
+        let held = (state.held).is_some_and(|(id, at)| Some(id) == focused && at + 1 >= pass);
         let arrow = ctx.input(|input| {
             input.events.iter().any(|event| {
                 matches!(
@@ -459,7 +466,16 @@ impl ChoiceArrows {
         });
         state.stepped = (owned && arrow).then_some(pass);
         ctx.data_mut(|data| data.insert_temp(Self::id(), state));
-        owned
+        owned || held
+    }
+
+    /// Said in each pass by a control that has the keyboard and moves with
+    /// Left and Right itself, as a slider does: from the next pass on they
+    /// are its own, and do not also step the playhead.
+    pub fn hold(ctx: &eframe::egui::Context, control: eframe::egui::Id) {
+        let mut state = Self::read(ctx);
+        state.held = Some((control, ctx.cumulative_pass_nr()));
+        ctx.data_mut(|data| data.insert_temp(Self::id(), state));
     }
 
     /// Called once the frame's widgets are made: notes whether the widget

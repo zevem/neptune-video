@@ -1409,6 +1409,8 @@ fn zoom_slider(ui: &mut Ui, p: &Palette, level: &mut f32, width: f32) -> Respons
                 },
             );
         });
+        // Nor do they step the playhead as well.
+        crate::ui::ChoiceArrows::hold(ui.ctx(), response.id);
     }
     let nudge = ui.input(|input| {
         use egui::accesskit::Action;

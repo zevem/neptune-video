@@ -372,6 +372,8 @@ pub fn slider(
         next = snap(low + (high - low) * ((pos.x - left) / travel).clamp(0.0, 1.0));
     }
     if response.has_focus() {
+        // Neptune Video: the arrows it moves with do not step the playhead.
+        super::ChoiceArrows::hold(ui.ctx(), response.id);
         let nudge = ui.input(|input| {
             input.num_presses(egui::Key::ArrowRight) as f32
                 - input.num_presses(egui::Key::ArrowLeft) as f32

@@ -48,6 +48,9 @@ struct Bench {
     snapping: bool,
     /// The node that held the keyboard focus after the last frame.
     focused: Option<egui::accesskit::NodeId>,
+    /// Whether Left and Right were a control's own in the last frame, as
+    /// the application is told: then they do not step the playhead.
+    arrows_kept: bool,
 }
 
 const NAMES: [&str; 4] = ["Video 1", "Audio 1", "Audio 2", "Text 1"];
@@ -105,6 +108,7 @@ impl Bench {
             refused: Vec::new(),
             snapping: false,
             focused: None,
+            arrows_kept: false,
         };
         bench.frame(Vec::new());
         bench
@@ -161,7 +165,10 @@ impl Bench {
             events,
             ..Default::default()
         };
+        let mut arrows_kept = false;
         let mut output = ctx.run_ui(input, |ui| {
+            // As the application reads them, before and after its widgets.
+            arrows_kept = crate::ui::ChoiceArrows::begin(ui.ctx());
             show(
                 ui,
                 ui.max_rect(),
@@ -181,7 +188,9 @@ impl Bench {
                 },
                 &mut actions,
             );
+            crate::ui::ChoiceArrows::end(ui.ctx());
         });
+        self.arrows_kept = arrows_kept;
         output.textures_delta.clear();
         let mut written = Vec::new();
         self.inked.clear();
@@ -963,6 +972,38 @@ fn the_arrows_step_the_zoom_slider_and_leave_the_focus_on_it() {
     bench.key(Key::ArrowLeft);
     assert!(bench.timeline.zoom < zoom, "the left arrow lowers it");
     assert_eq!(bench.focused, Some(slider));
+}
+
+// P5-R2-1: while the zoom slider has the keyboard, Left and Right are its
+// own, so the application does not also step the playhead with them. Once
+// the keyboard leaves it they are the application's again.
+#[test]
+fn the_zoom_sliders_arrows_do_not_also_step_the_playhead() {
+    let mut bench = Bench::new();
+    let arrow = |key| Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    bench.frame(vec![arrow(Key::ArrowRight)]);
+    assert!(!bench.arrows_kept, "nothing has the keyboard");
+    bench.focus("Timeline zoom");
+    let zoom = bench.timeline.zoom;
+    bench.frame(vec![arrow(Key::ArrowRight)]);
+    assert!(bench.timeline.zoom > zoom, "the zoom rose");
+    assert!(bench.arrows_kept, "the arrow was the slider's alone");
+    bench.frame(vec![arrow(Key::ArrowLeft)]);
+    assert!(bench.arrows_kept);
+    bench.ctx.memory_mut(|memory| {
+        if let Some(focused) = memory.focused() {
+            memory.surrender_focus(focused);
+        }
+    });
+    bench.frame(Vec::new());
+    bench.frame(vec![arrow(Key::ArrowRight)]);
+    assert!(!bench.arrows_kept, "the keyboard left the slider");
 }
 
 // TL4 and §7.2: in a pane too narrow for the whole tool strip, the Edit and
