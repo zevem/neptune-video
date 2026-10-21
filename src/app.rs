@@ -6349,6 +6349,8 @@ impl App {
         self.viewer.choose_region(region.filter(|_| masks_shown));
         self.viewer
             .show_paths(masks_shown && self.inspector.shows_paths());
+        // The stage's text keeps its dark weight in the light appearance.
+        let stage_shapes = ui::viewer::first_shape(ui);
         match &self.source {
             Some(source) => ui::viewer::show_source(
                 ui,
@@ -6393,6 +6395,7 @@ impl App {
                 actions,
             ),
         }
+        ui::viewer::keep_text_weight(ui, stage_shapes);
         // The camera paths the inspector and the canvas wanted and did not
         // have are asked for now, in the frame that wanted them.
         self.ask_steadies(&ctx);

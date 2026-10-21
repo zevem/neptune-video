@@ -40,7 +40,10 @@ use editor_media::{MediaService, Sampling, text::TitlePicture};
 use eframe::{
     egui::{
         self, Align2, Color32, CornerRadius, CursorIcon, Id, Mesh, Pos2, Rect, Sense, Shape,
-        Stroke, StrokeKind, Ui, Vec2, epaint::RectShape, pos2, vec2,
+        Stroke, StrokeKind, Ui, Vec2,
+        epaint::{FontColorTransferFunction, RectShape},
+        layers::ShapeIdx,
+        pos2, vec2,
     },
     egui_wgpu::RenderState,
 };
@@ -708,6 +711,72 @@ fn stage_palette(app: &Palette) -> Palette {
         .find(|accent| accent.color(app.dark) == app.accent)
         .unwrap_or_default();
     Palette::stage_palette(accent)
+}
+
+/// Where the viewer's shapes start in its layer, for [`keep_text_weight`].
+pub fn first_shape(ui: &Ui) -> ShapeIdx {
+    ui.ctx()
+        .graphics_mut(|graphics| graphics.entry(ui.layer_id()).next_idx())
+}
+
+/// Gives the stage's text the weight it has in the dark appearance.
+///
+/// egui keeps one glyph atlas. In the light appearance it stores coverage as
+/// alpha, the curve meant for dark ink on a light ground, and the dark
+/// appearance stores `2c - c²`. The stage is dark in both, so its light ink
+/// would come out thinner in light than in dark. Two strikes of coverage `c`
+/// cover `1 - (1 - c)²`, which is `2c - c²`, so the viewer's text is struck
+/// twice where the atlas holds plain coverage and reads the same in either
+/// appearance.
+pub fn keep_text_weight(ui: &Ui, from: ShapeIdx) {
+    let curve = ui.ctx().global_style().visuals.text_options;
+    if curve.color_transfer_function != FontColorTransferFunction::Off {
+        return;
+    }
+    ui.ctx().graphics_mut(|graphics| {
+        let list = graphics.entry(ui.layer_id());
+        for index in from.0..list.next_idx().0 {
+            list.mutate_shape(ShapeIdx(index), |clipped| strike_twice(&mut clipped.shape));
+        }
+    });
+}
+
+fn strike_twice(shape: &mut Shape) {
+    match shape {
+        Shape::Vec(shapes) => shapes.iter_mut().for_each(strike_twice),
+        Shape::Text(text) => {
+            let alpha = ink_alpha(text);
+            if alpha <= 0.0 {
+                return;
+            }
+            // Translucent ink, as in a fade, strikes twice at the opacity
+            // whose two strikes reach the one strike's core: `1 - √(1 - a)`.
+            text.opacity_factor *= (1.0 - (1.0 - alpha).sqrt()) / alpha;
+            *shape = Shape::Vec(vec![Shape::Text(text.clone()), Shape::Text(text.clone())]);
+        }
+        _ => {}
+    }
+}
+
+/// The most opaque ink a text shape paints its glyphs in, from 0 to 1.
+fn ink_alpha(text: &egui::epaint::TextShape) -> f32 {
+    let ink = text
+        .override_text_color
+        .map(|color| color.a())
+        .unwrap_or_else(|| {
+            (text.galley.rows.iter())
+                .flat_map(|placed| {
+                    let visuals = &placed.row.visuals;
+                    visuals.mesh.vertices[visuals.glyph_vertex_range.clone()].iter()
+                })
+                .map(|vertex| match vertex.color {
+                    Color32::PLACEHOLDER => text.fallback_color.a(),
+                    color => color.a(),
+                })
+                .max()
+                .unwrap_or(0)
+        });
+    (f32::from(ink) / 255.0 * text.opacity_factor).min(1.0)
 }
 
 /// The stage of a viewer pane: all of it above the transport.
@@ -4102,5 +4171,80 @@ mod tests {
             stage_status(&mut since, 11.5, true, None, Auto, 2),
             (Some(Status::Waiting), None)
         );
+    }
+
+    /// Text the viewer paints is struck twice where the glyph atlas holds
+    /// plain coverage, as in the light appearance, and once in the dark,
+    /// whose atlas already holds `2c - c²`. Translucent text keeps its core:
+    /// two strikes at `1 - √(1 - a)` cover `a`. Text painted before the
+    /// viewer, the chrome's, is left as it is.
+    #[test]
+    fn stage_text_keeps_its_dark_weight_in_either_appearance() {
+        fn strikes(shape: &Shape, found: &mut Vec<(String, f32)>) {
+            match shape {
+                Shape::Vec(shapes) => shapes.iter().for_each(|shape| strikes(shape, found)),
+                Shape::Text(text) => {
+                    found.push((text.galley.text().to_owned(), text.opacity_factor))
+                }
+                _ => {}
+            }
+        }
+        for (appearance, twice) in [
+            (theme::Appearance::Light, true),
+            (theme::Appearance::Dark, false),
+        ] {
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            theme::apply(&ctx, &Palette::new(appearance, Accent::Blue));
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let painter = ui.painter();
+                let font = theme::mono(15.0);
+                painter.text(
+                    pos2(0.0, 0.0),
+                    Align2::LEFT_TOP,
+                    "chrome",
+                    font.clone(),
+                    Color32::BLACK,
+                );
+                let from = first_shape(ui);
+                painter.text(
+                    pos2(0.0, 20.0),
+                    Align2::LEFT_TOP,
+                    "opaque",
+                    font.clone(),
+                    Color32::WHITE,
+                );
+                let half = Color32::WHITE.gamma_multiply(0.5);
+                painter.text(pos2(0.0, 40.0), Align2::LEFT_TOP, "half", font, half);
+                keep_text_weight(ui, from);
+            });
+            output.textures_delta.clear();
+            let mut found = Vec::new();
+            for clipped in &output.shapes {
+                strikes(&clipped.shape, &mut found);
+            }
+            let count = |name: &str| found.iter().filter(|(text, _)| text == name).count();
+            assert_eq!(count("chrome"), 1, "{appearance:?}");
+            assert_eq!(count("opaque"), if twice { 2 } else { 1 }, "{appearance:?}");
+            assert_eq!(count("half"), if twice { 2 } else { 1 }, "{appearance:?}");
+            let opacity = |name: &str| found.iter().find(|(text, _)| text == name).map(|(_, o)| *o);
+            assert_eq!(opacity("opaque"), Some(1.0));
+            let a = f32::from(Color32::WHITE.gamma_multiply(0.5).a()) / 255.0;
+            let struck = if twice {
+                (1.0 - (1.0 - a).sqrt()) / a
+            } else {
+                1.0
+            };
+            let half = opacity("half").expect("the translucent text is painted");
+            assert!(
+                (half - struck).abs() < 1e-4,
+                "{appearance:?}: {half} against {struck}"
+            );
+            if twice {
+                // Two strikes at that opacity reach the one strike's core.
+                let core = 1.0 - (1.0 - a * half).powi(2);
+                assert!((core - a).abs() < 1e-4, "{core} against {a}");
+            }
+        }
     }
 }
