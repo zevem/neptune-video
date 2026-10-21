@@ -134,10 +134,44 @@ pub enum CheckpointAnswer {
 
 pub struct Notice {
     pub text: String,
-    pub problem: bool,
+    pub kind: NoticeKind,
     /// Seconds since the application started at which it goes away: never,
-    /// for a problem, which stays until it is dismissed.
+    /// for a warning or a problem, which stays until it is dismissed.
     pub until: f64,
+}
+
+/// What a notice tells, from the least to the most pressing, which its mark
+/// says: news, something done, something done that needs a second look, and
+/// something that went wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NoticeKind {
+    Info,
+    Done,
+    Warning,
+    Problem,
+}
+
+impl NoticeKind {
+    /// What a piece of work came to: done, or a problem.
+    pub fn outcome(problem: bool) -> Self {
+        if problem { Self::Problem } else { Self::Done }
+    }
+
+    /// Whether it stays until it is dismissed, rather than going after a
+    /// while: what needs reading, which a Dismiss lets go of.
+    pub fn stays(self) -> bool {
+        matches!(self, Self::Warning | Self::Problem)
+    }
+
+    /// Its mark and the mark's ink, as Terminal marks what it did.
+    fn mark(self, p: &Palette) -> (Icon, Color32) {
+        match self {
+            Self::Info => (Icon::Info, p.secondary),
+            Self::Done => (Icon::CircleCheck, p.green),
+            Self::Warning => (Icon::Warning, p.legible(p.yellow)),
+            Self::Problem => (Icon::AlertCircle, p.red),
+        }
+    }
 }
 
 impl Notice {
@@ -2579,16 +2613,17 @@ fn card_rows(ui: &mut Ui, p: &Palette, card: &Card, actions: &mut Vec<Action>) {
 const MOST_NOTICES: usize = 4;
 
 /// Adds `notice` to those being shown. The same words twice are one notice
-/// that stays the longer of the two, and a problem said again as
-/// information is still a problem, which stays until it is dismissed. Past
-/// four, the oldest information makes room first, never the notice just
-/// told. Information never makes room by taking a problem away: with four
-/// problems in sight, information is not shown at all, and a fifth problem
-/// takes the place of the oldest, which has been in sight the longest.
+/// of the more pressing kind that stays the longer of the two, and a
+/// problem said again as information is still a problem, which stays until
+/// it is dismissed, as a warning does. Past four, the oldest notice that
+/// goes by itself makes room first, never the notice just told. Brief news
+/// never makes room by taking away one that stays: with four of those in
+/// sight, news is not shown at all, and a fifth that stays takes the place
+/// of the oldest, which has been in sight the longest.
 pub fn tell(notices: &mut Vec<Notice>, notice: Notice) {
     if let Some(told) = (notices.iter_mut()).find(|told| told.text == notice.text) {
-        told.problem |= notice.problem;
-        told.until = if told.problem {
+        told.kind = told.kind.max(notice.kind);
+        told.until = if told.kind.stays() {
             f64::INFINITY
         } else {
             told.until.max(notice.until)
@@ -2598,11 +2633,11 @@ pub fn tell(notices: &mut Vec<Notice>, notice: Notice) {
     notices.push(notice);
     if notices.len() > MOST_NOTICES {
         let told = notices.len() - 1;
-        let oldest = (notices[..told].iter()).position(|notice| !notice.problem);
+        let oldest = (notices[..told].iter()).position(|notice| !notice.kind.stays());
         let gone = match oldest {
             Some(oldest) => oldest,
             // Brief news does not compete with a failure still to be seen.
-            None if !notices[told].problem => told,
+            None if !notices[told].kind.stays() => told,
             None => 0,
         };
         notices.remove(gone);
@@ -2622,8 +2657,8 @@ fn paused(ctx: &egui::Context) -> Vec<(u64, f64)> {
 
 /// Lets the notices whose time is up go, and hands back when the next one
 /// that is not paused is up, if one is. A notice under the pointer or
-/// waiting for room keeps the time it had left; a problem stays until it is
-/// dismissed.
+/// waiting for room keeps the time it had left; a warning or a problem
+/// stays until it is dismissed.
 pub fn expire(ctx: &egui::Context, notices: &mut Vec<Notice>) -> Option<f64> {
     let now = ctx.input(|input| input.time);
     let paused = paused(ctx);
@@ -2692,7 +2727,7 @@ struct Toast {
 /// They are kept over the sheet's layer, so that a Dismiss in sight can be
 /// pressed. A toast takes no input, so what is under it can still be
 /// clicked; the pointer resting on it stops its clock all the same. A toast
-/// is not an accessibility node; the Dismiss of a problem is.
+/// is not an accessibility node; the Dismiss of one that stays is.
 pub fn notices(
     ctx: &egui::Context,
     p: &Palette,
@@ -2720,8 +2755,9 @@ pub fn notices(
     ));
     let laid: Vec<Toast> = (notices.iter())
         .map(|notice| {
-            // Mark, 10, words, and a problem's Dismiss after 10 more.
-            let dismiss = if notice.problem {
+            // Mark, 10, words, and the Dismiss of one that stays after 10
+            // more.
+            let dismiss = if notice.kind.stays() {
                 10.0 + 28.0 + 8.0
             } else {
                 14.0
@@ -2734,7 +2770,7 @@ pub fn notices(
             );
             job.wrap.max_rows = 3;
             let galley = painter.layout_job(job);
-            let least = if notice.problem { 28.0 } else { 20.0 };
+            let least = if notice.kind.stays() { 28.0 } else { 20.0 };
             let size = vec2(
                 14.0 + 16.0 + 10.0 + galley.size().x + dismiss,
                 galley.size().y.max(least) + 16.0,
@@ -2816,11 +2852,7 @@ pub fn notices(
                 toast_surface(painter, rect, p);
                 let text_top = rect.center().y - galley.size().y * 0.5;
                 let first_row = galley.rows.first().map_or(16.0, |row| row.height());
-                let (mark, ink) = if notice.problem {
-                    (Icon::AlertCircle, p.red)
-                } else {
-                    (Icon::Info, p.secondary)
-                };
+                let (mark, ink) = notice.kind.mark(p);
                 icons::paint(
                     painter,
                     Rect::from_center_size(
@@ -2837,9 +2869,9 @@ pub fn notices(
         if under {
             ctx.move_to_top(shown.response.layer_id);
         }
-        // Only a problem's Dismiss takes the pointer, in its own layer over
-        // the toast's.
-        if notice.problem {
+        // Only the Dismiss of one that stays takes the pointer, in its own
+        // layer over the toast's.
+        if notice.kind.stays() {
             let button = Rect::from_center_size(
                 pos2(rect.right() - 8.0 - 14.0, rect.center().y),
                 Vec2::splat(28.0),
@@ -3143,7 +3175,7 @@ mod tests {
             let (ctx, palette, viewer) = (self.ctx.clone(), self.palette, self.viewer);
             let mut shown = [Notice {
                 text: "Imported 1 file".to_owned(),
-                problem: false,
+                kind: NoticeKind::Done,
                 until: f64::MAX,
             }];
             let mut actions = Vec::new();

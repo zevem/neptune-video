@@ -35,7 +35,7 @@ fn done(name: &str) -> RenderJobInfo {
 fn notice(text: &str) -> Notice {
     Notice {
         text: text.to_owned(),
-        problem: false,
+        kind: NoticeKind::Info,
         until: 1e9,
     }
 }
@@ -43,7 +43,7 @@ fn notice(text: &str) -> Notice {
 fn problem(text: &str) -> Notice {
     Notice {
         text: text.to_owned(),
-        problem: true,
+        kind: NoticeKind::Problem,
         until: f64::INFINITY,
     }
 }
@@ -313,6 +313,61 @@ fn a_problem_stays_until_it_is_dismissed() {
 }
 
 #[test]
+fn each_kind_of_notice_has_its_mark_and_a_warning_stays_as_a_problem_does() {
+    // §5.8: Terminal marks what it did with a green check.
+    for appearance in [Appearance::Dark, Appearance::Light] {
+        let p = Palette::new(appearance, Accent::default());
+        assert_eq!(NoticeKind::Info.mark(&p), (Icon::Info, p.secondary));
+        assert_eq!(NoticeKind::Done.mark(&p), (Icon::CircleCheck, p.green));
+        let warning = NoticeKind::Warning.mark(&p);
+        assert_eq!(warning, (Icon::Warning, p.legible(p.yellow)));
+        assert_eq!(NoticeKind::Problem.mark(&p), (Icon::AlertCircle, p.red));
+    }
+    assert_eq!(NoticeKind::outcome(false), NoticeKind::Done);
+    assert_eq!(NoticeKind::outcome(true), NoticeKind::Problem);
+
+    let mut window = Window::new(
+        vec![
+            Notice {
+                kind: NoticeKind::Done,
+                ..notice("Checkpoint “Rough cut” saved")
+            },
+            Notice {
+                kind: NoticeKind::Warning,
+                until: f64::INFINITY,
+                ..notice("Unsaved changes were restored")
+            },
+        ],
+        None,
+    );
+    // What was done goes on its clock; a warning waits to be read.
+    window.notices[0].until = window.time + 4.0;
+    window.frame(60.0, Vec::new());
+    window.frame(0.05, Vec::new());
+    let left: Vec<_> = (window.notices.iter())
+        .map(|notice| notice.text.clone())
+        .collect();
+    assert_eq!(left, ["Unsaved changes were restored"]);
+    assert_eq!(window.named("Dismiss").len(), 1, "{:?}", window.named);
+
+    // The same words told again are of the more pressing kind.
+    let mut notices = vec![Notice {
+        kind: NoticeKind::Done,
+        until: 5.0,
+        ..notice("Saved")
+    }];
+    tell(
+        &mut notices,
+        Notice {
+            kind: NoticeKind::Warning,
+            ..notice("Saved")
+        },
+    );
+    assert_eq!(notices[0].kind, NoticeKind::Warning);
+    assert!(notices[0].until.is_infinite());
+}
+
+#[test]
 fn a_toast_under_the_pointer_keeps_the_time_it_had_left() {
     let mut window = Window::new(vec![notice("Copied 2 clips")], None);
     window.notices[0].until = window.time + 1.0;
@@ -419,7 +474,7 @@ fn toasts_keep_clear_of_the_cards_of_work() {
 
 fn told(notices: &[Notice]) -> Vec<(&str, bool)> {
     (notices.iter())
-        .map(|notice| (notice.text.as_str(), notice.problem))
+        .map(|notice| (notice.text.as_str(), notice.kind == NoticeKind::Problem))
         .collect()
 }
 

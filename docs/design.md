@@ -58,9 +58,11 @@ the default only when pressed after the sheet is in sight, and never a
 destructive one. Recovery and conflict sheets never default to replacement.
 Preferences is a sheet with a source list (Appearance, Editing, Preview,
 Agent, Keyboard) and a search, opened from the gear at the library's foot,
-the Project menu or Command/Ctrl+Comma. Information toasts sit at the
-window's top trailing corner and leave after four seconds; a problem stays
-until it is dismissed, and the pointer resting on a toast stops its clock.
+the Project menu or Command/Ctrl+Comma. Toasts sit at the window's top
+trailing corner. Information (a secondary info mark) and what was done (a
+green check, as in Terminal) leave after four seconds; a warning (yellow) or
+a problem (red) stays until it is dismissed, and the pointer resting on a
+toast stops its clock.
 While a sheet is open toasts move to the bottom trailing corner and never
 cover it; a refusal caused inside the open sheet is said in that sheet.
 

@@ -38,7 +38,7 @@ use crate::{
         library::{LibraryInput, LibraryState},
         sheets::{
             self, Answer, Checkpoint, CheckpointAnswer, CheckpointsState, Conflict, ConflictAnswer,
-            DuckQuestion, Notice, Overlay, Pending,
+            DuckQuestion, Notice, NoticeKind, Overlay, Pending,
         },
         text_tab,
         timeline::{self, Reach, TimelineInput, TimelineState},
@@ -76,9 +76,10 @@ const RECOVERY_INTERVAL: Duration = Duration::from_secs(15);
 const EXIT_WAIT: Duration = Duration::from_secs(2);
 /// How long it waits for a recovery lease a worker was asked for.
 const LEASE_WAIT: Duration = Duration::from_secs(1);
-/// How long information stays in its toast, unless the pointer holds it.
+/// How long information and what was done stay in their toasts, unless the
+/// pointer holds them.
 const NOTICE_SECONDS: f64 = 4.0;
-/// A problem stays until it is dismissed.
+/// A warning or a problem stays until it is dismissed.
 const PROBLEM_SECONDS: f64 = f64::INFINITY;
 const PROJECT_EXTENSION: &str = "nvp";
 /// The narrowest content the library is shown beside the right panel in:
@@ -954,7 +955,7 @@ impl App {
         let mut problem = |text: String| {
             notices.push(Notice {
                 text,
-                problem: true,
+                kind: NoticeKind::Problem,
                 until: PROBLEM_SECONDS,
             });
         };
@@ -1029,7 +1030,7 @@ impl App {
         if let Some(text) = proxies.problem() {
             notices.push(Notice {
                 text: text.to_owned(),
-                problem: false,
+                kind: NoticeKind::Info,
                 until: NOTICE_SECONDS,
             });
         }
@@ -1196,7 +1197,7 @@ impl App {
             None => {
                 app.find_orphan(ctx);
                 if let Some(text) = app.import(launch.import) {
-                    app.notify(ctx, text, true);
+                    app.notify(ctx, text, NoticeKind::Problem);
                 }
             }
         }
@@ -1205,10 +1206,10 @@ impl App {
 
     // ---- Notices ----------------------------------------------------------
 
-    fn notify(&mut self, ctx: &egui::Context, text: impl Into<String>, problem: bool) {
+    fn notify(&mut self, ctx: &egui::Context, text: impl Into<String>, kind: NoticeKind) {
         let now = ctx.input(|i| i.time);
         let until = now
-            + if problem {
+            + if kind.stays() {
                 PROBLEM_SECONDS
             } else {
                 NOTICE_SECONDS
@@ -1217,7 +1218,7 @@ impl App {
             &mut self.notices,
             Notice {
                 text: text.into(),
-                problem,
+                kind,
                 until,
             },
         );
@@ -1642,7 +1643,7 @@ impl App {
                 self.notify(
                     ctx,
                     format!("The recovery copy was not written: {error}"),
-                    true,
+                    NoticeKind::Problem,
                 );
             }
         }
@@ -2072,7 +2073,11 @@ impl App {
                 if std::mem::take(&mut self.agent_saving) {
                     self.finished_save(session.path(), Err(error.to_string()));
                 }
-                self.notify(ctx, format!("The project was not saved: {error}"), true);
+                self.notify(
+                    ctx,
+                    format!("The project was not saved: {error}"),
+                    NoticeKind::Problem,
+                );
             }
         }
     }
@@ -2082,7 +2087,7 @@ impl App {
     /// the document is restored work without a file: that takes a new file.
     fn prepare_save(&mut self, ctx: &egui::Context, path: PathBuf, create_only: bool) {
         if self.preparing {
-            self.notify(ctx, "A save is still being prepared", true);
+            self.notify(ctx, "A save is still being prepared", NoticeKind::Problem);
             return;
         }
         let epoch = self.epoch;
@@ -2175,7 +2180,11 @@ impl App {
                 Job::Picked(Pick::Duplicate, paths) => {
                     if let Some(path) = paths.into_iter().next() {
                         if self.duplicating {
-                            self.notify(ctx, "A duplicate is still being written", true);
+                            self.notify(
+                                ctx,
+                                "A duplicate is still being written",
+                                NoticeKind::Problem,
+                            );
                         } else {
                             self.duplicate_to(ctx, with_extension(path));
                         }
@@ -2194,7 +2203,7 @@ impl App {
                                     "{} is too wide for the agent; choose a folder inside it",
                                     path.display()
                                 ),
-                                true,
+                                NoticeKind::Problem,
                             );
                         } else if !self.settings.ai.folders.contains(&path) {
                             self.settings.ai.folders.push(path);
@@ -2208,15 +2217,15 @@ impl App {
                 }
                 Job::Picked(Pick::ImportFiles | Pick::ImportFolder | Pick::ImportFonts, paths) => {
                     if let Some(problem) = self.import(paths) {
-                        self.notify(ctx, problem, true);
+                        self.notify(ctx, problem, NoticeKind::Problem);
                     }
                 }
                 Job::AudioPicked { asked, to } => match to {
                     None => {}
-                    Some(Err(problem)) => self.notify(ctx, problem, true),
+                    Some(Err(problem)) => self.notify(ctx, problem, NoticeKind::Problem),
                     Some(Ok(to)) => {
                         if let Err(problem) = self.save_audio(ctx, &asked, to) {
-                            self.notify(ctx, problem, true);
+                            self.notify(ctx, problem, NoticeKind::Problem);
                         }
                     }
                 },
@@ -2254,7 +2263,7 @@ impl App {
                                 }))
                             });
                         }
-                        Err(why) => self.notify(ctx, why, true),
+                        Err(why) => self.notify(ctx, why, NoticeKind::Problem),
                     }
                 }
                 Job::Picked(Pick::SpeechModel, paths) => {
@@ -2281,10 +2290,14 @@ impl App {
                         self.notify(
                             ctx,
                             format!("Captions will be made with {name}.{english}"),
-                            false,
+                            NoticeKind::Done,
                         );
                     }
-                    Err(why) => self.notify(ctx, format!("That model was not chosen: {why}"), true),
+                    Err(why) => self.notify(
+                        ctx,
+                        format!("That model was not chosen: {why}"),
+                        NoticeKind::Problem,
+                    ),
                 },
                 Job::Models(inventory) => self.models = Some(inventory),
                 Job::CaptionsRead { epoch, files } => {
@@ -2293,8 +2306,8 @@ impl App {
                     }
                     for (path, read) in files {
                         match self.import_captions(&path, read) {
-                            Ok(text) => self.notify(ctx, text, false),
-                            Err(why) => self.notify(ctx, why, true),
+                            Ok(text) => self.notify(ctx, text, NoticeKind::Done),
+                            Err(why) => self.notify(ctx, why, NoticeKind::Problem),
                         }
                     }
                 }
@@ -2345,12 +2358,12 @@ impl App {
                             self.notify(
                                 ctx,
                                 format!("{} could not be opened: {error}", path.display()),
-                                true,
+                                NoticeKind::Problem,
                             );
                         }
                     }
                     if let Some(problem) = self.import(wanted) {
-                        self.notify(ctx, problem, true);
+                        self.notify(ctx, problem, NoticeKind::Problem);
                     }
                 }
                 Job::Prepared {
@@ -2382,7 +2395,7 @@ impl App {
                             self.notify(
                                 ctx,
                                 format!("{} cannot be saved to: {error}", path.display()),
-                                true,
+                                NoticeKind::Problem,
                             );
                         }
                     }
@@ -2401,7 +2414,7 @@ impl App {
                         self.notify(
                             ctx,
                             "The recovery copy was kept: this project changed meanwhile",
-                            true,
+                            NoticeKind::Warning,
                         );
                         continue;
                     }
@@ -2425,23 +2438,23 @@ impl App {
                                     ctx,
                                     "Unsaved changes were restored. The file changed on \
                                      disk since they were made and will not be replaced",
-                                    true,
+                                    NoticeKind::Warning,
                                 );
                             } else if detached {
                                 self.notify(
                                     ctx,
                                     "Unsaved changes were restored as a project without \
                                      a file. Saving asks where to keep it",
-                                    true,
+                                    NoticeKind::Warning,
                                 );
                             } else {
-                                self.notify(ctx, "Unsaved changes were restored", false);
+                                self.notify(ctx, "Unsaved changes were restored", NoticeKind::Done);
                             }
                         }
                         Err(error) => self.notify(
                             ctx,
                             format!("The recovery copy could not be read: {error}"),
-                            true,
+                            NoticeKind::Problem,
                         ),
                     }
                 }
@@ -2478,7 +2491,7 @@ impl App {
                             self.notify(
                                 ctx,
                                 format!("No recovery copy is being kept: {error}"),
-                                true,
+                                NoticeKind::Problem,
                             );
                         }
                     }
@@ -2501,9 +2514,13 @@ impl App {
                     self.checkpoints.busy = false;
                     match saved {
                         Some(Ok(label)) => {
-                            self.notify(ctx, format!("Checkpoint “{label}” saved"), false);
+                            self.notify(
+                                ctx,
+                                format!("Checkpoint “{label}” saved"),
+                                NoticeKind::Done,
+                            );
                         }
-                        Some(Err(problem)) => self.notify(ctx, problem, true),
+                        Some(Err(problem)) => self.notify(ctx, problem, NoticeKind::Problem),
                         None => {}
                     }
                     if epoch == self.epoch && self.path.as_ref() == Some(&path) {
@@ -2540,11 +2557,13 @@ impl App {
                                 self.sync_audio();
                             }
                             self.timeline.fit = true;
-                            self.notify(ctx, format!("Restored “{label}”"), false);
+                            self.notify(ctx, format!("Restored “{label}”"), NoticeKind::Done);
                         }
-                        Err(error) => {
-                            self.notify(ctx, format!("“{label}” was not restored: {error}"), true)
-                        }
+                        Err(error) => self.notify(
+                            ctx,
+                            format!("“{label}” was not restored: {error}"),
+                            NoticeKind::Problem,
+                        ),
                     }
                 }
                 Job::Duplicated {
@@ -2558,7 +2577,11 @@ impl App {
                     let session = match result {
                         Ok(session) => session,
                         Err(error) => {
-                            self.notify(ctx, format!("The duplicate was not saved: {error}"), true);
+                            self.notify(
+                                ctx,
+                                format!("The duplicate was not saved: {error}"),
+                                NoticeKind::Problem,
+                            );
                             continue;
                         }
                     };
@@ -2577,9 +2600,13 @@ impl App {
                             let at = self.playback.position;
                             self.replace_editor(ctx, editor, Some(path), Some(session), None);
                             self.playback.seek(at);
-                            self.notify(ctx, format!("Now editing “{name}”"), false);
+                            self.notify(ctx, format!("Now editing “{name}”"), NoticeKind::Info);
                         }
-                        _ => self.notify(ctx, format!("Duplicate saved as “{name}”"), false),
+                        _ => self.notify(
+                            ctx,
+                            format!("Duplicate saved as “{name}”"),
+                            NoticeKind::Done,
+                        ),
                     }
                 }
                 Job::TakePath { project, result } => {
@@ -2589,15 +2616,15 @@ impl App {
                         RecordService::start(path, move || wake.request_repaint())
                     });
                     if let Err(problem) = started {
-                        self.notify(ctx, problem, true);
+                        self.notify(ctx, problem, NoticeKind::Problem);
                     }
                 }
                 Job::Background(Ok(text)) => {
                     if !text.is_empty() {
-                        self.notify(ctx, text, false);
+                        self.notify(ctx, text, NoticeKind::Info);
                     }
                 }
-                Job::Background(Err(text)) => self.notify(ctx, text, true),
+                Job::Background(Err(text)) => self.notify(ctx, text, NoticeKind::Problem),
             }
         }
     }
@@ -2667,7 +2694,7 @@ impl App {
             self.sync_audio();
         }
         if let Some(problem) = framed.failed {
-            self.notify(ctx, problem, true);
+            self.notify(ctx, problem, NoticeKind::Problem);
         }
         if let Some(landed) = framed.landed {
             if let Some(command) = landed.command
@@ -2677,11 +2704,11 @@ impl App {
                 self.notify(
                     ctx,
                     format!("The take could not be placed: {error}. It is kept in {path}"),
-                    true,
+                    NoticeKind::Problem,
                 );
                 return;
             }
-            self.notify(ctx, landed.said, landed.problem);
+            self.notify(ctx, landed.said, NoticeKind::outcome(landed.problem));
         }
     }
 
@@ -2839,22 +2866,22 @@ impl App {
                     );
                     match taken {
                         Taken::Kept if measured => match unkept {
-                            None => self.notify(ctx, format!("{name} is analysed."), false),
+                            None => self.notify(ctx, format!("{name} is analysed."), NoticeKind::Done),
                             Some(why) => self.notify(
                                 ctx,
                                 format!(
                                     "{name} is analysed, but this could not be kept for another session: {why}"
                                 ),
-                                true,
+                                NoticeKind::Warning,
                             ),
                         },
                         Taken::Failed(why) if measured => {
-                            self.notify(ctx, format!("{name} was not analysed: {why}"), true);
+                            self.notify(ctx, format!("{name} was not analysed: {why}"), NoticeKind::Problem);
                         }
                         Taken::Changed => self.notify(
                             ctx,
                             format!("{name} changed while it was analysed. Analyse it again."),
-                            true,
+                            NoticeKind::Problem,
                         ),
                         _ => {}
                     }
@@ -2893,7 +2920,11 @@ impl App {
                 self.peaks.refuse(id);
             }
             self.peaks.beats.give_up_wanted();
-            self.notify(ctx, format!("Waveforms are unavailable: {error}"), true);
+            self.notify(
+                ctx,
+                format!("Waveforms are unavailable: {error}"),
+                NoticeKind::Problem,
+            );
             return;
         }
         let Some(sound) = &self.sound else {
@@ -2906,7 +2937,7 @@ impl App {
             &self.peak_cache,
         );
         for text in refused {
-            self.notify(ctx, text, true);
+            self.notify(ctx, text, NoticeKind::Problem);
         }
     }
 
@@ -2952,7 +2983,7 @@ impl App {
             if let SoundEvent::Extracted { .. } = event {
                 let now = ctx.input(|i| i.time);
                 if let Some(said) = self.saved_audio.answered(instance, now, event) {
-                    self.notify(ctx, said.text, said.problem);
+                    self.notify(ctx, said.text, NoticeKind::outcome(said.problem));
                 }
                 continue;
             }
@@ -2965,7 +2996,7 @@ impl App {
             }
             let failed = (self.peaks).answered(instance, self.editor.project(), event);
             if let Some(text) = failed {
-                self.notify(ctx, text, true);
+                self.notify(ctx, text, NoticeKind::Problem);
             }
         }
         // Clips held for room in the lane, or for an answer about the same
@@ -2975,7 +3006,7 @@ impl App {
         {
             let problems = self.normalizing.pump(|job| sound.loudness(job));
             for problem in problems {
-                self.notify(ctx, problem, true);
+                self.notify(ctx, problem, NoticeKind::Problem);
             }
         }
     }
@@ -3000,7 +3031,7 @@ impl App {
             .extract(asked.job(self.editor.project(), to.clone()))
             .map_err(|error| format!("The sound of {} was not saved: {error}", asked.name))?;
         if let Some(said) = self.saved_audio.sent(asked, to, &sent) {
-            self.notify(ctx, said, false);
+            self.notify(ctx, said, NoticeKind::Info);
         }
         ctx.request_repaint();
         Ok(())
@@ -3013,7 +3044,7 @@ impl App {
         let outcome = (self.sound.as_ref())
             .map_or(editor_media::Cancel::GivenUp, |sound| sound.cancel(request));
         if let Some(said) = self.saved_audio.cancelled(request, outcome) {
-            self.notify(ctx, said, false);
+            self.notify(ctx, said, NoticeKind::Info);
         }
     }
 
@@ -3062,11 +3093,15 @@ impl App {
                     "The stems could not be placed: {error}. They are kept in {}",
                     stems::listed(&answer.files)
                 ),
-                true,
+                NoticeKind::Problem,
             );
             return;
         }
-        self.notify(ctx, answer.said.text, answer.said.problem);
+        self.notify(
+            ctx,
+            answer.said.text,
+            NoticeKind::outcome(answer.said.problem),
+        );
     }
 
     /// Gives up the separation under way as `request`, and says what came
@@ -3076,7 +3111,7 @@ impl App {
         let outcome = (self.sound.as_ref())
             .map_or(editor_media::Cancel::GivenUp, |sound| sound.cancel(request));
         if let Some(said) = self.separating.cancelled(request, outcome) {
-            self.notify(ctx, said, false);
+            self.notify(ctx, said, NoticeKind::Info);
         }
     }
 
@@ -3094,7 +3129,7 @@ impl App {
         let said = (self.normalizing).ask(self.editor.project(), instance, clips, |job| {
             sound.loudness(job)
         })?;
-        self.notify(ctx, said.clone(), false);
+        self.notify(ctx, said.clone(), NoticeKind::Info);
         Ok(said)
     }
 
@@ -3110,10 +3145,14 @@ impl App {
         if let Some(command) = command
             && let Err(error) = self.edit(command)
         {
-            self.notify(ctx, format!("{name} was not normalized: {error}"), true);
+            self.notify(
+                ctx,
+                format!("{name} was not normalized: {error}"),
+                NoticeKind::Problem,
+            );
             return;
         }
-        self.notify(ctx, said, problem);
+        self.notify(ctx, said, NoticeKind::outcome(problem));
     }
 
     // ---- Ducking -----------------------------------------------------------
@@ -3163,7 +3202,7 @@ impl App {
         self.inspector
             .set_ducking(self.ducking.progress(self.editor.project()));
         let said = started?;
-        self.notify(ctx, said.clone(), false);
+        self.notify(ctx, said.clone(), NoticeKind::Info);
         ctx.request_repaint();
         Ok(said)
     }
@@ -3180,7 +3219,7 @@ impl App {
         self.notify(
             ctx,
             format!("{} was stopped; nothing was changed.", duck::LABEL),
-            false,
+            NoticeKind::Info,
         );
     }
 
@@ -3205,15 +3244,19 @@ impl App {
             // The next voice is wanted in a frame of its own.
             Some(Stepped::Took) => ctx.request_repaint(),
             Some(Stepped::Done(Ok((command, said)))) => match self.edit(*command) {
-                Ok(_) => self.notify(ctx, said, false),
-                Err(error) => self.notify(ctx, format!("Nothing was ducked: {error}"), true),
+                Ok(_) => self.notify(ctx, said, NoticeKind::Done),
+                Err(error) => self.notify(
+                    ctx,
+                    format!("Nothing was ducked: {error}"),
+                    NoticeKind::Problem,
+                ),
             },
-            Some(Stepped::Done(Err(said))) => self.notify(ctx, said, true),
+            Some(Stepped::Done(Err(said))) => self.notify(ctx, said, NoticeKind::Problem),
             Some(Stepped::GivenUp { said, cancel }) => {
                 if let (Some(request), Some(sound)) = (cancel, &self.sound) {
                     sound.cancel(request);
                 }
-                self.notify(ctx, said, true);
+                self.notify(ctx, said, NoticeKind::Problem);
             }
         }
         self.inspector
@@ -3345,7 +3388,7 @@ impl App {
                                     "{} is ready. Add it in the Motion section.",
                                     tracking.name
                                 ),
-                                false,
+                                NoticeKind::Done,
                             );
                             self.tracking = Some(Tracking {
                                 done: 1.0,
@@ -3353,7 +3396,7 @@ impl App {
                                 ..tracking
                             });
                         }
-                        Err(Some(why)) => self.notify(ctx, why, true),
+                        Err(Some(why)) => self.notify(ctx, why, NoticeKind::Problem),
                         Err(None) => {}
                     }
                 }
@@ -3388,9 +3431,13 @@ impl App {
     fn add_tracker(&mut self, ctx: &egui::Context, command: Command, said: String) {
         self.commit_drafts(ctx, true);
         match self.edit(command) {
-            Ok(_) => self.notify(ctx, said, false),
+            Ok(_) => self.notify(ctx, said, NoticeKind::Done),
             Err(error) => {
-                self.notify(ctx, format!("The tracker was not added: {error}"), true);
+                self.notify(
+                    ctx,
+                    format!("The tracker was not added: {error}"),
+                    NoticeKind::Problem,
+                );
             }
         }
     }
@@ -3524,19 +3571,27 @@ impl App {
                 SpeechEvent::Downloaded { .. } => {
                     self.look_at_models(ctx);
                     if speaking.stopping {
-                        self.notify(ctx, "Captions were not made.", false);
+                        self.notify(ctx, "Captions were not made.", NoticeKind::Info);
                     } else if let Err(why) = self.transcribe(speaking) {
-                        self.notify(ctx, format!("Captions were not made: {why}"), true);
+                        self.notify(
+                            ctx,
+                            format!("Captions were not made: {why}"),
+                            NoticeKind::Problem,
+                        );
                     }
                 }
                 SpeechEvent::Transcribed {
                     words, language, ..
                 } => self.take_words(ctx, &speaking, &words, language.as_deref()),
                 SpeechEvent::Failed { message, .. } => {
-                    self.notify(ctx, format!("Captions were not made: {message}"), true);
+                    self.notify(
+                        ctx,
+                        format!("Captions were not made: {message}"),
+                        NoticeKind::Problem,
+                    );
                 }
                 SpeechEvent::Cancelled { .. } => {
-                    self.notify(ctx, "Captions were not made.", false);
+                    self.notify(ctx, "Captions were not made.", NoticeKind::Info);
                 }
             }
         }
@@ -3566,7 +3621,7 @@ impl App {
             match speech::generated(self.editor.project(), words, &language, speaking.ask.length) {
                 Ok(made) => made,
                 Err(why) => {
-                    self.notify(ctx, why, true);
+                    self.notify(ctx, why, NoticeKind::Problem);
                     return;
                 }
             };
@@ -3587,7 +3642,7 @@ impl App {
                 self.notify(
                     ctx,
                     "Captions are ready. Add them in the Captions tab.",
-                    false,
+                    NoticeKind::Done,
                 );
             }
             None => self.add_heard(ctx, heard),
@@ -3605,10 +3660,18 @@ impl App {
                     count => format!("{count} captions"),
                 };
                 let language = crate::languages::label(&heard.language);
-                self.notify(ctx, format!("Added {captions} in {language}."), false);
+                self.notify(
+                    ctx,
+                    format!("Added {captions} in {language}."),
+                    NoticeKind::Done,
+                );
             }
             Err(error) => {
-                self.notify(ctx, format!("The captions were not added: {error}"), true);
+                self.notify(
+                    ctx,
+                    format!("The captions were not added: {error}"),
+                    NoticeKind::Problem,
+                );
             }
         }
     }
@@ -3656,23 +3719,35 @@ impl App {
                             label: "Import media".into(),
                             commands,
                         }) {
-                            self.notify(ctx, format!("The import failed: {error}"), true);
+                            self.notify(
+                                ctx,
+                                format!("The import failed: {error}"),
+                                NoticeKind::Problem,
+                            );
                         }
                     } else if skipped > 0 && errors.is_empty() {
-                        self.notify(ctx, "That media is already in the library", false);
+                        self.notify(
+                            ctx,
+                            "That media is already in the library",
+                            NoticeKind::Info,
+                        );
                     }
                     for error in errors.iter().take(3) {
                         let name = error.path.file_name().map_or_else(
                             || error.path.display().to_string(),
                             |name| name.to_string_lossy().into_owned(),
                         );
-                        self.notify(ctx, format!("{name}: {}", error.message), true);
+                        self.notify(
+                            ctx,
+                            format!("{name}: {}", error.message),
+                            NoticeKind::Problem,
+                        );
                     }
                     if errors.len() > 3 {
                         self.notify(
                             ctx,
                             format!("{} more files could not be imported", errors.len() - 3),
-                            true,
+                            NoticeKind::Problem,
                         );
                     }
                 }
@@ -3719,7 +3794,7 @@ impl App {
                     let taken =
                         (self.viewer).take_lut(asset, asset_id, from, &path, file_size, table);
                     if let crate::compose::lut::Taken::Failed(why) = taken {
-                        self.notify(ctx, why, true);
+                        self.notify(ctx, why, NoticeKind::Problem);
                     }
                 }
                 MediaEvent::Error {
@@ -3744,7 +3819,7 @@ impl App {
                             self.imports.pop_front();
                         }
                     }
-                    self.notify(ctx, message, true);
+                    self.notify(ctx, message, NoticeKind::Problem);
                 }
             }
         }
@@ -3759,7 +3834,7 @@ impl App {
             ctx.request_repaint();
         }
         for failure in taken.failures {
-            self.notify(ctx, failure, true);
+            self.notify(ctx, failure, NoticeKind::Problem);
         }
     }
 
@@ -3793,7 +3868,7 @@ impl App {
                         .answered(result.revision, result.result.is_ok(), Instant::now());
                     if let Err(error) = result.result {
                         let text = format!("The recovery copy was not written: {error}");
-                        self.notify(ctx, text, true);
+                        self.notify(ctx, text, NoticeKind::Problem);
                     } else if std::mem::take(&mut self.recovery_stale) && !self.editor.is_dirty() {
                         self.remove_recovery(ctx, key.1);
                     }
@@ -3833,11 +3908,19 @@ impl App {
                         if open && !busy {
                             self.conflicted = true;
                         }
-                        self.notify(ctx, format!("The agent's save was refused: {error}"), true);
+                        self.notify(
+                            ctx,
+                            format!("The agent's save was refused: {error}"),
+                            NoticeKind::Problem,
+                        );
                     }
                     // Reviewed in a sheet: the edits stay, unsaved.
                     Some(busy) => self.save_refused(result.path, busy),
-                    None => self.notify(ctx, format!("The project was not saved: {error}"), true),
+                    None => self.notify(
+                        ctx,
+                        format!("The project was not saved: {error}"),
+                        NoticeKind::Problem,
+                    ),
                 }
                 continue;
             }
@@ -3862,7 +3945,7 @@ impl App {
                 }
                 self.lease = None;
             }
-            self.notify(ctx, "Saved", false);
+            self.notify(ctx, "Saved", NoticeKind::Done);
             if self.editor.is_dirty() {
                 // Edits made while the file was being written are not in it.
                 // They are kept in a fresh recovery copy, and whatever waited
@@ -4349,7 +4432,7 @@ impl App {
                     self.notify(
                         ctx,
                         format!("{file} is held in the render queue; start it there"),
-                        false,
+                        NoticeKind::Info,
                     );
                 }
             }
@@ -4369,7 +4452,7 @@ impl App {
             Some(state) if matches!(self.overlay, Overlay::Export | Overlay::ReplaceExport(_)) => {
                 state.refuse(why);
             }
-            _ => self.notify(ctx, why, true),
+            _ => self.notify(ctx, why, NoticeKind::Problem),
         }
     }
 
@@ -4407,7 +4490,7 @@ impl App {
                     if self.overlay == Overlay::RenderQueue {
                         self.queue_refusal = Some(why);
                     } else {
-                        self.notify(ctx, why, true);
+                        self.notify(ctx, why, NoticeKind::Problem);
                     }
                 }
             }
@@ -4422,7 +4505,7 @@ impl App {
         let open = self.overlay == Overlay::RenderQueue;
         while let Some(event) = self.renders.poll() {
             if let Some((text, problem)) = crate::export::wiring::finished_notice(&event, open) {
-                self.notify(ctx, text, problem);
+                self.notify(ctx, text, NoticeKind::outcome(problem));
             }
         }
     }
@@ -4494,7 +4577,11 @@ impl App {
                 Some(command) => self.edit(command),
             };
             if let Err(error) = result {
-                self.notify(ctx, format!("That change was not applied: {error}"), true);
+                self.notify(
+                    ctx,
+                    format!("That change was not applied: {error}"),
+                    NoticeKind::Problem,
+                );
             }
         }
         let project_draft = std::mem::take(&mut self.project_draft);
@@ -4504,16 +4591,20 @@ impl App {
                 && name != self.editor.project().name
                 && let Err(error) = self.edit(Command::RenameProject { name })
             {
-                self.notify(ctx, error, true);
+                self.notify(ctx, error, NoticeKind::Problem);
             }
         }
         if let Some(settings) = project_draft.canvas
             && settings != self.editor.project().settings
         {
             if !settings.validate() {
-                self.notify(ctx, "That canvas size or frame rate cannot be used", true);
+                self.notify(
+                    ctx,
+                    "That canvas size or frame rate cannot be used",
+                    NoticeKind::Problem,
+                );
             } else if let Err(error) = self.edit(Command::SetSettings { settings }) {
-                self.notify(ctx, error, true);
+                self.notify(ctx, error, NoticeKind::Problem);
             }
         }
     }
@@ -4522,7 +4613,7 @@ impl App {
 
     fn run(&mut self, ctx: &egui::Context, action: Action) {
         if let Err(problem) = self.perform(ctx, action) {
-            self.notify(ctx, problem, true);
+            self.notify(ctx, problem, NoticeKind::Problem);
         }
     }
 
@@ -4751,7 +4842,7 @@ impl App {
                 );
                 self.settings.transitions =
                     transitions::saved_with(&self.settings.transitions, transition);
-                self.notify(ctx, text, false);
+                self.notify(ctx, text, NoticeKind::Done);
             }
             Action::SelectAll => {
                 self.selection.asset = None;
@@ -4786,7 +4877,7 @@ impl App {
             }
             Action::Presets(change) => {
                 if let Some(said) = self.change_presets(change)? {
-                    self.notify(ctx, said, false);
+                    self.notify(ctx, said, NoticeKind::Done);
                 }
             }
             Action::InsertAsset { asset, place } => {
@@ -4803,7 +4894,7 @@ impl App {
                 let (command, said) = remove_asset_command(self.editor.project(), asset);
                 let done = self.edit(command)?;
                 if let Some(said) = said {
-                    self.notify(ctx, said, false);
+                    self.notify(ctx, said, NoticeKind::Done);
                 }
                 return Ok(Some(done));
             }
@@ -5030,7 +5121,7 @@ impl App {
             Action::SetAiProvider(provider) => self.settings.ai.provider = provider,
             Action::SetAiEffort(effort) => self.settings.ai.effort = effort,
             Action::SetAiModel(model) => self.settings.ai.set_model(&model),
-            Action::Notify(text) => self.notify(ctx, text, false),
+            Action::Notify(text) => self.notify(ctx, text, NoticeKind::Info),
             Action::Track(request) => self.start_tracking(ctx, request)?,
             Action::GenerateCaptions(request) => self.generate_captions(ctx, request)?,
             Action::CancelSpeech => self.cancel_speech(),
@@ -6324,7 +6415,7 @@ impl App {
                     composed.unplaced
                 )
             };
-            self.notify(&ctx, text, true);
+            self.notify(&ctx, text, NoticeKind::Problem);
         }
         // A layer the media service had no room for asks again before the
         // frame its clock next crosses, which is all that clock is woken for.
@@ -6429,7 +6520,7 @@ impl App {
                         && let Err(problem) =
                             self.start_ducking(&ctx, &question.clips, question.depth)
                     {
-                        self.notify(&ctx, problem, true);
+                        self.notify(&ctx, problem, NoticeKind::Problem);
                     }
                 }
             }
@@ -6819,7 +6910,11 @@ impl eframe::App for App {
             if let Err(why) = found
                 && !editor_media::separator_absent(&why)
             {
-                self.notify(ctx, format!("Separate stems is unavailable: {why}"), true);
+                self.notify(
+                    ctx,
+                    format!("Separate stems is unavailable: {why}"),
+                    NoticeKind::Problem,
+                );
             }
         }
         self.take_jobs(ctx);
@@ -6835,10 +6930,10 @@ impl eframe::App for App {
         self.take_renders(ctx);
         self.take_proxies(ctx);
         while let Some(problem) = self.audio.as_ref().and_then(AudioService::poll) {
-            self.notify(ctx, format!("Sound: {problem}"), true);
+            self.notify(ctx, format!("Sound: {problem}"), NoticeKind::Problem);
         }
         for problem in std::mem::take(&mut self.problems) {
-            self.notify(ctx, problem, true);
+            self.notify(ctx, problem, NoticeKind::Problem);
         }
 
         // What egui expects a pass to take, which it takes off every wait it is
@@ -7004,10 +7099,10 @@ impl eframe::App for App {
         let dropped = self.file_drop.poll(&ctx);
         self.files_held = dropped.hovering;
         if let Some(problem) = dropped.problem {
-            self.notify(&ctx, problem, true);
+            self.notify(&ctx, problem, NoticeKind::Problem);
         }
         if let Some(problem) = self.import(dropped.paths) {
-            self.notify(&ctx, problem, true);
+            self.notify(&ctx, problem, NoticeKind::Problem);
         }
 
         // A scale the window has no room for is held down to the one it
