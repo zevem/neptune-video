@@ -237,7 +237,7 @@ pub fn show(
         kit::empty_state(
             ui,
             p,
-            rect,
+            library::inset(rect),
             Icon::Search,
             "No matches",
             "Nothing here has that name.",

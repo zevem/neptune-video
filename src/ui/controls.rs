@@ -1317,6 +1317,72 @@ mod tests {
     }
 
     #[test]
+    fn a_segmented_label_lights_under_the_pointer_and_its_cell_rings_with_the_keyboard() {
+        // Terminal's segmented control has no fill of its own under the
+        // pointer: the label there turns from secondary to fg. A cell with
+        // the keyboard is ringed, and once the thumb has slid, the control
+        // rests.
+        let ctx = context();
+        let p = palette();
+        let options = [(0u8, "Block"), (1, "Beam"), (2, "Underline")];
+        let mut value = 0u8;
+        // One frame: what it painted, how soon it asked for another, and
+        // where the control began.
+        let mut run = |events: Vec<Event>, focus: bool| {
+            let mut origin = Pos2::ZERO;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(480.0, 320.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    if focus {
+                        let id = ui.id().with(("segmented", "cursor")).with("Beam");
+                        ui.memory_mut(|memory| memory.request_focus(id));
+                    }
+                    origin = ui.cursor().min;
+                    segmented(ui, p, "cursor", &mut value, &options, 240.0);
+                },
+            );
+            output.textures_delta.clear();
+            let wait = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            let shapes: Vec<egui::Shape> = (output.shapes.into_iter())
+                .map(|clipped| clipped.shape)
+                .collect();
+            (shapes, wait, origin)
+        };
+        let ink = |shapes: &[egui::Shape], text: &str| {
+            shapes.iter().find_map(|shape| match shape {
+                egui::Shape::Text(shape) if shape.galley.text() == text => {
+                    Some(shape.fallback_color)
+                }
+                _ => None,
+            })
+        };
+        let (shapes, _, origin) = run(Vec::new(), false);
+        assert_eq!(ink(&shapes, "Beam"), Some(p.secondary), "at rest");
+        assert_eq!(ink(&shapes, "Block"), Some(p.fg), "chosen");
+        // The middle of three equal cells.
+        let beam = origin + vec2(120.0, 14.0);
+        let (shapes, ..) = run(vec![Event::PointerMoved(beam)], false);
+        assert_eq!(ink(&shapes, "Beam"), Some(p.fg), "under the pointer");
+        run(vec![Event::PointerGone], true);
+        let (shapes, ..) = run(Vec::new(), true);
+        let ring = theme::tint(p.accent, 0.55);
+        let ringed = (shapes.iter()).any(|shape| {
+            matches!(shape, egui::Shape::Rect(rect)
+                if rect.stroke.color == ring && rect.rect.contains(beam))
+        });
+        assert!(ringed, "the cell with the keyboard is ringed");
+        let mut wait = std::time::Duration::ZERO;
+        for _ in 0..30 {
+            wait = run(Vec::new(), true).1;
+        }
+        assert_eq!(wait, std::time::Duration::MAX, "it rests");
+    }
+
+    #[test]
     fn segmented_labels_keep_room_on_both_sides() {
         // Neptune Video, spec §5.4 and P9-V4: equal cells at Medium 12 where
         // the labels fit; "Ask | Command" at 136 gives Command the room

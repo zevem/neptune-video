@@ -4024,6 +4024,57 @@ mod tests {
     }
 
     #[test]
+    fn the_stage_s_capsules_at_rest_ask_for_no_frame() {
+        // Spec §9.12 Idle: "Effects not shown" and "Half quality" say a
+        // state for as long as it holds, and nothing on them moves.
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let p = &stage_palette(&Palette::new(
+            crate::theme::Appearance::Dark,
+            crate::theme::Accent::Blue,
+        ));
+        let mut since = None;
+        let mut wait = Duration::ZERO;
+        let mut said = Vec::new();
+        for frame in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 500.0))),
+                time: Some(f64::from(frame) * 0.5),
+                ..Default::default()
+            };
+            let output = ctx.run_ui(input, |ui| {
+                let stage = Rect::from_min_size(pos2(0.0, 10.0), vec2(824.0, 443.0));
+                let (canvas, _) = fitted_canvas(stage, vec2(1920.0, 1080.0));
+                let head = capsules_head(ui.ctx(), canvas, &[]);
+                let painter = ui.painter_at(stage);
+                let shown = effects_not_shown(&painter, stage, canvas, head, p, None, None);
+                name_effects_not_shown(ui, shown, None, None, &[]);
+                let now = ui.input(|input| input.time);
+                let (status, again) =
+                    stage_status(&mut since, now, false, None, PreviewQuality::Auto, 2);
+                assert_eq!(again, None, "no look again");
+                let status = status.expect("FIXTURE: Auto stepped down");
+                said = vec![EFFECTS_NOT_SHOWN.to_owned(), status.words()];
+                capsule(
+                    &painter,
+                    p,
+                    &status.words(),
+                    Some(status.dot(p)),
+                    stage,
+                    |size| {
+                        Rect::from_min_size(pos2(stage.center().x, stage.bottom() - size.y), size)
+                    },
+                );
+            });
+            wait = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            // No renderer takes the font atlas this pass made.
+            output.drop_without_applying_deltas();
+        }
+        assert_eq!(said, ["Effects not shown", "Half quality"]);
+        assert_eq!(wait, Duration::MAX);
+    }
+
+    #[test]
     fn a_frame_that_cannot_be_decoded_is_said_at_once_and_first() {
         // Spec §5.3: "Can't decode clip-b.mp4" with a red dot, for as long
         // as it fails, before waiting and before half quality.

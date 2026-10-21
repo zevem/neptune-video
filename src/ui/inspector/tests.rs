@@ -89,6 +89,8 @@ struct Bench {
     refused: Vec<String>,
     /// How long the last frame said it could wait before the next.
     wait: Duration,
+    /// The rectangles painted in the last frame.
+    rects: Vec<egui::epaint::RectShape>,
     /// How often the inspector asked for the file picker of an import.
     imports: usize,
     /// What the inspector said in a notice.
@@ -155,6 +157,7 @@ impl Bench {
             seen: Vec::new(),
             refused: Vec::new(),
             wait: Duration::ZERO,
+            rects: Vec::new(),
             imports: 0,
             said: Vec::new(),
             tracks: Vec::new(),
@@ -264,6 +267,17 @@ impl Bench {
         });
         // No renderer takes the textures.
         output.textures_delta.clear();
+        fn rects(shape: &egui::Shape, into: &mut Vec<egui::epaint::RectShape>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| rects(shape, into)),
+                egui::Shape::Rect(rect) => into.push(rect.clone()),
+                _ => {}
+            }
+        }
+        self.rects.clear();
+        for clipped in &output.shapes {
+            rects(&clipped.shape, &mut self.rects);
+        }
         self.wait = (output.viewport_output.values())
             .map(|viewport| viewport.repaint_delay)
             .min()
@@ -2015,6 +2029,49 @@ fn an_inspector_nothing_is_done_in_asks_for_no_frame() {
         );
         assert!(bench.draft.is_none() && bench.refused.is_empty());
     }
+}
+
+#[test]
+fn a_card_s_head_eases_to_hover_lies_on_pressed_and_rings_with_the_keyboard() {
+    // Spec §3.10 and §9.12: the disclosure of an effect's card.
+    let (mut bench, _, effect) = with_effect(EffectKind::Glow);
+    let p = bench.palette;
+    let name = effect_name(effect.kind);
+    bench.frame(Vec::new());
+    let head = bench.find(name).expect("the card's head is named").rect;
+    // Within the head, as the fill stands 4 in from it; accessibility's
+    // bounds are rounded.
+    let on = |bench: &Bench, test: &dyn Fn(&egui::epaint::RectShape) -> bool| {
+        (bench.rects.iter()).any(|rect| head.expand(3.0).contains_rect(rect.rect) && test(rect))
+    };
+    assert!(!on(&bench, &|rect| rect.fill == p.hover
+        || rect.fill == p.pressed));
+    bench.move_to(head.center());
+    assert!(
+        !on(&bench, &|rect| rect.fill == p.hover),
+        "the hover eases in"
+    );
+    for _ in 0..4 {
+        bench.frame(Vec::new());
+    }
+    assert!(
+        on(&bench, &|rect| rect.fill == p.hover),
+        "under the pointer"
+    );
+    bench.frame(vec![Bench::button(
+        head.center(),
+        PointerButton::Primary,
+        true,
+    )]);
+    assert!(on(&bench, &|rect| rect.fill == p.pressed), "pressed");
+    bench.release(head.center());
+    bench.frame(vec![Event::PointerGone]);
+    bench.focus(name);
+    let ring = theme::tint(p.accent, 0.55);
+    assert!(
+        on(&bench, &|rect| rect.stroke.color == ring),
+        "with the keyboard"
+    );
 }
 
 #[path = "audio_tests.rs"]

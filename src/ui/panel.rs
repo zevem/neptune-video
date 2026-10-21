@@ -343,6 +343,99 @@ mod tests {
         assert_eq!(strip(90.0, Vec::new()).1, Fit::ICONS);
     }
 
+    /// The strip of three over `frames` frames, with `events` in the first
+    /// and the keyboard on the tab named `focus`. What it painted last, and
+    /// how soon it asked to be drawn again.
+    fn painted(
+        events: Vec<Event>,
+        focus: Option<&str>,
+        frames: usize,
+    ) -> (Vec<egui::Shape>, std::time::Duration) {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let p = Palette::new(Appearance::Dark, Accent::default());
+        theme::apply(&ctx, &p);
+        let items = NAMES.map(|label| Tab {
+            label,
+            icon: Icon::Film,
+            waiting: 0,
+        });
+        let mut events = Some(events);
+        let mut last = (Vec::new(), std::time::Duration::MAX);
+        for _ in 0..frames {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(480.0, 200.0))),
+                    events: events.take().unwrap_or_default(),
+                    ..Default::default()
+                },
+                |ui| {
+                    if let Some(focus) = focus {
+                        let id = ui.id().with(("panel-tab", focus));
+                        ui.memory_mut(|memory| memory.request_focus(id));
+                    }
+                    let rect = Rect::from_min_size(Pos2::new(10.0, 10.0), vec2(300.0, TABS));
+                    tabs(ui, rect, p, &items, 0, WidgetType::RadioButton);
+                },
+            );
+            output.textures_delta.clear();
+            let repaint = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            let shapes = (output.shapes.into_iter()).map(|clipped| clipped.shape);
+            last = (shapes.collect(), repaint);
+        }
+        last
+    }
+
+    fn fills(shapes: &[egui::Shape]) -> Vec<(Rect, Color32)> {
+        (shapes.iter())
+            .filter_map(|shape| match shape {
+                egui::Shape::Rect(rect) if rect.fill != Color32::TRANSPARENT => {
+                    Some((rect.rect, rect.fill))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tab_lights_as_terminal_s_do_and_shows_the_keyboard() {
+        // Spec §3.10 and §9.12: Terminal's strip. The tab chosen lies on
+        // fg at .08, one under the pointer on fg at .045, at once and with
+        // no fill of its own while pressed, which chooses it.
+        let p = Palette::new(Appearance::Dark, Accent::default());
+        // Three equal tabs, 4 apart, in 300 points from 10.
+        let each = (300.0 - 2.0 * Fit::ROOMY.gap) / 3.0;
+        let left = 10.0 + each + Fit::ROOMY.gap;
+        let second = Rect::from_min_max(Pos2::new(left, 13.0), Pos2::new(left + each, 41.0));
+        let (rest, _) = painted(Vec::new(), None, 2);
+        assert_eq!(fills(&rest).len(), 1, "only the chosen tab is filled");
+        assert_eq!(fills(&rest)[0].1, theme::tint(p.fg, 0.08));
+        let (hovered, _) = painted(vec![Event::PointerMoved(second.center())], None, 2);
+        assert!(
+            fills(&hovered).contains(&(second, theme::tint(p.fg, 0.045))),
+            "{:?}",
+            fills(&hovered)
+        );
+        // With the keyboard, the ring of `focus_ring` round the tab.
+        let (focused, _) = painted(Vec::new(), Some("Text"), 2);
+        let ring = (focused.iter()).any(|shape| {
+            matches!(shape, egui::Shape::Rect(rect)
+                if rect.rect == second.expand(2.0)
+                    && rect.stroke.color == theme::tint(p.accent, 0.55))
+        });
+        assert!(ring, "the tab with the keyboard is ringed");
+    }
+
+    #[test]
+    fn a_strip_at_rest_asks_for_no_frame() {
+        // Spec §9.12 Idle: the library's and the inspector's strips.
+        let (_, repaint) = painted(Vec::new(), None, 4);
+        assert_eq!(repaint, std::time::Duration::MAX);
+        let at = Pos2::new(160.0, 27.0);
+        let (_, repaint) = painted(vec![Event::PointerMoved(at)], None, 4);
+        assert_eq!(repaint, std::time::Duration::MAX, "nor under the pointer");
+    }
+
     #[test]
     fn a_click_chooses_another_tab() {
         // Three equal tabs of 100 points: the third is at 210 to 310.

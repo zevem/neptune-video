@@ -12,11 +12,11 @@ use crate::{
     theme::{self, Palette, metrics},
 };
 use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, CursorIcon, Id, Layout, Painter, Pos2, Rect,
-    Response, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2,
-    vec2,
+    self, Align, Align2, Color32, CornerRadius, CursorIcon, Galley, Id, Layout, Painter, Pos2,
+    Rect, Response, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
+    pos2, vec2,
 };
-use std::ops::RangeInclusive;
+use std::{ops::RangeInclusive, sync::Arc};
 
 // ---- Reduce motion ------------------------------------------------------
 
@@ -1261,11 +1261,12 @@ fn statement(
     top: impl FnOnce(f32) -> f32,
 ) -> bool {
     let painter = ui.painter_at(rect);
-    let width = (rect.width() - 32.0).clamp(40.0, 260.0);
-    let mut job =
-        egui::text::LayoutJob::simple(hint.to_owned(), theme::regular(12.0), p.secondary, width);
-    job.halign = Align::Center;
-    let hint_galley = painter.layout_job(job);
+    let hint_galley = balanced(
+        &painter,
+        hint,
+        p.secondary,
+        (rect.width() - 32.0).clamp(40.0, 260.0),
+    );
     let title_galley = painter.layout_no_wrap(title.to_owned(), theme::medium(14.0), p.fg);
     let action_height = if action.is_some() {
         12.0 + metrics::CONTROL_HEIGHT
@@ -1331,6 +1332,40 @@ fn statement(
         ("empty-state-action", label),
         |ui| controls::button(ui, *p, label, ButtonKind::Secondary).clicked(),
     )
+}
+
+/// An empty state's hint, centred and wrapped at most `width` wide, its
+/// lines as even as the words allow: the fewest lines it needs, laid out at
+/// the narrowest width that keeps them that few, so that no word is left
+/// alone on the last.
+fn balanced(painter: &Painter, hint: &str, ink: Color32, width: f32) -> Arc<Galley> {
+    let lay = |width: f32| {
+        let mut job =
+            egui::text::LayoutJob::simple(hint.to_owned(), theme::regular(12.0), ink, width);
+        job.halign = Align::Center;
+        painter.layout_job(job)
+    };
+    let galley = lay(width);
+    let rows = galley.rows.len();
+    if rows < 2 {
+        return galley;
+    }
+    // Each line is at least its share of the hint on one line; a few
+    // halvings find the narrowest that still holds it in as many.
+    let single = painter
+        .layout_no_wrap(hint.to_owned(), theme::regular(12.0), ink)
+        .size()
+        .x;
+    let (mut narrow, mut wide) = ((single / rows as f32).floor(), width);
+    while wide - narrow > 1.0 {
+        let middle = ((narrow + wide) * 0.5).floor();
+        if lay(middle).rows.len() > rows {
+            narrow = middle;
+        } else {
+            wide = middle;
+        }
+    }
+    lay(wide)
 }
 
 // ---- Painted words and sheets' keys -------------------------------------
@@ -1418,3 +1453,7 @@ pub fn splitter(ui: &mut Ui, p: &Palette, rect: Rect, id: Id, vertical: bool) ->
     };
     (delta, response.double_clicked())
 }
+
+#[cfg(test)]
+#[path = "kit_tests.rs"]
+mod tests;

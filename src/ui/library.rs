@@ -42,6 +42,15 @@ use std::{cmp::Ordering, sync::Arc};
 /// the viewer: the inspector's insets, mirrored.
 pub(super) const LEADING: f32 = 8.0;
 pub(super) const TRAILING: f32 = 6.0;
+
+/// `rect` in by the library's insets: where its content stands, so that
+/// what is centred in it is centred over the cards.
+pub(super) fn inset(rect: Rect) -> Rect {
+    Rect::from_min_max(
+        pos2(rect.left() + LEADING, rect.top()),
+        pos2(rect.right() - TRAILING, rect.bottom()),
+    )
+}
 /// The search row under the tab strip, and the kinds row under it.
 const SEARCH: f32 = 28.0;
 const KINDS: f32 = 22.0;
@@ -997,6 +1006,7 @@ fn media(
     let items = listed(project, state.folder, &query, state.kind, sort);
 
     if items.is_empty() {
+        let list = inset(list);
         if let Some(problem) = input.problem.filter(|_| project.assets.is_empty()) {
             kit::empty_state(
                 ui,
@@ -2228,6 +2238,12 @@ mod tests {
         /// The words painted in the last frame, where, at what size and in
         /// what ink.
         words: Vec<(String, Rect, f32, Color32)>,
+        /// The rectangles filled in the last frame, and with what.
+        filled: Vec<(Rect, Color32)>,
+        /// How soon the last frame asked to be drawn again.
+        wait: std::time::Duration,
+        /// The peaks the sounds' cards draw, as the window holds them.
+        peaks: crate::peaks::HeldPeaks,
         actions: Vec<Action>,
     }
 
@@ -2251,6 +2267,9 @@ mod tests {
                 seen: Vec::new(),
                 focused: None,
                 words: Vec::new(),
+                filled: Vec::new(),
+                wait: std::time::Duration::ZERO,
+                peaks: crate::peaks::HeldPeaks::default(),
                 actions: Vec::new(),
             }
         }
@@ -2263,6 +2282,7 @@ mod tests {
                 ..Default::default()
             };
             let ctx = self.ctx.clone();
+            self.peaks.begin_frame();
             let output = ctx.run_ui(input, |ui| {
                 let rect = ui.max_rect();
                 (self.grid, self.sort) = show(
@@ -2272,7 +2292,7 @@ mod tests {
                     &mut self.selection,
                     &mut self.textures,
                     &mut Titles::default(),
-                    &mut crate::peaks::HeldPeaks::default(),
+                    &mut self.peaks,
                     &LibraryInput {
                         p: &palette,
                         project: &self.project,
@@ -2327,6 +2347,16 @@ mod tests {
                     _ => None,
                 })
                 .collect();
+            self.filled = (output.shapes.iter())
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(rect) => Some((rect.rect, rect.fill)),
+                    _ => None,
+                })
+                .collect();
+            self.wait = (output.viewport_output.values())
+                .map(|viewport| viewport.repaint_delay)
+                .min()
+                .unwrap_or(std::time::Duration::MAX);
             output.drop_without_applying_deltas();
         }
 
@@ -3176,6 +3206,90 @@ mod tests {
             shelf
                 .find("The second week, by the sea and in the hills")
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn a_card_lies_on_hover_under_the_pointer_and_on_pressed_once_chosen() {
+        // Spec §3.10 and §9.12: lit at once, as Terminal's rows are. The
+        // fill stands 4 out from the card, and the focus ring is tested
+        // with the keyboard above.
+        let p = Palette::new(crate::theme::Appearance::Dark, Default::default());
+        let clip = asset("clip.mp4", MediaKind::Video, 4.0, 10);
+        let mut project = Project::new("Library");
+        Arc::make_mut(&mut project.assets).insert(clip.id, clip.clone());
+        for grid in [true, false] {
+            let mut shelf = Shelf::new(project.clone(), grid);
+            shelf.frame(Vec::new());
+            shelf.frame(Vec::new());
+            let card = shelf.find("clip.mp4").expect("the card is named");
+            let behind = |shelf: &Shelf, fill: Color32| {
+                (shelf.filled.iter()).any(|(rect, painted)| {
+                    *painted == fill
+                        && rect.contains_rect(card)
+                        && rect.width() < card.width() + 12.0
+                })
+            };
+            assert!(!behind(&shelf, p.hover) && !behind(&shelf, p.pressed));
+            shelf.frame(vec![egui::Event::PointerMoved(card.center())]);
+            assert!(behind(&shelf, p.hover), "grid {grid}: under the pointer");
+            shelf.click(card.center(), egui::PointerButton::Primary);
+            assert_eq!(shelf.selection.asset, Some(clip.id), "grid {grid}");
+            assert!(behind(&shelf, p.pressed), "grid {grid}: chosen");
+            assert!(!behind(&shelf, p.hover), "grid {grid}");
+        }
+    }
+
+    #[test]
+    fn the_library_at_rest_asks_for_no_frame() {
+        // Spec §9.12 Idle: each of the six tabs, with a sound's card that
+        // draws the peaks the window holds and a video's beside it.
+        let mut song = asset("song.wav", MediaKind::Audio, 4.0, 50);
+        song.has_audio = true;
+        let shot = asset("shot.mp4", MediaKind::Video, 4.0, 50);
+        let mut project = Project::new("Library");
+        for asset in [&song, &shot] {
+            Arc::make_mut(&mut project.assets).insert(asset.id, asset.clone());
+        }
+        let mut shelf = Shelf::new(project, true);
+        shelf.frame(Vec::new());
+        // The card asked for its peaks, and the lane answered.
+        let wanted = shelf.peaks.take_wants();
+        assert_eq!(wanted.len(), 1, "FIXTURE: the sound's card wants its peaks");
+        shelf.peaks.asked(song.id, 1);
+        let peaks = Arc::new(Peaks {
+            buckets: vec![[0xc0, 0x40, 200, 100]; 400],
+        });
+        let source = editor_media::SourceIdentity::of(&song);
+        let instance = uuid::Uuid::from_u128(1);
+        let answer = match wanted[0].1 {
+            crate::peaks::Ask::Kept => {
+                crate::peaks::Answer::Kept(editor_media::KeptPeaks::Held(peaks))
+            }
+            crate::peaks::Ask::Sound => crate::peaks::Answer::Read(Ok(peaks)),
+        };
+        shelf
+            .peaks
+            .take(instance, Some(&song), 1, instance, song.id, &source, answer);
+        assert!(
+            shelf.peaks.held(&song).is_some(),
+            "FIXTURE: the peaks are held"
+        );
+        for tab in Tab::ALL {
+            shelf.state.tab = tab;
+            // What a first frame eases in has settled within a second.
+            for _ in 0..60 {
+                shelf.frame(Vec::new());
+            }
+            assert!(
+                shelf.wait > std::time::Duration::from_secs(3600),
+                "{tab:?} asked for a frame in {:?}",
+                shelf.wait
+            );
+        }
+        assert!(
+            shelf.peaks.take_wants().is_empty(),
+            "the peaks held are drawn"
         );
     }
 
