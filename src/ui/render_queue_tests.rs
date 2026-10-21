@@ -902,3 +902,32 @@ fn a_long_folder_gives_up_its_parents_before_its_own_name() {
         assert_eq!(fitted("/home/someone", 4), "Home folder");
     }
 }
+
+#[test]
+fn a_job_name_cut_short_is_shown_whole_on_hover() {
+    let long = "the whole of the trip, from the first morning to the last night, cut.mp4";
+    let mut bench = Bench::new(
+        NARROW,
+        vec![
+            job(long, RenderState::Queued),
+            job("a.mp4", RenderState::Queued),
+        ],
+    );
+    // A text shape keeps its whole text, cut or not, so a name is counted
+    // where it is painted: once in its row, and again in a tooltip.
+    let mut rest_on = |name: &str| {
+        let row = (bench.seen.iter())
+            .find(|seen| seen.name == name && seen.role == Role::Label)
+            .unwrap_or_else(|| panic!("FIXTURE: the row of {name} is listed"))
+            .rect;
+        bench.frame(vec![Event::PointerMoved(row.center())]);
+        for _ in 0..30 {
+            bench.frame(Vec::new());
+        }
+        (bench.painted.iter())
+            .filter(|(text, _)| text == name)
+            .count()
+    };
+    assert_eq!(rest_on(long), 2, "the long name is shown whole on hover");
+    assert_eq!(rest_on("a.mp4"), 1, "a name that fits has no tooltip");
+}

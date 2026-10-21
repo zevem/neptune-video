@@ -1529,3 +1529,76 @@ fn a_card_switch_shares_a_line_with_its_name() {
         }
     }
 }
+
+#[test]
+fn the_trailing_controls_start_together() {
+    // Spec §5.9.3: one trailing width, so that the Preset select over the
+    // first card and the Speed control under the encoder start where the
+    // other controls do.
+    for size in [WIDE, NARROW] {
+        let mut bench = Bench::new(size);
+        bench.click("Encoder and speed");
+        let rect = |bench: &Bench, name: &str| bench.get(name).rect;
+        let select = rect(&bench, "Frame rate");
+        for name in ["Preset", "Codec", "Encoder"] {
+            let at = rect(&bench, name);
+            assert!(
+                (at.left() - select.left()).abs() < 0.5
+                    && (at.width() - select.width()).abs() < 0.5,
+                "{name} at {size:?}: {at:?}, against Frame rate at {select:?}"
+            );
+        }
+        let (speed, format) = (rect(&bench, "Faster"), rect(&bench, "MP4"));
+        assert!(
+            (speed.left() - format.left()).abs() < 0.5,
+            "Speed at {size:?} starts at {speed:?}, against the format at {format:?}"
+        );
+    }
+}
+
+#[test]
+fn a_summary_value_cut_short_is_shown_whole_on_hover() {
+    // FIXTURE: a Mac's H.264, whose family and FFmpeg name together are
+    // longer than the summary's column.
+    let mut caps = host();
+    caps.video
+        .retain(|encoder| encoder.hardware != Some(HardwareKind::Nvenc));
+    caps.video.push(video(
+        "h264_videotoolbox",
+        VideoCodec::H264,
+        Some(HardwareKind::VideoToolbox),
+        4096,
+    ));
+    let mut bench = Bench::new(WIDE);
+    bench.probe = Probe::Ready(caps);
+    bench.settle();
+    // A text shape keeps its whole text, cut or not, so a value is counted
+    // where it is painted: once in the summary, and again in a tooltip.
+    let rest_on = |bench: &mut Bench, label: &str, value: &str| {
+        let fact = (bench.seen.iter())
+            .find(|seen| seen.name == format!("{label}: {value}"))
+            .unwrap_or_else(|| panic!("FIXTURE: the summary says {label}: {value}"))
+            .rect;
+        bench.frame(vec![Event::PointerMoved(fact.center())]);
+        for _ in 0..30 {
+            bench.frame(Vec::new());
+        }
+        (bench.painted.iter())
+            .filter(|(text, _)| text == value)
+            .count()
+    };
+    assert_eq!(
+        rest_on(
+            &mut bench,
+            "Encoder",
+            "Apple VideoToolbox · h264_videotoolbox"
+        ),
+        2,
+        "the encoder, cut short, is shown whole on hover"
+    );
+    assert_eq!(
+        rest_on(&mut bench, "Size", "1920 × 1080 · 16:9"),
+        1,
+        "a size that fits has no tooltip"
+    );
+}

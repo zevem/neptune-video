@@ -671,7 +671,7 @@ fn job_row(
     // The name, cut short before the actions.
     let room = (actions - 8.0 - left).max(0.0);
     let galley = controls::elided(&painter, name, theme::medium(13.0), p.fg, room);
-    let cut = galley.text() != name;
+    let cut = galley.elided;
     let words = Rect::from_min_size(
         pos2(left, line.center().y - galley.size().y * 0.5),
         galley.size(),

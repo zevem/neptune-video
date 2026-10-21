@@ -1036,6 +1036,7 @@ fn fact(ui: &mut Ui, p: &Palette, group: &mut Group, label: &str, value: &str) {
     );
     let room = rect.right() - 14.0 - words.right() - 12.0;
     let galley = controls::elided(&painter, value, theme::regular(12.5), p.fg, room);
+    let cut = galley.elided;
     painter.galley(
         pos2(
             rect.right() - 14.0 - galley.size().x,
@@ -1044,8 +1045,13 @@ fn fact(ui: &mut Ui, p: &Palette, group: &mut Group, label: &str, value: &str) {
         galley,
         p.fg,
     );
-    ui.interact(rect, ui.id().with(("fact", label)), Sense::hover())
-        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, format!("{label}: {value}")));
+    let named = ui.interact(rect, ui.id().with(("fact", label)), Sense::hover());
+    named.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, format!("{label}: {value}")));
+    // A value cut short shows the whole of it on hover, as the render
+    // queue's job names do.
+    if cut {
+        named.on_hover_text(value);
+    }
 }
 
 /// A problem or a caution, led by the warning glyph in `color`: the words
@@ -2077,7 +2083,7 @@ impl Sheet<'_, '_> {
         let reason = |preset: &ExportPreset| preset_problem(preset, caps);
         controls::group(ui, *p, |ui, group| {
             row(ui, p, group, "Preset", |ui, room| {
-                let width = room.min(240.0);
+                let width = room.min(TRAIL);
                 let select = kit::select(
                     ui,
                     p,
@@ -2169,7 +2175,7 @@ impl Sheet<'_, '_> {
                 p.secondary,
                 rect.width() - 28.0,
             );
-            let cut = galley.text() != said;
+            let cut = galley.elided;
             controls::galley_at(&painter, pos2(rect.left() + 14.0, rect.center().y), galley);
             let line = ui.interact(rect, ui.id().with("preset-note"), Sense::hover());
             line.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, said));
@@ -2770,7 +2776,7 @@ fn encoder_rows(
                     (EncodeSpeed::Balanced, "Balanced"),
                     (EncodeSpeed::Smaller, "Smaller"),
                 ],
-                room.min(240.0),
+                room.min(TRAIL),
             );
         });
     }
