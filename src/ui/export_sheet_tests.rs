@@ -265,7 +265,12 @@ impl Bench {
 
     fn find(&self, name: &str) -> Option<&Seen> {
         (self.seen.iter())
-            .find(|seen| seen.name == name && !matches!(seen.role, Role::Label | Role::TextRun))
+            // Spec §5.9.1: the sheet itself is a Window named by its title,
+            // "Export", which is not the button of that name.
+            .find(|seen| {
+                seen.name == name
+                    && !matches!(seen.role, Role::Label | Role::TextRun | Role::Window)
+            })
     }
 
     fn get(&self, name: &str) -> &Seen {
@@ -273,6 +278,14 @@ impl Bench {
             let names: Vec<&str> = self.seen.iter().map(|seen| seen.name.as_str()).collect();
             panic!("FIXTURE: no control is named \"{name}\" among {names:?}")
         })
+    }
+
+    /// The preset chip `name`, a button, and not the quality level or the
+    /// list row of the same name.
+    fn chip(&self, name: &str) -> &Seen {
+        (self.seen.iter())
+            .find(|seen| seen.name == name && seen.role == Role::Button)
+            .unwrap_or_else(|| panic!("FIXTURE: no chip is named \"{name}\""))
     }
 
     fn says(&self, text: &str) -> bool {
@@ -465,14 +478,20 @@ fn the_sheet_shows_presets_and_every_section_at_both_sizes() {
         assert!(bench.says("Estimated size") && bench.says("NVIDIA NVENC · h264_nvenc"));
         assert!(bench.says("1920 × 1080 · 16:9"));
         // The person's own settings and a preset both start as Recommended.
-        assert_eq!(bench.get("Recommended").toggled, Some(Toggled::True));
+        assert_eq!(bench.chip("Recommended").toggled, Some(Toggled::True));
         assert!(bench.says("Recommended"), "the preset list shows it chosen");
 
-        // Two columns: the file on the left, the presets on the right, and
+        // Spec §5.9.3: two columns, the picture on the left and the file
+        // card first among the choices on the right, before the presets;
         // the footer inside the window.
         let file = bench.get("File name").rect;
         let preset = bench.get("YouTube 1080p").rect;
-        assert!(file.right() < preset.left(), "{file:?} beside {preset:?}");
+        assert!(file.bottom() <= preset.top(), "{file:?} before {preset:?}");
+        let poster = (bench.seen.iter())
+            .find(|seen| seen.name.starts_with("Output frame"))
+            .expect("the poster is there")
+            .rect;
+        assert!(poster.right() < file.left(), "{poster:?} beside {file:?}");
         let export = bench.get("Export").rect;
         assert!(
             export.right() <= size.x && export.bottom() <= size.y,
@@ -514,8 +533,8 @@ fn clicking_a_preset_changes_the_settings_until_one_is_changed() {
     );
     assert_eq!(settings.audio.map(|a| a.kbps), Some(384));
     assert_eq!(bench.state.preset(), Some("youtube-1080"));
-    assert_eq!(bench.get("YouTube 1080p").toggled, Some(Toggled::True));
-    assert_eq!(bench.get("Recommended").toggled, Some(Toggled::False));
+    assert_eq!(bench.chip("YouTube 1080p").toggled, Some(Toggled::True));
+    assert_eq!(bench.chip("Recommended").toggled, Some(Toggled::False));
     assert!(bench.take().is_empty(), "a preset is not an answer");
 
     // Another size is no longer the preset, and the control clicked stays
@@ -897,6 +916,18 @@ fn escape_gives_up_a_preset_name_then_closes() {
     let mut bench = Bench::new(WIDE);
     bench.click("Save preset…");
     assert!(bench.find("Preset name").is_some());
+    // The name is typed at the footer's leading edge, away from Cancel,
+    // which closes the whole sheet and stays beside Add to queue.
+    let (cancel, add) = (bench.get("Cancel").rect, bench.get("Add to queue").rect);
+    assert!(
+        (add.left() - cancel.right() - 8.0).abs() < 0.5,
+        "Cancel {cancel:?} is beside Add to queue {add:?}"
+    );
+    let stop = bench.get("Stop naming the preset").rect;
+    assert!(
+        stop.right() + 40.0 < cancel.left(),
+        "the naming {stop:?} keeps away from Cancel {cancel:?}"
+    );
     bench.key(Key::Escape);
     assert!(bench.find("Preset name").is_none());
     assert!(bench.take().is_empty());
@@ -1003,41 +1034,123 @@ fn the_sheet_stays_inside_a_small_window() {
 
 #[test]
 fn the_settings_are_in_sight_without_scrolling() {
-    // At a common desktop size the preset, the picture's settings and the
-    // sound's are all in sight as the sheet opens.
+    // Spec §5.9.3: the file, the preset and the range come before the
+    // picture's cards now, so the sound's are under the fold. At a common
+    // desktop size the file, the preset, the range and the picture's
+    // settings down to its codec are in sight as the sheet opens.
     let bench = Bench::new(WIDE);
     for name in [
+        "File name",
+        "Folder: /exports",
         "Preset",
-        "Recommended",
+        "YouTube 1080p",
+        "Whole timeline",
         "Video",
         "1080p",
         "Frame rate",
         "Codec",
-        "Encoder and speed",
-        "Audio",
-        "Audio codec",
     ] {
         assert!(bench.in_sight(name), "{name} is in sight at {WIDE:?}");
     }
-    // At the smaller sizes the preset and the picture's first settings
-    // are, and what the file will be is always said in the footer.
+    let (top, bottom) = bench.band();
+    let chip = bench.chip("Recommended").rect;
+    assert!(
+        chip.top() >= top && chip.bottom() <= bottom,
+        "the Recommended chip is in sight at {WIDE:?}"
+    );
+    // At the smaller sizes the file, the preset, the range and the Video
+    // switch are, and what the file will be is always said in the footer.
     for size in [NARROW, vec2(720.0, 520.0)] {
         let bench = Bench::new(size);
-        for name in ["Preset", "Recommended", "Video", "1080p"] {
+        for name in [
+            "File name",
+            "Preset",
+            "YouTube 1080p",
+            "Whole timeline",
+            "Video",
+        ] {
             assert!(bench.in_sight(name), "{name} is in sight at {size:?}");
         }
+        let (top, bottom) = bench.band();
+        let chip = bench.chip("Recommended").rect;
         assert!(
-            bench.says("≈ ") && bench.says(" · 0:10 · 1920 × 1080"),
+            chip.top() >= top && chip.bottom() <= bottom,
+            "the Recommended chip is in sight at {size:?}"
+        );
+        let facts = " · 0:10 · 1920 × 1080";
+        assert!(
+            bench.says("≈ ") && bench.says(facts),
             "the footer says what will be made at {size:?}"
         );
+        // Spec §7.1: and says it to those who do not see it.
+        assert!(
+            (bench.seen.iter()).any(|seen| seen.role == Role::Label && seen.name.ends_with(facts)),
+            "the footer's words are a label at {size:?}"
+        );
+        // Spec §5.9.3: beside the choices the poster stays 16:9, shorter
+        // in a short sheet so that the whole summary under it is in sight.
         let poster = (bench.seen.iter())
             .find(|seen| seen.name.starts_with("Output frame"))
-            .expect("the poster is there");
+            .expect("the poster is there")
+            .rect;
         assert!(
-            poster.rect.height() <= 100.0,
-            "a short screen's poster is short"
+            (poster.width() / poster.height() - 16.0 / 9.0).abs() < 0.02,
+            "the poster at {size:?} is 16:9: {poster:?}"
+        );
+        let last = (bench.seen.iter())
+            .find(|seen| seen.name.starts_with("Encoder: "))
+            .expect("the summary names the encoder")
+            .rect;
+        assert!(
+            last.bottom() <= bench.band().1,
+            "the summary is in sight at {size:?}"
         );
     }
+    // Stacked, the poster sits beside the summary at most 100 tall.
+    let bench = Bench::new(vec2(640.0, 560.0));
+    let poster = (bench.seen.iter())
+        .find(|seen| seen.name.starts_with("Output frame"))
+        .expect("the poster is there");
+    assert!(
+        poster.rect.height() <= 100.0,
+        "a narrow sheet's poster is short"
+    );
+}
+
+#[test]
+fn the_painted_words_are_said_as_the_labels_they_were() {
+    // Spec §7.1: the title, the cards' labels, their rows' labels and the
+    // extension inside the file field are painted, and still said.
+    let bench = Bench::new(WIDE);
+    for text in ["Export", "Summary", "Range", "Video", "Format", ".mp4"] {
+        assert!(
+            (bench.seen.iter()).any(|seen| seen.role == Role::Label && seen.name == text),
+            "\"{text}\" is a label"
+        );
+    }
+}
+
+#[test]
+fn the_sheet_opens_again_at_its_first_card() {
+    let mut bench = Bench::new(NARROW);
+    bench.reveal("Audio codec");
+    assert!(
+        !bench.in_sight("File name"),
+        "FIXTURE: scrolled past the file"
+    );
+    // Closed for a while, then shown again.
+    for _ in 0..2 {
+        bench.time += 0.05;
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, bench.size)),
+            time: Some(bench.time),
+            ..Default::default()
+        };
+        let _ = bench.ctx.run_ui(raw, |_| {});
+    }
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    assert!(bench.in_sight("File name"), "the sheet opens at its top");
 }
 
 #[test]
@@ -1078,6 +1191,15 @@ fn presets_with_the_same_settings_keep_the_one_chosen() {
     assert!(
         chosen.iter().all(|name| *name == "TikTok"),
         "only TikTok is chosen: {chosen:?}"
+    );
+    // Spec §7.1: the list's rows say which is chosen, the chip and the
+    // list's TikTok both, and its Shorts not.
+    assert_eq!(chosen.len(), 2, "the chip and the list row: {chosen:?}");
+    assert!(
+        (bench.seen.iter()).any(|seen| seen.name == "YouTube Shorts"
+            && seen.role == Role::Button
+            && seen.toggled == Some(Toggled::False)),
+        "the list's Shorts is a button, not chosen"
     );
 
     // A preset of one's own the same as a built-in one is shown as one's
@@ -1175,9 +1297,9 @@ fn a_sheet_opened_again_keeps_what_was_set_but_not_a_waiting_export() {
 
 #[test]
 fn a_scroll_bar_widened_under_the_pointer_covers_nothing() {
-    // At the small size both columns scroll. With the pointer over the
-    // summary's column its bar is drawn at its widest, where the values
-    // end: room is kept for it.
+    // At the small size the options column scrolls. With the pointer over
+    // it (spec §5.9.3: the folder is in it now) its bar is drawn at its
+    // widest, where the controls end: room is kept for it.
     let mut bench = Bench::new(NARROW);
     let over = bench.get("Folder: /exports").rect.center();
     for _ in 0..12 {
@@ -1185,7 +1307,7 @@ fn a_scroll_bar_widened_under_the_pointer_covers_nothing() {
     }
     assert!(
         bench.bars.iter().any(|bar| bar.left() > over.x),
-        "FIXTURE: the summary's column scrolls at {NARROW:?}: {:?}",
+        "FIXTURE: the options column scrolls at {NARROW:?}: {:?}",
         bench.bars
     );
     for bar in &bench.bars {
@@ -1256,4 +1378,55 @@ fn the_sheet_holds_still_under_a_moving_pointer_at_a_fractional_scale() {
             );
         }
     }
+}
+
+#[test]
+fn a_fresh_enter_exports_when_nothing_has_the_keyboard() {
+    // Spec §5.9.1: Enter gives the sheet's one Primary, Export, but only
+    // pressed afresh: not while a field is typed in, and not as the sheet
+    // opens.
+    let enter = |pressed| Event::Key {
+        key: Key::Enter,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    // Pressed and let go, as a person strikes it.
+    let strike = |bench: &mut Bench| {
+        bench.frame(vec![enter(true)]);
+        bench.frame(vec![enter(false)]);
+    };
+    let mut bench = Bench::new(WIDE);
+    bench.retype("File name", "Holiday");
+    strike(&mut bench);
+    assert!(bench.take().is_empty(), "the field's Enter is the field's");
+
+    strike(&mut bench);
+    let answers = bench.take();
+    assert!(
+        matches!(
+            answers.as_slice(),
+            [ExportAnswer::Queue {
+                start_now: true,
+                ..
+            }]
+        ),
+        "{answers:?}"
+    );
+
+    // Away for a while, then shown again with an Enter in its first frame:
+    // that one was meant for what was there before.
+    let ctx = bench.ctx.clone();
+    for _ in 0..2 {
+        bench.time += 0.05;
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, bench.size)),
+            time: Some(bench.time),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |_| {});
+    }
+    bench.frame(vec![enter(true)]);
+    assert!(bench.take().is_empty(), "an Enter carried into the sheet");
 }

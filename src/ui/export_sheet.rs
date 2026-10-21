@@ -4,13 +4,17 @@
 //! keeps presets. Nothing offered is something this host cannot encode:
 //! choices come from the probed [`Capabilities`], and the rest are absent or
 //! disabled with the reason on hover.
+//!
+//! It is drawn on Terminal's sheet: a 52-point header, a body of cards that
+//! scrolls under a fade, and a fixed 60-point footer whose Export is the
+//! sheet's one accent.
 use super::{
-    sheets,
-    widgets::{self, Kind, icon_button, row, section},
+    controls::{self, ButtonKind, Group},
+    kit, widgets, window,
 };
 use crate::{
     icons::{self, Icon},
-    theme::{self, Palette, metrics},
+    theme::{self, Accent, Palette, metrics},
     timefmt,
 };
 use editor_core::{
@@ -24,8 +28,8 @@ use editor_core::{
     },
 };
 use eframe::egui::{
-    self, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Ui, Vec2, WidgetInfo,
-    WidgetType, pos2, vec2,
+    self, Align, Align2, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Stroke, Ui,
+    UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -632,32 +636,525 @@ fn choice_reason(
     })
 }
 
-fn note(ui: &mut Ui, text: &str, color: Color32) {
-    ui.add(egui::Label::new(RichText::new(text).font(theme::regular(11.5)).color(color)).wrap());
+// ---- The sheet ----------------------------------------------------------------
+
+/// The sheet at its largest; a smaller window keeps 12 points clear of it
+/// on every side.
+const WIDTH: f32 = 760.0;
+const HEIGHT: f32 = 640.0;
+/// Terminal's sheet header and footer.
+const HEADER: f32 = 52.0;
+const FOOTER: f32 = 60.0;
+/// The sheet's margin, which is also the room between its columns.
+const PAD: f32 = 20.0;
+/// A row of an options card: a 30-point control with 5 points about it.
+const ROW: f32 = 40.0;
+/// A line of the summary.
+const FACT: f32 = 32.0;
+/// The width of the control at the trailing end of a row, so that a card's
+/// controls start together: 20 more than a select in Terminal's settings,
+/// which the longest of today's values, "Auto (Apple VideoToolbox)", needs
+/// to be shown whole.
+const TRAIL: f32 = 200.0;
+/// From one card to the label of the next.
+const GAP: f32 = 14.0;
+/// The tallest a select's list is before it scrolls (spec §4.3.4).
+const LIST: f32 = 260.0;
+/// A section's label over its card, Terminal's: its words 12 over the card.
+const LABEL: f32 = 24.0;
+/// A label with the switch that turns its card on: the words as far over
+/// the card as any label's, and the 22-point switch 6 clear of the card, as
+/// a control is of the edge of its row.
+const SWITCHED: f32 = 34.0;
+
+/// Terminal's sheet (`controls::sheet`) under the id the editor has always
+/// given it, which the tests and the notices find it by: `elevated`, with a
+/// hairline border and the sheet shadow, `width` wide, its rows laid edge to
+/// edge. The window behind it is dimmed in the window's own rounded shape
+/// rather than egui's square backdrop, fading in as a sheet first shows.
+pub(super) fn scaffold<R>(
+    ctx: &egui::Context,
+    p: &Palette,
+    id: Id,
+    title: &str,
+    width: f32,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> egui::ModalResponse<R> {
+    // Painted first into the sheet's own layer: under the sheet, and over
+    // everything it covers, menus included.
+    let layer = egui::LayerId::new(egui::Order::Foreground, id);
+    controls::scrim(
+        &ctx.layer_painter(layer),
+        ctx.content_rect(),
+        window::corner_radius(ctx),
+        *p,
+        scrim_opacity(ctx),
+    );
+    let frame = egui::Frame::new()
+        .fill(p.elevated)
+        .corner_radius(metrics::SHEET_RADIUS)
+        .stroke(Stroke::new(1.0, p.border))
+        .shadow(p.sheet_shadow());
+    let modal = egui::Modal::new(id)
+        .frame(frame)
+        .backdrop_color(Color32::TRANSPARENT)
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            add(ui)
+        });
+    modal
+        .response
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Window, true, title));
+    modal
 }
 
-/// A line of the summary: what, and its value at the trailing edge.
-fn fact(ui: &mut Ui, p: &Palette, label: &str, value: &str) {
-    ui.horizontal(|ui| {
-        ui.set_min_height(20.0);
-        ui.label(
-            RichText::new(label)
-                .font(theme::regular(12.0))
-                .color(p.secondary),
-        );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add(
-                egui::Label::new(RichText::new(value).font(theme::regular(12.0)).color(p.fg))
-                    .truncate(),
-            );
+/// How far the scrim has come in: from nothing as the export sheet or the
+/// render queue first shows, over the sheet's 0.16 s, and at once under
+/// Reduce motion. Going from one of the two to the other it stays.
+fn scrim_opacity(ctx: &egui::Context) -> f32 {
+    let id = Id::new("export-scrim");
+    let pass = ctx.cumulative_pass_nr();
+    let now = ctx.input(|input| input.time);
+    let since = ctx.data_mut(|data| {
+        // Shown in this pass or the one before: the same showing.
+        let since = (data.get_temp::<(u64, f64)>(id))
+            .filter(|(shown, _)| shown + 1 >= pass)
+            .map_or(now, |(_, since)| since);
+        data.insert_temp(id, (pass, since));
+        since
+    });
+    if kit::reduced_motion(ctx) {
+        return 1.0;
+    }
+    let t = ((now - since) as f32 / theme::motion::SHEET).clamp(0.0, 1.0);
+    if t < 1.0 {
+        ctx.request_repaint();
+    }
+    egui::emath::easing::cubic_out(t)
+}
+
+/// A part of a sheet's body that scrolls: `width` of content at the leading
+/// edge of `rect`, whose scroll bar floats in the room beside it, clear of
+/// what it holds. An edge that content runs on past fades into `ground`.
+/// When `afresh`, as the sheet opens, it shows its top again, wherever it
+/// was left.
+pub(super) fn scrolled(
+    ui: &mut Ui,
+    ground: Color32,
+    rect: Rect,
+    width: f32,
+    salt: &str,
+    afresh: bool,
+    add: impl FnOnce(&mut Ui),
+) {
+    let mut part = ui.new_child(
+        UiBuilder::new()
+            .id_salt(salt)
+            .max_rect(rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    part.spacing_mut().scroll.floating_allocated_width = 0.0;
+    let mut area = egui::ScrollArea::vertical()
+        .id_salt(salt)
+        .auto_shrink([false, false])
+        .max_height(rect.height());
+    if afresh {
+        area = area.vertical_scroll_offset(0.0);
+    }
+    let output = area.show(&mut part, |ui| {
+        super::sheets::column(ui, width, |ui| {
+            ui.add_space(4.0);
+            add(ui);
+            ui.add_space(PAD);
         });
+    });
+    faded(ui, &output, ground);
+}
+
+/// Fades into `ground` each edge of what a scroll area shows that its
+/// content runs on past, so that a line cut there fades out rather than
+/// being sliced.
+fn faded<R>(ui: &Ui, output: &egui::scroll_area::ScrollAreaOutput<R>, ground: Color32) {
+    let shown = output.inner_rect;
+    let above = output.state.offset.y;
+    let below = output.content_size.y - above - shown.height();
+    let painter = ui.painter_at(shown);
+    if above > 0.5 {
+        kit::scroll_fade(&painter, shown, kit::Edge::Top, ground);
+    }
+    if below > 0.5 {
+        kit::scroll_fade(&painter, shown, kit::Edge::Bottom, ground);
+    }
+}
+
+/// A sheet's 52-point title row: the title at its leading edge and, at the
+/// trailing one, `close` named `close_name`, with what `more` adds before
+/// it, right to left, each 28 points square.
+pub(super) fn header(
+    ui: &mut Ui,
+    p: &Palette,
+    title: &str,
+    close_name: &str,
+    more: impl FnOnce(&mut Ui),
+) -> bool {
+    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), HEADER));
+    let words = ui.painter().text(
+        pos2(rect.left() + PAD, rect.center().y),
+        Align2::LEFT_CENTER,
+        title,
+        theme::semibold(15.0),
+        p.fg,
+    );
+    said(ui, words, title);
+    // The close control's centre is 26 in from the edge, as in Terminal.
+    let controls = Rect::from_min_max(
+        pos2(rect.left() + PAD, rect.top()),
+        pos2(rect.right() - 12.0, rect.bottom()),
+    );
+    let mut closed = false;
+    controls::place(
+        ui,
+        controls,
+        Layout::right_to_left(Align::Center),
+        ("sheet-header", title),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            // What comes before the close control is made first, so that Tab
+            // reaches it first.
+            let at = ui.cursor();
+            let mut before = ui.new_child(
+                UiBuilder::new()
+                    .max_rect(Rect::from_min_max(
+                        controls.left_top(),
+                        pos2(at.right() - 28.0 - 4.0, controls.bottom()),
+                    ))
+                    .layout(Layout::right_to_left(Align::Center)),
+            );
+            before.spacing_mut().item_spacing.x = 4.0;
+            more(&mut before);
+            closed = widgets::icon_button(ui, p, Icon::Close, close_name).clicked();
+        },
+    );
+    closed
+}
+
+/// Words that are only painted, named for those who do not see them as the
+/// labels they replaced were: `text` over `rect`, where it is drawn.
+pub(super) fn said(ui: &Ui, rect: Rect, text: &str) {
+    ui.interact(rect, ui.auto_id_with(("said", text)), Sense::hover())
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+}
+
+/// The label over a card, set in 4 from it as Terminal sets it. Returns
+/// its row, for a switch at its trailing end.
+fn section(ui: &mut Ui, p: &Palette, text: &str) -> Rect {
+    section_of(ui, p, text, LABEL)
+}
+
+/// The label over a card in a row `height` tall, as far over the card
+/// whatever room the row has over it.
+fn section_of(ui: &mut Ui, p: &Palette, text: &str, height: f32) -> Rect {
+    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), height));
+    let words = ui.painter().text(
+        pos2(rect.left() + 4.0, rect.bottom() - LABEL * 0.5),
+        Align2::LEFT_CENTER,
+        text,
+        theme::medium(11.5),
+        p.secondary,
+    );
+    said(ui, words, text);
+    rect
+}
+
+/// The switch that turns a whole card on, at the end of the card's label
+/// where the card's own controls end.
+fn section_switch(
+    ui: &mut Ui,
+    p: &Palette,
+    label: Rect,
+    on: &mut bool,
+    name: &str,
+    enabled: bool,
+) -> egui::Response {
+    let at = Rect::from_min_size(
+        pos2(label.right() - 12.0 - 38.0, label.bottom() - 6.0 - 22.0),
+        vec2(38.0, 22.0),
+    );
+    controls::place(
+        ui,
+        at,
+        Layout::left_to_right(Align::Center),
+        ("section-switch", name),
+        |ui| {
+            ui.add_enabled_ui(enabled, |ui| controls::toggle(ui, *p, on, name))
+                .inner
+        },
+    )
+}
+
+/// A row of an options card: its label at the leading edge and what `add`
+/// makes at the trailing one, given the room the label leaves it.
+fn row<R>(
+    ui: &mut Ui,
+    p: &Palette,
+    group: &mut Group,
+    label: &str,
+    add: impl FnOnce(&mut Ui, f32) -> R,
+) -> R {
+    let lead = label_width(ui, p, label);
+    row_after(ui, p, group, label, lead, add)
+}
+
+/// How wide a row's label is.
+fn label_width(ui: &Ui, p: &Palette, label: &str) -> f32 {
+    (ui.painter())
+        .layout_no_wrap(label.to_owned(), theme::regular(13.0), p.fg)
+        .size()
+        .x
+}
+
+/// A row whose control is given the room after `lead`, the widest label of
+/// the rows it lines up with, so that their controls start together.
+fn row_after<R>(
+    ui: &mut Ui,
+    p: &Palette,
+    group: &mut Group,
+    label: &str,
+    lead: f32,
+    add: impl FnOnce(&mut Ui, f32) -> R,
+) -> R {
+    let words = label_width(ui, p, label);
+    group.row_with_height(ui, label, ROW, |ui| {
+        // The label is 2 in from where the controls' room starts.
+        let row = ui.max_rect();
+        said(
+            ui,
+            Rect::from_min_size(pos2(row.left() + 2.0, row.top()), vec2(words, row.height())),
+            label,
+        );
+        let room = (ui.available_width() - 2.0 - lead.max(words) - 16.0).max(40.0);
+        add(ui, room)
+    })
+}
+
+/// A row whose control takes the card's width: under its label when it has
+/// one, else alone.
+fn wide<R>(
+    ui: &mut Ui,
+    p: &Palette,
+    group: &mut Group,
+    label: Option<&str>,
+    salt: &str,
+    add: impl FnOnce(&mut Ui, f32) -> R,
+) -> R {
+    let height = if label.is_some() { 68.0 } else { ROW };
+    let rect = group.custom(ui, height);
+    if let Some(label) = label {
+        let words = ui.painter().text(
+            pos2(rect.left() + 14.0, rect.top() + 20.0),
+            Align2::LEFT_CENTER,
+            label,
+            theme::regular(13.0),
+            p.fg,
+        );
+        said(ui, words, label);
+    }
+    let control = Rect::from_min_max(
+        pos2(rect.left() + 12.0, rect.bottom() - 6.0 - 28.0),
+        pos2(rect.right() - 12.0, rect.bottom() - 6.0),
+    );
+    controls::place(
+        ui,
+        control,
+        Layout::left_to_right(Align::Center),
+        ("wide-row", salt),
+        |ui| add(ui, control.width()),
+    )
+}
+
+/// One of a few choices, as a segmented control whose cells Left and Right
+/// move among, choosing as they go (Terminal). Whether the choice changed.
+fn choice<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    p: &Palette,
+    value: &mut T,
+    options: &[(T, &str)],
+    width: f32,
+) -> bool {
+    // The cells' ids, as the segmented control makes them.
+    let name = (options.iter())
+        .map(|(_, label)| *label)
+        .collect::<Vec<_>>()
+        .join("|");
+    let base = ui.id().with(("segmented", name.as_str()));
+    let cells: Vec<Id> = options.iter().map(|(_, label)| base.with(*label)).collect();
+    let selected = (options.iter())
+        .position(|(option, _)| option == value)
+        .unwrap_or(0);
+    let mut changed = false;
+    if let Some(to) = super::arrow_choice(ui.ctx(), &cells, selected) {
+        *value = options[to].0;
+        changed = true;
+    }
+    widgets::segmented(ui, p, value, options, width) || changed
+}
+
+/// A select over `options`, the one equal to `current` checked, each offered
+/// only when its reason is `None` and otherwise disabled with the reason on
+/// hover. Its rows are buttons. The option taken, if one was.
+#[allow(clippy::too_many_arguments)]
+fn list<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    p: &Palette,
+    id: &str,
+    name: &str,
+    shown: &str,
+    width: f32,
+    current: T,
+    options: &[(T, String, Option<String>)],
+) -> Option<T> {
+    let select = kit::select(
+        ui,
+        p,
+        Id::new(id),
+        shown,
+        name,
+        vec2(width, metrics::CONTROL_HEIGHT),
+    );
+    let mut taken = None;
+    egui::Popup::menu(&select).show(|ui| {
+        widgets::menu_style(ui, width.max(240.0));
+        for (option, text, reason) in options {
+            if offer(ui, p, text, *option == current, reason.as_deref()) {
+                taken = Some(*option);
+            }
+        }
+    });
+    taken
+}
+
+/// A row of a select's list, checked when it is the current choice, and
+/// disabled with `reason` on hover. Whether it was taken.
+fn offer(ui: &mut Ui, p: &Palette, text: &str, current: bool, reason: Option<&str>) -> bool {
+    let response = ui
+        .add_enabled_ui(reason.is_none(), |ui| choice_row(ui, p, text, current))
+        .inner;
+    match reason {
+        Some(reason) => {
+            response.on_disabled_hover_text(reason);
+            false
+        }
+        None => response.clicked(),
+    }
+}
+
+/// A row of a select's list: a button, checked when it is the current
+/// choice and announced as chosen, as the selectable rows it replaced were.
+fn choice_row(ui: &mut Ui, p: &Palette, text: &str, current: bool) -> egui::Response {
+    let check = current.then_some(Icon::Check);
+    let response = kit::menu_row(ui, p, check, text, "", false, None);
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, current, text));
+    response
+}
+
+/// A field on the control material, `width` wide, its text in a 13-point
+/// editor named `name` for accessibility, and `suffix` (a unit or an
+/// extension) set quietly inside its trailing end. Text that cannot be used
+/// outlines it in the problem colour.
+#[allow(clippy::too_many_arguments)]
+fn field(
+    ui: &mut Ui,
+    p: &Palette,
+    id: Id,
+    text: &mut String,
+    width: f32,
+    hint: &str,
+    name: &str,
+    suffix: Option<&str>,
+    valid: bool,
+) -> egui::Response {
+    let (_, rect) = ui.allocate_space(vec2(width, metrics::CONTROL_HEIGHT));
+    controls::field_frame(ui, *p, rect, id, valid);
+    let unit = suffix.map(|suffix| {
+        let galley =
+            (ui.painter()).layout_no_wrap(suffix.to_owned(), theme::regular(13.0), p.muted);
+        let at = pos2(
+            rect.right() - 10.0 - galley.size().x,
+            rect.center().y - galley.size().y * 0.5,
+        );
+        let shown = Rect::from_min_size(at, galley.size());
+        ui.painter().galley(at, galley, p.muted);
+        (suffix, shown)
+    });
+    let after = unit.map_or(0.0, |(_, shown)| shown.width() + 4.0);
+    let inner = Rect::from_min_max(
+        pos2(rect.left() + 10.0, rect.top()),
+        pos2(rect.right() - 10.0 - after, rect.bottom()),
+    );
+    let response = controls::place(
+        ui,
+        inner,
+        Layout::left_to_right(Align::Center),
+        ("field", id),
+        |ui| controls::bare_text_edit(ui, id, text, hint, 13.0, inner.width()),
+    );
+    // Read after what is typed, where it is seen.
+    if let Some((suffix, shown)) = unit {
+        said(ui, shown, suffix);
+    }
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, ui.is_enabled(), name));
+    response
+}
+
+/// Supporting words under a card, wrapped.
+fn note(ui: &mut Ui, text: &str, color: Color32) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .font(theme::regular(11.5))
+                    .color(color),
+            )
+            .wrap(),
+        );
     });
 }
 
-/// A problem or a caution, led by the warning glyph.
+/// A line of the summary: what, and its value at the trailing edge, named
+/// together for those who do not see them.
+fn fact(ui: &mut Ui, p: &Palette, group: &mut Group, label: &str, value: &str) {
+    let rect = group.custom(ui, FACT);
+    let painter = ui.painter().clone();
+    let words = controls::galley_at(
+        &painter,
+        pos2(rect.left() + 14.0, rect.center().y),
+        painter.layout_no_wrap(label.to_owned(), theme::regular(12.5), p.secondary),
+    );
+    let room = rect.right() - 14.0 - words.right() - 12.0;
+    let galley = controls::elided(&painter, value, theme::regular(12.5), p.fg, room);
+    painter.galley(
+        pos2(
+            rect.right() - 14.0 - galley.size().x,
+            rect.center().y - galley.size().y * 0.5,
+        ),
+        galley,
+        p.fg,
+    );
+    ui.interact(rect, ui.id().with(("fact", label)), Sense::hover())
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, format!("{label}: {value}")));
+}
+
+/// A problem or a caution, led by the warning glyph in `color`: the words
+/// of a problem in it too, a caution's in the quieter ink.
 fn caution(ui: &mut Ui, p: &Palette, text: &str, color: Color32) {
+    ui.add_space(8.0);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
+        ui.add_space(4.0);
         let (glyph, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
         icons::paint(
             ui.painter(),
@@ -667,7 +1164,7 @@ fn caution(ui: &mut Ui, p: &Palette, text: &str, color: Color32) {
         );
         ui.add(
             egui::Label::new(
-                RichText::new(text)
+                egui::RichText::new(text)
                     .font(theme::regular(12.0))
                     .color(if color == p.red { p.red } else { p.secondary }),
             )
@@ -676,48 +1173,9 @@ fn caution(ui: &mut Ui, p: &Palette, text: &str, color: Color32) {
     });
 }
 
-/// A field on the control material, named for accessibility.
-fn field(
-    ui: &mut Ui,
-    p: &Palette,
-    text: &mut String,
-    width: f32,
-    hint: &str,
-    name: &str,
-) -> egui::Response {
-    egui::Frame::NONE
-        .fill(p.control)
-        .corner_radius(CornerRadius::same(metrics::CONTROL_RADIUS))
-        .inner_margin(egui::Margin::symmetric(8, 5))
-        .show(ui, |ui| {
-            let response = ui.add(
-                egui::TextEdit::singleline(text)
-                    .hint_text(hint)
-                    .frame(egui::Frame::NONE)
-                    .desired_width(width)
-                    .font(theme::regular(12.5)),
-            );
-            response
-                .widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, ui.is_enabled(), name));
-            response
-        })
-        .inner
-}
-
-/// A choice in a dropdown that is offered only when `reason` is `None`.
-fn option<T: PartialEq>(ui: &mut Ui, value: &mut T, choice: T, text: &str, reason: Option<&str>) {
-    let enabled = reason.is_none();
-    let response = ui
-        .add_enabled_ui(enabled, |ui| ui.selectable_value(value, choice, text))
-        .inner;
-    if let Some(reason) = reason {
-        response.on_disabled_hover_text(reason);
-    }
-}
-
 /// Shows the export sheet. Returns what the person asked for, if anything;
-/// Escape and the backdrop close it, and the application keeps `state` to
-/// show again.
+/// Escape and the backdrop close it, an Enter pressed afresh exports, and the
+/// application keeps `state` to show again.
 pub fn show(
     ctx: &egui::Context,
     p: &Palette,
@@ -760,93 +1218,64 @@ pub fn show(
     // the frame before.
     let typing_id = Id::new("export-sheet-typing");
     let typing = ctx.data(|data| data.get_temp(typing_id).unwrap_or(false));
-    let response = egui::Modal::new(Id::new("export-sheet"))
-        .backdrop_color(p.scrim)
-        .frame(sheets::sheet(p))
-        .show(ctx, |ui| {
-            let screen = ui.ctx().content_rect();
-            let width = 760.0f32.min(screen.width() - 64.0).max(240.0);
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing.y = 6.0;
-            reserve_scroll_bar(ui);
-            // Escape gives up a preset name being typed before it closes the
-            // sheet.
-            if state.naming.is_some()
-                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-            {
-                state.naming = None;
+    // Enter exports, as the sheet's one Primary, when it is pressed afresh
+    // while nothing has the keyboard: not one carried over from what was
+    // there before the sheet, held down, or meant for a field or a button.
+    let opening = opening(ctx, Id::new("export-sheet"));
+    let enter = fresh_enter(ctx, opening) && ctx.memory(|memory| memory.focused()).is_none();
+    let screen = ctx.content_rect();
+    let size = vec2(
+        WIDTH.min(screen.width() - 24.0).max(240.0),
+        HEIGHT
+            .min(screen.height() - 24.0)
+            .max(HEADER + FOOTER + 120.0),
+    );
+    let response = scaffold(ctx, p, Id::new("export-sheet"), "Export", size.x, |ui| {
+        // Escape gives up a preset name being typed before it closes the
+        // sheet.
+        if state.naming.is_some()
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            state.naming = None;
+        }
+        let queue = input.queue_len;
+        if header(ui, p, "Export", "Close export", |ui| {
+            if queue > 0 {
+                let label = match queue {
+                    1 => "Render queue (1 job)".to_owned(),
+                    n => format!("Render queue ({n} jobs)"),
+                };
+                if widgets::icon_button(ui, p, Icon::List, &label).clicked() {
+                    answer = Some(ExportAnswer::OpenQueue);
+                }
             }
-            header(ui, p, input, &mut answer);
-
-            let room = (screen.height() - 190.0).clamp(160.0, 600.0);
-            let mut sheet = Sheet {
-                p,
-                input,
-                caps,
-                plan: plan.as_ref(),
-                range_problem: range_problem.as_deref(),
-                answer: &mut answer,
-            };
-            if width >= TWO_COLUMNS {
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    sheets::column(ui, LEFT, |ui| {
-                        ui.set_min_height(room);
-                        egui::ScrollArea::vertical()
-                            .id_salt("export-summary")
-                            .max_height(room)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                ui.spacing_mut().item_spacing.y = 6.0;
-                                sheet.left(ui, state);
-                            });
-                    });
-                    ui.add_space(10.0);
-                    let (line, _) = ui.allocate_exact_size(vec2(1.0, room), Sense::hover());
-                    ui.painter()
-                        .vline(line.center().x, line.y_range(), p.hairline());
-                    ui.add_space(10.0);
-                    sheets::column(ui, ui.available_width(), |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("export-options")
-                            .max_height(room)
-                            .min_scrolled_height(room)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                ui.spacing_mut().item_spacing.y = 6.0;
-                                sheet.right(ui, state);
-                            });
-                    });
-                });
-            } else {
-                sheets::column(ui, width, |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("export-stacked")
-                        .max_height(room)
-                        .min_scrolled_height(room)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.y = 6.0;
-                            sheet.left(ui, state);
-                            ui.add_space(6.0);
-                            sheet.right(ui, state);
-                        });
-                });
-            }
-            ui.add_space(4.0);
-            let facts = (plan.as_ref())
-                .and_then(|plan| plan.as_ref().ok())
-                .map(brief);
-            footer(
-                ui,
-                p,
-                state,
-                input,
-                blocker.as_deref(),
-                facts.as_deref(),
-                &mut answer,
-            );
-        });
+        }) {
+            answer = Some(ExportAnswer::Close);
+        }
+        let (_, body) = ui.allocate_space(vec2(size.x, size.y - HEADER - FOOTER));
+        let mut sheet = Sheet {
+            p,
+            input,
+            caps,
+            plan: plan.as_ref(),
+            range_problem: range_problem.as_deref(),
+            answer: &mut answer,
+            opening,
+        };
+        sheet.body(ui, body, state);
+        let facts = (plan.as_ref())
+            .and_then(|plan| plan.as_ref().ok())
+            .map(brief);
+        footer(
+            ui,
+            p,
+            state,
+            input,
+            blocker.as_deref(),
+            facts.as_deref(),
+            &mut answer,
+        );
+    });
     if state.settings != before {
         // What is shown beside the control that changed was laid out from
         // the settings before it: show it again from the new ones.
@@ -866,19 +1295,71 @@ pub fn show(
     if answer.is_none() && (response.backdrop_response.clicked() || escape) {
         answer = Some(ExportAnswer::Close);
     }
+    if answer.is_none()
+        && enter
+        && blocker.is_none()
+        && state.naming.is_none()
+        && response.is_top_modal
+        && !response.any_popup_open
+    {
+        answer = Some(queued(state, true));
+    }
     answer
 }
 
-/// Keeps room beside a scrolled column for its scroll bar at its widest, so
-/// that the bar, widened under the pointer, covers nothing: the summary's
-/// values and the options' trailing controls end at the column's edge.
-fn reserve_scroll_bar(ui: &mut Ui) {
-    let scroll = &mut ui.spacing_mut().scroll;
-    scroll.floating_allocated_width = scroll.bar_width + scroll.bar_inner_margin;
+/// Whether the sheet `id` is shown in this frame for the first time since it
+/// was last away: the frame whose keys were meant for what was there before.
+fn opening(ctx: &egui::Context, id: Id) -> bool {
+    let frame = ctx.cumulative_frame_nr();
+    let key = id.with("shown");
+    let seen = ctx.data(|data| data.get_temp::<(u64, u64)>(key));
+    let first = match seen {
+        Some((first, last)) if last == frame || last + 1 == frame => first,
+        _ => frame,
+    };
+    ctx.data_mut(|data| data.insert_temp(key, (first, frame)));
+    first == frame
 }
 
-/// What the file will be, in a few words for the footer, whatever either
-/// column is scrolled to: "≈ 1.9 MB · 0:05 · 1280 × 720".
+/// An Enter pressed in this frame, and none that was held down or pressed
+/// as the sheet opened.
+fn fresh_enter(ctx: &egui::Context, opening: bool) -> bool {
+    let (fresh, carried) = ctx.input(|input| {
+        (input.events.iter()).fold((false, false), |(fresh, carried), event| match event {
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                pressed: true,
+                repeat,
+                ..
+            } => {
+                let old = *repeat || opening;
+                (fresh || !old, carried || old)
+            }
+            _ => (fresh, carried),
+        })
+    });
+    fresh && !carried
+}
+
+/// The export as it stands, to start now or to wait in the queue; or, with
+/// no folder yet, the question that asks for one, the export kept until it
+/// comes.
+fn queued(state: &mut ExportSheetState, start_now: bool) -> ExportAnswer {
+    match state.destination() {
+        Some(destination) => ExportAnswer::Queue {
+            settings: state.settings.clone(),
+            destination,
+            start_now,
+        },
+        None => {
+            state.pending = Some(start_now);
+            ExportAnswer::ChooseFolder
+        }
+    }
+}
+
+/// What the file will be, in a few words for the footer, whatever the body
+/// is scrolled to: "≈ 1.9 MB · 0:05 · 1280 × 720".
 fn brief(plan: &ExportPlan) -> String {
     let mut parts = vec![
         format!(
@@ -892,6 +1373,39 @@ fn brief(plan: &ExportPlan) -> String {
         parts.push(format!("{width} × {height}"));
     }
     parts.join(" · ")
+}
+
+/// `text` in 12 points on one line of at most `width`, its figures in the
+/// monospace face so that a changing estimate does not shift what follows.
+fn figures(text: &str, color: Color32, width: f32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let figure = |c: char| c.is_ascii_digit() || c == '.' || c == ':';
+    let mut start = 0;
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    for (at, (_, c)) in chars.iter().enumerate() {
+        let next = chars.get(at + 1);
+        if next.is_none_or(|(_, next)| figure(*next) != figure(*c)) {
+            let end = next.map_or(text.len(), |(index, _)| *index);
+            let font = if figure(*c) {
+                theme::mono(12.0)
+            } else {
+                theme::regular(12.0)
+            };
+            job.append(
+                &text[start..end],
+                0.0,
+                egui::TextFormat::simple(font, color),
+            );
+            start = end;
+        }
+    }
+    job.wrap = egui::text::TextWrapping {
+        max_width: width.max(0.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    job
 }
 
 /// Why the export cannot be queued as it stands.
@@ -923,30 +1437,9 @@ fn blocker(
     None
 }
 
-fn header(ui: &mut Ui, p: &Palette, input: &ExportSheetInput, answer: &mut Option<ExportAnswer>) {
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new("Export")
-                .font(theme::semibold(15.0))
-                .color(p.fg),
-        );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if icon_button(ui, p, Icon::Close, "Close export").clicked() {
-                *answer = Some(ExportAnswer::Close);
-            }
-            if input.queue_len > 0 {
-                let label = match input.queue_len {
-                    1 => "Render queue (1 job)".to_owned(),
-                    n => format!("Render queue ({n} jobs)"),
-                };
-                if icon_button(ui, p, Icon::List, &label).clicked() {
-                    *answer = Some(ExportAnswer::OpenQueue);
-                }
-            }
-        });
-    });
-}
-
+/// The fixed bar under the body: what will be made, or the name of a preset
+/// being kept, at the leading edge, and at the trailing one Cancel, the
+/// other actions, then Export, the sheet's one accent.
 fn footer(
     ui: &mut Ui,
     p: &Palette,
@@ -956,11 +1449,143 @@ fn footer(
     facts: Option<&str>,
     answer: &mut Option<ExportAnswer>,
 ) {
-    ui.horizontal(|ui| {
-        ui.set_min_height(metrics::legacy::CONTROL_HEIGHT);
-        let ready = matches!(input.caps, CapabilityView::Ready(_));
-        if let Some(name) = state.naming.as_mut() {
-            let typed = field(ui, p, name, 150.0, "Preset name", "Preset name");
+    let bar = controls::sheet_footer(ui, *p).shrink2(vec2(PAD - 16.0, 0.0));
+    controls::place(
+        ui,
+        bar,
+        Layout::right_to_left(Align::Center),
+        "export-footer",
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let ready = matches!(input.caps, CapabilityView::Ready(_));
+            let reason = blocker.unwrap_or_default();
+            let ok = blocker.is_none();
+            // Made from the trailing edge in, the confirming action first,
+            // which is also the order Tab takes.
+            let export = ui
+                .add_enabled_ui(ok, |ui| {
+                    controls::button(ui, *p, "Export", ButtonKind::Primary)
+                })
+                .inner
+                .on_hover_text("Queue it to render now, and show the render queue")
+                .on_disabled_hover_text(reason);
+            if export.clicked() && ok {
+                *answer = Some(queued(state, true));
+            }
+            let add = ui
+                .add_enabled_ui(ok, |ui| {
+                    controls::button(ui, *p, "Add to queue", ButtonKind::Secondary)
+                })
+                .inner
+                .on_hover_text("Queue it paused, to start from the render queue")
+                .on_disabled_hover_text(reason);
+            if add.clicked() && ok {
+                *answer = Some(queued(state, false));
+            }
+            // While a preset is being named, its name has the leading edge
+            // to itself, away from Cancel, which closes the whole sheet.
+            if state.naming.is_none() {
+                let own = matched(&state.settings, state.preset.as_deref(), input.presets)
+                    .filter(|preset| preset.destination == Destination::Custom);
+                if let Some(preset) = own
+                    && kit::small_icon_button(
+                        ui,
+                        p,
+                        Icon::Trash,
+                        &format!("Delete preset “{}”", preset.name),
+                    )
+                    .clicked()
+                {
+                    *answer = Some(ExportAnswer::DeletePreset(preset.id.clone()));
+                    state.preset = None;
+                }
+                let save = ui
+                    .add_enabled_ui(ready, |ui| {
+                        controls::button(ui, *p, "Save preset…", ButtonKind::Secondary)
+                    })
+                    .inner
+                    .on_hover_text("Keep these settings as a preset of your own")
+                    .on_disabled_hover_text("Available once the encoders have been checked");
+                if save.clicked() {
+                    state.naming = Some(String::new());
+                    state.focus_naming = true;
+                }
+            }
+            if controls::button(ui, *p, "Cancel", ButtonKind::Secondary).clicked() {
+                *answer = Some(ExportAnswer::Close);
+            }
+            // What is left at the leading edge says what will be made.
+            let room = Rect::from_min_max(
+                bar.left_top(),
+                pos2(bar.left() + ui.available_width() - 8.0, bar.bottom()),
+            );
+            if state.naming.is_some() {
+                let mut lead = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(room)
+                        .layout(Layout::left_to_right(Align::Center)),
+                );
+                naming(&mut lead, p, state, answer);
+            } else if matches!(input.caps, CapabilityView::Probing) {
+                let glyph = Rect::from_center_size(
+                    pos2(room.left() + 7.0, room.center().y),
+                    Vec2::splat(14.0),
+                );
+                kit::spinner(ui, glyph, p.muted);
+                let words = ui.painter().layout_job(figures(
+                    "Checking encoders…",
+                    p.secondary,
+                    room.width() - 22.0,
+                ));
+                let shown = controls::galley_at(
+                    ui.painter(),
+                    pos2(room.left() + 22.0, room.center().y),
+                    words,
+                );
+                said(ui, shown, "Checking encoders…");
+            } else if let Some(facts) = facts {
+                let words = (ui.painter()).layout_job(figures(facts, p.secondary, room.width()));
+                let shown = controls::galley_at(ui.painter(), room.left_center(), words);
+                said(ui, shown, facts);
+            }
+        },
+    );
+}
+
+/// A preset's name being typed in the footer, with its Save and a way to
+/// stop, in reading order.
+fn naming(
+    ui: &mut Ui,
+    p: &Palette,
+    state: &mut ExportSheetState,
+    answer: &mut Option<ExportAnswer>,
+) {
+    let save_width = (ui.painter())
+        .layout_no_wrap("Save".to_owned(), theme::medium(13.0), p.fg)
+        .size()
+        .x
+        .max(40.0)
+        + 32.0;
+    let width = 160.0 + 8.0 + save_width + 4.0 + metrics::SMALL_BUTTON;
+    ui.allocate_ui_with_layout(
+        vec2(width, metrics::CONTROL_HEIGHT),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let Some(name) = state.naming.as_mut() else {
+                return;
+            };
+            let typed = field(
+                ui,
+                p,
+                Id::new("export-preset-name"),
+                name,
+                160.0,
+                "Preset name",
+                "Preset name",
+                None,
+                true,
+            );
             if std::mem::take(&mut state.focus_naming) {
                 typed.request_focus();
             }
@@ -968,11 +1593,12 @@ fn footer(
             let named = !name.trim().is_empty();
             let save = ui
                 .add_enabled_ui(named, |ui| {
-                    widgets::button(ui, p, None, "Save", Kind::Plain)
+                    controls::button(ui, *p, "Save", ButtonKind::Secondary)
                 })
                 .inner
                 .on_hover_text("Keep these settings as a preset")
                 .on_disabled_hover_text("Name the preset");
+            ui.spacing_mut().item_spacing.x = 4.0;
             if (save.clicked() || entered) && named {
                 let mut settings = state.settings.clone();
                 // A preset carries neither a range nor a caption track.
@@ -983,97 +1609,12 @@ fn footer(
                     settings,
                 });
                 state.naming = None;
-            } else if widgets::small_icon_button(ui, p, Icon::Close, "Stop naming the preset")
-                .clicked()
+            } else if kit::small_icon_button(ui, p, Icon::Close, "Stop naming the preset").clicked()
             {
                 state.naming = None;
             }
-        } else {
-            let save = ui
-                .add_enabled_ui(ready, |ui| {
-                    widgets::button(ui, p, None, "Save preset…", Kind::Plain)
-                })
-                .inner
-                .on_hover_text("Keep these settings as a preset of your own")
-                .on_disabled_hover_text("Available once the encoders have been checked");
-            if save.clicked() {
-                state.naming = Some(String::new());
-                state.focus_naming = true;
-            }
-            let own = matched(&state.settings, state.preset.as_deref(), input.presets)
-                .filter(|preset| preset.destination == Destination::Custom);
-            if let Some(preset) = own
-                && widgets::small_icon_button(
-                    ui,
-                    p,
-                    Icon::Trash,
-                    &format!("Delete preset “{}”", preset.name),
-                )
-                .clicked()
-            {
-                *answer = Some(ExportAnswer::DeletePreset(preset.id.clone()));
-                state.preset = None;
-            }
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let reason = blocker.unwrap_or_default();
-            let ok = blocker.is_none();
-            let mut queue = |start_now: bool| match state.destination() {
-                Some(destination) => Some(ExportAnswer::Queue {
-                    settings: state.settings.clone(),
-                    destination,
-                    start_now,
-                }),
-                None => {
-                    state.pending = Some(start_now);
-                    Some(ExportAnswer::ChooseFolder)
-                }
-            };
-            let export = ui
-                .add_enabled_ui(ok, |ui| {
-                    widgets::button(ui, p, Some(Icon::Export), "Export", Kind::Primary)
-                })
-                .inner
-                .on_hover_text("Queue it to render now, and show the render queue")
-                .on_disabled_hover_text(reason);
-            if export.clicked() && ok {
-                *answer = queue(true);
-            }
-            let add = ui
-                .add_enabled_ui(ok, |ui| {
-                    widgets::button(ui, p, None, "Add to queue", Kind::Plain)
-                })
-                .inner
-                .on_hover_text("Queue it paused, to start from the render queue")
-                .on_disabled_hover_text(reason);
-            if add.clicked() && ok {
-                *answer = queue(false);
-            }
-            if widgets::button(ui, p, None, "Cancel", Kind::Plain).clicked() {
-                *answer = Some(ExportAnswer::Close);
-            }
-            if matches!(input.caps, CapabilityView::Probing) {
-                ui.label(
-                    RichText::new("Checking encoders…")
-                        .font(theme::regular(12.0))
-                        .color(p.muted),
-                );
-                ui.add(egui::Spinner::new().size(12.0).color(p.muted));
-            } else if let Some(facts) = facts
-                && state.naming.is_none()
-            {
-                ui.add_space(6.0);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(facts)
-                            .font(theme::regular(11.5))
-                            .color(p.muted),
-                    )
-                    .truncate(),
-                );
-            }
-        });
-    });
+        },
+    );
 }
 
 /// What both columns read while they are drawn.
@@ -1084,6 +1625,8 @@ struct Sheet<'s, 'a> {
     plan: Option<&'s Result<ExportPlan, ExportError>>,
     range_problem: Option<&'s str>,
     answer: &'s mut Option<ExportAnswer>,
+    /// The sheet shows in this frame for the first time since it was away.
+    opening: bool,
 }
 
 impl Sheet<'_, '_> {
@@ -1096,130 +1639,90 @@ impl Sheet<'_, '_> {
         self.input.project.settings.frame_rate
     }
 
-    /// The picture, the file, what will be made and the range.
-    fn left(&mut self, ui: &mut Ui, state: &mut ExportSheetState) {
-        let p = self.p;
-        self.poster(ui, state);
-        ui.add_space(2.0);
-
-        // The file: its name, its extension and the folder it goes in.
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let extension = format!(".{}", state.settings.container.extension());
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(extension.clone(), theme::regular(12.5), p.muted);
-            let room = (ui.available_width() - galley.size().x - 22.0).max(40.0);
-            field(ui, p, &mut state.name, room, "File name", "File name");
-            ui.label(
-                RichText::new(extension)
-                    .font(theme::regular(12.5))
-                    .color(p.muted),
+    /// The body between the header and the footer: from 640 points of
+    /// sheet, the picture and what will be made in a column beside the
+    /// choices; narrower, one over the other. What does not fit scrolls.
+    fn body(&mut self, ui: &mut Ui, body: Rect, state: &mut ExportSheetState) {
+        let ground = self.p.elevated;
+        // A sheet opens at its first card, however far down it was left.
+        let afresh = self.opening;
+        // A scrolled part reaches 6 points short of the edge beside it, so
+        // that its bar floats in the margin, clear of what it holds.
+        if body.width() >= TWO_COLUMNS {
+            let split = body.left() + PAD + LEFT;
+            let left = Rect::from_min_max(
+                pos2(body.left() + PAD, body.top()),
+                pos2(split + PAD - 6.0, body.bottom()),
             );
-        });
-        // Shown as the render queue shows where a job goes.
-        let folder_text = state.folder.as_ref().map_or_else(
-            || "Choose a folder…".to_owned(),
-            |folder| super::render_queue::short_folder(folder, state.home.as_deref()),
-        );
-        let tip = state.folder.as_ref().map_or_else(
-            || "Choose where the file is saved".to_owned(),
-            |folder| format!("Saved in {}", folder.display()),
-        );
-        let folder = folder_button(ui, p, &folder_text, state.folder.as_deref()).on_hover_text(tip);
-        if folder.clicked() {
-            *self.answer = Some(ExportAnswer::ChooseFolder);
-        }
-
-        section(ui, p, "Summary");
-        self.summary(ui, state);
-
-        section(ui, p, "Range");
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            let selection = self.input.selection;
-            for (choice, text, reason) in [
-                (RangeChoice::Timeline, "Whole timeline", None),
-                (
-                    RangeChoice::Selection,
-                    "Selected clips",
-                    selection
-                        .is_none()
-                        .then_some("Close Export and select clips on the timeline first"),
-                ),
-                (RangeChoice::Custom, "Custom range", None),
-            ] {
-                // Added in place rather than in a child, so the row wraps
-                // inside the column instead of widening it.
-                let chosen = state.range == choice;
-                let chip = ui
-                    .add_enabled(reason.is_none(), |ui: &mut Ui| {
-                        widgets::chip(ui, p, text, chosen)
-                    })
-                    .on_disabled_hover_text(reason.unwrap_or_default());
-                if chip.clicked() && reason.is_none() && state.range != choice {
-                    if choice == RangeChoice::Custom {
-                        let (start, end) = match (state.range, selection) {
-                            (RangeChoice::Selection, Some(span)) => span,
-                            _ => (Time::ZERO, self.input.project.duration()),
-                        };
-                        state.start_text = timefmt::timecode(start, self.rate());
-                        state.end_text = timefmt::timecode(end, self.rate());
-                    }
-                    state.range = choice;
-                }
-            }
-        });
-        if state.range == RangeChoice::Custom {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                let width = ((ui.available_width() - 40.0) * 0.5 - 16.0).max(48.0);
-                field(ui, p, &mut state.start_text, width, "Start", "Range start");
-                ui.label(
-                    RichText::new("to")
-                        .font(theme::regular(12.0))
-                        .color(p.muted),
-                );
-                field(ui, p, &mut state.end_text, width, "End", "Range end");
+            scrolled(ui, ground, left, LEFT, "export-summary", afresh, |ui| {
+                self.left(ui, body.height(), state);
             });
-            let playhead = self.input.playhead;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                if widgets::button(ui, p, None, "Start at playhead", Kind::Plain).clicked() {
-                    state.start_text = timefmt::timecode(playhead, self.rate());
-                }
-                if widgets::button(ui, p, None, "End at playhead", Kind::Plain).clicked() {
-                    state.end_text = timefmt::timecode(playhead, self.rate());
-                }
+            let right = Rect::from_min_max(
+                pos2(split + PAD, body.top()),
+                pos2(body.right() - 6.0, body.bottom()),
+            );
+            let width = body.right() - PAD - right.left();
+            scrolled(ui, ground, right, width, "export-options", afresh, |ui| {
+                self.right(ui, state);
             });
-        }
-        if let Some(problem) = self.range_problem {
-            note(ui, problem, p.red);
+        } else {
+            let all = Rect::from_min_max(
+                pos2(body.left() + PAD, body.top()),
+                pos2(body.right() - 6.0, body.bottom()),
+            );
+            let width = body.width() - PAD * 2.0;
+            scrolled(ui, ground, all, width, "export-stacked", afresh, |ui| {
+                self.top(ui, state);
+                ui.add_space(GAP);
+                self.right(ui, state);
+            });
         }
     }
 
-    /// The picture as it lands in the output: in the output's shape, with
-    /// the bars or the crop the fit makes.
-    fn poster(&self, ui: &mut Ui, state: &ExportSheetState) {
+    /// The column beside the choices: the picture, then what will be made,
+    /// in a body `height` tall.
+    fn left(&mut self, ui: &mut Ui, height: f32, state: &ExportSheetState) {
+        // Shorter in a short sheet, so that the six lines of the summary
+        // under it, with their label 14 under it, are seen with the room
+        // the column leaves over and under what it holds.
+        let under = GAP + LABEL + 6.0 * FACT;
+        let most = (height - 4.0 - under - PAD).clamp(72.0, 170.0);
+        let width = ui.available_width();
+        self.poster(ui, state, width, most);
+        ui.add_space(GAP);
+        section(ui, self.p, "Summary");
+        self.summary(ui, state);
+    }
+
+    /// Over the choices in a narrow sheet: the picture beside what will be
+    /// made.
+    fn top(&mut self, ui: &mut Ui, state: &ExportSheetState) {
+        section(ui, self.p, "Summary");
+        let width = ui.available_width();
+        // 16:9 at its 100 points' height, or less of a narrow column.
+        let poster = (width * 0.4).min(178.0);
+        ui.horizontal_top(|ui| {
+            self.poster(ui, state, poster, 100.0);
+            ui.add_space(12.0);
+            super::sheets::column(ui, ui.available_width(), |ui| self.summary(ui, state));
+        });
+    }
+
+    /// The picture as it lands in the output, on the stage: in the output's
+    /// shape, with the bars or the crop the fit makes, in a 16:9 well at
+    /// most `width` wide and `most` tall, at the leading edge of the
+    /// `width` it has, where the card under it starts.
+    fn poster(&self, ui: &mut Ui, state: &ExportSheetState, width: f32, most: f32) {
         let p = self.p;
         let canvas = self.canvas();
         let video = state.settings.video.as_ref();
         let output = video.map_or(canvas, |video| video.resolution.size(canvas));
-        let ratio = output[1].max(1) as f32 / output[0].max(1) as f32;
-        let width = ui.available_width();
-        // Shorter on a short screen, so that the summary under it is seen.
-        let most = match ui.ctx().content_rect().height() {
-            high if high >= 760.0 => 170.0,
-            high if high >= 600.0 => 130.0,
-            _ => 96.0,
-        };
-        let size = if width * ratio > most {
-            vec2(most / ratio, most)
-        } else {
-            vec2(width, width * ratio)
-        };
-        let (row, response) = ui.allocate_exact_size(vec2(width, size.y), Sense::hover());
-        let frame = Rect::from_center_size(row.center(), size);
+        // Narrowed rather than shortened, so that the bars it shows are the
+        // fit's and not the well's.
+        let height = (width * 9.0 / 16.0).min(most).round();
+        let (_, room) = ui.allocate_space(vec2(width, height));
+        let well = Rect::from_min_size(room.min, vec2((height * 16.0 / 9.0).round(), height));
+        let response = ui.interact(well, ui.id().with("export-poster"), Sense::hover());
         let name = match (video, self.input.poster) {
             (Some(_), Some(_)) => format!(
                 "Output frame at the playhead, {} × {}",
@@ -1235,158 +1738,201 @@ impl Sheet<'_, '_> {
         {
             response.on_hover_text(format!("No preview of the output: {problem}"));
         }
-        if !ui.is_rect_visible(row) {
+        if !ui.is_rect_visible(well) {
             return;
         }
-        let painter = ui.painter_at(frame);
+        let painter = ui.painter_at(well);
         let radius = CornerRadius::same(metrics::CONTROL_RADIUS);
+        painter.rect_filled(well, radius, p.stage());
+        // The stage is dark in either appearance; so is what is drawn on it.
+        let stage = Palette::stage_palette(Accent::default());
         let Some(video) = video else {
-            painter.rect_filled(frame, radius, p.sunken);
             icons::paint(
                 &painter,
-                Rect::from_center_size(frame.center() - vec2(0.0, 8.0), Vec2::splat(22.0)),
+                Rect::from_center_size(well.center() - vec2(0.0, 9.0), Vec2::splat(22.0)),
                 Icon::Music,
-                p.muted,
+                stage.muted,
             );
             painter.text(
-                frame.center() + vec2(0.0, 16.0),
-                egui::Align2::CENTER_CENTER,
+                well.center() + vec2(0.0, 15.0),
+                Align2::CENTER_CENTER,
                 "Sound only",
                 theme::regular(12.0),
-                p.muted,
+                stage.secondary,
             );
             return;
         };
-        painter.rect_filled(frame, radius, Color32::BLACK);
+        // The output's shape, as large as the well holds it.
+        let ratio = output[0].max(1) as f32 / output[1].max(1) as f32;
+        let size = if well.width() > well.height() * ratio {
+            vec2(well.height() * ratio, well.height())
+        } else {
+            vec2(well.width(), well.width() / ratio)
+        };
+        let frame = Rect::from_center_size(well.center(), size);
+        // Rounded with the well where it fills it; set in it, square.
+        let round = if frame.width() >= well.width() - 1.0 && frame.height() >= well.height() - 1.0
+        {
+            radius
+        } else {
+            CornerRadius::ZERO
+        };
+        painter.rect_filled(frame, round, Color32::BLACK);
         let geometry = Geometry::new(canvas, output, video.fit);
         let k = frame.width() / output[0].max(1) as f32;
         let drawn = Rect::from_min_size(
             frame.min + vec2(geometry.offset[0] as f32, geometry.offset[1] as f32) * k,
             vec2(geometry.drawn[0] as f32, geometry.drawn[1] as f32) * k,
         );
-        // Corners are rounded only where the picture reaches them.
-        let round = if drawn.contains_rect(frame.shrink(0.5)) || geometry.is_exact() {
-            radius
-        } else {
-            CornerRadius::ZERO
-        };
         match self.input.poster {
             // The output picture itself: its bars and crop are drawn in it.
             Some((texture, _)) => {
                 painter.add(
-                    egui::epaint::RectShape::filled(frame, radius, Color32::WHITE)
+                    egui::epaint::RectShape::filled(frame, round, Color32::WHITE)
                         .with_texture(texture, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
                 );
             }
             None => {
-                painter.rect_filled(drawn, round, theme::mix(p.sunken, p.elevated, 0.6));
+                let picture = drawn.intersect(frame);
+                // Corners are rounded only where the picture reaches them.
+                let corners = if geometry.is_exact() || picture == frame {
+                    round
+                } else {
+                    CornerRadius::ZERO
+                };
+                painter.rect_filled(
+                    picture,
+                    corners,
+                    theme::mix(p.stage(), Color32::WHITE, 0.07),
+                );
                 icons::paint(
                     &painter,
-                    Rect::from_center_size(drawn.intersect(frame).center(), Vec2::splat(22.0)),
+                    Rect::from_center_size(picture.center(), Vec2::splat(22.0)),
                     Icon::Film,
-                    p.muted,
+                    stage.muted,
                 );
             }
         }
     }
 
+    /// What will be made, as a card of facts, then what will not come out
+    /// as previewed and why the plan fails, if it does.
     fn summary(&self, ui: &mut Ui, state: &ExportSheetState) {
         let p = self.p;
         let settings = &state.settings;
         let canvas = self.canvas();
-        ui.spacing_mut().item_spacing.y = 0.0;
         let plan = self.plan.and_then(|plan| plan.as_ref().ok());
+        let mut facts: Vec<(&str, String)> = Vec::new();
         if let Some(video) = &settings.video {
             let size = plan.and_then(|plan| plan.video.as_ref()).map_or_else(
                 || video.resolution.size(canvas),
                 |video| video.geometry.output,
             );
-            fact(
-                ui,
-                p,
+            facts.push((
                 "Size",
-                &format!("{} × {} · {}", size[0], size[1], aspect(size)),
-            );
+                format!("{} × {} · {}", size[0], size[1], aspect(size)),
+            ));
             let rate = video.frame_rate.unwrap_or(self.rate());
-            fact(ui, p, "Frame rate", &format!("{} fps", rate_label(rate)));
+            facts.push(("Frame rate", format!("{} fps", rate_label(rate))));
         }
-        if let Some(audio) = &settings.audio {
-            let channels = if audio.channels == 1 {
-                "Mono"
-            } else {
-                "Stereo"
-            };
-            fact(
-                ui,
-                p,
-                "Sound",
-                &format!(
-                    "{} · {} kHz · {channels}",
-                    audio.codec.label(),
-                    trim(audio.sample_rate as f64 / 1000.0)
-                ),
-            );
-        } else {
-            fact(ui, p, "Sound", "None");
-        }
+        facts.push((
+            "Sound",
+            match &settings.audio {
+                Some(audio) => {
+                    let channels = if audio.channels == 1 {
+                        "Mono"
+                    } else {
+                        "Stereo"
+                    };
+                    format!(
+                        "{} · {} kHz · {channels}",
+                        audio.codec.label(),
+                        trim(audio.sample_rate as f64 / 1000.0)
+                    )
+                }
+                None => "None".to_owned(),
+            },
+        ));
         match plan {
             Some(plan) => {
                 let length = plan.end - plan.start;
                 let frames = plan.video.as_ref().map(|video| video.frames.count);
-                let duration = match frames {
-                    Some(frames) => format!("{} · {frames} frames", timefmt::short(length)),
-                    None => timefmt::short(length),
-                };
-                fact(ui, p, "Duration", &duration);
-                fact(
-                    ui,
-                    p,
+                facts.push((
+                    "Duration",
+                    match frames {
+                        Some(frames) => format!("{} · {frames} frames", timefmt::short(length)),
+                        None => timefmt::short(length),
+                    },
+                ));
+                facts.push((
                     "Estimated size",
-                    &format!(
+                    format!(
                         "≈ {}",
                         timefmt::file_size(ExportSettings::estimate_bytes(plan))
                     ),
-                );
-                let encoder = match (&plan.video, &plan.audio) {
-                    (Some(video), _) => encoder_label(video.encoder.hardware, &video.encoder.name),
-                    (None, Some(audio)) => audio.encoder.name.clone(),
-                    (None, None) => "None".to_owned(),
-                };
-                fact(ui, p, "Encoder", &encoder);
+                ));
+                facts.push((
+                    "Encoder",
+                    match (&plan.video, &plan.audio) {
+                        (Some(video), _) => {
+                            encoder_label(video.encoder.hardware, &video.encoder.name)
+                        }
+                        (None, Some(audio)) => audio.encoder.name.clone(),
+                        (None, None) => "None".to_owned(),
+                    },
+                ));
             }
             None => {
                 if let Ok((start, end)) = settings.span(self.input.project) {
-                    fact(ui, p, "Duration", &timefmt::short(end - start));
+                    facts.push(("Duration", timefmt::short(end - start)));
                 }
             }
         }
-        ui.spacing_mut().item_spacing.y = 6.0;
+        controls::group(ui, *p, |ui, group| {
+            for (label, value) in &facts {
+                fact(ui, p, group, label, value);
+            }
+        });
         for warning in self.input.warnings {
-            caution(ui, p, warning, p.yellow);
+            caution(ui, p, warning, p.legible(p.yellow));
         }
         if let Some(Err(error)) = self.plan {
             caution(ui, p, &error.to_string(), p.red);
         }
     }
 
-    /// Presets, then the picture, the sound and the captions.
+    /// The file, the preset and the range, then the picture, the sound and
+    /// the captions, as cards in that order. The choices that need to know
+    /// what this host encodes wait for it.
     fn right(&mut self, ui: &mut Ui, state: &mut ExportSheetState) {
         let p = self.p;
+        self.file(ui, state);
+        ui.add_space(GAP);
         let caps = match (self.input.caps, self.caps) {
             (_, Some(caps)) => caps,
             (CapabilityView::Failed(problem), _) => {
+                self.range(ui, state);
                 ui.add_space(24.0);
                 ui.vertical_centered(|ui| {
                     let (glyph, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
                     icons::paint(ui.painter(), glyph, Icon::Warning, p.red);
+                    ui.add_space(8.0);
                     ui.label(
-                        RichText::new("The encoders could not be checked")
+                        egui::RichText::new("The encoders could not be checked")
                             .font(theme::medium(13.0))
                             .color(p.fg),
                     );
-                    note(ui, problem, p.secondary);
                     ui.add_space(4.0);
-                    if widgets::button(ui, p, Some(Icon::Loop), "Try again", Kind::Plain)
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(problem)
+                                .font(theme::regular(12.0))
+                                .color(p.secondary),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(12.0);
+                    if controls::button(ui, *p, "Try again", ButtonKind::Secondary)
                         .on_hover_text("Ask FFmpeg which encoders work again")
                         .clicked()
                     {
@@ -1396,11 +1942,14 @@ impl Sheet<'_, '_> {
                 return;
             }
             _ => {
-                ui.add_space(48.0);
+                self.range(ui, state);
+                ui.add_space(24.0);
                 ui.vertical_centered(|ui| {
-                    ui.add(egui::Spinner::new().size(18.0).color(p.muted));
+                    let (glyph, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+                    kit::spinner(ui, glyph, p.muted);
+                    ui.add_space(8.0);
                     ui.label(
-                        RichText::new("Checking which encoders work on this computer…")
+                        egui::RichText::new("Checking which encoders work on this computer…")
                             .font(theme::regular(12.5))
                             .color(p.secondary),
                     );
@@ -1409,14 +1958,189 @@ impl Sheet<'_, '_> {
             }
         };
         self.presets(ui, state, caps);
+        ui.add_space(GAP);
+        self.range(ui, state);
         self.video(ui, state, caps);
         self.audio(ui, state, caps);
         self.captions(ui, state);
     }
 
+    /// The file's name, its extension, and the folder it goes in.
+    fn file(&mut self, ui: &mut Ui, state: &mut ExportSheetState) {
+        let p = self.p;
+        let extension = format!(".{}", state.settings.container.extension());
+        // Shown as the render queue shows where a job goes.
+        let folder_text = state.folder.as_ref().map_or_else(
+            || "Choose a folder…".to_owned(),
+            |folder| super::render_queue::short_folder(folder, state.home.as_deref()),
+        );
+        let tip = state.folder.as_ref().map_or_else(
+            || "Choose where the file is saved".to_owned(),
+            |folder| format!("Saved in {}", folder.display()),
+        );
+        let mut chose = false;
+        // The field and the folder start together, after the longer label.
+        let lead = label_width(ui, p, "File name").max(label_width(ui, p, "Folder"));
+        controls::group(ui, *p, |ui, group| {
+            row_after(ui, p, group, "File name", lead, |ui, room| {
+                let valid = name_problem(&state.name).is_none();
+                field(
+                    ui,
+                    p,
+                    Id::new("export-file-name"),
+                    &mut state.name,
+                    room,
+                    "File name",
+                    "File name",
+                    Some(&extension),
+                    valid,
+                );
+            });
+            row_after(ui, p, group, "Folder", lead, |ui, room| {
+                let folder = folder_button(ui, p, &folder_text, state.folder.as_deref(), room);
+                chose = folder.on_hover_text(tip).clicked();
+            });
+        });
+        if chose {
+            *self.answer = Some(ExportAnswer::ChooseFolder);
+        }
+    }
+
+    /// Which part of the timeline: chips that wrap inside the card, and the
+    /// typed start and end of a custom range.
+    fn range(&mut self, ui: &mut Ui, state: &mut ExportSheetState) {
+        let p = self.p;
+        let selection = self.input.selection;
+        let rate = self.rate();
+        let chips = [
+            (RangeChoice::Timeline, "Whole timeline", None),
+            (
+                RangeChoice::Selection,
+                "Selected clips",
+                selection
+                    .is_none()
+                    .then_some("Close Export and select clips on the timeline first"),
+            ),
+            (RangeChoice::Custom, "Custom range", None),
+        ];
+        section(ui, p, "Range");
+        let mut picked = None;
+        controls::group(ui, *p, |ui, group| {
+            // Each chip is given the room it takes when chosen, so that a
+            // choice does not move the others onto another line.
+            let room = ui.available_width() - 24.0;
+            let widths: Vec<f32> = (chips.iter())
+                .map(|(_, text, _)| chip_width(ui, text))
+                .collect();
+            let mut lines: Vec<Vec<usize>> = vec![Vec::new()];
+            let mut used = 0.0;
+            for (index, width) in widths.iter().enumerate() {
+                let line = lines.last_mut().expect("a line to fill");
+                if !line.is_empty() && used + 6.0 + width > room {
+                    lines.push(vec![index]);
+                    used = *width;
+                } else {
+                    used += if line.is_empty() { 0.0 } else { 6.0 } + width;
+                    line.push(index);
+                }
+            }
+            let height = 7.0 * 2.0 + lines.len() as f32 * 26.0 + (lines.len() - 1) as f32 * 6.0;
+            let rect = group.custom(ui, height);
+            for (at, line) in lines.iter().enumerate() {
+                let top = rect.top() + 7.0 + at as f32 * 32.0;
+                let strip = Rect::from_min_max(
+                    pos2(rect.left() + 12.0, top),
+                    pos2(rect.right() - 12.0, top + 26.0),
+                );
+                controls::place(
+                    ui,
+                    strip,
+                    Layout::left_to_right(Align::Center),
+                    ("range-chips", at),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for index in line {
+                            let (choice, text, reason) = chips[*index];
+                            let chosen = state.range == choice;
+                            let chip = ui
+                                .add_enabled(reason.is_none(), |ui: &mut Ui| {
+                                    kit::chip(ui, p, text, chosen)
+                                })
+                                .on_disabled_hover_text(reason.unwrap_or_default());
+                            if chip.clicked() && reason.is_none() && !chosen {
+                                picked = Some(choice);
+                            }
+                        }
+                    },
+                );
+            }
+            if state.range == RangeChoice::Custom {
+                let playhead = self.input.playhead;
+                let rows = [
+                    ("Start", 0, "Start", "Range start", "Start at playhead"),
+                    ("End", 1, "End", "Range end", "End at playhead"),
+                ];
+                // Both fields and both buttons start together: after the
+                // longer label, and as wide as the longer button needs.
+                let lead = (rows.iter())
+                    .map(|(label, ..)| label_width(ui, p, label))
+                    .fold(0.0, f32::max);
+                let button_width = (rows.iter())
+                    .map(|(.., button)| button_width(ui, button))
+                    .fold(0.0, f32::max);
+                for (label, which, hint, name, button) in rows {
+                    row_after(ui, p, group, label, lead, |ui, room| {
+                        let width = (room - 8.0 - button_width).clamp(48.0, 132.0);
+                        ui.allocate_ui_with_layout(
+                            vec2(width + 8.0 + button_width, metrics::CONTROL_HEIGHT),
+                            Layout::left_to_right(Align::Center),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                let text = if which == 0 {
+                                    &mut state.start_text
+                                } else {
+                                    &mut state.end_text
+                                };
+                                field(
+                                    ui,
+                                    p,
+                                    Id::new(("export-range", which)),
+                                    text,
+                                    width,
+                                    hint,
+                                    name,
+                                    None,
+                                    true,
+                                );
+                                if controls::button(ui, *p, button, ButtonKind::Secondary).clicked()
+                                {
+                                    *text = timefmt::timecode(playhead, rate);
+                                }
+                            },
+                        );
+                    });
+                }
+            }
+        });
+        if let Some(choice) = picked {
+            if choice == RangeChoice::Custom {
+                let (start, end) = match (state.range, selection) {
+                    (RangeChoice::Selection, Some(span)) => span,
+                    _ => (Time::ZERO, self.input.project.duration()),
+                };
+                state.start_text = timefmt::timecode(start, rate);
+                state.end_text = timefmt::timecode(end, rate);
+            }
+            state.range = choice;
+        }
+        if let Some(problem) = self.range_problem {
+            note(ui, problem, p.red);
+        }
+    }
+
     /// The preset: one list grouped by destination, the person's own last,
-    /// with what the chosen one is for under it, and the most used presets
-    /// as chips on one row.
+    /// the most used presets as chips on one row, and what the chosen one is
+    /// for under them.
     fn presets(&self, ui: &mut Ui, state: &mut ExportSheetState, caps: &Capabilities) {
         let p = self.p;
         let presets = self.input.presets;
@@ -1435,91 +2159,108 @@ impl Sheet<'_, '_> {
             destinations.push(Destination::Custom);
         }
         let mut chosen = None;
-        // A preset this host cannot make is listed, disabled with why.
-        // Whether it was chosen.
-        let offer = |preset: &ExportPreset, response: egui::Response| {
-            let problem = preset_problem(preset, caps);
-            let response = match &problem {
-                Some(problem) => response.on_disabled_hover_text(problem),
-                None if preset.note.is_empty() => response,
-                None => response.on_hover_text(&preset.note),
-            };
-            response.clicked() && problem.is_none()
-        };
-        row(ui, p, "Preset", |ui| {
-            let room = ui.ctx().content_rect().height() - 160.0;
-            egui::ComboBox::from_id_salt("export-preset")
-                .icon(widgets::combo_icon)
-                .selected_text(current.map_or("Custom settings", |preset| preset.name.as_str()))
-                .width(ui.available_width().min(240.0))
-                .height(room.max(160.0))
-                .show_ui(ui, |ui| {
-                    for destination in &destinations {
-                        ui.add_space(2.0);
-                        ui.label(
-                            RichText::new(destination.label())
-                                .font(theme::medium(11.0))
-                                .color(p.muted),
-                        );
-                        for preset in presets.iter().filter(|p| p.destination == *destination) {
-                            let enabled = preset_problem(preset, caps).is_none();
-                            let selected = current_id.as_deref() == Some(preset.id.as_str());
-                            let response = ui
-                                .add_enabled_ui(enabled, |ui| {
-                                    ui.selectable_label(selected, &preset.name)
-                                })
-                                .inner;
-                            if offer(preset, response) {
-                                chosen = Some(preset);
+        let reason = |preset: &ExportPreset| preset_problem(preset, caps);
+        controls::group(ui, *p, |ui, group| {
+            row(ui, p, group, "Preset", |ui, room| {
+                let width = room.min(240.0);
+                let select = kit::select(
+                    ui,
+                    p,
+                    Id::new("export-preset"),
+                    current.map_or("Custom settings", |preset| preset.name.as_str()),
+                    "Preset",
+                    vec2(width, metrics::CONTROL_HEIGHT),
+                );
+                egui::Popup::menu(&select).show(|ui| {
+                    widgets::menu_style(ui, width.max(240.0));
+                    // A select's long list (spec §4.3.4), which opens under
+                    // the select in any window the sheet fits.
+                    let output = egui::ScrollArea::vertical()
+                        .max_height(LIST)
+                        .show(ui, |ui| {
+                            for (at, destination) in destinations.iter().enumerate() {
+                                if at > 0 {
+                                    widgets::menu_separator(ui, p);
+                                }
+                                kit::menu_heading(ui, p, destination.label());
+                                for preset in
+                                    presets.iter().filter(|p| p.destination == *destination)
+                                {
+                                    let problem = reason(preset);
+                                    let selected =
+                                        current_id.as_deref() == Some(preset.id.as_str());
+                                    let response = ui
+                                        .add_enabled_ui(problem.is_none(), |ui| {
+                                            choice_row(ui, p, &preset.name, selected)
+                                        })
+                                        .inner;
+                                    if offered(preset, response, problem.as_deref()) {
+                                        chosen = Some(preset);
+                                    }
+                                }
                             }
+                        });
+                    faded(ui, &output, p.elevated);
+                });
+            });
+            // The most used, as many as one row holds.
+            let rect = group.custom(ui, ROW);
+            let strip = rect.shrink2(vec2(12.0, 7.0));
+            controls::place(
+                ui,
+                strip,
+                Layout::left_to_right(Align::Center),
+                "quick-presets",
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let mut room = strip.width();
+                    for id in QUICK {
+                        let Some(preset) = presets.iter().find(|preset| preset.id == id) else {
+                            continue;
+                        };
+                        // The room it takes when chosen, so that the row holds
+                        // the same chips whichever is.
+                        let width = chip_width(ui, &preset.name);
+                        if width > room {
+                            break;
+                        }
+                        room -= width + 6.0;
+                        let problem = reason(preset);
+                        let selected = current_id.as_deref() == Some(preset.id.as_str());
+                        let response = ui
+                            .add_enabled_ui(problem.is_none(), |ui| {
+                                kit::chip(ui, p, &preset.name, selected)
+                            })
+                            .inner;
+                        if offered(preset, response, problem.as_deref()) {
+                            chosen = Some(preset);
                         }
                     }
-                })
-                .response
-                .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, "Preset"));
-        });
-        // Always one line, so that a choice which turns the preset into
-        // custom settings does not move the controls under the pointer.
-        let said = match current {
-            Some(preset) if !preset.note.is_empty() => preset.note.as_str(),
-            Some(_) => "A preset of your own",
-            None => "Changed from the presets; Save preset… keeps them",
-        };
-        // Cut short where it does not fit; the whole line is on hover.
-        ui.add(
-            egui::Label::new(
-                RichText::new(said)
-                    .font(theme::regular(11.5))
-                    .color(p.muted),
-            )
-            .truncate(),
-        );
-        // The most used, as many as one row holds.
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let mut room = ui.available_width();
-            for id in QUICK {
-                let Some(preset) = presets.iter().find(|preset| preset.id == id) else {
-                    continue;
-                };
-                let width = ui
-                    .painter()
-                    .layout_no_wrap(preset.name.clone(), theme::medium(12.0), p.fg)
-                    .size()
-                    .x
-                    + 22.0;
-                if width > room {
-                    break;
-                }
-                room -= width + 6.0;
-                let enabled = preset_problem(preset, caps).is_none();
-                let selected = current_id.as_deref() == Some(preset.id.as_str());
-                let response = ui
-                    .add_enabled_ui(enabled, |ui| widgets::chip(ui, p, &preset.name, selected))
-                    .inner;
-                if offer(preset, response) {
-                    chosen = Some(preset);
-                }
+                },
+            );
+            // Always one line, so that a choice which turns the preset into
+            // custom settings does not move the controls under the pointer.
+            let said = match current {
+                Some(preset) if !preset.note.is_empty() => preset.note.as_str(),
+                Some(_) => "A preset of your own",
+                None => "Changed from the presets; Save preset… keeps them",
+            };
+            let rect = group.custom(ui, 34.0);
+            let painter = ui.painter().clone();
+            let galley = controls::elided(
+                &painter,
+                said,
+                theme::regular(11.5),
+                p.secondary,
+                rect.width() - 28.0,
+            );
+            let cut = galley.text() != said;
+            controls::galley_at(&painter, pos2(rect.left() + 14.0, rect.center().y), galley);
+            let line = ui.interact(rect, ui.id().with("preset-note"), Sense::hover());
+            line.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, said));
+            if cut {
+                // Cut short where it does not fit; the whole line is on hover.
+                line.on_hover_text(said);
             }
         });
         if let Some(preset) = chosen {
@@ -1531,26 +2272,17 @@ impl Sheet<'_, '_> {
         let p = self.p;
         let canvas = self.canvas();
         let mut on = state.settings.video.is_some();
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            section(ui, p, "Video");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if widgets::switch(ui, p, on, "Video")
-                    .on_hover_text(if on {
-                        "Turn off to export sound only"
-                    } else {
-                        "Turn on to export the picture"
-                    })
-                    .clicked()
-                {
-                    on = !on;
-                }
-            });
+        ui.add_space(GAP);
+        let label = section_of(ui, p, "Video", SWITCHED);
+        section_switch(ui, p, label, &mut on, "Video", true).on_hover_text(if on {
+            "Turn off to export sound only"
+        } else {
+            "Turn on to export the picture"
         });
         if on != state.settings.video.is_some() {
             state.set_video(on, caps);
         }
-        sheets::group(ui, p, |ui| {
+        controls::group(ui, *p, |ui, group| {
             // The file the picture or the sound goes in.
             let pool: &[Container] = if on {
                 &Container::VIDEO
@@ -1561,24 +2293,24 @@ impl Sheet<'_, '_> {
                 .filter(|c| caps.has_container(*c))
                 .map(|c| (c, c.label()))
                 .collect();
-            row(ui, p, "Format", |ui| {
+            row(ui, p, group, "Format", |ui, room| {
                 if offered.is_empty() {
                     ui.label(
-                        RichText::new("This FFmpeg writes none")
+                        egui::RichText::new("This FFmpeg writes none")
                             .font(theme::regular(12.5))
                             .color(p.red),
                     );
                     return;
                 }
                 let mut container = state.settings.container;
-                let width = (56.0 * offered.len() as f32).min(ui.available_width());
-                if widgets::segmented(ui, p, &mut container, &offered, width) {
+                let width = (56.0 * offered.len() as f32).max(TRAIL).min(room);
+                if choice(ui, p, &mut container, &offered, width) {
                     state.settings.container = container;
                     settle(&mut state.settings, caps);
                 }
             });
             if !on {
-                note(ui, "Sound only: the file has no picture.", p.muted);
+                group.note(ui, "Sound only: the file has no picture.");
                 return;
             }
             let container = state.settings.container;
@@ -1587,7 +2319,6 @@ impl Sheet<'_, '_> {
             };
             let output = video.resolution.size(canvas);
 
-            stacked(ui, p, "Resolution");
             let mut size = match video.resolution {
                 Resolution::Short { pixels } => SizeChoice::Short(pixels),
                 Resolution::Project => SizeChoice::Project,
@@ -1603,8 +2334,15 @@ impl Sheet<'_, '_> {
                     (SizeChoice::Custom, "Custom"),
                 ])
                 .collect();
-            let full = ui.available_width();
-            if widgets::segmented(ui, p, &mut size, &sizes, full) {
+            let resized = wide(
+                ui,
+                p,
+                group,
+                Some("Resolution"),
+                "resolution",
+                |ui, width| choice(ui, p, &mut size, &sizes, width),
+            );
+            if resized {
                 video.resolution = match size {
                     SizeChoice::Short(pixels) => Resolution::Short { pixels },
                     SizeChoice::Project => Resolution::Project,
@@ -1619,35 +2357,48 @@ impl Sheet<'_, '_> {
                 };
             }
             if let Resolution::Custom { width, height } = &mut video.resolution {
-                row(ui, p, "Size", |ui| {
+                row(ui, p, group, "Size", |ui, room| {
                     // Laid out in reading order, which is the order Tab
-                    // walks: width, then height.
+                    // walks: width, then height. The pair is as wide as the
+                    // card's other controls, so that it starts with them.
+                    let unit = (ui.painter())
+                        .layout_no_wrap("×".to_owned(), theme::regular(13.0), p.muted)
+                        .size()
+                        .x;
+                    let each = ((room.min(TRAIL) - unit - 12.0) * 0.5).max(56.0).floor();
                     ui.allocate_ui_with_layout(
-                        vec2(160.0, metrics::legacy::CONTROL_HEIGHT),
+                        vec2(each * 2.0 + unit + 12.0, metrics::CONTROL_HEIGHT),
                         Layout::left_to_right(Align::Center),
                         |ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let valid = state.width_text.trim().parse::<u32>().is_ok();
                             field(
                                 ui,
                                 p,
+                                Id::new("export-width"),
                                 &mut state.width_text,
-                                44.0,
+                                each,
                                 "Width",
                                 "Width in pixels",
+                                None,
+                                valid,
                             );
-                            ui.label(RichText::new("×").font(theme::regular(12.5)).color(p.muted));
+                            ui.label(
+                                egui::RichText::new("×")
+                                    .font(theme::regular(13.0))
+                                    .color(p.muted),
+                            );
+                            let valid = state.height_text.trim().parse::<u32>().is_ok();
                             field(
                                 ui,
                                 p,
+                                Id::new("export-height"),
                                 &mut state.height_text,
-                                44.0,
+                                each,
                                 "Height",
                                 "Height in pixels",
-                            );
-                            ui.label(
-                                RichText::new("px")
-                                    .font(theme::regular(12.0))
-                                    .color(p.muted),
+                                Some("px"),
+                                valid,
                             );
                         },
                     );
@@ -1661,65 +2412,67 @@ impl Sheet<'_, '_> {
             }
             let output = video.resolution.size(canvas);
             if !Geometry::new(canvas, output, Fit::Letterbox).is_exact() {
-                row(ui, p, "Fit", |ui| {
-                    widgets::segmented(
+                row(ui, p, group, "Fit", |ui, room| {
+                    choice(
                         ui,
                         p,
                         &mut video.fit,
                         &[(Fit::Letterbox, "Letterbox"), (Fit::Fill, "Fill")],
-                        170.0,
+                        room.min(TRAIL),
                     );
                 });
             }
 
-            row(ui, p, "Frame rate", |ui| {
+            row(ui, p, group, "Frame rate", |ui, room| {
                 let project = self.rate();
                 let shown = match video.frame_rate {
                     None => format!("Project ({})", rate_label(project)),
                     Some(rate) => format!("{} fps", rate_label(rate)),
                 };
-                egui::ComboBox::from_id_salt("export-frame-rate")
-                    .icon(widgets::combo_icon)
-                    .selected_text(shown)
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut video.frame_rate,
-                            None,
-                            format!("Project ({})", rate_label(project)),
-                        );
-                        for (numerator, denominator, label) in RATES {
+                let options: Vec<(Option<FrameRate>, String, Option<String>)> =
+                    std::iter::once((None, format!("Project ({})", rate_label(project)), None))
+                        .chain(RATES.iter().map(|(numerator, denominator, label)| {
                             let rate = FrameRate {
-                                numerator,
-                                denominator,
+                                numerator: *numerator,
+                                denominator: *denominator,
                             };
-                            ui.selectable_value(
-                                &mut video.frame_rate,
-                                Some(rate),
-                                format!("{label} fps"),
-                            );
-                        }
-                    })
-                    .response
-                    .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, "Frame rate"));
+                            (Some(rate), format!("{label} fps"), None)
+                        }))
+                        .collect();
+                if let Some(rate) = list(
+                    ui,
+                    p,
+                    "export-frame-rate",
+                    "Frame rate",
+                    &shown,
+                    room.min(TRAIL),
+                    video.frame_rate,
+                    &options,
+                ) {
+                    video.frame_rate = rate;
+                }
             });
 
-            row(ui, p, "Codec", |ui| {
-                let mut codec = video.codec;
-                egui::ComboBox::from_id_salt("export-codec")
-                    .icon(widgets::combo_icon)
-                    .selected_text(codec.label())
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        for offered in container.video_codecs() {
-                            let reason = (!caps.has_video_codec(*offered))
-                                .then(|| codec_reason(caps, *offered));
-                            option(ui, &mut codec, *offered, offered.label(), reason.as_deref());
-                        }
+            row(ui, p, group, "Codec", |ui, room| {
+                let options: Vec<(VideoCodec, String, Option<String>)> = (container.video_codecs())
+                    .iter()
+                    .map(|offered| {
+                        let reason =
+                            (!caps.has_video_codec(*offered)).then(|| codec_reason(caps, *offered));
+                        (*offered, offered.label().to_owned(), reason)
                     })
-                    .response
-                    .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, "Codec"));
-                if codec != video.codec {
+                    .collect();
+                if let Some(codec) = list(
+                    ui,
+                    p,
+                    "export-codec",
+                    "Codec",
+                    video.codec.label(),
+                    room.min(TRAIL),
+                    video.codec,
+                    &options,
+                ) && codec != video.codec
+                {
                     video.codec = codec;
                     if codec == VideoCodec::ProRes
                         && matches!(video.rate_control, RateControl::Bitrate { .. })
@@ -1731,24 +2484,25 @@ impl Sheet<'_, '_> {
 
             let fps = video.frame_rate.unwrap_or(self.rate()).fps();
             if video.codec == VideoCodec::ProRes {
-                stacked(ui, p, "Profile");
                 let mut level = match video.rate_control {
                     RateControl::Quality { level } => level,
                     RateControl::Bitrate { .. } => QualityLevel::Recommended,
                 };
-                let full = ui.available_width();
-                if widgets::segmented(
-                    ui,
-                    p,
-                    &mut level,
-                    &[
-                        (QualityLevel::Lower, "LT"),
-                        (QualityLevel::Recommended, "422"),
-                        (QualityLevel::Higher, "HQ"),
-                        (QualityLevel::Maximum, "4444"),
-                    ],
-                    full,
-                ) {
+                let changed = wide(ui, p, group, Some("Profile"), "profile", |ui, width| {
+                    choice(
+                        ui,
+                        p,
+                        &mut level,
+                        &[
+                            (QualityLevel::Lower, "LT"),
+                            (QualityLevel::Recommended, "422"),
+                            (QualityLevel::Higher, "HQ"),
+                            (QualityLevel::Maximum, "4444"),
+                        ],
+                        width,
+                    )
+                });
+                if changed {
                     video.rate_control = RateControl::Quality { level };
                 }
             } else {
@@ -1756,13 +2510,13 @@ impl Sheet<'_, '_> {
                     RateControl::Quality { .. } => Target::Quality,
                     RateControl::Bitrate { .. } => Target::Bitrate,
                 };
-                row(ui, p, "Target", |ui| {
-                    widgets::segmented(
+                row(ui, p, group, "Target", |ui, room| {
+                    choice(
                         ui,
                         p,
                         &mut target,
                         &[(Target::Quality, "Quality"), (Target::Bitrate, "Bitrate")],
-                        170.0,
+                        room.min(TRAIL),
                     );
                 });
                 match (target, video.rate_control) {
@@ -1781,25 +2535,24 @@ impl Sheet<'_, '_> {
                         let levels: Vec<(QualityLevel, &str)> = (QualityLevel::ALL.iter())
                             .map(|l| (*l, l.label()))
                             .collect();
-                        let full = ui.available_width();
-                        widgets::segmented(ui, p, level, &levels, full);
+                        wide(ui, p, group, None, "quality", |ui, width| {
+                            choice(ui, p, level, &levels, width)
+                        });
                     }
                     RateControl::Bitrate { kbps } => {
                         let hint = suggested(video.codec, output, fps, QualityLevel::Recommended);
-                        row(ui, p, "Bitrate", |ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.label(
-                                RichText::new("kbit/s")
-                                    .font(theme::regular(12.0))
-                                    .color(p.muted),
-                            );
+                        let valid = state.kbps_text.trim().parse::<u32>().is_ok();
+                        row(ui, p, group, "Bitrate", |ui, room| {
                             field(
                                 ui,
                                 p,
+                                Id::new("export-kbps"),
                                 &mut state.kbps_text,
-                                64.0,
+                                room.min(TRAIL),
                                 &hint.to_string(),
                                 "Bitrate in kbit/s",
+                                Some("kbit/s"),
+                                valid,
                             )
                             .on_hover_text(format!(
                                 "{MIN_VIDEO_KBPS}–{MAX_VIDEO_KBPS} kbit/s; about {hint} suits this picture"
@@ -1812,13 +2565,9 @@ impl Sheet<'_, '_> {
                 }
             }
 
-            ui.add_space(2.0);
-            if widgets::disclosure(ui, p, state.encoding_open, "Encoder and speed", false).clicked()
-            {
-                state.encoding_open = !state.encoding_open;
-            }
+            group.disclosure(ui, "Encoder and speed", &mut state.encoding_open);
             if state.encoding_open {
-                encoder_rows(ui, p, video, caps, output);
+                encoder_rows(ui, p, group, video, caps, output);
             }
         });
     }
@@ -1827,19 +2576,10 @@ impl Sheet<'_, '_> {
         let p = self.p;
         let video = state.settings.video.is_some();
         let mut on = state.settings.audio.is_some();
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            section(ui, p, "Audio");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let switch = ui
-                    .add_enabled_ui(video, |ui| widgets::switch(ui, p, on, "Audio"))
-                    .inner
-                    .on_disabled_hover_text("A sound-only file needs its sound");
-                if switch.clicked() && video {
-                    on = !on;
-                }
-            });
-        });
+        ui.add_space(GAP);
+        let label = section_of(ui, p, "Audio", SWITCHED);
+        section_switch(ui, p, label, &mut on, "Audio", video)
+            .on_disabled_hover_text("A sound-only file needs its sound");
         if on != state.settings.audio.is_some() {
             state.set_audio(on, caps);
         }
@@ -1847,23 +2587,27 @@ impl Sheet<'_, '_> {
         let Some(audio) = state.settings.audio.as_mut() else {
             return;
         };
-        sheets::group(ui, p, |ui| {
-            row(ui, p, "Codec", |ui| {
-                let mut codec = audio.codec;
-                egui::ComboBox::from_id_salt("export-audio-codec")
-                    .icon(widgets::combo_icon)
-                    .selected_text(codec.label())
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        for offered in container.audio_codecs() {
-                            let reason = (!caps.has_audio_codec(*offered))
-                                .then(|| format!("This FFmpeg has no {} encoder", offered.label()));
-                            option(ui, &mut codec, *offered, offered.label(), reason.as_deref());
-                        }
+        controls::group(ui, *p, |ui, group| {
+            row(ui, p, group, "Codec", |ui, room| {
+                let options: Vec<(AudioCodec, String, Option<String>)> = (container.audio_codecs())
+                    .iter()
+                    .map(|offered| {
+                        let reason = (!caps.has_audio_codec(*offered))
+                            .then(|| format!("This FFmpeg has no {} encoder", offered.label()));
+                        (*offered, offered.label().to_owned(), reason)
                     })
-                    .response
-                    .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, "Audio codec"));
-                if codec != audio.codec {
+                    .collect();
+                if let Some(codec) = list(
+                    ui,
+                    p,
+                    "export-audio-codec",
+                    "Audio codec",
+                    audio.codec.label(),
+                    room.min(TRAIL),
+                    audio.codec,
+                    &options,
+                ) && codec != audio.codec
+                {
                     audio.codec = codec;
                     audio.kbps = codec.default_kbps();
                 }
@@ -1879,29 +2623,27 @@ impl Sheet<'_, '_> {
                     offered.push(audio.kbps);
                     offered.sort_unstable();
                 }
-                row(ui, p, "Bitrate", |ui| {
-                    egui::ComboBox::from_id_salt("export-audio-kbps")
-                        .icon(widgets::combo_icon)
-                        .selected_text(format!("{} kbit/s", audio.kbps))
-                        .width(150.0)
-                        .show_ui(ui, |ui| {
-                            for kbps in offered {
-                                let reason = (kbps > most).then(|| {
-                                    format!("{} goes up to {most} kbit/s", audio.codec.label())
-                                });
-                                option(
-                                    ui,
-                                    &mut audio.kbps,
-                                    kbps,
-                                    &format!("{kbps} kbit/s"),
-                                    reason.as_deref(),
-                                );
-                            }
+                row(ui, p, group, "Bitrate", |ui, room| {
+                    let options: Vec<(u32, String, Option<String>)> = (offered.iter())
+                        .map(|kbps| {
+                            let reason = (*kbps > most).then(|| {
+                                format!("{} goes up to {most} kbit/s", audio.codec.label())
+                            });
+                            (*kbps, format!("{kbps} kbit/s"), reason)
                         })
-                        .response
-                        .widget_info(|| {
-                            WidgetInfo::labeled(WidgetType::ComboBox, true, "Audio bitrate")
-                        });
+                        .collect();
+                    if let Some(kbps) = list(
+                        ui,
+                        p,
+                        "export-audio-kbps",
+                        "Audio bitrate",
+                        &format!("{} kbit/s", audio.kbps),
+                        room.min(TRAIL),
+                        audio.kbps,
+                        &options,
+                    ) {
+                        audio.kbps = kbps;
+                    }
                 });
             }
             let rates: Vec<(u32, String)> = (SAMPLE_RATES.into_iter())
@@ -1909,17 +2651,17 @@ impl Sheet<'_, '_> {
                 .map(|rate| (rate, format!("{} kHz", trim(rate as f64 / 1000.0))))
                 .collect();
             let rates: Vec<(u32, &str)> = rates.iter().map(|(r, l)| (*r, l.as_str())).collect();
-            row(ui, p, "Sample rate", |ui| {
-                let width = (72.0 * rates.len() as f32).min(ui.available_width());
-                widgets::segmented(ui, p, &mut audio.sample_rate, &rates, width);
+            row(ui, p, group, "Sample rate", |ui, room| {
+                let width = (60.0 * rates.len() as f32).max(TRAIL).min(room);
+                choice(ui, p, &mut audio.sample_rate, &rates, width);
             });
-            row(ui, p, "Channels", |ui| {
-                if widgets::segmented(
+            row(ui, p, group, "Channels", |ui, room| {
+                if choice(
                     ui,
                     p,
                     &mut audio.channels,
                     &[(1, "Mono"), (2, "Stereo")],
-                    150.0,
+                    room.min(TRAIL),
                 ) && audio.codec.has_bitrate()
                 {
                     audio.kbps = audio.kbps.min(audio.codec.max_kbps(audio.channels));
@@ -1939,22 +2681,23 @@ impl Sheet<'_, '_> {
         let container = state.settings.container;
         let video = state.settings.video.is_some();
         let subtitles = &mut state.settings.subtitles;
-        ui.add_space(4.0);
+        ui.add_space(GAP);
         section(ui, p, "Captions");
-        sheets::group(ui, p, |ui| {
-            row(ui, p, "Burn into the picture", |ui| {
-                let switch = ui
-                    .add_enabled_ui(video, |ui| {
-                        widgets::switch(ui, p, subtitles.burn_in, "Burn captions into the picture")
-                    })
-                    .inner
-                    .on_disabled_hover_text("A sound-only file has no picture");
-                if switch.clicked() && video {
-                    subtitles.burn_in = !subtitles.burn_in;
-                }
+        controls::group(ui, *p, |ui, group| {
+            row(ui, p, group, "Burn into the picture", |ui, _| {
+                ui.add_enabled_ui(video, |ui| {
+                    controls::toggle(
+                        ui,
+                        *p,
+                        &mut subtitles.burn_in,
+                        "Burn captions into the picture",
+                    )
+                })
+                .inner
+                .on_disabled_hover_text("A sound-only file has no picture");
             });
-            row(ui, p, "Subtitle file", |ui| {
-                widgets::segmented(
+            row(ui, p, group, "Subtitle file", |ui, room| {
+                choice(
                     ui,
                     p,
                     &mut subtitles.sidecar,
@@ -1963,7 +2706,7 @@ impl Sheet<'_, '_> {
                         (Some(SidecarFormat::Srt), "SRT"),
                         (Some(SidecarFormat::Vtt), "VTT"),
                     ],
-                    170.0,
+                    room.min(TRAIL),
                 );
             });
             let refusal = if !video {
@@ -1974,64 +2717,80 @@ impl Sheet<'_, '_> {
                     .is_none()
                     .then(|| format!("{} files carry no subtitle stream", container.label()))
             };
-            row(ui, p, "Subtitle stream", |ui| {
-                let switch = ui
-                    .add_enabled_ui(refusal.is_none(), |ui| {
-                        widgets::switch(ui, p, subtitles.embed, "Subtitle stream in the file")
-                    })
-                    .inner
-                    .on_hover_text("Viewers can turn the captions on and off")
-                    .on_disabled_hover_text(refusal.as_deref().unwrap_or_default());
-                if switch.clicked() && refusal.is_none() {
-                    subtitles.embed = !subtitles.embed;
-                }
+            row(ui, p, group, "Subtitle stream", |ui, _| {
+                ui.add_enabled_ui(refusal.is_none(), |ui| {
+                    controls::toggle(ui, *p, &mut subtitles.embed, "Subtitle stream in the file")
+                })
+                .inner
+                .on_hover_text("Viewers can turn the captions on and off")
+                .on_disabled_hover_text(refusal.as_deref().unwrap_or_default());
             });
             if subtitles.sidecar.is_some() || subtitles.embed {
                 let chosen = subtitles
                     .track
                     .filter(|id| tracks.iter().any(|(track, _)| track == id))
                     .unwrap_or(tracks[0].0);
-                let mut pick = chosen;
-                row(ui, p, "Track", |ui| {
+                row(ui, p, group, "Track", |ui, room| {
                     let shown = (tracks.iter())
                         .find(|(id, _)| *id == chosen)
                         .map_or("", |(_, name)| name);
-                    egui::ComboBox::from_id_salt("export-caption-track")
-                        .icon(widgets::combo_icon)
-                        .selected_text(shown)
-                        .width(150.0)
-                        .show_ui(ui, |ui| {
-                            for (id, name) in &tracks {
-                                ui.selectable_value(&mut pick, *id, *name);
-                            }
-                        })
-                        .response
-                        .widget_info(|| {
-                            WidgetInfo::labeled(WidgetType::ComboBox, true, "Caption track")
-                        });
+                    let options: Vec<(TrackId, String, Option<String>)> = (tracks.iter())
+                        .map(|(id, name)| (*id, (*name).to_owned(), None))
+                        .collect();
+                    if let Some(pick) = list(
+                        ui,
+                        p,
+                        "export-caption-track",
+                        "Caption track",
+                        shown,
+                        room.min(TRAIL),
+                        chosen,
+                        &options,
+                    ) && pick != chosen
+                    {
+                        subtitles.track = Some(pick);
+                    }
                 });
-                if pick != chosen {
-                    subtitles.track = Some(pick);
-                }
             }
         });
     }
 }
 
-/// A row's label alone, over a control as wide as the row.
-fn stacked(ui: &mut Ui, p: &Palette, label: &str) {
-    ui.add_space(2.0);
-    ui.label(
-        RichText::new(label)
-            .font(theme::regular(12.5))
-            .color(p.secondary),
-    );
+/// Whether a preset offered in the list or as a chip was taken: one this
+/// host cannot make is disabled with why, and one it can says what it is
+/// for on hover.
+fn offered(preset: &ExportPreset, response: egui::Response, problem: Option<&str>) -> bool {
+    let response = match problem {
+        Some(problem) => response.on_disabled_hover_text(problem),
+        None if preset.note.is_empty() => response,
+        None => response.on_hover_text(&preset.note),
+    };
+    response.clicked() && problem.is_none()
+}
+
+/// The room a chip takes when it is chosen, its check before its name.
+fn chip_width(ui: &Ui, text: &str) -> f32 {
+    let words = (ui.painter())
+        .layout_no_wrap(text.to_owned(), theme::medium(12.0), Color32::PLACEHOLDER)
+        .size()
+        .x;
+    10.0 + 16.0 + words + 10.0
+}
+
+/// The width of a text button of the sheet.
+fn button_width(ui: &Ui, text: &str) -> f32 {
+    let words = (ui.painter())
+        .layout_no_wrap(text.to_owned(), theme::medium(13.0), Color32::PLACEHOLDER)
+        .size()
+        .x;
+    (words + 32.0).max(72.0)
 }
 
 /// The encoder choice and its effort.
 fn encoder_rows(
     ui: &mut Ui,
     p: &Palette,
+    group: &mut Group,
     video: &mut VideoSettings,
     caps: &Capabilities,
     output: [u32; 2],
@@ -2057,41 +2816,38 @@ fn encoder_rows(
         EncoderChoice::Software => "Software".to_owned(),
         EncoderChoice::Hardware(kind) => kind.label().to_owned(),
     };
-    row(ui, p, "Encoder", |ui| {
-        let mut choice = video.encoder;
-        egui::ComboBox::from_id_salt("export-encoder")
-            .icon(widgets::combo_icon)
-            .selected_text(label(choice))
-            .width(170.0)
-            .show_ui(ui, |ui| {
-                option(
-                    ui,
-                    &mut choice,
-                    EncoderChoice::Auto,
-                    &label(EncoderChoice::Auto),
-                    None,
-                );
-                for candidate in [EncoderChoice::Software]
-                    .into_iter()
-                    .chain(families.iter().map(|kind| EncoderChoice::Hardware(*kind)))
-                {
-                    let reason = choice_reason(caps, candidate, codec, output);
-                    option(
-                        ui,
-                        &mut choice,
-                        candidate,
-                        &label(candidate),
-                        reason.as_deref(),
-                    );
-                }
-            })
-            .response
-            .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, "Encoder"));
-        video.encoder = choice;
+    row(ui, p, group, "Encoder", |ui, room| {
+        let options: Vec<(EncoderChoice, String, Option<String>)> =
+            std::iter::once((EncoderChoice::Auto, label(EncoderChoice::Auto), None))
+                .chain(
+                    [EncoderChoice::Software]
+                        .into_iter()
+                        .chain(families.iter().map(|kind| EncoderChoice::Hardware(*kind)))
+                        .map(|candidate| {
+                            (
+                                candidate,
+                                label(candidate),
+                                choice_reason(caps, candidate, codec, output),
+                            )
+                        }),
+                )
+                .collect();
+        if let Some(choice) = list(
+            ui,
+            p,
+            "export-encoder",
+            "Encoder",
+            &label(video.encoder),
+            room.min(TRAIL),
+            video.encoder,
+            &options,
+        ) {
+            video.encoder = choice;
+        }
     });
     if codec != VideoCodec::ProRes {
-        row(ui, p, "Speed", |ui| {
-            widgets::segmented(
+        row(ui, p, group, "Speed", |ui, room| {
+            choice(
                 ui,
                 p,
                 &mut video.speed,
@@ -2100,7 +2856,7 @@ fn encoder_rows(
                     (EncodeSpeed::Balanced, "Balanced"),
                     (EncodeSpeed::Smaller, "Smaller"),
                 ],
-                210.0,
+                room.min(240.0),
             );
         });
     }
@@ -2118,11 +2874,17 @@ fn trim(value: f64) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-/// The folder the file goes in, as a field-like button, named with the
-/// whole path for accessibility.
-fn folder_button(ui: &mut Ui, p: &Palette, text: &str, folder: Option<&Path>) -> egui::Response {
+/// The folder the file goes in, as a Secondary button `width` wide led by
+/// the folder glyph, named with the whole path for accessibility.
+fn folder_button(
+    ui: &mut Ui,
+    p: &Palette,
+    text: &str,
+    folder: Option<&Path>,
+    width: f32,
+) -> egui::Response {
     let missing = folder.is_none();
-    let size = vec2(ui.available_width(), metrics::legacy::CONTROL_HEIGHT);
+    let size = vec2(width, metrics::CONTROL_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| {
         let name = match folder {
@@ -2132,40 +2894,45 @@ fn folder_button(ui: &mut Ui, p: &Palette, text: &str, folder: Option<&Path>) ->
         WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), name)
     });
     if ui.is_rect_visible(rect) {
-        let radius = CornerRadius::same(metrics::CONTROL_RADIUS);
-        let fill = if response.is_pointer_button_down_on() {
-            p.pressed
-        } else if response.hovered() {
-            p.hover
-        } else {
-            p.control
-        };
+        let radius = metrics::CONTROL_RADIUS;
+        let hover = kit::hover_amount(ui, &response);
         let painter = ui.painter();
-        painter.rect_filled(rect, radius, fill);
+        painter.rect_filled(rect, radius, p.control);
+        if response.is_pointer_button_down_on() {
+            painter.rect_filled(rect, radius, p.pressed);
+        } else if hover > 0.0 {
+            painter.rect_filled(rect, radius, p.hover.gamma_multiply(hover));
+        }
         if response.has_focus() {
-            painter.rect_stroke(
-                rect,
-                radius,
-                egui::Stroke::new(1.5, p.accent),
-                egui::StrokeKind::Inside,
-            );
+            controls::focus_ring(painter, rect, radius, *p);
         }
         icons::paint(
             painter,
-            Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(14.0)),
+            Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), Vec2::splat(14.0)),
             Icon::Folder,
             p.secondary,
         );
         let ink = if missing { p.muted } else { p.fg };
-        let galley = widgets::truncated(ui, text, theme::regular(12.5), ink, rect.width() - 40.0);
-        ui.painter().galley(
-            pos2(rect.left() + 30.0, rect.center().y - galley.size().y * 0.5),
-            galley,
+        let galley = controls::elided(
+            painter,
+            text,
+            theme::regular(13.0),
             ink,
+            rect.width() - 46.0,
         );
+        controls::galley_at(painter, pos2(rect.left() + 34.0, rect.center().y), galley);
     }
-    response.on_hover_cursor(egui::CursorIcon::Default)
+    response.on_hover_cursor(CursorIcon::PointingHand)
 }
+
+// The export sheet and the render queue were the last to call these
+// adapters of the old controls, which are another package's to remove
+// (packages.md, P10). Named here so that the build stays free of warnings
+// until they go; delete this with them.
+const _: () = {
+    let _ = widgets::chip;
+    let _ = widgets::progress;
+};
 
 #[cfg(test)]
 #[path = "export_sheet_tests.rs"]

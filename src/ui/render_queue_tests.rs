@@ -9,7 +9,7 @@
 use super::*;
 use crate::theme::{Accent, Appearance};
 use editor_core::export::ExportSettings;
-use eframe::egui::{Event, Key, Modifiers, PointerButton, Pos2, Shape, accesskit::Role};
+use eframe::egui::{Color32, Event, Key, Modifiers, PointerButton, Pos2, Shape, accesskit::Role};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
 const WIDE: Vec2 = vec2(1440.0, 900.0);
@@ -202,9 +202,11 @@ impl Bench {
         for _ in 0..8 {
             self.frame(Vec::new());
             let top = self.get("Close render queue").rect.bottom();
+            // Spec §5.9.4: Clear finished moved into the header; the list
+            // ends at the footer's New export….
             let bottom = self
-                .find("Clear finished")
-                .map_or(self.size.y, |clear| clear.rect.top());
+                .find("New export…")
+                .map_or(self.size.y, |new| new.rect.top());
             let rect = self.get(name).rect;
             // The header's and the footer's controls do not scroll.
             let chrome = [
@@ -426,6 +428,21 @@ fn a_job_says_how_far_it_has_got_and_why_it_failed() {
         bench.says("3 rendering · 1 paused · 2 waiting"),
         "the header counts the work"
     );
+    // Spec §7.1: the count and the encoder are painted, and still said to
+    // those who do not see them.
+    let label =
+        |text: &str| (bench.seen.iter()).any(|seen| seen.role == Role::Label && seen.name == text);
+    assert!(
+        label("3 rendering · 1 paused · 2 waiting"),
+        "the count is a label"
+    );
+    assert!(label("h264_nvenc"), "the encoder is a label");
+    assert!(label("Render queue"), "the title is a label");
+    // Spec §3.1: where a job goes is read, not disabled, ink.
+    assert_eq!(
+        bench.painted_in("/home/someone/Exports"),
+        Some(bench.palette.secondary)
+    );
     let red = bench.palette.red;
     let mut bench = bench;
     // The failed job's message is just over the last row, the job done
@@ -459,6 +476,31 @@ fn the_panel_is_in_place_from_its_first_frame() {
         first,
         "it does not creep"
     );
+}
+
+#[test]
+fn the_sheet_keeps_its_place_as_jobs_come_and_go() {
+    // Spec §5.9.4: the sheet is as tall whatever it lists, so that its
+    // header's controls stay where they are as a job starts and finishes.
+    for size in [WIDE, NARROW] {
+        let mut bench = Bench::new(size, Vec::new());
+        let empty = bench.get("Close render queue").rect;
+        let seen = |bench: &mut Bench, jobs: Vec<RenderJobInfo>| {
+            bench.jobs = jobs;
+            for _ in 0..4 {
+                bench.frame(Vec::new());
+            }
+            (
+                bench.get("Close render queue").rect,
+                bench.get("Clear finished").rect,
+            )
+        };
+        let (rendering, clear) = seen(&mut bench, vec![job("first.mp4", RenderState::Rendering)]);
+        let (done, cleared) = seen(&mut bench, vec![job("first.mp4", RenderState::Done)]);
+        assert_eq!(empty, rendering, "at {size:?}");
+        assert_eq!(rendering, done, "at {size:?}");
+        assert_eq!(clear, cleared, "Clear finished stays put at {size:?}");
+    }
 }
 
 #[test]
@@ -612,6 +654,35 @@ fn a_folder_is_shown_by_its_last_folders_from_home() {
     );
 }
 
+#[test]
+fn a_long_failure_is_cut_to_two_lines_and_said_whole() {
+    // A raw FFmpeg error runs to many lines; the row shows two of them and
+    // the rest of the queue stays in sight.
+    let long = (0..10)
+        .map(|at| format!("[out#0/mp4 @ 0x5581] line {at} of what FFmpeg said on stopping"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut failed = job("failed.mp4", RenderState::Failed);
+    failed.message = Some(long.clone());
+    let bench = Bench::new(NARROW, vec![failed, job("next.mp4", RenderState::Queued)]);
+    let message = (bench.seen.iter())
+        .find(|seen| seen.role == Role::Label && seen.name == long)
+        .expect("the whole message is said");
+    assert!(
+        message.rect.height() <= 2.0 * 16.0,
+        "the message is two lines at most: {:?}",
+        message.rect
+    );
+    assert_eq!(
+        bench.painted_in("line 0 of what FFmpeg said"),
+        Some(bench.palette.red)
+    );
+    assert!(
+        in_sight(&bench, "Cancel “next.mp4”"),
+        "the next job is in sight"
+    );
+}
+
 /// Where the row of `job` begins: the top of its name.
 fn row_top(bench: &Bench, job: &str) -> f32 {
     (bench.seen.iter())
@@ -624,7 +695,9 @@ fn row_top(bench: &Bench, job: &str) -> f32 {
 /// Whether `name` is shown whole between the header and the footer.
 fn in_sight(bench: &Bench, name: &str) -> bool {
     let top = bench.get("Close render queue").rect.bottom();
-    let bottom = bench.get("Clear finished").rect.top();
+    // Spec §5.9.4: Clear finished moved into the header; the list ends at
+    // the footer's New export….
+    let bottom = bench.get("New export…").rect.top();
     let rect = bench.get(name).rect;
     rect.top() >= top && rect.bottom() <= bottom
 }
