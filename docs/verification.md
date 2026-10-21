@@ -33,16 +33,38 @@ part-way through §9.4:
 | §9.2 Window and toolbar | Pass: 44-pt toolbar, lights at 22/42/62, toggles, title button, launcher (centred, folded at 760), quiet Export, regions, project menu order and fit |
 | §9.3 Library | Pass, except that the Captions actions are out of order and the scroll bar lane differs between tabs. A "Missing" card cannot be shown, because no worker publishes that status yet |
 | §9.4 Viewer and transport | Pass for the stage, the picture inset and keyline, and the transport's disc, timecode, record dot and detail. The rest of §9.4 did not reach this record |
-| §9.10 Narrow window | Pass, except that the ruler's 12×13 marker flag is under 22 pt and §9.10 does not list it |
+| §9.10 Narrow window | Pass. The review found the ruler's 12×13 marker flag under 22 pt and missing from §9.10's exceptions. §9.10 now pins it, as §5.5.4 keeps it: the flag sits in the ruler's lower half, clear of the time labels |
+| §9.12 Evidence the harness does not capture | Pass, by the tests and recordings named below |
 | §9.13 Automated gates | Pass: no `ComboBox::from` and no palette `surface` or `sunken`. Spacing outside the §1.1 steps names the geometry it reproduces. The 91 accent-grep hits are content selection, drags, Primary, progress, focus, switches, solo or test and settings reads |
 
-§9.5 to §9.9, §9.11 and §9.12 are not recorded here and make no claim. Their
+§9.5 to §9.9 and §9.11 are not recorded here and make no claim. Their
 captures are kept. The recordings in the next section are the native
 evidence for drags, playback and scrubbing. Nothing here covers macOS,
 Windows, a real GPU or compositor, HiDPI scale, or native hover, pressed,
 tooltip and animation states. Kittest tests paint those states in an egui
 pass, but they were not seen in a native window. No screen reader was used,
 and offline or missing media marks wait on a worker-published status.
+
+§9.12 lists the states the harness cannot reach. Each is covered by these
+desktop library tests, which passed in the round-4 review at `6a5a45e` and
+again at `85a1364` (1,356 passed, none failing or ignored):
+
+| Behaviour | Evidence |
+| --- | --- |
+| Hover, pressed and focus of buttons, tabs, rows and cells | `ui::widgets::tests::hover_and_press_fill_with_the_hover_and_pressed_tokens`, `ui::widgets::tests::a_control_reached_with_the_keyboard_shows_the_focus_ring`, `ui::panel::tests::a_tab_lights_as_terminal_s_do_and_shows_the_keyboard`, `ui::controls::tests::a_segmented_label_lights_under_the_pointer_and_its_cell_rings_with_the_keyboard`, `ui::kit::tests::a_menu_row_lies_on_the_accent_under_the_pointer_and_with_the_keyboard`, `ui::kit::tests::a_chip_lies_on_hover_and_pressed_and_the_chosen_one_is_checked`, `ui::kit::tests::a_select_lies_on_pressed_under_the_pointer_and_rings_with_the_keyboard`, `ui::timeline::heads::a_head_cell_is_lit_under_the_pointer_and_ringed_when_tab_reaches_it`, `ui::library::tests::a_card_lies_on_hover_under_the_pointer_and_on_pressed_once_chosen`, `ui::sheets::settings_sheet_tests::a_source_row_lies_on_hover_and_pressed_and_rings_with_the_keyboard`, `ui::viewer::transport_tests::play_speed_and_record_light_on_hover_press_and_focus`, `ui::inspector::tests::a_card_s_head_eases_to_hover_lies_on_pressed_and_rings_with_the_keyboard` |
+| Panel slide in 0.16 s, at once under Reduce motion | `ui::window::tests::a_panel_settles_in_its_slide_and_at_once_under_reduce_motion`, `ui::window::tests::a_slide_reversed_midway_turns_around_without_a_jump` |
+| Drag feedback | The `*-clip-drag-snap.mp4` recordings below, for a move with a snap guide. The trim capsule and the drop caret were not recorded: `ui::timeline::beating::a_held_trim_says_how_far_its_edge_has_gone_above_the_tile`, `ui::timeline::beating::a_library_item_held_over_a_lane_shows_where_and_when_it_would_land` |
+| Toasts: anchor, persistence, hover pause, under a sheet | `ui::sheets::notices_tests::toasts_sit_at_the_window_s_top_trailing_corner`, `…::a_problem_stays_until_it_is_dismissed`, `…::a_toast_under_the_pointer_keeps_the_time_it_had_left`, `…::notices_go_under_an_open_sheet_rather_than_over_it`, `…::toasts_keep_clear_of_a_sheet_a_question_was_asked_over`, `…::a_window_showing_toasts_that_stay_goes_idle` |
+| Level capsule | `app::tests::cmd_or_ctrl_with_plus_minus_and_0_scale_the_interface`, `ui::window::tests::the_interface_size_is_said_in_a_capsule_that_lets_the_window_sleep` |
+| Dialogs: footer order, fresh Enter, Destructive never default, Escape | `ui::sheets::tests::enter_confirms_only_a_primary_and_only_when_pressed_afresh` (unsaved changes, duck, stop rendering, replace export, recovery and conflict), `ui::sheets::tests::a_dialog_foot_puts_the_default_last_and_what_gives_up_apart`, `ui::export_sheet::tests::a_fresh_enter_exports_when_nothing_has_the_keyboard` |
+| Record take: pill, level bar, 10 Hz repaint | `ui::viewer::transport_tests::a_take_is_a_pill_with_its_level_in_the_colour_of_its_loudness`, `ui::viewer::transport_tests::a_running_take_shows_its_time_in_speeds_place_and_a_press_stops_it`, `record::tests::no_repaint_is_asked_for_once_the_take_is_placed`, `app::tests::r_asks_for_a_take_or_ends_it_and_is_a_letter_in_a_field` |
+| Drop target | `ui::sheets::tests::the_drop_target_is_rounded_and_says_what_a_drop_does` |
+| Playback and scrubbing | The `*-playback-scrub.mp4` recordings below |
+| Idle | `ui::toolbar::toolbar_tests::the_bar_lets_the_window_sleep_at_rest` (the launcher), `ui::panel::tests::a_strip_at_rest_asks_for_no_frame`, `ui::viewer::tests::the_stage_s_capsules_at_rest_ask_for_no_frame`, `ui::library::tests::the_library_at_rest_asks_for_no_frame`, `ui::sheets::notices_tests::a_window_showing_toasts_that_stay_goes_idle`, and the inspector, keyframe and transition tests that ask for no frame when nothing is done |
+
+These tests paint each state in an egui pass and read back what was
+painted or asked for. They do not show a native window, and the recordings
+show a software renderer, not real-time playback on a GPU or sound.
 
 ## Interface revamp: drag, playback and scrubbing recordings (2026-10-21)
 
