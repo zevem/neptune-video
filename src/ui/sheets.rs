@@ -496,6 +496,7 @@ fn dialog<A: Copy>(
     escape: A,
 ) -> Option<A> {
     let heard = scaffold(ctx, p, id, name, width, false, |ui| {
+        // Terminal's dialog: 22 over the body and at its sides (§5.9.5).
         ui.add_space(22.0);
         controls::padded(ui, 22.0, body);
         ui.add_space(6.0);
@@ -859,6 +860,8 @@ pub fn checkpoints(
                 let entered = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 create = save.clicked() || entered;
             });
+            // The list's card stands 14 under the field, as Preferences'
+            // cards stand apart (§5.9.2).
             ui.add_space(14.0);
 
             // The checkpoints, newest first as the worker lists them, in
@@ -1404,6 +1407,7 @@ fn card(
         return;
     }
     if listed.cards.replace(listed.cards.get() + 1) > 0 {
+        // Cards stand 14 apart, as Terminal's Preferences cards do (§5.9.2).
         ui.add_space(14.0);
     }
     // Every card is titled, as Terminal's are, and never with its pane's

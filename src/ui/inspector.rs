@@ -1771,7 +1771,7 @@ fn asset_pane(
         Stroke::new(1.0, p.canvas_edge()),
         StrokeKind::Inside,
     );
-    ui.add_space(10.0);
+    ui.add_space(12.0);
     let kind = match asset.kind {
         MediaKind::Video => "Video",
         MediaKind::Audio => "Audio",
@@ -1813,7 +1813,7 @@ fn asset_pane(
             }
             ui.add(egui::Label::new(job));
         });
-    ui.add_space(10.0);
+    ui.add_space(12.0);
     // A lookup table is neither placed nor played.
     if crate::rules::placeable(asset) {
         button_row(ui, p, |ui| {

@@ -1636,10 +1636,12 @@ fn volume_menu(ui: &mut Ui, p: &Palette, track: &Track, actions: &mut Vec<Action
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
             ui.set_min_size(vec2(ui.available_width(), metrics::COMPACT_HEIGHT));
+            // A menu row's shortcut stands 10 in from its trailing edge.
             ui.add_space(10.0);
             let field = volume_field(ui, p, &mut shown);
             // The word is a label, as it is read out.
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                // A menu row's label stands at +32, after its glyph.
                 ui.add_space(32.0);
                 ui.add(
                     egui::Label::new(

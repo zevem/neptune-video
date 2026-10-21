@@ -734,7 +734,7 @@ pub fn show(
                                 )
                                 .wrap(),
                             );
-                            ui.add_space(10.0);
+                            ui.add_space(12.0);
                             continue;
                         }
                     }

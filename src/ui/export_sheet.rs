@@ -673,7 +673,8 @@ const FACT: f32 = 32.0;
 /// which the longest of today's values, "Auto (Apple VideoToolbox)", needs
 /// to be shown whole.
 const TRAIL: f32 = 200.0;
-/// From one card to the label of the next.
+/// From one card to the label of the next: 14, as Terminal's Preferences
+/// cards stand apart (§5.9.2).
 const GAP: f32 = 14.0;
 /// The tallest a select's list is before it scrolls (spec §4.3.4).
 const LIST: f32 = 260.0;
