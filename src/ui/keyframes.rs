@@ -1967,7 +1967,7 @@ impl KeyframesState {
                         // alone is drawn.
                         continue;
                     };
-                    let at = patch.min + vec2(2.0, 1.0);
+                    let at = patch.min;
                     // Square and on whole pixels, so the two coats meet
                     // edge to edge and no rim of either shows.
                     let patch = patch.round_to_pixels(painter.pixels_per_point());
@@ -2581,13 +2581,14 @@ fn keys_clip(view: Rect) -> Rect {
 }
 
 /// The patch a value of the graph is said on, for its line at `y`: the
-/// label stands on the line at the plot's leading edge, and the patch
-/// reaches round it above and to the sides but not under it, so it never
-/// shaves a curve that runs along the line. None where it would not be whole
-/// inside `area`.
+/// label stands on the line at the plot's leading edge, and the patch is
+/// the label's own box and no more. Its line's air above the digits keeps
+/// them clear of a curve, and a curve that passes beside them, or runs
+/// along the line under them, is drawn whole. None where it would not be
+/// whole inside `area`.
 fn value_patch(area: Rect, y: f32, label: Vec2) -> Option<Rect> {
     let at = pos2(area.left() + 6.0, y - 2.0 - label.y);
-    let patch = Rect::from_min_max(at - vec2(2.0, 1.0), at + label + vec2(2.0, 0.0));
+    let patch = Rect::from_min_size(at, label);
     (patch.top() >= area.top()).then_some(patch)
 }
 

@@ -2079,8 +2079,11 @@ fn every_value_the_graph_says_is_whole_inside_its_plot_and_clear_of_its_line() {
     assert!(patch.bottom() <= 250.5 - 1.0 - 1.0, "{patch:?}");
     assert!(patch.contains_rect(Rect::from_min_size(pos2(6.0, 250.5 - 2.0 - label.y), label)));
     // One whose label would reach above the plot is not said.
-    assert!(value_patch(area, 100.0 + label.y + 2.0, label).is_none());
-    assert!(value_patch(area, 100.0 + label.y + 3.0, label).is_some());
+    assert!(value_patch(area, 100.0 + label.y + 1.0, label).is_none());
+    assert!(value_patch(area, 100.0 + label.y + 2.0, label).is_some());
+    // The patch is the label's own box, so a curve passing beside it is not
+    // cut.
+    assert_eq!(patch.size(), label);
 }
 
 #[test]

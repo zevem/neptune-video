@@ -4812,8 +4812,9 @@ fn paint_clip(
     // inks, light on a dark shade, in either appearance. A chosen one is
     // ringed with the accent and washed with it inside the ring, and the
     // ring waits for the clip's own: a selected clip is ringed and barred
-    // at its edges too, so this ring stands clear of them, inside the bars
-    // and the keyline and a little under the name's band.
+    // at its edges too, so this ring stands clear of them, two points past
+    // the grip as a fade's handle does, and a little under the name's band.
+    // Its lines are then drawn inside the ring, which frames them.
     let mut chosen = None;
     for edge in transitions::EDGES {
         let Some(transition) = transitions::of(clip, edge) else {
@@ -4833,8 +4834,9 @@ fn paint_clip(
         let selected = marks.selected == Some(edge);
         let ring = selected
             .then(|| {
+                let clear = EDGE_GRIP + 2.5;
                 Rect::from_x_y_ranges(
-                    mark.left().max(rect.left() + 7.5)..=mark.right().min(rect.right() - 7.5),
+                    mark.left().max(rect.left() + clear)..=mark.right().min(rect.right() - clear),
                     (mark.top() + 2.0)..=(mark.bottom() - 3.0),
                 )
             })
@@ -4844,10 +4846,33 @@ fn paint_clip(
             clipped.rect_filled(washed, round, p.accent.gamma_multiply(0.45 * opacity));
             chosen = ring;
         }
+        // The line starts and ends three points in from the marking's
+        // corners, so neither it nor its halo reaches past the round of the
+        // tile's corner at the cut.
+        let (dx, dy) = (
+            3.0f32.min(mark.width() / 2.0),
+            3.0f32.min(mark.height() / 2.0),
+        );
         let (rising, end) = match edge {
-            TransitionEdge::In => ([mark.left_bottom(), mark.right_top()], mark.right() - 0.5),
-            TransitionEdge::Out => ([mark.right_bottom(), mark.left_top()], mark.left() + 0.5),
+            TransitionEdge::In => (
+                [
+                    mark.left_bottom() + vec2(dx, -dy),
+                    mark.right_top() + vec2(-dx, dy),
+                ],
+                mark.right() - 0.5,
+            ),
+            TransitionEdge::Out => (
+                [
+                    mark.right_bottom() + vec2(-dx, -dy),
+                    mark.left_top() + vec2(dx, dy),
+                ],
+                mark.left() + 0.5,
+            ),
         };
+        let lines = ring.map_or_else(
+            || clipped.clone(),
+            |ring| clipped.with_clip_rect(ring.shrink(2.0)),
+        );
         // The line runs through where its glyph stands when there is room
         // for one: the marking's centre, or within a ring the point of the
         // line nearest the ring's, with a point to spare inside the ring.
@@ -4875,13 +4900,22 @@ fn paint_clip(
         };
         for stroke in [Stroke::new(3.0, halo), Stroke::new(1.0, ink)] {
             for part in &parts[..count] {
-                clipped.line_segment(*part, stroke);
+                lines.line_segment(*part, stroke);
             }
         }
         if mark.width() >= 6.0 {
-            clipped.vline(
-                clipped.round_to_pixel_center(end),
-                (mark.top() + 2.0)..=(mark.bottom() - 2.0),
+            // Two points short of the marking's top and foot, or as short
+            // as the round of the tile's corners where a transition as long
+            // as its clip ends in one.
+            let corner = (end - rect.left()).min(rect.right() - end);
+            let short = if corner < f32::from(round) {
+                f32::from(round)
+            } else {
+                2.0
+            };
+            lines.vline(
+                lines.round_to_pixel_center(end),
+                (mark.top() + short)..=(mark.bottom() - short),
                 Stroke::new(1.0, ink),
             );
         }
