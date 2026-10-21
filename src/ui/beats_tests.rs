@@ -326,6 +326,17 @@ impl Bench {
         self.frame(Vec::new());
     }
 
+    /// Opens the clip menu at `pos` and, where it has one, its Audio menu:
+    /// the rows of a clip's sound are in it (§5.7.3).
+    fn audio_menu_at(&mut self, pos: Pos2) {
+        self.secondary_click_at(pos);
+        if let Some(audio) = self.find("Audio").map(|row| row.rect.center()) {
+            for _ in 0..4 {
+                self.frame(vec![Event::PointerMoved(audio)]);
+            }
+        }
+    }
+
     /// Presses the menu row with this name, and lets it go there.
     fn choose(&mut self, name: &str) {
         let rect = self.menu_row(name);
@@ -498,17 +509,18 @@ fn with_its_beats_hidden_nothing_lands_on_them() {
 
 // ---- The clip menu --------------------------------------------------------
 
+// §5.7.3: the rows of a clip's sound are in its Audio menu.
 #[test]
 fn the_menu_of_an_audio_lane_clip_shows_and_hides_beats_and_marks_them() {
     let (mut bench, [song, _]) = Bench::new();
     let asset = bench.asset("song.wav");
     let steps = bench.steps();
-    bench.secondary_click_at(bench.tile(song).center());
+    bench.audio_menu_at(bench.tile(song).center());
     assert!(bench.find("Markers from beats").is_none());
     bench.choose("Show beats");
     assert!(bench.peaks.beats.shown(asset.id));
     // Shown and still being found: the row is there, and cannot be chosen.
-    bench.secondary_click_at(bench.tile(song).center());
+    bench.audio_menu_at(bench.tile(song).center());
     assert!(
         bench
             .find("Markers from beats")
@@ -520,7 +532,7 @@ fn the_menu_of_an_audio_lane_clip_shows_and_hides_beats_and_marks_them() {
 
     // Held, the song's beats are marked: twelve, in one step.
     bench.hold("song.wav", grid(20));
-    bench.secondary_click_at(bench.tile(song).center());
+    bench.audio_menu_at(bench.tile(song).center());
     assert!(
         bench
             .find("Markers from beats")

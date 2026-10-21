@@ -1233,8 +1233,10 @@ fn a_selected_keys_segment_has_handles_that_shape_its_ease_as_one_step() {
     );
     assert!((x2 - 2.0 / 3.0).abs() < 0.01 && (y2 - 2.0 / 3.0).abs() < 0.01);
 
-    // A handle never leaves what an ease can hold.
-    let end = bench.drag(into, vec2(400.0, -900.0));
+    // A handle never leaves what an ease can hold. The travel is past the
+    // limit of a graph made taller by the 34-point strip and 24-point ruler
+    // (§5.5.1, §5.5.2).
+    let end = bench.drag(into, vec2(400.0, -1200.0));
     bench.release(end);
     let Ease::Bezier { x2, y2, .. } = bench.clip(clip).animation[0].keys[0].ease else {
         panic!("a cubic");

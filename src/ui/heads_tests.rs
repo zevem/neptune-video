@@ -17,6 +17,8 @@ struct Seen {
     rect: Rect,
     role: Role,
     disabled: bool,
+    /// Whether a check box is checked.
+    toggled: Option<egui::accesskit::Toggled>,
 }
 
 struct Bench {
@@ -29,6 +31,11 @@ struct Bench {
     seen: Vec<Seen>,
     /// Every line of text the last frame painted, and where.
     written: Vec<(String, Rect)>,
+    /// The colour of every line of text and glyph the last frame painted,
+    /// and where.
+    inked: Vec<(Rect, Color32)>,
+    /// Every rectangle the last frame filled, and with what.
+    filled: Vec<(Rect, Color32)>,
     refused: Vec<String>,
 }
 
@@ -70,6 +77,8 @@ impl Bench {
             time: 0.0,
             seen: Vec::new(),
             written: Vec::new(),
+            inked: Vec::new(),
+            filled: Vec::new(),
             refused: Vec::new(),
         };
         bench.frame(Vec::new());
@@ -97,13 +106,17 @@ impl Bench {
 
     /// One frame of the application with these events in it.
     fn frame(&mut self, events: Vec<Event>) {
-        fn texts(shape: &egui::Shape, found: &mut Vec<(String, Rect)>) {
+        fn texts(shape: &egui::Shape, found: &mut Vec<(String, Rect)>, bench: &mut Bench) {
             match shape {
-                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, found)),
-                egui::Shape::Text(text) => found.push((
-                    text.galley.text().to_owned(),
-                    Rect::from_min_size(text.pos, text.galley.size()),
-                )),
+                egui::Shape::Vec(shapes) => {
+                    (shapes.iter()).for_each(|shape| texts(shape, found, bench))
+                }
+                egui::Shape::Text(text) => {
+                    let rect = Rect::from_min_size(text.pos, text.galley.size());
+                    found.push((text.galley.text().to_owned(), rect));
+                    bench.inked.push((rect, text.fallback_color));
+                }
+                egui::Shape::Rect(rect) => bench.filled.push((rect.rect, rect.fill)),
                 _ => {}
             }
         }
@@ -139,10 +152,13 @@ impl Bench {
             );
         });
         output.textures_delta.clear();
-        self.written.clear();
+        let mut written = Vec::new();
+        self.inked.clear();
+        self.filled.clear();
         for clipped in &output.shapes {
-            texts(&clipped.shape, &mut self.written);
+            texts(&clipped.shape, &mut written, self);
         }
+        self.written = written;
         if let Some(update) = &output.platform_output.accesskit_update {
             self.seen = (update.nodes.iter())
                 .filter_map(|(id, node)| {
@@ -156,6 +172,7 @@ impl Bench {
                         ),
                         role: node.role(),
                         disabled: node.is_disabled(),
+                        toggled: node.toggled(),
                     })
                 })
                 .collect();
@@ -391,8 +408,8 @@ fn the_toggles_of_every_head_fit_a_156_point_head_and_leave_its_name_room() {
             "{name}: {name_width} in {}",
             room.span()
         );
-        // And the longest volume a head says under it.
-        let figure = width_of(&ctx, "800%", theme::regular(10.5));
+        // And the longest volume a head says under it, in Regular 11 (§4.4.5).
+        let figure = width_of(&ctx, "800%", theme::regular(11.0));
         assert!(figure <= room.span(), "{kind:?}: {figure}");
     }
 
@@ -834,4 +851,46 @@ fn a_head_says_under_its_name_a_volume_that_is_not_the_one_it_starts_with() {
     // that carries sound is tall enough.
     assert!(lane_height(TrackKind::Audio) >= HEAD_FIGURE);
     assert!(lane_height(TrackKind::Video) >= HEAD_FIGURE);
+}
+
+// §4.4.5, with the owner's decision on Solo: a soloed head's Solo cell is
+// pressed and its Headphones glyph is in the accent, not yellow. Off, the
+// cell is bare and its glyph muted.
+#[test]
+fn a_soloed_head_shows_its_solo_cell_pressed_with_its_glyph_in_the_accent() {
+    let mut bench = Bench::new();
+    let p = bench.palette;
+    let cell = (bench.toggle("Audio 1", "Solo track"))
+        .expect("FIXTURE: Audio 1 has a solo")
+        .rect;
+    let glyphs = |bench: &Bench| -> Vec<Color32> {
+        (bench.inked.iter())
+            .filter(|(rect, _)| cell.contains_rect(*rect))
+            .map(|(_, ink)| *ink)
+            .collect()
+    };
+    let pressed = |bench: &Bench| {
+        (bench.filled.iter()).any(|(rect, fill)| cell.contains_rect(*rect) && *fill == p.pressed)
+    };
+    assert_eq!(glyphs(&bench), [p.muted]);
+    assert!(!pressed(&bench));
+    bench.switch("Audio 1", "Solo track");
+    assert!(bench.track("Audio 1").solo, "{:?}", bench.refused);
+    assert_eq!(glyphs(&bench), [p.accent]);
+    assert!(pressed(&bench));
+}
+
+// §7.2: the tool strip's snapping toggle is "Snapping (N)", a check box that
+// says whether snapping is on, and its zoom is the slider "Timeline zoom".
+#[test]
+fn the_tool_strip_names_its_snapping_toggle_and_its_zoom() {
+    use egui::accesskit::Toggled;
+    let bench = Bench::new();
+    let snapping = bench.find("Snapping (N)").expect("the snapping toggle");
+    assert_eq!(snapping.role, Role::CheckBox);
+    assert_eq!(snapping.toggled, Some(Toggled::False));
+    assert!(snapping.rect.bottom() <= STRIP, "{:?}", snapping.rect);
+    let zoom = bench.find("Timeline zoom").expect("the zoom slider");
+    assert_eq!(zoom.role, Role::Slider);
+    assert!(zoom.rect.bottom() <= STRIP, "{:?}", zoom.rect);
 }
