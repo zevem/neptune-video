@@ -29,9 +29,11 @@ wells, number fields, the key column, select lists, chips, empty states) and
 draws it from the same tokens and primitives. Buttons, fields and selects are
 30 points tall, compact controls and menu rows 28, controls inside an
 inspector row 26, and icon buttons 28 around a 16-point glyph. Head cells,
-diamonds and card actions are 22-point small targets. Type is Geist in
-Regular, Medium and SemiBold, in sentence case; JetBrains Mono, Terminal's
-mono, is kept for the timecode and readouts, whose digits must not shift.
+the key column's diamonds and card actions are 22-point small targets; the
+keyframe lane's diamonds are 14 by 16 points inside its 18-point rows. Type
+is Geist in Regular, Medium and SemiBold, in sentence case; JetBrains Mono,
+Terminal's mono, is kept for the timecode and readouts, whose digits must not
+shift.
 Every egui `ComboBox` is drawn as a select with a menu list.
 
 The toolbar is the title bar: 44 points of `chrome`, a drag region minus its
