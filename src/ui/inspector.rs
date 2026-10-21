@@ -695,28 +695,6 @@ fn section(ui: &mut Ui, p: &Palette, text: &str) {
     );
 }
 
-/// The heading of a menu's rows, as `kit::menu_heading` sets it, made a
-/// label that a screen reader reads.
-fn menu_heading(ui: &mut Ui, p: &Palette, text: &str) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-    controls::place(
-        ui,
-        Rect::from_min_max(pos2(rect.left() + 32.0, rect.top()), rect.max),
-        egui::Layout::left_to_right(egui::Align::Center),
-        ("menu-heading", text),
-        |ui| {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(text)
-                        .font(theme::medium(11.5))
-                        .color(p.secondary),
-                )
-                .truncate(),
-            );
-        },
-    );
-}
-
 /// The heading row of a card: the name of what the card is (an effect, a
 /// mask, a tracker, a group of the Color section) and the small buttons that
 /// act on it, which stay in view. With `open`, the name is a disclosure that

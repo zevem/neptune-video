@@ -965,16 +965,18 @@ pub fn menu_row(
     }
 }
 
-/// A heading inside a menu, aligned with the rows' labels.
+/// A heading inside a menu, aligned with the rows' labels and read out as
+/// the label it is.
 pub fn menu_heading(ui: &mut Ui, p: &Palette, text: &str) {
     let (_, rect) = ui.allocate_space(vec2(ui.available_width(), 24.0));
-    ui.painter().text(
+    let words = ui.painter().text(
         Pos2::new(rect.left() + 32.0, rect.center().y),
         Align2::LEFT_CENTER,
         text,
         theme::medium(11.5),
         p.secondary,
     );
+    said(ui, words, text);
 }
 
 /// Words at the head of a menu, or where a heading would stand, that say

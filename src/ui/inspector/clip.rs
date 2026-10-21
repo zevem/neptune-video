@@ -677,7 +677,7 @@ impl<'a> Pane<'a> {
                 }
                 return;
             }
-            super::menu_heading(
+            kit::menu_heading(
                 ui,
                 p,
                 if easing.is_some() {

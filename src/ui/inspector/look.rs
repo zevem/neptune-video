@@ -6,7 +6,7 @@
 //! `SetEffects` for the clip the draft was made for.
 use super::{
     FIELD, button, button_row, card, card_head, clip::Field, clip::Pane, fitted_row, head_button,
-    keyed_row, menu_heading, note, section, select_menu, tall_row, well,
+    keyed_row, note, section, select_menu, tall_row, well,
 };
 use crate::{
     icons::Icon,
@@ -471,7 +471,7 @@ impl Pane<'_> {
                         if at > 0 {
                             widgets::menu_separator(ui, p);
                         }
-                        menu_heading(ui, p, family.label());
+                        kit::menu_heading(ui, p, family.label());
                         for kind in EffectKind::ALL {
                             if self::family(kind) == family
                                 && addable(kind)
