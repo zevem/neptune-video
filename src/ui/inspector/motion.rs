@@ -16,8 +16,8 @@
 //! worker as an [`Action::Track`], and the path comes back as one tracker.
 //! Following, renaming and removing are the project's own commands.
 use super::{
-    FIELD, LEAD, button, button_row, card, clip::Pane, fitted_row, look::set_param, number, row,
-    section, select_menu, tall_row, text_field, wide_row,
+    FIELD, LEAD, button, button_row, card, clip::Pane, fitted_row, look::set_param, note, number,
+    row, section, select_menu, tall_row, text_field, wide_row,
 };
 use crate::{
     icons::Icon,
@@ -68,10 +68,6 @@ fn shown_until(clip: &Clip, playhead: Time) -> Time {
         .chain([clip.end()])
         .map(|at| clip.source_time(at))
         .fold(clip.source_time(playhead), Time::max)
-}
-
-pub(super) fn note(ui: &mut Ui, p: &theme::Palette, text: &str) -> egui::Response {
-    super::note(ui, p, text)
 }
 
 /// How far something the analysis worker does has got: what it is and a

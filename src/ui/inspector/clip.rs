@@ -9,9 +9,9 @@
 //! A section is a method of [`Pane`] chosen in [`rows`]: one that is not
 //! written yet is [`Pane::placeholder`], and filling it is replacing that arm.
 use super::{
-    InspectorInput, InspectorState, PAIRED_GAP, ProjectDraft, SWITCH, Section, Thumb, button,
-    button_row, card, fact, keyed_card, keyed_row, note, number, number_with, object_header,
-    paired_width, row, section, section_switch, select_list, tall_row, time_fact,
+    FIELD, Ink, InspectorInput, InspectorState, PAIRED_GAP, ProjectDraft, SWITCH, Section, Thumb,
+    button, button_row, card, fact, keyed_card, keyed_row, note, number, number_with,
+    object_header, paired_width, row, section, section_switch, select_list, tall_row, time_fact,
 };
 use crate::{
     icons::Icon,
@@ -36,9 +36,6 @@ use eframe::egui::{
     self, Key, Rect, Response, Sense, SetOpenCommand, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 use uuid::Uuid;
-
-/// The width of a field that has a row to itself.
-pub(super) const FIELD: f32 = super::FIELD;
 
 /// The values a row shows together, which are keyframed together: a value
 /// written at a time gives the others of its row a keyframe there too.
@@ -336,7 +333,8 @@ pub(super) fn head(
     let rate = project.settings.frame_rate;
     let asset = clip.asset_id().and_then(|id| project.assets.get(&id));
     let icon = asset.map_or(icon_of_track(track.kind), |asset| icon_of_media(asset.kind));
-    let tone = p.tone(asset.map_or(tone_of_track(track.kind), |asset| tone_of_media(asset.kind)));
+    let tone =
+        Ink::Tone(asset.map_or(tone_of_track(track.kind), |asset| tone_of_media(asset.kind)));
     // A picture shows its poster; a sound its wave, and a title its glyph.
     let thumb = match asset.map(|asset| asset.kind) {
         Some(MediaKind::Video | MediaKind::Image | MediaKind::Gif) => Thumb::Picture(
@@ -344,8 +342,8 @@ pub(super) fn head(
             icon,
             tone,
         ),
-        Some(MediaKind::Audio) => Thumb::Glyph(Icon::Music, p.wave()),
-        _ if track.kind == TrackKind::Audio => Thumb::Glyph(Icon::Music, p.wave()),
+        Some(MediaKind::Audio) => Thumb::Glyph(Icon::Music, Ink::Wave),
+        _ if track.kind == TrackKind::Audio => Thumb::Glyph(Icon::Music, Ink::Wave),
         _ => Thumb::Glyph(icon, tone),
     };
     let words = format!("{} · ", track.name);

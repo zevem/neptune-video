@@ -695,7 +695,7 @@ impl Pane<'_> {
 }
 
 /// The two colours a look leaves in the shadows and in the lights, as the
-/// library's look cards show them (`browser::look_colours`).
+/// library's look cards tone their sample frame (`browser::look_colours`).
 fn look_colours(preset: LookPreset) -> (egui::Color32, egui::Color32) {
     let rgb = egui::Color32::from_rgb;
     match preset {
@@ -709,14 +709,21 @@ fn look_colours(preset: LookPreset) -> (egui::Color32, egui::Color32) {
     }
 }
 
-/// The narrowest a look card is: room for its name under its swatch.
-const LOOK_CARD: f32 = 76.0;
-const LOOK_GAP: f32 = 6.0;
+/// The narrowest a look card's swatch is, and the room between two. Three
+/// fit across the narrowest card, so the seven looks and the strength
+/// under them stay about a screen of the panel.
+const LOOK_CARD: f32 = 68.0;
+const LOOK_GAP: f32 = 8.0;
+/// How far a card's hover and pressed fills reach past its swatch and name.
+const LOOK_BLEED: f32 = 4.0;
 
-/// The looks as the library shows them, a swatch over a name, as many to a
-/// row as fit, at most four. The one the clip has is pressed, with a check
-/// on its swatch. Each is a button named by its look, said to be chosen or
-/// not, and `hint` is its tooltip. Hands back the look clicked.
+/// The looks as the library's cards show them (§4.4.7), as many to a row as
+/// fit, at most four: the sample frame toned by the look, its name 6 under
+/// it in Medium 12. The swatches start and end where the card's rows do; a
+/// card's fills bleed 4 past them into the margin. The look the clip has is
+/// pressed, with a check on its swatch. Each is a button named by its look,
+/// said to be chosen or not, and `hint` is its tooltip. Hands back the look
+/// clicked.
 fn look_cards(
     ui: &mut egui::Ui,
     p: &theme::Palette,
@@ -727,37 +734,46 @@ fn look_cards(
     super::rule(ui, p);
     let inner = ui.available_width() - 2.0 * super::LEAD;
     let columns = (((inner + LOOK_GAP) / (LOOK_CARD + LOOK_GAP)).floor() as usize).clamp(2, 4);
-    let cell = (inner - LOOK_GAP * (columns - 1) as f32) / columns as f32;
-    let swatch = vec2(cell - 8.0, ((cell - 8.0) * 32.0 / 56.0).round());
-    let cell_height = 4.0 + swatch.y + 4.0 + 16.0 + 4.0;
+    let width = (inner - LOOK_GAP * (columns - 1) as f32) / columns as f32;
+    let swatch = vec2(width, (width * 9.0 / 16.0).round());
+    let name_height = 16.0;
+    let cell_height = swatch.y + 6.0 + name_height;
     let rows = PRESETS.len().div_ceil(columns);
-    let height = 8.0 + rows as f32 * cell_height + (rows - 1) as f32 * LOOK_GAP + 8.0;
+    let pad = 8.0 + LOOK_BLEED;
+    let height = 2.0 * pad + rows as f32 * cell_height + (rows - 1) as f32 * LOOK_GAP;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     let enabled = ui.is_enabled();
     let mut picked = None;
     for (index, (preset, name)) in PRESETS.into_iter().enumerate() {
         let (row, column) = (index / columns, index % columns);
         let min = pos2(
-            rect.left() + super::LEAD + column as f32 * (cell + LOOK_GAP),
-            rect.top() + 8.0 + row as f32 * (cell_height + LOOK_GAP),
+            rect.left() + super::LEAD + column as f32 * (width + LOOK_GAP),
+            rect.top() + pad + row as f32 * (cell_height + LOOK_GAP),
         );
-        let cell_rect = Rect::from_min_size(min, vec2(cell, cell_height));
+        let cell = Rect::from_min_size(min, vec2(width, cell_height));
+        let back = cell.expand(LOOK_BLEED);
         let chosen = given == Some(preset);
-        let response = ui.interact(cell_rect, ui.id().with(("look-card", name)), Sense::click());
+        let response = ui.interact(back, ui.id().with(("look-card", name)), Sense::click());
         response.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, chosen, name));
-        if ui.is_rect_visible(cell_rect) {
+        if ui.is_rect_visible(back) {
             let painter = ui.painter();
             let hover = kit::hover_amount(ui, &response);
             if chosen || (enabled && response.is_pointer_button_down_on()) {
-                painter.rect_filled(cell_rect, 8, p.pressed);
+                painter.rect_filled(back, 10, p.pressed);
             } else if hover > 0.0 {
-                painter.rect_filled(cell_rect, 8, p.hover.gamma_multiply(hover));
+                painter.rect_filled(back, 10, p.hover.gamma_multiply(hover));
             }
             if response.has_focus() {
-                super::controls::focus_ring(painter, cell_rect, 8, *p);
+                super::controls::focus_ring(painter, back, 10, *p);
             }
-            let tile = Rect::from_min_size(cell_rect.min + vec2(4.0, 4.0), swatch);
-            look_swatch(painter, tile, preset);
+            let tile = Rect::from_min_size(cell.min, swatch);
+            let (dark, light) = look_colours(preset);
+            sample(
+                &painter.with_clip_rect(tile.intersect(painter.clip_rect())),
+                tile,
+                8,
+                &|level| theme::mix(dark, light, level),
+            );
             if chosen {
                 // Over a picture, as a badge is: white on a dark disc.
                 let centre = pos2(tile.right() - 10.0, tile.top() + 10.0);
@@ -771,23 +787,13 @@ fn look_cards(
             }
             painter.rect_stroke(
                 tile,
-                6,
+                8,
                 Stroke::new(1.0, p.canvas_edge()),
                 egui::StrokeKind::Inside,
             );
             let ink = if enabled { p.fg } else { p.muted };
-            let galley = super::controls::elided(
-                painter,
-                name,
-                theme::regular(11.5),
-                ink,
-                cell_rect.width() - 8.0,
-            );
-            super::controls::galley_at(
-                painter,
-                pos2(tile.left(), tile.bottom() + 4.0 + 8.0),
-                galley,
-            );
+            let galley = super::controls::elided(painter, name, theme::medium(12.0), ink, width);
+            painter.galley(pos2(tile.left(), tile.bottom() + 6.0), galley, ink);
         }
         let response = response
             .on_hover_text(hint(chosen))
@@ -799,27 +805,55 @@ fn look_cards(
     picked
 }
 
-/// A look's swatch: its shadows' colour running into its lights'.
-fn look_swatch(painter: &egui::Painter, rect: egui::Rect, preset: LookPreset) {
-    const STEPS: usize = 8;
-    let (dark, light) = look_colours(preset);
-    for step in 0..STEPS {
-        let from = rect.left() + rect.width() * step as f32 / STEPS as f32;
-        let to = rect.left() + rect.width() * (step + 1) as f32 / STEPS as f32;
-        let radius = egui::CornerRadius {
-            nw: if step == 0 { 6 } else { 0 },
-            sw: if step == 0 { 6 } else { 0 },
-            ne: if step + 1 == STEPS { 6 } else { 0 },
-            se: if step + 1 == STEPS { 6 } else { 0 },
+/// A point of `rect`, at parts of its width and height.
+fn at(rect: egui::Rect, x: f32, y: f32) -> egui::Pos2 {
+    egui::pos2(
+        rect.left() + rect.width() * x,
+        rect.top() + rect.height() * y,
+    )
+}
+
+/// Neptune Video: the library's sample frame (`browser::sample`), drawn
+/// here as it is there until the two share one painter. A sky lightening
+/// toward the horizon, a sun, two ridges and the ground, each a level of
+/// `ink` from dark (0) to light (1), rounded at `radius`. The painter is to
+/// clip to `rect`. Drawn with a handful of shapes, the same every frame.
+fn sample(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    radius: u8,
+    ink: &dyn Fn(f32) -> egui::Color32,
+) {
+    // Each band runs half a point under the next, so no seam shows, and is
+    // rounded at the corners of the frame it reaches.
+    let band = |top: f32, bottom: f32, level: f32| {
+        let mut band = egui::Rect::from_min_max(at(rect, 0.0, top), at(rect, 1.0, bottom));
+        if bottom < 1.0 {
+            band.max.y += 0.5;
+        }
+        let round = |at: bool| if at { radius } else { 0 };
+        let corners = egui::CornerRadius {
+            nw: round(top == 0.0),
+            ne: round(top == 0.0),
+            sw: round(bottom >= 1.0),
+            se: round(bottom >= 1.0),
         };
-        // Half a point over the next, so no seam shows between two.
-        let stripe = egui::Rect::from_min_max(
-            egui::pos2(from, rect.top()),
-            egui::pos2((to + 0.5).min(rect.right()), rect.bottom()),
-        );
-        let amount = step as f32 / (STEPS - 1) as f32;
-        painter.rect_filled(stripe, radius, theme::mix(dark, light, amount));
-    }
+        painter.rect_filled(band, corners, ink(level));
+    };
+    band(0.0, 0.36, 0.3);
+    band(0.36, 0.56, 0.38);
+    band(0.56, 0.74, 0.47);
+    painter.circle_filled(at(rect, 0.72, 0.34), rect.height() * 0.12, ink(0.95));
+    let ridge = |points: [(f32, f32); 3], level: f32| {
+        painter.add(egui::Shape::convex_polygon(
+            points.iter().map(|(x, y)| at(rect, *x, *y)).collect(),
+            ink(level),
+            egui::Stroke::NONE,
+        ));
+    };
+    ridge([(-0.06, 0.76), (0.32, 0.44), (0.74, 0.76)], 0.24);
+    ridge([(0.34, 0.76), (0.7, 0.52), (1.08, 0.76)], 0.17);
+    band(0.74, 1.0, 0.1);
 }
 
 /// A part of a whole in hundredths, read beside the slider that sets it.

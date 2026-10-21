@@ -432,7 +432,10 @@ pub(super) fn well(
     alpha: bool,
     brand: &[[u8; 4]],
 ) -> Response {
-    let id = ui.id().with(("colour-well", label));
+    // Its own, where it is laid out: wells of one name in two cards (the
+    // text's colour and the outline's) are two wells, and their pickers and
+    // kept hues are apart.
+    let id = ui.auto_id_with(("colour-well", label));
     let popover = id.with("popover");
     let open = egui::Popup::is_id_open(ui.ctx(), popover);
     let (_, mut response) = ui.allocate_exact_size(SWATCH, Sense::click());

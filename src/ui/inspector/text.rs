@@ -332,16 +332,46 @@ fn words_field(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, rows: us
             top: 8,
             bottom: 8,
         })
-        .show(ui, |ui| {
-            ui.add(
-                egui::TextEdit::multiline(text)
-                    .desired_rows(rows)
-                    .desired_width(f32::INFINITY)
-                    .frame(egui::Frame::NONE)
-                    .font(theme::regular(13.0))
-                    .hint_text(hint),
-            );
-        });
+        .show(ui, |ui| writing(ui, p, text, hint, rows));
+}
+
+/// A multi-line field `rows` tall, named and hinted by `hint`: edged as
+/// every field is, with the accent's outline and halo while it has the
+/// keyboard (§3.10). Its words are set 8 in from its edge.
+fn writing(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, rows: usize) {
+    let surface = ui.painter().add(egui::Shape::Noop);
+    let response = ui.add(
+        egui::TextEdit::multiline(text)
+            .desired_rows(rows)
+            .desired_width(f32::INFINITY)
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 5)))
+            .font(theme::regular(13.0))
+            .hint_text(hint),
+    );
+    let rect = response.rect;
+    let mut shapes = vec![egui::Shape::rect_filled(rect, 7, p.control)];
+    if response.has_focus() {
+        shapes.push(egui::Shape::rect_stroke(
+            rect.expand(2.5),
+            9,
+            egui::Stroke::new(3.0, theme::tint(p.accent, 0.28)),
+            egui::StrokeKind::Inside,
+        ));
+        shapes.push(egui::Shape::rect_stroke(
+            rect,
+            7,
+            egui::Stroke::new(1.0, p.accent),
+            egui::StrokeKind::Inside,
+        ));
+    } else {
+        shapes.push(egui::Shape::rect_stroke(
+            rect,
+            7,
+            p.hairline(),
+            egui::StrokeKind::Inside,
+        ));
+    }
+    ui.painter().set(surface, egui::Shape::Vec(shapes));
 }
 
 /// The families a title may name: the lane's, the project's font files and
@@ -405,6 +435,12 @@ pub(super) fn font_rows(
                                 break;
                             }
                             shown += 1;
+                            // Neptune Video: §5.4 shows each family in its
+                            // own face here. The families are the title
+                            // lane's, which egui has not loaded, and loading
+                            // them is file reads the frame may not wait on;
+                            // until the lane hands faces over, a row is set
+                            // in the menu's face.
                             let on = font.family == *name;
                             if kit::menu_row(ui, p, None, name, "", false, Some(on)).clicked() {
                                 picked = Some(name.clone());
@@ -872,14 +908,7 @@ impl Pane<'_> {
                                     .font(theme::regular(11.5))
                                     .color(p.secondary),
                             ));
-                            ui.add(
-                                egui::TextEdit::multiline(text)
-                                    .desired_rows(1)
-                                    .desired_width(f32::INFINITY)
-                                    .frame(egui::Frame::NONE)
-                                    .font(theme::regular(13.0))
-                                    .hint_text(element.name.as_str()),
-                            );
+                            writing(ui, p, text, element.name.as_str(), 1);
                         });
                 }
             });

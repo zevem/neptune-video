@@ -66,6 +66,8 @@ struct Seen {
     disabled: bool,
     /// Whether a control that is one of several is the chosen one.
     selected: Option<bool>,
+    /// Whether a disclosure shows what it holds.
+    expanded: Option<bool>,
 }
 
 struct Bench {
@@ -282,6 +284,7 @@ impl Bench {
                         disabled: node.is_disabled(),
                         selected: (node.toggled())
                             .map(|toggled| toggled == egui::accesskit::Toggled::True),
+                        expanded: node.is_expanded(),
                     })
                 })
                 .collect();
@@ -1955,9 +1958,12 @@ fn every_control_is_named_and_fits_a_narrow_panel() {
 /// section switch spans the panel inside its 2-point thumb inset, a curve
 /// frame's well is 4 in from its card (§5.4.1) with the targets of its edge
 /// points over the well's rim. Every other control starts at a card's lead,
-/// 12 in, or on the cards' edge itself (a card heading's disclosure, a row
-/// of buttons under the cards), and ends no further out than the key
-/// column, 8 in from a card's edge.
+/// 12 in, or 4 in under the cards (a row of buttons there, as notes are),
+/// or a look card's 8, and ends no further out than the key column, 8 in
+/// from a card's edge.
+/// Only a card heading's disclosure, whose ring is drawn 4 inside it, may
+/// sit on the cards' edge: a control's ring is never cut by the pane's edge
+/// (§7.4).
 fn fits_cards(seen: &Seen, panel: Rect) -> bool {
     let switch = seen.role == Role::RadioButton && seen.rect.bottom() <= panel.top() + 80.0;
     let well = seen.name.ends_with(" curve")
@@ -1967,7 +1973,12 @@ fn fits_cards(seen: &Seen, panel: Rect) -> bool {
         return seen.rect.left() >= panel.left() + 1.0 && seen.rect.right() <= panel.right() - 1.0;
     }
     let left = seen.rect.left() - panel.left();
-    (left.abs() < 0.5 || left >= 11.0) && seen.rect.right() <= panel.right() - 8.0
+    let disclosure = seen.expanded.is_some() && left.abs() < 0.5;
+    let under_cards = (left - 4.0).abs() < 0.5;
+    // A look card's fills, which are its target, bleed 4 past its swatch
+    // into the card's margin (§4.4.7).
+    let look = seen.role == Role::Button && seen.selected.is_some() && (left - 8.0).abs() < 0.5;
+    (disclosure || under_cards || look || left >= 11.0) && seen.rect.right() <= panel.right() - 8.0
 }
 
 fn key_of(at: f64, value: f32) -> Keyframe {
@@ -2335,21 +2346,30 @@ fn a_text_field_takes_a_click_anywhere_on_it() {
 fn a_short_header_says_its_detail_whole_or_not_at_all() {
     // Spec §5.4: under 300 points of panel the header is one line. A time
     // cut short says nothing, and the name and the detail are read apart.
+    // What is not shown of the line is still read out (§7.1).
     for width in [300.0, 160.0] {
         let (mut bench, _) = Bench::new();
         bench.size = vec2(width, 280.0);
         bench.frame(Vec::new());
         bench.frame(Vec::new());
-        let name = bench.clip(bench.selection.single().unwrap()).name.clone();
-        let line = (bench.seen.iter())
-            .find(|seen| Bench::is_text(seen) && seen.name.starts_with(&name))
+        let clip = bench.clip(bench.selection.single().unwrap());
+        let (name, start) = (clip.name.clone(), clip.start);
+        let rate = bench.editor.project().settings.frame_rate;
+        let time = crate::timefmt::timecode(start, rate);
+        let lines =
+            (bench.seen.iter()).filter(|seen| Bench::is_text(seen) && seen.name.starts_with(&name));
+        for line in lines {
+            let detail = line.name[name.len()..].to_owned();
+            assert!(!detail.contains('…'), "at {width}: {:?}", line.name);
+            assert!(
+                detail.is_empty() || detail.starts_with(' '),
+                "at {width}: {:?}",
+                line.name
+            );
+        }
+        let said = (bench.seen.iter())
+            .find(|seen| seen.role == Role::Label && seen.name.starts_with(&name))
             .expect("the header's line");
-        let detail = line.name[name.len()..].to_owned();
-        assert!(!detail.contains('…'), "at {width}: {:?}", line.name);
-        assert!(
-            detail.is_empty() || detail.starts_with(' '),
-            "at {width}: {:?}",
-            line.name
-        );
+        assert!(said.name.ends_with(&time), "at {width}: {:?}", said.name);
     }
 }

@@ -172,6 +172,7 @@ fn graph(
     for index in 0..count {
         let centre = to_screen(curve.at(index), curve.speed(index));
         let target = Rect::from_center_size(centre, Vec2::splat(TARGET));
+        let target = super::clear_of_bar(ui, target);
         let response = ui.interact(target, point_id(index), Sense::click_and_drag());
         response.widget_info(|| {
             let mut info = WidgetInfo::labeled(
@@ -304,26 +305,27 @@ fn graph(
         let grid = Stroke::new(1.0, p.separator.gamma_multiply(0.6));
         // The speeds the plot is read against: four even lines to its top,
         // each named, and normal speed, which is the stronger line.
+        // Each line starts 4 past its name, which is read as the ruler's
+        // are, in secondary: normal speed is told apart by its line.
         let level = |speed: f64| plot.bottom() - height(speed, top) * plot.height();
-        let name = |speed: f64, ink| {
-            painter.text(
+        let line = |speed: f64, stroke: Stroke| {
+            let name = painter.text(
                 pos2(rect.left() + 5.0, level(speed)),
                 egui::Align2::LEFT_CENTER,
                 speed::times(speed),
                 theme::regular(11.0),
-                ink,
+                p.secondary,
             );
+            let start = (plot.left() - RADIUS - 1.0).max(name.right() + 4.0);
+            painter.hline(start..=rect.right() - 1.0, level(speed), stroke);
         };
-        let lines = plot.left() - RADIUS - 1.0..=rect.right() - 1.0;
         for step in 1..=4 {
             let speed = top * f64::from(step) / 4.0;
-            painter.hline(lines.clone(), level(speed), grid);
             if speed != 1.0 {
-                name(speed, p.muted);
+                line(speed, grid);
             }
         }
-        painter.hline(lines, level(1.0), Stroke::new(1.0, p.separator));
-        name(1.0, p.secondary);
+        line(1.0, Stroke::new(1.0, p.separator));
         if let Some(playhead) = playhead {
             let x = to_screen(playhead, 0.0).x;
             painter.vline(
@@ -357,8 +359,10 @@ fn graph(
             begins += span;
         }
         painter.add(Shape::line(line, Stroke::new(1.5, ink)));
-        // The point last taken hold of is marked only while the person is
-        // at the graph: holding a point, or with one at the keyboard.
+        // The point last taken hold of is the one the rows under the graph
+        // act on, and is always marked: filled with the ink at rest, and
+        // with the accent only while the person is at the graph, holding a
+        // point or with one at the keyboard.
         let picked = (responses.iter())
             .any(|r| r.has_focus() || r.dragged() || r.is_pointer_button_down_on());
         // Drawn where they are held now; the targets follow a frame later.
@@ -369,8 +373,11 @@ fn graph(
             let grabbed = response.is_some_and(|r| r.dragged() || r.is_pointer_button_down_on());
             let hovered = response.is_some_and(Response::hovered);
             let size = if grabbed || hovered { 5.0 } else { 4.0 };
-            let chosen = picked && index == state.point;
-            let fill = if chosen && enabled { p.accent } else { p.bg };
+            let fill = match (index == state.point, picked && enabled) {
+                (true, true) => p.accent,
+                (true, false) => ink,
+                (false, _) => p.bg,
+            };
             painter.circle_filled(centre, size, fill);
             painter.circle_stroke(centre, size, Stroke::new(1.5, ink));
             if response.is_some_and(Response::has_focus) {

@@ -620,11 +620,13 @@ fn segmented<T: PartialEq + Copy>(
 }
 
 /// A row of buttons at the card's leading edge, wrapped where the card is
-/// narrow. Outside a card, the same row under the cards, on their edge.
+/// narrow. Outside a card, the same row under the cards, set in 4 as notes
+/// are there, so that a button's focus ring is clear of the pane's edge
+/// (§7.4).
 fn button_row<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
     rule(ui, p);
     let carded = in_card(ui);
-    let lead = if carded { LEAD as i8 } else { 0 };
+    let lead = if carded { LEAD as i8 } else { 4 };
     let inner = egui::Frame::NONE
         .inner_margin(egui::Margin {
             left: lead,
@@ -880,19 +882,9 @@ fn head_button(ui: &mut Ui, p: &Palette, icon: Icon, enabled: bool, label: &str)
 }
 
 /// A compact button for the inside of a card, 26 tall, led by an icon where
-/// it has one. `controls::button_sized` is the same button without an icon.
+/// it has one, and read out by what it shows. `controls::button_sized` is
+/// the same button without an icon.
 fn button(ui: &mut Ui, p: &Palette, icon: Option<Icon>, text: &str, kind: Kind) -> Response {
-    named_button(ui, p, icon, (text, text), kind)
-}
-
-/// As [`button`], read out by a `name` longer than what it shows.
-fn named_button(
-    ui: &mut Ui,
-    p: &Palette,
-    icon: Option<Icon>,
-    (text, name): (&str, &str),
-    kind: Kind,
-) -> Response {
     let galley =
         ui.painter()
             .layout_no_wrap(text.to_owned(), theme::medium(12.5), Color32::PLACEHOLDER);
@@ -904,7 +896,7 @@ fn named_button(
     let (rect, response) =
         ui.allocate_exact_size(vec2(width, metrics::INSPECTOR_CONTROL), Sense::click());
     let enabled = ui.is_enabled();
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -1119,14 +1111,37 @@ const HEAD: f32 = 44.0;
 const HEAD_COMPACT: f32 = 28.0;
 /// The section switch, and the room above and under it.
 const SWITCH: f32 = 28.0;
+/// The room the statement that nothing is selected takes over the
+/// project's cards.
+const NOTHING_SELECTED: f32 = 112.0;
 
 /// What the header's thumbnail shows.
 #[derive(Clone, Copy)]
 enum Thumb<'a> {
     /// A picture's poster, with its kind's glyph until the poster is read.
-    Picture(Option<&'a egui::TextureHandle>, Icon, Color32),
+    Picture(Option<&'a egui::TextureHandle>, Icon, Ink),
     /// A glyph for what has no picture: a title, a sound, the project.
-    Glyph(Icon, Color32),
+    Glyph(Icon, Ink),
+}
+
+/// The ink of a thumbnail's glyph, said by what it is rather than as a
+/// colour: on the 48-point tile it is the stage palette's, as everything
+/// on the stage is (§3.2), and on the one-line header the panel's own.
+#[derive(Clone, Copy)]
+enum Ink {
+    Secondary,
+    Tone(theme::Tone),
+    Wave,
+}
+
+impl Ink {
+    fn on(self, p: &Palette) -> Color32 {
+        match self {
+            Self::Secondary => p.secondary,
+            Self::Tone(tone) => p.tone(tone),
+            Self::Wave => p.wave(),
+        }
+    }
 }
 
 /// The header of what the inspector shows, 44 tall in `rect`: a thumbnail on
@@ -1149,13 +1164,13 @@ fn object_header(
     };
     if compact {
         let glyph = match thumb {
-            Thumb::Picture(_, icon, tone) | Thumb::Glyph(icon, tone) => (icon, tone),
+            Thumb::Picture(_, icon, ink) | Thumb::Glyph(icon, ink) => (icon, ink),
         };
         icons::paint(
             ui.painter(),
             Rect::from_center_size(pos2(rect.left() + 13.0, rect.center().y), Vec2::splat(14.0)),
             glyph.0,
-            glyph.1,
+            glyph.1.on(p),
         );
         // The detail follows the name only where it fits whole: a time cut
         // short says nothing. Without the time, the words go on their own
@@ -1169,6 +1184,12 @@ fn object_header(
         };
         let room = rect.right() - left - width(name, theme::medium(12.5)) - 8.0;
         let bare = words.trim_end_matches(" · ");
+        // What is read out is the whole line, however much of it is shown.
+        let said = match (bare.is_empty(), time.is_empty()) {
+            (true, true) => name.to_owned(),
+            (false, true) => format!("{name} {bare}"),
+            _ => format!("{name} {words}{time}"),
+        };
         let (words, time) =
             if width(words, theme::regular(11.5)) + width(time, theme::mono(11.0)) <= room {
                 (words, time)
@@ -1191,7 +1212,10 @@ fn object_header(
             Rect::from_min_max(pos2(left, rect.top()), rect.max),
             egui::Layout::left_to_right(egui::Align::Center),
             "object-header",
-            |ui| ui.add(egui::Label::new(job).truncate()),
+            |ui| {
+                ui.add(egui::Label::new(job).truncate())
+                    .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
+            },
         );
         return;
     }
@@ -1213,12 +1237,15 @@ fn object_header(
                     .with_texture(texture.id(), uv),
             );
         }
-        Thumb::Picture(None, icon, tone) | Thumb::Glyph(icon, tone) => {
+        Thumb::Picture(None, icon, ink) | Thumb::Glyph(icon, ink) => {
+            // The tile is the stage's dark in either appearance. None of
+            // these inks follows the accent.
+            let stage = Palette::stage_palette(theme::Accent::default());
             icons::paint(
                 painter,
                 Rect::from_center_size(tile.center(), Vec2::splat(14.0)),
                 icon,
-                tone,
+                ink.on(&stage),
             );
         }
     }
@@ -1497,7 +1524,7 @@ fn panes(
             ui,
             p,
             head,
-            Thumb::Glyph(Icon::Layers, p.secondary),
+            Thumb::Glyph(Icon::Layers, Ink::Secondary),
             &format!("{clips} clips"),
             ("Selected together", ""),
             compact,
@@ -1516,8 +1543,8 @@ fn panes(
             asset_pane(ui, p, asset, input.textures, actions);
         });
     } else {
-        // Nothing selected shows the project's own settings, which are
-        // edited nowhere else.
+        // Nothing selected says so (§5.10), and over the project's own
+        // settings, which are edited nowhere else.
         let clips: usize = project.tracks.iter().map(|track| track.clips.len()).sum();
         let detail = match clips {
             1 => "1 clip · ".to_owned(),
@@ -1527,12 +1554,23 @@ fn panes(
             ui,
             p,
             head,
-            Thumb::Glyph(Icon::Film, p.tone(theme::Tone::Video)),
+            Thumb::Glyph(Icon::Film, Ink::Tone(theme::Tone::Video)),
             &project.name,
             (&detail, &timefmt::short(project.duration())),
             compact,
         );
         scrolled(ui, p, below(head.bottom() + 6.0), "inspector", |ui| {
+            let (rect, _) = ui
+                .allocate_exact_size(vec2(ui.available_width(), NOTHING_SELECTED), Sense::hover());
+            kit::empty_state(
+                ui,
+                p,
+                rect,
+                Icon::Pointer,
+                "Nothing selected",
+                "Select a clip to see its properties.",
+                None,
+            );
             project_pane(ui, p, project, project_draft);
         });
     }
@@ -1549,7 +1587,15 @@ fn scrolled(
     add: impl FnOnce(&mut Ui),
 ) {
     let mut body = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-    body.set_clip_rect(rect.intersect(ui.clip_rect()));
+    // The rows are cut off above and under the pane, but not at its sides:
+    // there they are cut 3 out, in the panel's gutter, so that the ring of
+    // a control on the cards' edge is whole (§7.4).
+    body.set_clip_rect(rect.expand2(vec2(3.0, 0.0)).intersect(ui.clip_rect()));
+    // Where the floating scroll bar starts, which a point's target stops
+    // short of: the bar is laid over the rows and takes what is under it.
+    let scroll = ui.spacing().scroll;
+    let bar = rect.right() - scroll.bar_outer_margin - scroll.bar_width;
+    ui.data_mut(|data| data.insert_temp(egui::Id::new("inspector-bar"), bar));
     let output = egui::ScrollArea::vertical()
         .id_salt(salt)
         .auto_shrink([false, false])
@@ -1589,6 +1635,20 @@ fn scrolled(
     if output.state.offset.y + shown.height() < output.content_size.y - 1.0 {
         kit::scroll_fade(&ui.painter_at(shown), shown, kit::Edge::Bottom, p.chrome);
     }
+}
+
+/// Where the floating scroll bar of the pane being laid out starts. A
+/// target that would run under it, as a curve's last point's would, is cut
+/// short there, so that a press beside the point takes the point.
+fn bar_start(ui: &Ui) -> f32 {
+    (ui.data(|data| data.get_temp(egui::Id::new("inspector-bar")))).unwrap_or(f32::INFINITY)
+}
+
+/// A point's target, cut short of the scroll bar.
+fn clear_of_bar(ui: &Ui, target: Rect) -> Rect {
+    let mut target = target;
+    target.max.x = target.max.x.min(bar_start(ui)).max(target.min.x);
+    target
 }
 
 fn several_pane(

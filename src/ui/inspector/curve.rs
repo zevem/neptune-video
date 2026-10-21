@@ -153,6 +153,7 @@ pub(super) fn editor(
     let mut responses = Vec::with_capacity(count);
     for (index, point) in points.iter().enumerate() {
         let target = Rect::from_center_size(to_screen(*point), Vec2::splat(TARGET));
+        let target = super::clear_of_bar(ui, target);
         let response = ui.interact(target, point_id(index), Sense::click_and_drag());
         let enabled = ui.is_enabled();
         response.widget_info(|| {

@@ -19,7 +19,7 @@ use super::{
     clip::Pane,
     curve, fitted_row, head_button, keyed_card, keyed_row,
     look::{KEY_COLOUR, is_default, percent, set_param, slider_width},
-    named_button, note, select_menu,
+    note, select_menu,
     speed::well_row,
     tall_row, well,
 };
@@ -508,13 +508,7 @@ impl Pane<'_> {
                     // Alone, the add is a labelled button as every other is;
                     // after the bands' chips, a small one.
                     let plus = if bands().next().is_none() {
-                        named_button(
-                            ui,
-                            p,
-                            Some(Icon::Plus),
-                            ("Add band", "Add hue band"),
-                            Kind::Plain,
-                        )
+                        button(ui, p, Some(Icon::Plus), "Add hue band", Kind::Plain)
                     } else {
                         kit::small_icon_button(ui, p, Icon::Plus, "Add hue band")
                     }

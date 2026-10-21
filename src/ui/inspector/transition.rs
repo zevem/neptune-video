@@ -5,8 +5,8 @@
 //! scrubbed length is one undo step and an Escape gives it up. Removing it
 //! and keeping it as its kind's default are [`Action`]s.
 use super::{
-    FIELD, InspectorInput, InspectorState, Thumb, button, button_row, card, look::is_default, note,
-    number, object_header, row, section, select_list, select_popup, tall_row,
+    FIELD, Ink, InspectorInput, InspectorState, Thumb, button, button_row, card, look::is_default,
+    note, number, object_header, row, section, select_list, select_popup, tall_row,
 };
 use crate::{
     icons::Icon,
@@ -104,7 +104,7 @@ pub(super) fn head(
         ui,
         p,
         rect,
-        Thumb::Glyph(Icon::Transition, p.secondary),
+        Thumb::Glyph(Icon::Transition, Ink::Secondary),
         transitions::name(stored.kind),
         (&words, ""),
         compact,
