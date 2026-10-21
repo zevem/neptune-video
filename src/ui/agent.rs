@@ -47,17 +47,20 @@ const BUBBLE: f32 = 0.85;
 /// The composer: its corner, and the inset of its controls from its edge.
 const RADIUS: u8 = 12;
 const INSET: f32 = 8.0;
-/// The row of controls at the surface's foot, and the room over the words.
+/// The row of controls at the surface's foot, and the room over the words
+/// and beside them: they begin where the row's switch does.
 const FOOT: f32 = 30.0;
 const TOP: f32 = 10.0;
-const SIDE: f32 = 12.0;
+const SIDE: f32 = INSET;
 /// The room between the words and the row under them.
 const GAP: f32 = 4.0;
 /// The most lines the field shows before it scrolls.
 const LINES: f32 = 6.0;
-/// The round button that sends, and the switch between asking and commands.
+/// The round button that sends, and the switch between asking and commands:
+/// as narrow as it may be, and as wide as it takes where the row has room.
 const ROUND: f32 = 28.0;
 const MODE: f32 = 136.0;
+const ROOMY_MODE: f32 = 152.0;
 /// A pill's room around its words, and its chevron.
 const PAD: f32 = 8.0;
 const CHEVRON: f32 = 14.0;
@@ -160,6 +163,9 @@ pub struct AgentState {
     pub focus: bool,
     /// Scroll to the newest entry on the next frame.
     stick: bool,
+    /// The arrows changed Ask or Command last frame: the keyboard stays on
+    /// the choice rather than going back to the field the change asks for.
+    keyed: bool,
 }
 
 impl AgentState {
@@ -206,12 +212,6 @@ impl AgentState {
             card.state = state;
         }
     }
-
-    /// A proposal waits for the person to apply or discard it.
-    fn proposal_waits(&self) -> bool {
-        (self.log.iter())
-            .any(|entry| matches!(entry, Entry::Plan(card) if card.state == PlanState::Open))
-    }
 }
 
 /// A request the model has not answered yet.
@@ -241,6 +241,10 @@ pub struct AgentInput<'a> {
     pub current: bool,
     /// A conversation goes on: the next request continues it.
     pub talking: bool,
+    /// A proposal waits for the person to apply or discard it: the planner
+    /// says so, as it does for the Agent tab's count, whether or not its
+    /// card is still in the log.
+    pub proposal_waits: bool,
 }
 
 pub fn show(
@@ -251,7 +255,7 @@ pub fn show(
     actions: &mut Vec<Action>,
 ) {
     let session = Rect::from_min_size(rect.min, vec2(rect.width(), SESSION));
-    session_row(ui, session, state, input, actions);
+    session_row(ui, session, input, actions);
 
     // The composer grows with what is written in it, up to six lines, and
     // the conversation takes what it leaves.
@@ -303,13 +307,7 @@ fn composer_height(ui: &Ui, text: &str, width: f32, font: &FontId) -> f32 {
 
 /// Whether an agent can connect, as a dot and its words, and "More", which
 /// holds the command it connects with.
-fn session_row(
-    ui: &mut Ui,
-    rect: Rect,
-    state: &AgentState,
-    input: &AgentInput,
-    actions: &mut Vec<Action>,
-) {
+fn session_row(ui: &mut Ui, rect: Rect, input: &AgentInput, actions: &mut Vec<Action>) {
     let p = input.p;
     ui.painter()
         .hline(rect.x_range(), rect.bottom() - 0.5, p.hairline());
@@ -318,9 +316,12 @@ fn session_row(
         (None, Some(_)) => (p.red, "The session could not be opened."),
         (None, None) => (p.muted, "No agent session"),
     };
-    // A proposal waiting for an answer is what needs the person here.
-    let dot = if state.proposal_waits() {
-        p.legible(p.attention)
+    // A proposal waiting for an answer is what needs the person here,
+    // unless the session failed: that stays red. A fill, so the plain
+    // attention, as the inspector toggle's dot.
+    let failed = input.session.is_none() && input.session_problem.is_some();
+    let dot = if input.proposal_waits && !failed {
+        p.attention
     } else {
         dot
     };
@@ -339,7 +340,12 @@ fn session_row(
     let shown = galley_at(ui.painter(), pos2(rect.left() + MARKED, line), galley);
     let said = ui.interact(shown, ui.id().with("agent-session"), Sense::hover());
     said.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, words));
-    if let (None, Some(problem)) = (input.session, input.session_problem) {
+    // Why it failed is read with the words, and said again where the
+    // command would be copied.
+    let problem = input.session_problem.filter(|_| input.session.is_none());
+    if let Some(problem) = problem {
+        ui.ctx()
+            .accesskit_node_builder(said.id, |node| node.set_description(problem));
         said.on_hover_text(problem);
     }
 
@@ -359,6 +365,9 @@ fn session_row(
         .align(RectAlign::BOTTOM_END)
         .show(|ui| {
             menu_style(ui, 240.0);
+            if let Some(problem) = problem {
+                menu_note(ui, p, problem);
+            }
             let copy = ui
                 .add_enabled_ui(command.is_some(), |ui| {
                     menu_item(ui, p, Some(Icon::Copy), "Copy the connect command", "")
@@ -384,6 +393,23 @@ fn session_row(
                 }
             }
         });
+}
+
+/// Words at the head of a menu that say why its rows cannot be used, set
+/// where the rows' words begin and read as a label.
+fn menu_note(ui: &mut Ui, p: &Palette, text: &str) {
+    let width = ui.available_width();
+    let galley = ui.painter().layout(
+        text.to_owned(),
+        theme::regular(11.5),
+        p.secondary,
+        (width - 32.0 - 8.0).max(40.0),
+    );
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(width, galley.size().y + 12.0), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+    ui.painter()
+        .galley(rect.min + vec2(32.0, 6.0), galley, Color32::PLACEHOLDER);
 }
 
 // ---- The conversation -----------------------------------------------------
@@ -555,26 +581,41 @@ fn examples(ui: &mut Ui, p: &Palette) {
             let meaning =
                 painter.layout(meaning.to_owned(), theme::regular(12.0), p.secondary, width);
             let height = (command.size().y + 2.0 + meaning.size().y + 14.0).max(32.0);
+            // The row's own place among the panel's widgets, which scrolling
+            // does not change.
+            let id = ui.auto_id_with("agent-example");
             let rect = group.custom(ui, height);
             let top = rect.center().y - (command.size().y + 2.0 + meaning.size().y) * 0.5;
-            let read = format!("{} — {}", command.text(), meaning.text());
             let below = top + command.size().y + 2.0;
-            ui.painter()
-                .galley(pos2(rect.left() + 14.0, top), command, p.fg);
-            ui.painter()
-                .galley(pos2(rect.left() + 14.0, below), meaning, p.secondary);
-            ui.interact(
-                rect,
-                ui.id().with(("agent-example", top as i32)),
-                Sense::hover(),
-            )
-            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &read));
+            // The command and what it does are read as two labels, as they
+            // were before the card.
+            for (salt, at, galley, ink) in [
+                ("command", top, command, p.fg),
+                ("meaning", below, meaning, p.secondary),
+            ] {
+                let shown = Rect::from_min_size(pos2(rect.left() + 14.0, at), galley.size());
+                let text = galley.text().to_owned();
+                ui.painter().galley(shown.min, galley, ink);
+                ui.interact(shown, id.with(salt), Sense::hover())
+                    .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
+            }
         }
-        group.note(
+        card_note(
             ui,
+            group,
             "A line that starts with { is applied as a JSON command.",
         );
     });
+}
+
+/// A card's note, read as a label as well as painted.
+fn card_note(ui: &mut Ui, group: &mut controls::Group, text: &str) {
+    let id = ui.auto_id_with("agent-note");
+    let top = ui.cursor().top();
+    group.note(ui, text);
+    let rect = Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
+    ui.interact(rect, id, Sense::hover())
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
 }
 
 /// Words set in the conversation's column, wrapped to it and read out whole.
@@ -745,26 +786,28 @@ fn written(text: &str, p: &Palette) -> LayoutJob {
 
 /// One tool step: what it was and how it ended, with the edit it made.
 fn step_row(ui: &mut Ui, p: &Palette, step: &Step) {
+    // The edit a step made is said quietly after it; why one was refused
+    // is the one line that explains a failure, and is read as the step is.
     let (mark, detail, ink) = match &step.state {
         StepState::Running => (Mark::Dot(p.muted), None, p.secondary),
         StepState::Done(edit) => (
             Mark::Glyph(Icon::CircleCheck, p.green),
-            edit.as_deref(),
+            edit.as_deref().map(|edit| (edit, p.muted)),
             p.secondary,
         ),
         StepState::Refused(why) => (
             Mark::Glyph(Icon::AlertCircle, p.red),
-            why.as_deref(),
+            why.as_deref().map(|why| (why, p.secondary)),
             p.secondary,
         ),
         StepState::Stopped => (Mark::Glyph(Icon::Close, p.muted), None, p.muted),
     };
     let mut text = plain(&step.what, theme::regular(12.0), ink);
-    if let Some(detail) = detail {
+    if let Some((detail, ink)) = detail {
         text.append(
             &format!("  {detail}"),
             0.0,
-            egui::TextFormat::simple(theme::regular(12.0), p.muted),
+            egui::TextFormat::simple(theme::regular(12.0), ink),
         );
     }
     marked(ui, mark, text, 24.0);
@@ -795,9 +838,11 @@ fn waiting_row(ui: &mut Ui, p: &Palette, waiting: &WaitingInput, actions: &mut V
     } else {
         format!("{} is planning… {}s", waiting.provider, waiting.seconds)
     };
+    // Set in from the conversation's clip, so that the keyboard's ring
+    // around Cancel is drawn whole.
     let cancel = place(
         ui,
-        rect,
+        rect.shrink2(vec2(TEXT_INSET, 0.0)),
         Layout::right_to_left(Align::Center),
         "agent-cancel",
         |ui| {
@@ -850,6 +895,9 @@ fn card_row(
     let lead = if glyph.is_some() { 36.0 } else { 14.0 };
     job.wrap.max_width = (ui.available_width() - lead - 14.0).max(40.0);
     let galley = ui.painter().layout_job(job);
+    // The row's own place among the panel's widgets, which scrolling does
+    // not change.
+    let id = ui.auto_id_with("agent-card-row");
     let rect = group.custom(ui, (galley.size().y + 14.0).max(least));
     let top = rect.center().y - galley.size().y * 0.5;
     if let Some((icon, ink)) = glyph {
@@ -867,12 +915,8 @@ fn card_row(
     let text = galley.text().to_owned();
     ui.painter()
         .galley(pos2(rect.left() + lead, top), galley, Color32::PLACEHOLDER);
-    ui.interact(
-        rect,
-        ui.id().with(("agent-card-row", rect.top() as i32)),
-        Sense::hover(),
-    )
-    .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
+    ui.interact(rect, id, Sense::hover())
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
 }
 
 /// A proposal: what the model says it would do, the commands that do it,
@@ -941,7 +985,7 @@ fn plan(ui: &mut Ui, p: &Palette, card: &PlanCard, current: bool, actions: &mut 
                 );
             }
             if !plan.changes.is_empty() {
-                group.note(ui, &plan.changes.join("  ·  "));
+                card_note(ui, group, &plan.changes.join("  ·  "));
             }
             let note = |ui: &mut Ui, group: &mut controls::Group, glyph, text: &str| {
                 card_row(
@@ -955,7 +999,7 @@ fn plan(ui: &mut Ui, p: &Palette, card: &PlanCard, current: bool, actions: &mut 
             match &card.state {
                 PlanState::Open => {
                     if current {
-                        group.note(ui, "Make these edits as one step you can undo");
+                        card_note(ui, group, "Make these edits as one step you can undo");
                     } else {
                         note(
                             ui,
@@ -1081,7 +1125,17 @@ fn composer_surface(
                 .inner
         },
     );
-    if std::mem::take(&mut state.focus) {
+    response.widget_info(|| {
+        WidgetInfo::labeled(
+            WidgetType::TextEdit,
+            ui.is_enabled(),
+            if input.ask { "Request" } else { "Command line" },
+        )
+    });
+    // A change of mode asks for the field, but one made with the arrows
+    // leaves the keyboard on the choice, where the next arrow is read.
+    let keyed = std::mem::take(&mut state.keyed);
+    if std::mem::take(&mut state.focus) && !keyed {
         response.request_focus();
     }
 
@@ -1093,7 +1147,7 @@ fn composer_surface(
         pos2(rect.left() + INSET, line - FOOT * 0.5),
         pos2(send.left() - 4.0, line + FOOT * 0.5),
     );
-    foot(ui, row, input, actions);
+    state.keyed = foot(ui, row, input, actions);
 
     // One request at a time: while the model is asked, the button stops it.
     let stop = input.ask && input.waiting.is_some();
@@ -1153,12 +1207,19 @@ fn take_enter(ui: &Ui) -> bool {
 }
 
 /// The row at the surface's foot: Ask or Command, and in Ask who answers.
-fn foot(ui: &mut Ui, row: Rect, input: &AgentInput, actions: &mut Vec<Action>) {
+/// Returns whether the arrows changed the choice.
+fn foot(ui: &mut Ui, row: Rect, input: &AgentInput, actions: &mut Vec<Action>) -> bool {
     let p = input.p;
+    // The switch gives "Command" room round it where the row also holds the
+    // whole of who answers, and is no narrower than its least where it does
+    // not. Its width is the same in either mode.
+    let described = input.ai.describe();
+    let wide = row.width() - 4.0 - pill_width(ui, &described);
     let mode = Rect::from_min_size(
         pos2(row.left(), row.center().y - 14.0),
-        vec2(MODE.min(row.width()), 28.0),
+        vec2(wide.clamp(MODE, ROOMY_MODE).min(row.width()), 28.0),
     );
+    let mut keyed = false;
     place(
         ui,
         mode,
@@ -1172,6 +1233,7 @@ fn foot(ui: &mut Ui, row: Rect, input: &AgentInput, actions: &mut Vec<Action>) {
             // Left and Right move the choice, as in Terminal's strips.
             if let Some(to) = super::arrow_choice(ui.ctx(), &cells, usize::from(!ask)) {
                 ask = to == 0;
+                keyed = true;
             }
             controls::segmented(
                 ui,
@@ -1186,36 +1248,46 @@ fn foot(ui: &mut Ui, row: Rect, input: &AgentInput, actions: &mut Vec<Action>) {
             }
         },
     );
-    if !input.ask {
-        return;
+    if input.ask {
+        let room = Rect::from_min_max(pos2(mode.right() + 4.0, row.top()), row.max);
+        model(ui, room, input, &described, actions);
     }
-    let room = Rect::from_min_max(pos2(mode.right() + 4.0, row.top()), row.max);
-    model(ui, room, input, actions);
+    keyed
 }
+
+/// The width of the pill that shows `words`.
+fn pill_width(ui: &Ui, words: &str) -> f32 {
+    (ui.painter())
+        .layout_no_wrap(words.to_owned(), theme::medium(12.0), Color32::PLACEHOLDER)
+        .size()
+        .x
+        + 2.0 * PAD
+        + CHEVRON
+}
+
+/// The fewest points of words a description cut short keeps past the
+/// provider's name: fewer say nothing.
+const LEAST: f32 = 28.0;
 
 /// Who answers, as a pill that opens the choices: the provider, the effort
 /// and how edits are made, and the way to the model's own preferences.
-fn model(ui: &mut Ui, room: Rect, input: &AgentInput, actions: &mut Vec<Action>) {
+fn model(ui: &mut Ui, room: Rect, input: &AgentInput, described: &str, actions: &mut Vec<Action>) {
     let p = input.p;
-    let described = input.ai.describe();
-    // The whole description where it fits, the provider alone where it
-    // does not, and in the narrowest panel only its chevron; the name and
-    // the tooltip always say all of it.
-    let chrome = 2.0 * PAD + CHEVRON;
-    let width = |words: &str| {
-        (ui.painter())
-            .layout_no_wrap(words.to_owned(), theme::medium(12.0), Color32::PLACEHOLDER)
-            .size()
-            .x
-            + chrome
+    let provider = input.ai.provider.name();
+    // The whole description where it fits. Where it does not, as much of it
+    // as the room holds, cut short, while that keeps more than the
+    // provider's name; then the provider alone, and in the narrowest panel
+    // only its chevron. The name and the tooltip always say all of it.
+    let (width, shown) = if pill_width(ui, described) <= room.width() {
+        (pill_width(ui, described), Some(described))
+    } else if pill_width(ui, provider) + LEAST <= room.width() {
+        (room.width(), Some(described))
+    } else if pill_width(ui, provider) <= room.width() {
+        (pill_width(ui, provider), Some(provider))
+    } else {
+        (26.0, None)
     };
-    let shown = [described.as_str(), input.ai.provider.name()]
-        .into_iter()
-        .find(|words| width(words) <= room.width());
-    let rect = Rect::from_min_size(
-        pos2(room.left(), room.center().y - 13.0),
-        vec2(shown.map_or(26.0, width), 26.0),
-    );
+    let rect = Rect::from_min_size(pos2(room.left(), room.center().y - 13.0), vec2(width, 26.0));
     if rect.width() > room.width() {
         return;
     }
@@ -1236,7 +1308,7 @@ fn model(ui: &mut Ui, room: Rect, input: &AgentInput, actions: &mut Vec<Action>)
         .align_alternatives(&[])
         .show(|ui| {
             menu_style(ui, 210.0);
-            egui::ScrollArea::vertical()
+            let list = egui::ScrollArea::vertical()
                 .id_salt("agent-model-list")
                 .max_height(above)
                 .show(ui, |ui| {
@@ -1274,9 +1346,21 @@ fn model(ui: &mut Ui, room: Rect, input: &AgentInput, actions: &mut Vec<Action>)
                         ui.close();
                     }
                 });
+            // A list cut short by the window says it goes on.
+            let shown = list.inner_rect;
+            if list.state.offset.y + shown.height() < list.content_size.y - 0.5 {
+                kit::scroll_fade(ui.painter(), shown, Edge::Bottom, p.elevated);
+            }
+            if list.state.offset.y > 0.5 {
+                kit::scroll_fade(ui.painter(), shown, Edge::Top, p.elevated);
+            }
         });
-    response.on_hover_text(
-        "Who answers. It uses the sign-in of the Claude or Codex command line on this computer.",
+    kit::rich_tooltip(
+        response,
+        p,
+        described,
+        &["Who answers. It uses the sign-in of the Claude or Codex command line on this computer."],
+        None,
     );
 }
 
@@ -1407,6 +1491,7 @@ mod tests {
     const BODY: Rect = Rect::from_min_max(pos2(492.0, 78.0), pos2(752.0, 333.0));
 
     struct Seen {
+        id: egui::accesskit::NodeId,
         name: String,
         rect: Rect,
         role: Role,
@@ -1428,6 +1513,7 @@ mod tests {
         waiting: Option<bool>,
         talking: bool,
         current: bool,
+        proposal_waits: bool,
         /// The panel's body, in a window `NARROW` large.
         body: Rect,
         seen: Vec<Seen>,
@@ -1458,6 +1544,7 @@ mod tests {
                 waiting: None,
                 talking: false,
                 current: true,
+                proposal_waits: false,
                 body: BODY,
                 seen: Vec::new(),
                 focused: None,
@@ -1492,6 +1579,7 @@ mod tests {
                 }),
                 current: self.current,
                 talking: self.talking,
+                proposal_waits: self.proposal_waits,
             };
             let mut actions = Vec::new();
             let ctx = self.ctx.clone();
@@ -1506,9 +1594,10 @@ mod tests {
                     .find(|(id, _)| *id == update.focus)
                     .and_then(|(_, node)| name(node));
                 self.seen = (update.nodes.iter())
-                    .filter_map(|(_, node)| {
+                    .filter_map(|(id, node)| {
                         let bounds = node.bounds()?;
                         Some(Seen {
+                            id: *id,
                             name: name(node)?,
                             rect: Rect::from_min_max(
                                 pos2(bounds.x0 as f32, bounds.y0 as f32),
@@ -1532,6 +1621,13 @@ mod tests {
                 }),
             );
             output.drop_without_applying_deltas();
+            // As the app does: a change of mode asks for the field.
+            for action in &actions {
+                if let Action::SetAgentAsk(ask) = action {
+                    self.ask = *ask;
+                    self.state.focus = true;
+                }
+            }
             self.actions.extend(actions);
         }
 
@@ -1567,14 +1663,22 @@ mod tests {
         }
 
         fn key(&mut self, key: Key) {
+            self.chord(Modifiers::NONE, key);
+        }
+
+        fn chord(&mut self, modifiers: Modifiers, key: Key) {
             let event = |pressed| Event::Key {
                 key,
                 physical_key: None,
                 pressed,
                 repeat: false,
-                modifiers: Modifiers::NONE,
+                modifiers,
             };
             self.frame(vec![event(true), event(false)]);
+        }
+
+        fn type_text(&mut self, text: &str) {
+            self.frame(vec![Event::Text(text.into())]);
         }
 
         /// The field's words: the composer's top less the room over them.
@@ -1605,6 +1709,16 @@ mod tests {
                 }
             }
             Shape::Rect(rect) => fills.push((rect.rect, rect.fill)),
+            Shape::Circle(circle) => fills.push((
+                Rect::from_center_size(circle.center, Vec2::splat(2.0 * circle.radius)),
+                circle.fill,
+            )),
+            // Words cut short are what is seen of them.
+            Shape::Text(text) if text.galley.elided => painted.push(
+                (text.galley.rows.iter())
+                    .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
+                    .collect(),
+            ),
             Shape::Text(text) => painted.push(text.galley.text().to_owned()),
             _ => {}
         }
@@ -1647,7 +1761,32 @@ mod tests {
         bench.get("The session could not be opened.", Role::Label);
         bench.click("More", Role::Button);
         assert!(bench.get("Copy the connect command", Role::Button).disabled);
+        // Why is read in the menu, not only under the pointer.
+        bench.get("The folder is read-only", Role::Label);
         assert!(bench.copied.is_empty());
+    }
+
+    // §5.6 and A4: the session's dot says a proposal waits, from what the
+    // planner says as the tab's count does, in the plain attention fill; a
+    // failed session stays red.
+    #[test]
+    fn the_session_dot_says_a_proposal_waits_unless_the_session_failed() {
+        let mut bench = Bench::new();
+        bench.settle();
+        assert!(bench.filled(bench.p.green));
+        bench.proposal_waits = true;
+        bench.settle();
+        assert!(
+            bench.filled(bench.p.attention),
+            "the waiting dot is not attention"
+        );
+        assert!(!bench.filled(bench.p.green));
+
+        bench.session = None;
+        bench.problem = Some("The folder is read-only".into());
+        bench.settle();
+        assert!(bench.filled(bench.p.red), "the failure is not red");
+        assert!(!bench.filled(bench.p.attention));
     }
 
     // §5.6: the round button is named for what it does in each state, and
@@ -1704,26 +1843,22 @@ mod tests {
             bench.ask = ask;
             bench.ai.review = review;
             bench.settle();
-            let end = |bench: &Bench| {
+            // The paragraph, or the card's note, that ends it.
+            let bottom = |bench: &Bench| {
                 (bench.seen.iter())
-                    .filter(|seen| seen.role == Role::Label)
-                    .find(|seen| seen.name.ends_with(last))
-                    .map(|seen| seen.rect)
+                    .find(|seen| seen.role == Role::Label && seen.name.ends_with(last))
+                    .unwrap_or_else(|| panic!("FIXTURE: nothing ends with \"{last}\""))
+                    .rect
+                    .bottom()
             };
-            // The JSON note is painted in its card rather than named.
-            let bottom = |bench: &Bench| match end(bench) {
-                Some(rect) => rect.bottom(),
-                None => {
-                    let labels: Vec<_> = (bench.seen.iter())
-                        .filter(|seen| seen.role == Role::Label)
-                        .collect();
-                    assert!(bench.painted.iter().any(|text| text == last));
-                    labels
-                        .iter()
-                        .map(|seen| seen.rect.bottom())
-                        .fold(0.0, f32::max)
-                }
+            // A row of the examples keeps its node as the log scrolls.
+            let example = |bench: &Bench| {
+                (bench.seen.iter())
+                    .find(|seen| seen.name == "split" && seen.role == Role::Label)
+                    .map(|seen| seen.id)
             };
+            let before = example(&bench);
+            assert_eq!(before.is_some(), !ask);
             let log = bench.field().top() - TOP - INSET;
             assert!(bottom(&bench) > log, "the words fit; nothing is tested");
             assert!(bench.faded(true), "clipped words show no fade");
@@ -1749,6 +1884,11 @@ mod tests {
             );
             assert!(!bench.faded(true), "the end is in view and still faded");
             assert!(bench.faded(false), "the scrolled top shows no fade");
+            if let Some(before) = before
+                && let Some(after) = example(&bench)
+            {
+                assert_eq!(before, after, "the row's node changed as it scrolled");
+            }
         }
     }
 
@@ -1791,6 +1931,9 @@ mod tests {
         for _ in 0..20 {
             bench.frame(Vec::new());
         }
+        // What it changes, and what Apply does, are read before it is.
+        bench.get("Clips 3 → 4", Role::Label);
+        bench.get("Make these edits as one step you can undo", Role::Label);
         bench.click("Apply", Role::Button);
         bench.click("Discard", Role::Button);
         assert!(matches!(
@@ -1841,11 +1984,118 @@ mod tests {
             bench.key(Key::Tab);
         }
         assert_eq!(bench.focused.as_deref(), Some("Ask"));
+        // The app gives the field the keyboard as the mode changes; the
+        // arrows keep it on the choice, where the next arrow is read.
         bench.key(Key::ArrowRight);
+        bench.settle();
+        assert_eq!(bench.focused.as_deref(), Some("Command"));
+        bench.key(Key::ArrowLeft);
+        bench.settle();
+        assert_eq!(bench.focused.as_deref(), Some("Ask"));
         assert!(matches!(
             bench.actions.as_slice(),
-            [Action::SetAgentAsk(false)]
+            [Action::SetAgentAsk(false), Action::SetAgentAsk(true)]
         ));
+
+        // A press on the choice writes in the field, named for what it
+        // takes.
+        bench.click("Command", Role::RadioButton);
+        bench.settle();
+        assert_eq!(bench.focused.as_deref(), Some("Command line"));
+    }
+
+    // §5.6: Enter sends and Shift+Enter starts a new line; while the model
+    // is asked, Enter keeps the words for later.
+    #[test]
+    fn enter_sends_and_shift_enter_starts_a_line() {
+        let mut bench = Bench::new();
+        bench.ask = false;
+        bench.state.focus = true;
+        bench.settle();
+        assert_eq!(bench.focused.as_deref(), Some("Command line"));
+        // An empty field sends nothing.
+        bench.key(Key::Enter);
+        assert!(bench.actions.is_empty());
+        assert!(bench.state.input.is_empty());
+
+        bench.type_text("split");
+        bench.chord(Modifiers::SHIFT, Key::Enter);
+        bench.type_text("undo");
+        assert_eq!(bench.state.input, "split\nundo");
+        assert!(bench.actions.is_empty());
+        bench.key(Key::Enter);
+        assert!(matches!(
+            bench.actions.as_slice(),
+            [Action::AgentSubmit(text)] if text == "split\nundo"
+        ));
+        assert!(bench.state.input.is_empty());
+        bench.settle();
+        assert_eq!(bench.focused.as_deref(), Some("Command line"));
+
+        let mut bench = Bench::new();
+        bench.waiting = Some(false);
+        bench.state.focus = true;
+        bench.settle();
+        bench.type_text("Now the ending");
+        bench.key(Key::Enter);
+        assert!(bench.actions.is_empty(), "a second request was sent");
+        assert_eq!(bench.state.input, "Now the ending");
+    }
+
+    // §4.1 and §5.6: who answers keeps the effort in view where the row
+    // has room for more than the provider, and the switch widens only where
+    // the whole description still fits beside it.
+    #[test]
+    fn who_answers_keeps_the_effort_in_view() {
+        let described = AiSettings::default().describe();
+        assert_eq!(described, "Claude · High");
+        let pill = |bench: &Bench| {
+            (bench.painted.iter())
+                .find(|text| text.starts_with("Claude") && text.len() < 20)
+                .cloned()
+                .expect("FIXTURE: the pill is painted")
+        };
+        let switch = |bench: &Bench| {
+            bench.get("Ask", Role::RadioButton).rect.width()
+                + bench.get("Command", Role::RadioButton).rect.width()
+                + 4.0
+        };
+        // The 1440 × 900 window's panel.
+        let mut bench = Bench::new();
+        bench.body = Rect::from_min_size(pos2(400.0, 78.0), vec2(286.0, 255.0));
+        bench.settle();
+        let shown = pill(&bench);
+        assert!(
+            shown.starts_with("Claude · H") && shown.ends_with('…'),
+            "{shown}"
+        );
+        assert_eq!(switch(&bench), MODE);
+        // A wider panel.
+        bench.body = Rect::from_min_size(pos2(300.0, 78.0), vec2(400.0, 255.0));
+        bench.settle();
+        assert_eq!(pill(&bench), described);
+        assert_eq!(switch(&bench), ROOMY_MODE);
+        // The 760 × 560 window's panel: the provider alone.
+        bench.body = BODY;
+        bench.settle();
+        assert_eq!(pill(&bench), "Claude");
+        bench.get(&format!("Model: {described}"), Role::ComboBox);
+    }
+
+    // §7.4: Cancel stands in from the conversation's clip, so that its
+    // keyboard ring is whole.
+    #[test]
+    fn the_waiting_rows_cancel_stands_in_from_the_clip() {
+        let mut bench = Bench::new();
+        bench.ask = false;
+        bench.waiting = Some(false);
+        bench.state.push(Entry::Asked("split".into()));
+        bench.settle();
+        let cancel = bench.get("Cancel", Role::Button).rect;
+        assert!(
+            cancel.right() <= BODY.right() - 3.0 - 2.0,
+            "{cancel:?} in {BODY:?}"
+        );
     }
 
     fn card(id: uuid::Uuid) -> Entry {
@@ -1854,7 +2104,7 @@ mod tests {
                 id,
                 summary: "Tighten the opening".into(),
                 steps: vec!["Trim clip".into()],
-                changes: Vec::new(),
+                changes: vec!["Clips 3 → 4".into()],
                 by: "Claude".into(),
             },
             state: PlanState::Open,

@@ -6764,6 +6764,7 @@ impl App {
                     },
                     current: self.ai.open_is_current(&self.editor),
                     talking: self.live.talking(),
+                    proposal_waits: self.ai.open().is_some(),
                 },
                 actions,
             ),
