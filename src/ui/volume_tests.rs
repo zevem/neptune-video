@@ -410,6 +410,15 @@ impl Bench {
         }]);
         self.frame(Vec::new());
     }
+
+    /// Closes the menus open, one Escape each (§5.7.1): the Audio menu,
+    /// then the clip menu it opened from.
+    fn close_menus(&mut self) {
+        self.escape();
+        if self.has("Split at playhead") {
+            self.escape();
+        }
+    }
 }
 
 // ---- Where the line stands -------------------------------------------------
@@ -1082,12 +1091,12 @@ fn the_clip_menu_keys_the_volume_at_the_playhead_and_opens_the_lane() {
     bench.frame(Vec::new());
     bench.audio_menu_at(bench.tile(voice).center());
     assert!(bench.find("Key volume").is_some_and(|row| row.disabled));
-    bench.escape();
+    bench.close_menus();
     // Nor with the playhead off the clip.
     bench.playhead = seconds(7.0);
     bench.audio_menu_at(bench.tile(voice).center());
     assert!(bench.find("Key volume").is_some_and(|row| row.disabled));
-    bench.escape();
+    bench.close_menus();
     assert!(bench.editor.undo());
     assert!(bench.keyed(voice).is_empty());
 
@@ -1109,7 +1118,7 @@ fn the_clip_menu_keys_the_volume_at_the_playhead_and_opens_the_lane() {
     assert!(bench.find("Key volume").is_some_and(|row| row.disabled));
     bench.click("Key volume");
     assert_eq!(bench.steps(), steps);
-    bench.escape();
+    bench.close_menus();
 
     // A title has no sound: the row is not there.
     let mut text = Track::new("Text 1", TrackKind::Text);

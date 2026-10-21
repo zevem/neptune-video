@@ -980,7 +980,32 @@ pub fn menu_submenu(
             p.muted
         },
     );
-    egui::containers::menu::SubMenu::new().show(ui, &response, content);
+    // Neptune Video: Escape in an open submenu closes it alone and leaves
+    // the menu it opened from, with the keyboard back on its row. egui
+    // closes the whole menu on that Escape, so it is taken here first.
+    use egui::containers::menu::{MenuState, SubMenu};
+    let id = SubMenu::id_from_widget_id(response.id);
+    let open = MenuState::from_ui(ui, |state, _| state.open_item == Some(id));
+    // Only the deepest: a submenu that has one of its own open leaves the
+    // Escape to it.
+    let deepest = open && MenuState::from_id(ui.ctx(), id, |state| state.open_item.is_none());
+    // Closed so, it opens again from the keyboard, or once the pointer
+    // moves: one resting on its row does not open it again at once.
+    let escaped = id.with("escaped");
+    let pointer = ui.ctx().pointer_hover_pos();
+    if deepest && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
+        MenuState::from_ui(ui, |state, _| state.open_item = None);
+        ui.data_mut(|data| data.insert_temp(escaped, pointer));
+        response.request_focus();
+    }
+    let mut row = response.clone();
+    match ui.data(|data| data.get_temp::<Option<Pos2>>(escaped)) {
+        Some(at) if at == pointer => row.rect = Rect::NOTHING,
+        Some(_) => ui.data_mut(|data| data.remove::<Option<Pos2>>(escaped)),
+        None => {}
+    }
+    SubMenu::new().show(ui, &row, content);
 }
 
 pub fn menu_separator(ui: &mut Ui, p: Palette) {
