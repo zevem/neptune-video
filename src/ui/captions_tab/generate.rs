@@ -8,7 +8,7 @@ use crate::{
     speech::{self, CueLength, Inventory, SpeechRequest, SpeechSettings, SpeechView},
     theme::{self, Palette, metrics},
     ui::{
-        Action, Selection,
+        Action, Selection, library,
         widgets::{self, Kind},
     },
 };
@@ -65,9 +65,26 @@ fn note(ui: &mut Ui, p: &Palette, text: &str) {
         egui::Label::new(
             egui::RichText::new(text)
                 .font(theme::regular(11.5))
-                .color(p.muted),
+                .color(p.secondary),
         )
         .wrap(),
+    );
+}
+
+/// A group of the panel's choices on a card of its own, as Preferences
+/// groups its rows.
+fn card(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
+    let background = ui.painter().add(egui::Shape::Noop);
+    let framed = egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(10, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            add(ui);
+        });
+    ui.painter().set(
+        background,
+        egui::epaint::RectShape::filled(framed.response.rect, 10, p.control),
     );
 }
 
@@ -78,6 +95,10 @@ fn caption(ui: &mut Ui, p: &Palette, text: &str) {
             .color(p.secondary),
     );
 }
+
+/// Said under a spoken language Whisper has no name for.
+const UNKNOWN_LANGUAGE: &str =
+    "Whisper does not know this language, so it tells the language from the sound.";
 
 /// A chooser as wide as the panel, named `name`, showing `shown`.
 fn wide_chooser(ui: &mut Ui, p: &Palette, id: &str, name: &str, shown: &str) -> egui::Response {
@@ -113,7 +134,10 @@ pub fn status(
     if matches!(view, SpeechView::Idle) {
         return 0.0;
     }
-    let card = rect.shrink2(vec2(10.0, 0.0));
+    let card = Rect::from_min_max(
+        pos2(rect.left() + library::LEADING, rect.top()),
+        pos2(rect.right() - library::TRAILING, rect.bottom()),
+    );
     let background = ui.painter().add(egui::Shape::Noop);
     let mut body = ui.new_child(
         egui::UiBuilder::new()
@@ -208,11 +232,7 @@ pub fn status(
     let shape = Rect::from_min_max(card.min, pos2(card.right(), used.bottom()));
     ui.painter().set(
         background,
-        egui::epaint::RectShape::filled(
-            shape,
-            CornerRadius::same(metrics::CONTROL_RADIUS),
-            p.control,
-        ),
+        egui::epaint::RectShape::filled(shape, CornerRadius::same(10), p.control),
     );
     shape.height() + 8.0
 }
@@ -240,8 +260,11 @@ pub fn panel(
             let mut ui = outer.new_child(
                 egui::UiBuilder::new()
                     .max_rect(Rect::from_min_size(
-                        outer.cursor().min + vec2(10.0, 0.0),
-                        vec2(outer.available_width() - 20.0, f32::INFINITY),
+                        outer.cursor().min + vec2(library::LEADING, 0.0),
+                        vec2(
+                            outer.available_width() - library::LEADING - library::TRAILING,
+                            f32::INFINITY,
+                        ),
                     ))
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
@@ -264,168 +287,178 @@ pub fn panel(
                 p,
                 "Made on this computer from the timeline's sound. Nothing is uploaded.",
             );
-            ui.add_space(4.0);
+            ui.add_space(2.0);
 
+            // What the cards find out, for the button under them.
+            let mut missing = false;
+            let mut times = None;
             // The model.
-            caption(ui, p, "Model");
-            let model = wide_chooser(
-                ui,
-                p,
-                "speech-model",
-                "Speech model",
-                &model_name(&settings),
-            );
-            egui::Popup::menu(&model)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .show(|ui| {
-                    widgets::menu_style(ui, 240.0);
-                    for model in &MODELS {
-                        let chosen = settings.file.is_none() && settings.model == model.id;
-                        let size = if input.inventory.is_some_and(|seen| seen.has(model)) {
-                            "Downloaded".to_owned()
-                        } else {
-                            format!("{} MB", model.megabytes())
-                        };
-                        let item = widgets::menu_item(
-                            ui,
-                            p,
-                            chosen.then_some(Icon::Check),
-                            model.name,
-                            &size,
-                        )
-                        .on_hover_text(model.note);
-                        if item.clicked() {
-                            settings.model = model.id.to_owned();
-                            settings.file = None;
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    if let Some(file) = &settings.file {
-                        let name = model_name(&settings);
-                        widgets::menu_item(ui, p, Some(Icon::Check), &name, "Yours")
-                            .on_hover_text(file.display().to_string());
-                    }
-                    if widgets::menu_item(ui, p, Some(Icon::File), "Model file…", "").clicked() {
-                        actions.push(Action::PickSpeechModel);
-                        ui.close();
-                    }
-                });
-            let catalog = settings.catalog();
-            let missing =
-                settings.file.is_none() && !input.inventory.is_some_and(|seen| seen.has(catalog));
-            match &settings.file {
-                Some(_) => note(ui, p, "A Whisper model file of your own."),
-                None if missing => note(
+            card(ui, p, |ui| {
+                caption(ui, p, "Model");
+                let model = wide_chooser(
                     ui,
                     p,
-                    &format!(
-                        "{}. Downloads {} MB once from Hugging Face, checked before use.",
-                        catalog.note,
-                        catalog.megabytes()
+                    "speech-model",
+                    "Speech model",
+                    &model_name(&settings),
+                );
+                egui::Popup::menu(&model)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                        widgets::menu_style(ui, 240.0);
+                        for model in &MODELS {
+                            let chosen = settings.file.is_none() && settings.model == model.id;
+                            let size = if input.inventory.is_some_and(|seen| seen.has(model)) {
+                                "Downloaded".to_owned()
+                            } else {
+                                format!("{} MB", model.megabytes())
+                            };
+                            let item = widgets::menu_item(
+                                ui,
+                                p,
+                                chosen.then_some(Icon::Check),
+                                model.name,
+                                &size,
+                            )
+                            .on_hover_text(model.note);
+                            if item.clicked() {
+                                settings.model = model.id.to_owned();
+                                settings.file = None;
+                                ui.close();
+                            }
+                        }
+                        widgets::menu_separator(ui, p);
+                        if let Some(file) = &settings.file {
+                            let name = model_name(&settings);
+                            widgets::menu_item(ui, p, Some(Icon::Check), &name, "Yours")
+                                .on_hover_text(file.display().to_string());
+                        }
+                        if widgets::menu_item(ui, p, Some(Icon::File), "Model file…", "").clicked()
+                        {
+                            actions.push(Action::PickSpeechModel);
+                            ui.close();
+                        }
+                    });
+                let catalog = settings.catalog();
+                missing = settings.file.is_none()
+                    && !input.inventory.is_some_and(|seen| seen.has(catalog));
+                match &settings.file {
+                    Some(_) => note(ui, p, "A Whisper model file of your own."),
+                    None if missing => note(
+                        ui,
+                        p,
+                        &format!(
+                            "{}. Downloads {} MB once from Hugging Face, checked before use.",
+                            catalog.note,
+                            catalog.megabytes()
+                        ),
                     ),
-                ),
-                None => note(ui, p, &format!("{}. On this computer.", catalog.note)),
-            }
-            ui.add_space(2.0);
+                    None => note(ui, p, &format!("{}. On this computer.", catalog.note)),
+                }
+            });
 
             // The language spoken.
-            caption(ui, p, "Language spoken");
-            let shown = (settings.language.as_deref())
-                .map_or_else(|| "Detect from speech".to_owned(), languages::label);
-            let language = wide_chooser(ui, p, "speech-language", "Spoken language", &shown);
-            egui::Popup::menu(&language)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .show(|ui| {
-                    widgets::menu_style(ui, 220.0);
-                    let detect = settings.language.is_none().then_some(Icon::Check);
-                    if widgets::menu_item(ui, p, detect, "Detect from speech", "").clicked() {
-                        settings.language = None;
-                        ui.close();
-                    }
-                    ui.separator();
-                    let current = settings.language.clone();
-                    if let Some(tag) = language_menu(ui, p, &mut state.language, current.as_deref())
-                    {
-                        settings.language = Some(tag);
-                    }
-                });
-            if (settings.language.as_deref()).is_some_and(|tag| whisper_language(tag).is_none()) {
-                note(
-                    ui,
-                    p,
-                    "Whisper does not know this language, so it tells the language from the sound.",
-                );
-            }
-            ui.add_space(2.0);
+            card(ui, p, |ui| {
+                caption(ui, p, "Language spoken");
+                let shown = (settings.language.as_deref())
+                    .map_or_else(|| "Detect from speech".to_owned(), languages::label);
+                let language = wide_chooser(ui, p, "speech-language", "Spoken language", &shown);
+                egui::Popup::menu(&language)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                        widgets::menu_style(ui, 220.0);
+                        let detect = settings.language.is_none().then_some(Icon::Check);
+                        if widgets::menu_item(ui, p, detect, "Detect from speech", "").clicked() {
+                            settings.language = None;
+                            ui.close();
+                        }
+                        widgets::menu_separator(ui, p);
+                        let current = settings.language.clone();
+                        if let Some(tag) =
+                            language_menu(ui, p, &mut state.language, current.as_deref())
+                        {
+                            settings.language = Some(tag);
+                        }
+                    });
+                if (settings.language.as_deref()).is_some_and(|tag| whisper_language(tag).is_none())
+                {
+                    note(ui, p, UNKNOWN_LANGUAGE);
+                }
+            });
 
             // What is heard.
-            caption(ui, p, "Captions from");
-            let stretch = wide_chooser(
-                ui,
-                p,
-                "speech-stretch",
-                "Captions from",
-                state.stretch.name(),
-            );
-            egui::Popup::menu(&stretch)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .show(|ui| {
-                    widgets::menu_style(ui, 200.0);
-                    for choice in [Stretch::Timeline, Stretch::Selection] {
-                        let icon = (state.stretch == choice).then_some(Icon::Check);
-                        if widgets::menu_item(ui, p, icon, choice.name(), "").clicked() {
-                            state.stretch = choice;
-                            ui.close();
-                        }
-                    }
-                });
-            let times = state.stretch.times(project, selection);
-            if times.is_none() {
-                note(
+            card(ui, p, |ui| {
+                caption(ui, p, "Captions from");
+                let stretch = wide_chooser(
                     ui,
                     p,
-                    match state.stretch {
-                        Stretch::Timeline => "The timeline is empty.",
-                        Stretch::Selection => "Select the clips to caption.",
-                    },
+                    "speech-stretch",
+                    "Captions from",
+                    state.stretch.name(),
                 );
-            }
-            ui.add_space(2.0);
+                egui::Popup::menu(&stretch)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                        widgets::menu_style(ui, 200.0);
+                        for choice in [Stretch::Timeline, Stretch::Selection] {
+                            let icon = (state.stretch == choice).then_some(Icon::Check);
+                            if widgets::menu_item(ui, p, icon, choice.name(), "").clicked() {
+                                state.stretch = choice;
+                                ui.close();
+                            }
+                        }
+                    });
+                times = state.stretch.times(project, selection);
+                if times.is_none() {
+                    note(
+                        ui,
+                        p,
+                        match state.stretch {
+                            Stretch::Timeline => "The timeline is empty.",
+                            Stretch::Selection => "Select the clips to caption.",
+                        },
+                    );
+                }
+            });
 
             // How long each caption is.
-            caption(ui, p, "Caption length");
-            let length = wide_chooser(
-                ui,
-                p,
-                "speech-length",
-                "Caption length",
-                settings.length.name(),
-            );
-            egui::Popup::menu(&length)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .show(|ui| {
-                    widgets::menu_style(ui, 220.0);
-                    for choice in CueLength::ALL {
-                        let icon = (settings.length == choice).then_some(Icon::Check);
-                        if widgets::menu_item(ui, p, icon, choice.name(), choice.note()).clicked() {
-                            settings.length = choice;
-                            ui.close();
-                        }
-                    }
-                });
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                if widgets::switch(ui, p, settings.translate, "Translate to English").clicked() {
-                    settings.translate = !settings.translate;
-                }
-                ui.label(
-                    egui::RichText::new("Translate to English")
-                        .font(theme::regular(12.0))
-                        .color(p.fg),
+            card(ui, p, |ui| {
+                caption(ui, p, "Caption length");
+                let length = wide_chooser(
+                    ui,
+                    p,
+                    "speech-length",
+                    "Caption length",
+                    settings.length.name(),
                 );
+                egui::Popup::menu(&length)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                        widgets::menu_style(ui, 220.0);
+                        for choice in CueLength::ALL {
+                            let icon = (settings.length == choice).then_some(Icon::Check);
+                            if widgets::menu_item(ui, p, icon, choice.name(), choice.note())
+                                .clicked()
+                            {
+                                settings.length = choice;
+                                ui.close();
+                            }
+                        }
+                    });
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    if widgets::switch(ui, p, settings.translate, "Translate to English").clicked()
+                    {
+                        settings.translate = !settings.translate;
+                    }
+                    ui.label(
+                        egui::RichText::new("Translate to English")
+                            .font(theme::regular(12.0))
+                            .color(p.fg),
+                    );
+                });
             });
-            ui.add_space(6.0);
+            ui.add_space(4.0);
 
             let working = input.view.working();
             let label = if missing {

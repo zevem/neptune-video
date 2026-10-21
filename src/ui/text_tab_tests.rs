@@ -444,6 +444,8 @@ struct Bench {
     side: f32,
     time: f64,
     seen: Vec<Seen>,
+    /// The rects filled with the stage's dark in the last frame.
+    staged: Vec<Rect>,
     refused: Vec<String>,
     said: Vec<String>,
     wait: Duration,
@@ -476,6 +478,7 @@ impl Bench {
             side: 300.0,
             time: 0.0,
             seen: Vec::new(),
+            staged: Vec::new(),
             refused: Vec::new(),
             said: Vec::new(),
             wait: Duration::ZERO,
@@ -559,6 +562,13 @@ impl Bench {
             );
         });
         output.textures_delta.clear();
+        let stage = self.palette.stage();
+        self.staged = (output.shapes.iter())
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect) if rect.fill == stage => Some(rect.rect),
+                _ => None,
+            })
+            .collect();
         self.wait = (output.viewport_output.values())
             .map(|viewport| viewport.repaint_delay)
             .min()
@@ -956,4 +966,13 @@ fn every_tab_has_room_in_a_narrow_library() {
         );
     }
     assert!(bench.has("Simple"), "the tab still shows its tiles");
+    // §5.2: a look's picture sits on a well of the stage's dark, as the
+    // viewer's picture does, in place of the tile's own backdrop.
+    let tile = bench.rect("Simple");
+    assert!(
+        (bench.staged.iter())
+            .any(|well| tile.contains_rect(*well) && well.width() > tile.width() - 1.0),
+        "{tile:?} {:?}",
+        bench.staged
+    );
 }

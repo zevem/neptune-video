@@ -849,6 +849,17 @@ fn with_no_caption_track_the_tab_says_what_captions_are_and_starts_one() {
     bench.click("Import SRT or VTT…");
     bench.click("Import SRT or VTT");
     assert_eq!(bench.imports, 2, "from the tab and from its header");
+    // §5.2: the header's actions are on the search row, under the tabs.
+    let header = bench.find("Import SRT or VTT").unwrap().rect;
+    let search = (bench.seen.iter())
+        .find(|seen| seen.role == Role::TextInput)
+        .expect("the search field")
+        .rect;
+    assert!(
+        header.top() >= 34.0 && header.left() > search.right(),
+        "{header:?}"
+    );
+    assert!((header.center().y - search.center().y).abs() < 2.0);
 
     bench.click("New caption track");
     assert!(bench.has("English") && bench.has("Language or tag"));
@@ -866,6 +877,35 @@ fn with_no_caption_track_the_tab_says_what_captions_are_and_starts_one() {
     assert!(bench.has("Add caption") && bench.has("Caption language"));
     assert!(bench.says("No captions yet"));
     assert!(bench.refused.is_empty() && bench.said.is_empty());
+}
+
+#[test]
+fn a_short_library_shows_every_way_to_start_captions_above_its_footer() {
+    let mut bench = Bench::new();
+    // The library of a window of 760 by 560.
+    bench.size = vec2(236.0, 330.0);
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    let foot = bench.size.y - metrics::PANE_FOOTER;
+    let mut widths = Vec::new();
+    for action in [
+        "Generate from speech",
+        "New caption track",
+        "Import SRT or VTT…",
+    ] {
+        let rect = bench.find(action).expect("offered").rect;
+        assert!(
+            rect.bottom() <= foot,
+            "{action} at {rect:?} is under the footer"
+        );
+        widths.push(rect.width());
+    }
+    // They stand as one column.
+    assert!(
+        widths.iter().all(|width| (width - widths[0]).abs() < 0.5),
+        "{widths:?}"
+    );
+    assert!(bench.says("one track for each language"));
 }
 
 #[test]
@@ -902,8 +942,9 @@ fn a_caption_is_added_at_the_playhead_and_typed_into_the_list() {
     bench.retype("Two");
     bench.key(Key::Enter, Modifiers::SHIFT);
     bench.frame(vec![Event::Text("lines".into())]);
-    // Clicking elsewhere keeps the words too.
-    let away = pos2(150.0, 860.0);
+    // Clicking elsewhere keeps the words too. (§5.2: the foot of the panel
+    // is the library's footer now, so the click is on the empty list.)
+    let away = pos2(150.0, 700.0);
     bench.click_at(away, PointerButton::Primary);
     assert_eq!(texts(&bench.editor, track), ["Two\nlines"]);
     assert_eq!(bench.steps(), 4);
