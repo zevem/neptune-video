@@ -1470,9 +1470,14 @@ fn zoom_slider(ui: &mut Ui, p: &Palette, level: &mut f32, width: f32) -> Respons
         }
         painter.circle_filled(knob + vec2(0.0, 1.0), KNOB, Color32::from_black_alpha(50));
         painter.circle_filled(knob, KNOB, Color32::WHITE);
-        // On the light strip a white knob needs an edge of its own.
+        // On the light strip a white knob needs an edge of its own, a
+        // shade firmer than a border's so it stands off the pale track.
         if !p.dark {
-            painter.circle_stroke(knob, KNOB - 0.5, Stroke::new(1.0, p.border));
+            painter.circle_stroke(
+                knob,
+                KNOB - 0.5,
+                Stroke::new(1.0, Color32::from_black_alpha(56)),
+            );
         }
     }
     icons::hint(
