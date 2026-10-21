@@ -508,6 +508,16 @@ fn row<R>(ui: &mut Ui, p: &Palette, label: &str, add: impl FnOnce(&mut Ui) -> R)
     kit::row(ui, p, label, fit, add)
 }
 
+/// Controls `add` makes in `width` at the trailing edge of a row, laid out
+/// in the order they are read. A row adds its controls from the trailing
+/// edge, and Tab would walk two of them right to left (§4.3.3, §7).
+fn in_reading_order<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    let height = ui.available_height();
+    ui.allocate_ui_with_layout(vec2(width, height), layout, add)
+        .inner
+}
+
 /// As [`row`], with a label that is cut with an ellipsis rather than pushed
 /// under its controls when the card is narrow.
 fn fitted_row<R>(ui: &mut Ui, p: &Palette, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
@@ -1039,8 +1049,10 @@ const HEAD_COMPACT: f32 = 28.0;
 /// The section switch, and the room above and under it.
 const SWITCH: f32 = 28.0;
 /// The room the statement that nothing is selected takes over the
-/// project's cards.
+/// project's cards, and in a short panel, where it is said without its
+/// glyph so that the cards under it keep the room.
 const NOTHING_SELECTED: f32 = 112.0;
+const NOTHING_SELECTED_COMPACT: f32 = 48.0;
 
 /// What the header's thumbnail shows.
 #[derive(Clone, Copy)]
@@ -1487,17 +1499,19 @@ fn panes(
             compact,
         );
         scrolled(ui, p, below(head.bottom() + 6.0), "inspector", |ui| {
-            let (rect, _) = ui
-                .allocate_exact_size(vec2(ui.available_width(), NOTHING_SELECTED), Sense::hover());
-            kit::empty_state(
-                ui,
-                p,
-                rect,
-                Icon::Pointer,
-                "Nothing selected",
-                "Select a clip to see its properties.",
-                None,
-            );
+            let (title, hint) = ("Nothing selected", "Select a clip to see its properties.");
+            let room = if compact {
+                NOTHING_SELECTED_COMPACT
+            } else {
+                NOTHING_SELECTED
+            };
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), room), Sense::hover());
+            if compact {
+                kit::small_empty_state(ui, p, rect, Icon::Pointer, title, hint);
+            } else {
+                kit::empty_state(ui, p, rect, Icon::Pointer, title, hint, None);
+            }
             project_pane(ui, p, project, project_draft);
         });
     }
@@ -1518,6 +1532,11 @@ fn scrolled(
     // there they are cut 3 out, in the panel's gutter, so that the ring of
     // a control on the cards' edge is whole (§7.4).
     body.set_clip_rect(rect.expand2(vec2(3.0, 0.0)).intersect(ui.clip_rect()));
+    // Its bar shows without the pointer over it, as Terminal's does: a fade
+    // in the gap between two cards is chrome on chrome, and the bar is what
+    // says that the rows go on.
+    let shown = &mut body.spacing_mut().scroll;
+    shown.dormant_handle_opacity = shown.active_handle_opacity;
     // Where the floating scroll bar starts, which a point's target stops
     // short of: the bar is laid over the rows and takes what is under it.
     let scroll = ui.spacing().scroll;
@@ -1865,13 +1884,14 @@ fn project_pane(ui: &mut Ui, p: &Palette, project: &Project, draft: &mut Project
             let field = |ui: &mut Ui, value: &mut f32, axis, name| {
                 number_with(ui, p, value, &range, 2.0, (Some(axis), ""), 0, width, name).changed()
             };
-            // Laid out from the trailing edge: the width reads first.
-            if field(ui, &mut height, "H", "Canvas height") {
-                canvas.height = height.round() as u32;
-            }
-            if field(ui, &mut wide, "W", "Canvas width") {
-                canvas.width = wide.round() as u32;
-            }
+            in_reading_order(ui, 2.0 * width + PAIRED_GAP, |ui| {
+                if field(ui, &mut wide, "W", "Canvas width") {
+                    canvas.width = wide.round() as u32;
+                }
+                if field(ui, &mut height, "H", "Canvas height") {
+                    canvas.height = height.round() as u32;
+                }
+            });
         });
         let wide = 2.0 * paired_width(ui) + PAIRED_GAP;
         tall_row(ui, p, "Frame rate", |ui| {

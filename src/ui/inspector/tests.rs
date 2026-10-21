@@ -2208,6 +2208,65 @@ fn a_keyed_row_is_walked_in_reading_order_and_keeps_its_name_whole() {
     assert!(label.rect.right() <= rects[0].left() + 0.5);
 }
 
+/// Whether `row`'s controls stand left to right on the line of the row's
+/// name, `label`, and Tab takes them in that order.
+fn walked_in_reading_order(bench: &mut Bench, label: &str, row: &[&str]) {
+    let rects: Vec<Rect> = row
+        .iter()
+        .map(|name| bench.find(name).unwrap_or_else(|| panic!("no {name}")).rect)
+        .collect();
+    assert!(
+        rects
+            .windows(2)
+            .all(|pair| pair[0].right() <= pair[1].left() + 0.5),
+        "{row:?} at {rects:?}"
+    );
+    let name = (bench.seen.iter())
+        .find(|seen| seen.name == label && Bench::is_text(seen))
+        .expect("the row is named");
+    assert!(
+        (rects.iter()).all(|rect| (rect.center().y - name.rect.center().y).abs() < 1.0),
+        "{rects:?} beside {:?}",
+        name.rect
+    );
+    bench.focus(row[0]);
+    for name in &row[1..] {
+        bench.key(Key::Tab, Modifiers::NONE);
+        bench.frame(Vec::new());
+        let focused = bench.ctx.memory(|memory| memory.focused());
+        let node = bench.find(name).unwrap().node;
+        assert_eq!(
+            focused.map(|id| id.value()),
+            Some(node.0),
+            "Tab reaches {name}"
+        );
+    }
+}
+
+#[test]
+fn a_plain_row_of_two_controls_is_walked_in_reading_order() {
+    // Spec §4.3.3, §7: a row adds its controls from the trailing edge, and
+    // still Tab takes them left to right, as they are read.
+    let (mut bench, _) = Bench::new();
+    bench.frame(Vec::new());
+    let flip = ["Flip horizontally", "Flip vertically"];
+    walked_in_reading_order(&mut bench, "Flip", &flip);
+    bench.selection = Selection::default();
+    bench.frame(Vec::new());
+    // The row is as tall as it was when its fields were laid out from the
+    // trailing edge: the next row's name is a row under it.
+    let size = ["Canvas width", "Canvas height"];
+    walked_in_reading_order(&mut bench, "Size", &size);
+    let label = |name: &str| {
+        (bench.seen.iter())
+            .find(|seen| seen.name == name && Bench::is_text(seen))
+            .unwrap_or_else(|| panic!("no {name}"))
+            .rect
+    };
+    let step = label("Frame rate").center().y - label("Size").center().y;
+    assert!(step < 40.0, "{step}");
+}
+
 #[test]
 fn a_diamond_pressed_with_the_playhead_off_the_clip_says_so_and_keys_nothing() {
     let (mut bench, clip) = Bench::new();

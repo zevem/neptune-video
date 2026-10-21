@@ -10,8 +10,9 @@
 //! written yet is [`Pane::placeholder`], and filling it is replacing that arm.
 use super::{
     FIELD, Ink, InspectorInput, InspectorState, PAIRED_GAP, ProjectDraft, SWITCH, Section, Thumb,
-    button, button_row, card, fact, keyed_card, keyed_row, note, number, number_with,
-    object_header, paired_width, row, section, section_switch, select_list, tall_row, time_fact,
+    button, button_row, card, fact, in_reading_order, keyed_card, keyed_row, note, number,
+    number_with, object_header, paired_width, row, section, section_switch, select_list, tall_row,
+    time_fact,
 };
 use crate::{
     icons::Icon,
@@ -889,22 +890,16 @@ impl<'a> Pane<'a> {
             let t = &mut self.next.transform;
             row(ui, p, "Flip", |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if kit::small_icon_toggle(ui, p, Icon::FlipVertical, t.flip_y, "Flip vertically")
-                    .clicked()
-                {
-                    t.flip_y = !t.flip_y;
-                }
-                if kit::small_icon_toggle(
-                    ui,
-                    p,
-                    Icon::FlipHorizontal,
-                    t.flip_x,
-                    "Flip horizontally",
-                )
-                .clicked()
-                {
-                    t.flip_x = !t.flip_x;
-                }
+                in_reading_order(ui, 2.0 * widgets::SMALL_BUTTON + 2.0, |ui| {
+                    let (icon, on) = (Icon::FlipHorizontal, t.flip_x);
+                    if kit::small_icon_toggle(ui, p, icon, on, "Flip horizontally").clicked() {
+                        t.flip_x = !t.flip_x;
+                    }
+                    let (icon, on) = (Icon::FlipVertical, t.flip_y);
+                    if kit::small_icon_toggle(ui, p, icon, on, "Flip vertically").clicked() {
+                        t.flip_y = !t.flip_y;
+                    }
+                });
             });
             if self.next.transform != Transform::default() {
                 button_row(ui, p, |ui| {

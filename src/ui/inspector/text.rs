@@ -140,7 +140,7 @@ fn em_row(ui: &mut Ui, p: &Palette, label: &str, value: &mut f32, size: f32, ran
     });
 }
 
-/// A row of two lengths in ems, each named.
+/// A row of two lengths in ems, each named, the first at the leading side.
 fn em_pair(
     ui: &mut Ui,
     p: &Palette,
@@ -153,8 +153,10 @@ fn em_pair(
     row(ui, p, label, |ui| {
         ui.spacing_mut().item_spacing.x = PAIRED_GAP;
         let width = super::paired_width(ui);
-        em_field_sized(ui, p, first, size, range, (names[0], width));
-        em_field_sized(ui, p, second, size, range, (names[1], width));
+        super::in_reading_order(ui, 2.0 * width + PAIRED_GAP, |ui| {
+            em_field_sized(ui, p, first, size, range, (names[0], width));
+            em_field_sized(ui, p, second, size, range, (names[1], width));
+        });
     });
 }
 
@@ -348,6 +350,9 @@ fn writing(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, rows: usize)
             .font(theme::regular(13.0))
             .hint_text(hint),
     );
+    // The hint is shown only while the field is empty: it is also the
+    // field's name, which is said whatever it holds.
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, ui.is_enabled(), hint));
     let rect = response.rect;
     let mut shapes = vec![egui::Shape::rect_filled(rect, 7, p.control)];
     if response.has_focus() {
@@ -560,10 +565,10 @@ fn style_cards(
                 ui,
                 p,
                 "Offset",
-                (down, right),
+                (right, down),
                 size,
                 [-2.0, 2.0],
-                ["Shadow offset down", "Shadow offset right"],
+                ["Shadow offset right", "Shadow offset down"],
             );
             em_row(ui, p, "Blur", &mut shadow.blur, size, [0.0, 1.0]);
         }
@@ -586,10 +591,10 @@ fn style_cards(
                 ui,
                 p,
                 "Padding",
-                (above, sides),
+                (sides, above),
                 size,
                 [0.0, 4.0],
-                ["Padding above and below", "Padding at the sides"],
+                ["Padding at the sides", "Padding above and below"],
             );
             em_row(ui, p, "Corners", &mut background.radius, size, [0.0, 4.0]);
         }

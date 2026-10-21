@@ -8,8 +8,8 @@
 //! the project would refuse is not held: the last one that it takes stays,
 //! and a line says why.
 use super::{
-    FIELD, button, button_row, card, choice, clip::Pane, controls, number, row, rule, section,
-    select_menu, tall_row, time_fact,
+    FIELD, button, button_row, card, choice, clip::Pane, controls, in_reading_order, number, row,
+    rule, section, select_menu, tall_row, time_fact,
 };
 use crate::{
     icons::Icon,
@@ -442,9 +442,9 @@ pub(super) fn value_capsule(
     painter.galley(capsule.center() - galley.size() * 0.5, galley, p.fg);
 }
 
-/// A ramp's button: the shape of its speed.
-fn ramp_button(ui: &mut Ui, p: &Palette, ramp: Ramp) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(34.0, 26.0), Sense::click());
+/// A ramp's button, `width` wide: the shape of its speed.
+fn ramp_button(ui: &mut Ui, p: &Palette, ramp: Ramp, width: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 26.0), Sense::click());
     let enabled = ui.is_enabled();
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, ramp.label()));
     if ui.is_rect_visible(rect) {
@@ -665,8 +665,14 @@ impl Pane<'_> {
         card(ui, p, |ui| {
             button_row(ui, p, |ui| {
                 ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                // The presets are one row: in a narrow card each button
+                // gives up a little of its 34, never so much that its shape
+                // is cut.
+                let count = Ramp::ALL.len() as f32;
+                let room = ui.available_width() - 4.0 * (count - 1.0);
+                let width = (room / count).floor().clamp(26.0, 34.0);
                 for ramp in Ramp::ALL {
-                    if ramp_button(ui, p, ramp).clicked() {
+                    if ramp_button(ui, p, ramp, width).clicked() {
                         self.change_curve(ramp.label(), |curve| {
                             *curve = ramp.over(curve);
                             true
@@ -688,34 +694,38 @@ impl Pane<'_> {
             let label = format!("Point {} of {count}", point + 1);
             row(ui, p, &label, |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                ui.add_enabled_ui(count < MAX_TIME_KEYS, |ui| {
-                    let add = kit::small_icon_button(ui, p, Icon::Plus, "Add point")
-                        .on_hover_text("Add a point at the playhead, or in the longest stretch");
-                    if add.clicked() {
-                        let local = self.local;
-                        let mut added = None;
-                        self.change_curve("Add speed point", |with| {
-                            added = (with.insert(local)).or_else(|| {
-                                let widest = (0..with.pieces.len())
-                                    .filter(|index| !with.pieces[*index].frozen())
-                                    .max_by_key(|index| with.pieces[*index].span)?;
-                                let middle =
-                                    Time(with.at(widest).0 + with.pieces[widest].span.0 / 2);
-                                with.insert(middle)
+                in_reading_order(ui, 2.0 * widgets::SMALL_BUTTON + 2.0, |ui| {
+                    ui.add_enabled_ui(count < MAX_TIME_KEYS, |ui| {
+                        let add = kit::small_icon_button(ui, p, Icon::Plus, "Add point")
+                            .on_hover_text(
+                                "Add a point at the playhead, or in the longest stretch",
+                            );
+                        if add.clicked() {
+                            let local = self.local;
+                            let mut added = None;
+                            self.change_curve("Add speed point", |with| {
+                                added = (with.insert(local)).or_else(|| {
+                                    let widest = (0..with.pieces.len())
+                                        .filter(|index| !with.pieces[*index].frozen())
+                                        .max_by_key(|index| with.pieces[*index].span)?;
+                                    let middle =
+                                        Time(with.at(widest).0 + with.pieces[widest].span.0 / 2);
+                                    with.insert(middle)
+                                });
+                                added.is_some()
                             });
-                            added.is_some()
-                        });
-                        if let Some(index) = added {
-                            self.state.graph.point = index;
+                            if let Some(index) = added {
+                                self.state.graph.point = index;
+                            }
                         }
-                    }
-                });
-                ui.add_enabled_ui(point > 0 && point + 1 < count, |ui| {
-                    let remove = kit::small_icon_button(ui, p, Icon::Trash, "Remove point")
-                        .on_disabled_hover_text("The ends of the clip stay");
-                    if remove.clicked() {
-                        self.change_curve("Remove speed point", |curve| curve.remove(point));
-                    }
+                    });
+                    ui.add_enabled_ui(point > 0 && point + 1 < count, |ui| {
+                        let remove = kit::small_icon_button(ui, p, Icon::Trash, "Remove point")
+                            .on_disabled_hover_text("The ends of the clip stay");
+                        if remove.clicked() {
+                            self.change_curve("Remove speed point", |curve| curve.remove(point));
+                        }
+                    });
                 });
             });
             row(ui, p, "Speed here", |ui| {

@@ -713,7 +713,9 @@ pub fn keyed_row(
         .size()
         .x;
     let wraps = fit.lead + whole + 8.0 + controls + 8.0 + metrics::KEY_COLUMN + fit.trail > width;
-    let height = tall + if wraps { 20.0 } else { 0.0 };
+    // A label on a line of its own is set 4 below the row's top, so that it
+    // is clear of a card's rounded corner and nearer the fields it names.
+    let height = tall + if wraps { 24.0 } else { 0.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     // The whole row is one child of a fixed identity, so what comes after it
     // keeps its own whether or not this row shows its steps.
@@ -726,7 +728,10 @@ pub fn keyed_row(
     let ui = &mut ui;
     let line = Rect::from_min_max(pos2(rect.left(), rect.bottom() - tall), rect.max);
     let label_line = if wraps {
-        Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + 20.0))
+        Rect::from_min_max(
+            pos2(rect.left(), rect.top() + 4.0),
+            pos2(rect.right(), rect.top() + 24.0),
+        )
     } else {
         line
     };

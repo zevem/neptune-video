@@ -310,9 +310,9 @@ pub fn slider(
     }
 }
 
-/// A switch for a setting that is on or off.
+/// A switch for a setting that is on or off, as large as Terminal's.
 pub fn switch(ui: &mut Ui, p: &Palette, on: bool, label: &str) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(32.0, SMALL_BUTTON), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(38.0, SMALL_BUTTON), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), on, label));
     if ui.is_rect_visible(rect) {
         let progress = controls::animate(
@@ -444,7 +444,9 @@ mod tests {
                     small_icon_button(ui, &p, Icon::Rotate, "Reset").rect.size(),
                     vec2(22.0, 22.0),
                 ),
-                (switch(ui, &p, true, "Snap").rect.size(), vec2(32.0, 22.0)),
+                // Spec §4.2: a switch is Terminal's, 38 by 22, now that
+                // every area takes the final size.
+                (switch(ui, &p, true, "Snap").rect.size(), vec2(38.0, 22.0)),
                 (
                     slider(ui, &p, &mut on, 1.0, 112.0, "Mix").rect.size(),
                     vec2(112.0, 22.0),

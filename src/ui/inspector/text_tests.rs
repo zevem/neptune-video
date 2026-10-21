@@ -464,3 +464,14 @@ fn a_colour_well_opens_its_own_picker_and_edits_its_own_colour() {
     assert_eq!(shadow_now, shadow, "nor the shadow's");
     assert_eq!(bench.steps(), before + 1, "{:?}", bench.refused);
 }
+
+#[test]
+fn a_title_s_words_are_in_a_named_field() {
+    // Spec §7: the Text section's field is read out by its name, not as an
+    // empty entry, whatever it holds.
+    let (bench, _) = titled(Section::Text);
+    let field = (bench.seen.iter())
+        .find(|seen| matches!(seen.role, Role::TextInput | Role::MultilineTextInput))
+        .expect("the words are a field");
+    assert_eq!(field.name, "Text");
+}
