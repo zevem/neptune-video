@@ -93,6 +93,8 @@ struct Bench {
     jobs: Vec<RenderJobInfo>,
     /// Paused jobs that are held: waiting, never started.
     held: Vec<Uuid>,
+    /// Why the last request failed, as the application hands it in.
+    refusal: Option<String>,
     seen: Vec<Seen>,
     painted: Vec<(String, Color32)>,
     answers: Vec<QueueAnswer>,
@@ -112,6 +114,7 @@ impl Bench {
             time: 0.0,
             jobs,
             held: Vec::new(),
+            refusal: None,
             seen: Vec::new(),
             painted: Vec::new(),
             answers: Vec::new(),
@@ -143,7 +146,13 @@ impl Bench {
             .collect();
         let mut answer = None;
         let output = ctx.run_ui(raw, |ui| {
-            answer = show(ui.ctx(), &self.palette, &self.jobs, &waiting);
+            answer = show(
+                ui.ctx(),
+                &self.palette,
+                &self.jobs,
+                &waiting,
+                self.refusal.as_deref(),
+            );
         });
         if let Some(update) = &output.platform_output.accesskit_update {
             self.seen = (update.nodes.iter())
@@ -819,4 +828,28 @@ fn a_job_that_starts_is_scrolled_into_sight_once() {
         !in_sight(&bench, "Pause “next.mp4”"),
         "it is not held in sight"
     );
+}
+
+#[test]
+fn a_refusal_is_said_in_the_footer_of_a_short_window() {
+    // Spec §5.8: a toast waits under a sheet that leaves it no room, so what
+    // the queue refused is said in its own footer.
+    let why = "The file manager could not be opened: no handler for the folder";
+    let mut bench = Bench::new(NARROW, every_state());
+    bench.refusal = Some(why.to_owned());
+    bench.frame(Vec::new());
+    let said = (bench.seen.iter())
+        .find(|seen| seen.name == why && seen.role == Role::Label)
+        .unwrap_or_else(|| panic!("the refusal is read out"))
+        .rect;
+    let new = bench.get("New export…").rect;
+    assert!(
+        said.bottom() <= NARROW.y && said.top() >= new.top() - 12.0,
+        "in the footer, in sight: {said:?}, {new:?}"
+    );
+    assert!(said.right() <= new.left(), "beside the buttons: {said:?}");
+    assert_eq!(bench.painted_in("file manager"), Some(bench.palette.red));
+    bench.refusal = None;
+    bench.frame(Vec::new());
+    assert!(!bench.says("file manager"));
 }

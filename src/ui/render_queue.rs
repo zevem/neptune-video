@@ -10,7 +10,7 @@
 //! and a fixed footer.
 use super::{
     controls::{self, ButtonKind},
-    export_sheet::{header, said, scaffold, scrolled},
+    export_sheet::{header, refusal_line, said, scaffold, scrolled},
     kit,
 };
 use crate::{
@@ -78,13 +78,15 @@ pub enum QueueAnswer {
 /// Shows the render queue. `waiting` is the queue's waiting jobs in the
 /// order they render, held ones included: a waiting job that reads Paused is
 /// held, queued by Add to queue and started only when the person says so.
-/// Returns what the person asked for, if anything; Escape and the backdrop
-/// close it.
+/// `refusal` is why what was last asked of the queue failed, said at the
+/// footer's leading edge. Returns what the person asked for, if anything;
+/// Escape and the backdrop close it.
 pub fn show(
     ctx: &egui::Context,
     p: &Palette,
     jobs: &[RenderJobInfo],
     waiting: &[Uuid],
+    refusal: Option<&str>,
 ) -> Option<QueueAnswer> {
     let mut answer = None;
     let home = directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
@@ -213,6 +215,15 @@ pub fn show(
                         .clicked()
                 {
                     answer = Some(QueueAnswer::StartAll);
+                }
+                // What is left at the leading edge says why the last
+                // request failed.
+                if let Some(refusal) = refusal {
+                    let room = Rect::from_min_max(
+                        bar.left_top(),
+                        pos2(bar.left() + ui.available_width() - 8.0, bar.bottom()),
+                    );
+                    refusal_line(ui, p, room, refusal);
                 }
             },
         );

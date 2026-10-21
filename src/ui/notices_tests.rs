@@ -124,7 +124,7 @@ impl Window {
             }
             expire(ui.ctx(), &mut self.notices);
             if let Some(jobs) = &self.jobs
-                && let Some(answer) = render_queue::show(ui.ctx(), &self.palette, jobs, &[])
+                && let Some(answer) = render_queue::show(ui.ctx(), &self.palette, jobs, &[], None)
             {
                 self.answers.push(answer);
             }

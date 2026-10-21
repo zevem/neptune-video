@@ -1430,3 +1430,51 @@ fn a_fresh_enter_exports_when_nothing_has_the_keyboard() {
     bench.frame(vec![enter(true)]);
     assert!(bench.take().is_empty(), "an Enter carried into the sheet");
 }
+
+#[test]
+fn a_refusal_is_said_in_the_footer_of_a_short_window_until_something_changes() {
+    // Spec §5.8: a toast waits under a sheet that leaves it no room, so the
+    // queue's refusal of an Export is said inside the sheet.
+    let why = "The render queue holds 64 jobs; remove finished jobs first";
+    let mut bench = Bench::new(NARROW);
+    bench.click("Export");
+    assert!(matches!(
+        bench.take().as_slice(),
+        [ExportAnswer::Queue { .. }]
+    ));
+    bench.state.refuse(why.to_owned());
+    bench.frame(Vec::new());
+    let said = (bench.seen.iter())
+        .find(|seen| seen.name == why && seen.role == Role::Label)
+        .unwrap_or_else(|| panic!("the refusal is read out"))
+        .rect;
+    let export = bench.get("Export").rect;
+    let cancel = bench.get("Cancel").rect;
+    assert!(
+        said.bottom() <= NARROW.y && said.top() >= cancel.top() - 12.0,
+        "in the footer, in sight: {said:?}, {cancel:?}"
+    );
+    assert!(
+        said.right() <= cancel.left(),
+        "beside the buttons: {said:?}"
+    );
+    assert!(!said.intersects(export));
+    assert_eq!(
+        bench.painted_in("render queue holds"),
+        Some(bench.palette.red)
+    );
+
+    // Asking again answers it afresh.
+    bench.click("Export");
+    assert!(matches!(
+        bench.take().as_slice(),
+        [ExportAnswer::Queue { .. }]
+    ));
+    assert_eq!(bench.state.refusal(), None);
+
+    // So does changing what would be made.
+    bench.state.refuse(why.to_owned());
+    bench.click("MOV");
+    assert_eq!(bench.state.refusal(), None);
+    assert!(!bench.says("render queue holds"));
+}

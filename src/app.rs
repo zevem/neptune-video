@@ -580,6 +580,9 @@ pub struct App {
         bool,
         Option<String>,
     )>,
+    /// Why the render queue refused what was last asked of it from its own
+    /// sheet, said in the sheet's footer while it stays open.
+    queue_refusal: Option<String>,
     /// The person's saved export presets and the file they are kept in.
     export_presets: crate::export::presets::ExportPresets,
     export_presets_path: Option<PathBuf>,
@@ -1171,6 +1174,7 @@ impl App {
             export: None,
             poster,
             export_replace: None,
+            queue_refusal: None,
             export_presets,
             export_presets_path,
             export_presets_asked: 0,
@@ -4296,7 +4300,7 @@ impl App {
             ExportAnswer::SavePreset { name, settings } => {
                 match self.export_presets.keep(&name, &settings) {
                     Ok(_) => self.save_export_presets(ctx),
-                    Err(why) => self.notify(ctx, why, true),
+                    Err(why) => self.refuse_in_export(ctx, why),
                 }
             }
             ExportAnswer::DeletePreset(id) => {
@@ -4351,8 +4355,21 @@ impl App {
             }
             Err(error) => {
                 self.overlay = Overlay::Export;
-                self.notify(ctx, error.to_string(), true);
+                self.refuse_in_export(ctx, error.to_string());
             }
+        }
+    }
+
+    /// Says why the export sheet's request was refused inside the sheet,
+    /// where the person is looking: a toast waits under an open sheet that
+    /// leaves it no room, as in a short window. With no sheet open it is a
+    /// problem notice.
+    fn refuse_in_export(&mut self, ctx: &egui::Context, why: String) {
+        match self.export.as_mut() {
+            Some(state) if matches!(self.overlay, Overlay::Export | Overlay::ReplaceExport(_)) => {
+                state.refuse(why);
+            }
+            _ => self.notify(ctx, why, true),
         }
     }
 
@@ -4363,6 +4380,9 @@ impl App {
         jobs: &[editor_core::export::RenderJobInfo],
     ) {
         use ui::render_queue::QueueAnswer;
+        // A refusal answers what was last asked; anything asked next
+        // replaces it.
+        self.queue_refusal = None;
         let renders = &self.renders;
         // A job whose state changed since the panel was drawn refuses the
         // operation; the panel shows the new state.
@@ -4382,7 +4402,13 @@ impl App {
                 if let Some(file) = file
                     && let Err(why) = crate::export::wiring::reveal(&file.destination)
                 {
-                    self.notify(ctx, why, true);
+                    // Said in the queue, which is open: a toast would wait
+                    // under it in a short window.
+                    if self.overlay == Overlay::RenderQueue {
+                        self.queue_refusal = Some(why);
+                    } else {
+                        self.notify(ctx, why, true);
+                    }
                 }
             }
             QueueAnswer::NewExport => self.open_export(ctx),
@@ -6388,6 +6414,11 @@ impl App {
         if !matches!(self.overlay, Overlay::Export | Overlay::ReplaceExport(_)) {
             self.poster.stop();
         }
+        // The queue's refusal is said only while the queue that was asked
+        // stays open.
+        if self.overlay != Overlay::RenderQueue {
+            self.queue_refusal = None;
+        }
         // Sheets and what floats over the window.
         match self.overlay.clone() {
             Overlay::None | Overlay::Conflict(_) => {}
@@ -6449,7 +6480,10 @@ impl App {
             Overlay::RenderQueue => {
                 let jobs = self.renders.jobs();
                 let waiting = self.renders.waiting();
-                if let Some(answer) = ui::render_queue::show(&ctx, &p, &jobs, &waiting) {
+                let refusal = self.queue_refusal.clone();
+                if let Some(answer) =
+                    ui::render_queue::show(&ctx, &p, &jobs, &waiting, refusal.as_deref())
+                {
                     self.answer_queue(&ctx, answer, &jobs);
                 }
             }

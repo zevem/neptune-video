@@ -190,6 +190,10 @@ pub struct ExportSheetState {
     /// for: a sheet closed unfinished is opened again as it was only for
     /// the same project.
     owner: Option<Uuid>,
+    /// Why the queue refused what the sheet last asked of it, said in the
+    /// footer until the person changes something or asks again. A toast
+    /// would wait under the sheet in a short window, out of sight.
+    refusal: Option<String>,
 }
 
 impl ExportSheetState {
@@ -220,6 +224,7 @@ impl ExportSheetState {
             pending: None,
             fitted: false,
             owner: None,
+            refusal: None,
         };
         state.refresh_texts();
         state
@@ -256,6 +261,18 @@ impl ExportSheetState {
         self.pending = None;
         self.naming = None;
         self.focus_naming = false;
+        self.refusal = None;
+    }
+
+    /// Says in the sheet why what it asked for was refused, while the sheet
+    /// is open and the person is looking at it.
+    pub fn refuse(&mut self, why: String) {
+        self.refusal = Some(why);
+    }
+
+    #[cfg(test)]
+    pub fn refusal(&self) -> Option<&str> {
+        self.refusal.as_deref()
     }
 
     pub fn settings(&self) -> &ExportSettings {
@@ -1195,6 +1212,7 @@ pub fn show(
     }
     let range_problem = state.follow_range(input);
     let before = state.settings.clone();
+    let named = (state.name.clone(), state.folder.clone());
     let plan = caps.map(|caps| state.settings.plan(input.project, caps));
     let blocker = blocker(state, input, range_problem.as_deref(), plan.as_ref());
 
@@ -1303,6 +1321,14 @@ pub fn show(
         && !response.any_popup_open
     {
         answer = Some(queued(state, true));
+    }
+    // A refusal answers what was last asked; it goes once the person
+    // changes what would be made, or asks again.
+    if answer.is_some()
+        || state.settings != before
+        || (state.name.clone(), state.folder.clone()) != named
+    {
+        state.refusal = None;
     }
     answer
 }
@@ -1526,6 +1552,8 @@ fn footer(
                         .layout(Layout::left_to_right(Align::Center)),
                 );
                 naming(&mut lead, p, state, answer);
+            } else if let Some(refusal) = state.refusal.as_deref() {
+                refusal_line(ui, p, room, refusal);
             } else if matches!(input.caps, CapabilityView::Probing) {
                 let glyph = Rect::from_center_size(
                     pos2(room.left() + 7.0, room.center().y),
@@ -1550,6 +1578,35 @@ fn footer(
             }
         },
     );
+}
+
+/// Why what a sheet asked for was refused, at its footer's leading edge in
+/// the problem colour after the warning glyph, on at most two lines. The
+/// whole of it is read out, and shown on hover where it is cut short.
+pub(super) fn refusal_line(ui: &Ui, p: &Palette, room: Rect, text: &str) {
+    let glyph = Rect::from_center_size(pos2(room.left() + 7.0, room.center().y), Vec2::splat(14.0));
+    icons::paint(ui.painter(), glyph, Icon::Warning, p.red);
+    let mut job = egui::text::LayoutJob::simple(
+        text.to_owned(),
+        theme::regular(12.0),
+        p.red,
+        (room.width() - 22.0).max(0.0),
+    );
+    job.wrap.max_rows = 2;
+    job.wrap.break_anywhere = false;
+    job.wrap.overflow_character = Some('…');
+    let words = ui.painter().layout_job(job);
+    let cut = words.elided;
+    let shown = controls::galley_at(
+        ui.painter(),
+        pos2(room.left() + 22.0, room.center().y),
+        words,
+    );
+    let response = ui.interact(shown, ui.auto_id_with(("refusal", text)), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+    if cut {
+        response.on_hover_text(text);
+    }
 }
 
 /// A preset's name being typed in the footer, with its Save and a way to
