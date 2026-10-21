@@ -144,6 +144,8 @@ pub fn first_shape(painter: &Painter) -> ShapeIdx {
 /// thinner in light than in dark. Two strikes of coverage `c` cover
 /// `1 - (1 - c)²`, which is `2c - c²`, so the text is struck twice where the
 /// atlas holds plain coverage and reads the same in either appearance.
+/// The shapes from `from` on move along the layer to make room for the
+/// second strikes, so a shape index taken among them is set before this.
 pub fn keep_text_weight(painter: &Painter, from: ShapeIdx) {
     let curve = painter.ctx().global_style().visuals.text_options;
     if curve.color_transfer_function != FontColorTransferFunction::Off {
@@ -151,8 +153,43 @@ pub fn keep_text_weight(painter: &Painter, from: ShapeIdx) {
     }
     painter.ctx().graphics_mut(|graphics| {
         let list = graphics.entry(painter.layer_id());
-        for index in from.0..list.next_idx().0 {
-            list.mutate_shape(ShapeIdx(index), |clipped| strike_twice(&mut clipped.shape));
+        let end = list.next_idx().0;
+        let mut strikes = 0;
+        for index in from.0..end {
+            list.mutate_shape(ShapeIdx(index), |clipped| {
+                strikes += usize::from(thin_for_two_strikes(&mut clipped.shape));
+            });
+        }
+        if strikes == 0 {
+            return;
+        }
+        // Each second strike goes straight after its first, so that what
+        // was painted over the words still covers both. The layer grows by
+        // the strikes and its shapes move down from the last, in place,
+        // which costs no list of their own each frame.
+        for _ in 0..strikes {
+            list.add(Rect::NOTHING, Shape::Noop);
+        }
+        let mut to = end + strikes;
+        for index in (from.0..end).rev() {
+            let mut moved = (Rect::NOTHING, Shape::Noop);
+            list.mutate_shape(ShapeIdx(index), |clipped| {
+                moved = (
+                    clipped.clip_rect,
+                    std::mem::replace(&mut clipped.shape, Shape::Noop),
+                );
+            });
+            let (clip_rect, shape) = moved;
+            // `to` stays past `index` by the strikes still to place.
+            if let Shape::Text(text) = &shape
+                && to > index + 1
+                && ink_alpha(text) > 0.0
+            {
+                to -= 1;
+                list.set(ShapeIdx(to), clip_rect, Shape::Text(text.clone()));
+            }
+            to -= 1;
+            list.set(ShapeIdx(to), clip_rect, shape);
         }
     });
 }
@@ -167,20 +204,34 @@ pub fn on_dark<R>(painter: &Painter, paint: impl FnOnce() -> R) -> R {
     painted
 }
 
-fn strike_twice(shape: &mut Shape) {
+/// Sets the ink of a text shape to what two strikes of it reach the one
+/// strike's weight at, and says whether it is to be struck twice. Text
+/// within a list of shapes is struck twice there.
+fn thin_for_two_strikes(shape: &mut Shape) -> bool {
     match shape {
-        Shape::Vec(shapes) => shapes.iter_mut().for_each(strike_twice),
+        Shape::Vec(shapes) => {
+            let mut index = 0;
+            while index < shapes.len() {
+                if thin_for_two_strikes(&mut shapes[index]) {
+                    let second = shapes[index].clone();
+                    shapes.insert(index + 1, second);
+                    index += 1;
+                }
+                index += 1;
+            }
+            false
+        }
         Shape::Text(text) => {
             let alpha = ink_alpha(text);
             if alpha <= 0.0 {
-                return;
+                return false;
             }
             // Translucent ink, as in a fade, strikes twice at the opacity
             // whose two strikes reach the one strike's core: `1 - √(1 - a)`.
             text.opacity_factor *= (1.0 - (1.0 - alpha).sqrt()) / alpha;
-            *shape = Shape::Vec(vec![Shape::Text(text.clone()), Shape::Text(text.clone())]);
+            true
         }
-        _ => {}
+        _ => false,
     }
 }
 

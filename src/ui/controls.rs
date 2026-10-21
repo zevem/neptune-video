@@ -284,11 +284,11 @@ pub fn segmented_choice<T: PartialEq + Copy>(
 ) -> bool {
     // The ids `segmented` gives its cells.
     let id = ui.id().with(("segmented", name));
-    let cells: Vec<Id> = (options.iter()).map(|(_, label)| id.with(*label)).collect();
+    let cells = (options.iter()).map(|(_, label)| id.with(*label));
     let selected = (options.iter())
         .position(|(option, _)| option == value)
         .unwrap_or(usize::MAX);
-    let arrowed = super::arrow_choice(ui.ctx(), &cells, selected);
+    let arrowed = super::arrow_among(ui.ctx(), cells, selected);
     if let Some(to) = arrowed {
         *value = options[to].0;
     }
@@ -322,8 +322,7 @@ pub fn segmented<T: PartialEq + Copy>(
     } else {
         0.14
     };
-    if let Some(selected) = selected {
-        let chosen = cells[selected];
+    if let Some(chosen) = selected.and_then(|selected| cells.clone().nth(selected)) {
         let left = ui
             .ctx()
             .animate_value_with_time(id.with("thumb"), chosen.left(), slide);
@@ -350,7 +349,7 @@ pub fn segmented<T: PartialEq + Copy>(
         );
     }
     let mut changed = false;
-    for (index, ((option, label), cell)) in options.iter().zip(&cells).enumerate() {
+    for (index, ((option, label), cell)) in options.iter().zip(cells).enumerate() {
         let cell = Rect::from_x_y_ranges(cell.x_range(), rect.y_range());
         let response = ui.interact(cell, id.with(*label), Sense::click());
         let active = Some(index) == selected;
@@ -392,70 +391,73 @@ pub const SEGMENT_SNUG: f32 = 6.0;
 /// where each label at 11.5 still keeps [`SEGMENT_ROOM`] on both sides.
 pub fn segmented_fit(ui: &Ui, labels: &[&str]) -> f32 {
     (labels.iter())
-        .map(|label| {
-            (ui.painter())
-                .layout_no_wrap(
-                    (*label).to_owned(),
-                    theme::medium(11.5),
-                    Color32::PLACEHOLDER,
-                )
-                .size()
-                .x
-                + SEGMENT_ROOM * 2.0
-        })
+        .map(|label| label_width(ui, label, 11.5) + SEGMENT_ROOM * 2.0)
         .sum::<f32>()
         + 4.0
 }
 
+/// Neptune Video: how wide `label` is in Medium at `size`. A segmented
+/// control fits its labels in every frame it is drawn in, so each width is
+/// kept from the first frame that laid the label out, for the window's
+/// scale, and later frames lay none out again.
+fn label_width(ui: &Ui, label: &str, size: f32) -> f32 {
+    let scale = ui.ctx().pixels_per_point();
+    let key = Id::new(("segment-label", label, size.to_bits(), scale.to_bits()));
+    if let Some(width) = ui.ctx().data(|data| data.get_temp::<f32>(key)) {
+        return width;
+    }
+    let width = (ui.painter())
+        .layout_no_wrap(label.to_owned(), theme::medium(size), Color32::PLACEHOLDER)
+        .size()
+        .x;
+    ui.ctx().data_mut(|data| data.insert_temp(key, width));
+    width
+}
+
 /// Neptune Video: the cells of a segmented control in `rect`, inside its
-/// 2-point track, and the size their labels are written at: equal cells at
-/// Medium 12, or at 11.5, while every label has [`SEGMENT_ROOM`] on both
-/// sides, or at 11.5 while each still has [`SEGMENT_SNUG`]; otherwise at
-/// 11.5 in cells as wide as their labels, the width left over shared out
-/// evenly.
-fn segment_cells<T>(ui: &Ui, rect: Rect, options: &[(T, &str)]) -> (Vec<Rect>, f32) {
+/// 2-point track, from leading to trailing, and the size their labels are
+/// written at: equal cells at Medium 12, or at 11.5, while every label has
+/// [`SEGMENT_ROOM`] on both sides, or at 11.5 while each still has
+/// [`SEGMENT_SNUG`]; otherwise at 11.5 in cells as wide as their labels, the
+/// width left over shared out evenly.
+fn segment_cells<'a, T>(
+    ui: &'a Ui,
+    rect: Rect,
+    options: &'a [(T, &str)],
+) -> (impl Iterator<Item = Rect> + Clone + 'a, f32) {
     let inner = Rect::from_min_max(rect.min + vec2(2.0, 2.0), rect.max - vec2(2.0, 2.0));
     let count = options.len().max(1) as f32;
     let equal = inner.width() / count;
-    let widths = |size: f32| -> Vec<f32> {
-        (options.iter())
-            .map(|(_, label)| {
-                (ui.painter())
-                    .layout_no_wrap(
-                        (*label).to_owned(),
-                        theme::medium(size),
-                        Color32::PLACEHOLDER,
-                    )
-                    .size()
-                    .x
-            })
-            .collect()
+    let fits = |size: f32, room: f32| {
+        (options.iter()).all(|(_, label)| label_width(ui, label, size) + room * 2.0 <= equal)
     };
-    let at = |lefts: &mut f32, wide: f32| {
-        let cell = Rect::from_min_size(Pos2::new(*lefts, inner.top()), vec2(wide, inner.height()));
-        *lefts += wide;
-        cell
-    };
-    for (size, room) in [
+    let even = [
         (12.0, SEGMENT_ROOM),
         (11.5, SEGMENT_ROOM),
         (11.5, SEGMENT_SNUG),
-    ] {
-        if widths(size).iter().all(|label| label + room * 2.0 <= equal) {
-            let mut left = inner.left();
-            return (
-                (0..options.len()).map(|_| at(&mut left, equal)).collect(),
-                size,
-            );
+    ]
+    .into_iter()
+    .find(|&(size, room)| fits(size, room))
+    .map(|(size, _)| size);
+    let spare = match even {
+        Some(_) => 0.0,
+        None => {
+            let labels = (options.iter())
+                .map(|(_, label)| label_width(ui, label, 11.5))
+                .sum::<f32>();
+            (inner.width() - labels).max(0.0) / count
         }
-    }
-    let labels = widths(11.5);
-    let spare = (inner.width() - labels.iter().sum::<f32>()).max(0.0) / count;
-    let mut left = inner.left();
-    let cells = (labels.iter())
-        .map(|label| at(&mut left, label + spare))
-        .collect();
-    (cells, 11.5)
+    };
+    let cells = options.iter().scan(inner.left(), move |left, (_, label)| {
+        let wide = match even {
+            Some(_) => equal,
+            None => label_width(ui, label, 11.5) + spare,
+        };
+        let cell = Rect::from_min_size(Pos2::new(*left, inner.top()), vec2(wide, inner.height()));
+        *left += wide;
+        Some(cell)
+    });
+    (cells, even.unwrap_or(11.5))
 }
 
 /// A continuous value with a filled track. Arrow keys nudge by one step.
@@ -1469,6 +1471,7 @@ mod tests {
             let rect = Rect::from_min_size(Pos2::ZERO, vec2(228.0, 28.0));
             let options = [(0u8, "Light"), (1, "Dark"), (2, "System")];
             let (cells, size) = segment_cells(ui, rect, &options);
+            let cells: Vec<Rect> = cells.collect();
             assert_eq!(size, 12.0);
             assert!(
                 cells
@@ -1479,6 +1482,7 @@ mod tests {
             let rect = Rect::from_min_size(Pos2::ZERO, vec2(136.0, 28.0));
             let options = [(0u8, "Ask"), (1, "Command")];
             let (cells, size) = segment_cells(ui, rect, &options);
+            let cells: Vec<Rect> = cells.collect();
             assert_eq!(size, 11.5);
             assert!(
                 (cells[0].left() - 2.0).abs() < 0.01 && (cells[1].right() - 134.0).abs() < 0.01
@@ -1493,6 +1497,7 @@ mod tests {
             let fit = segmented_fit(ui, &["Ask", "Command"]);
             let rect = Rect::from_min_size(Pos2::ZERO, vec2(fit, 28.0));
             let (cells, size) = segment_cells(ui, rect, &options);
+            let cells: Vec<Rect> = cells.collect();
             assert_eq!(size, 11.5);
             let room = (cells[1].width() - label(ui, "Command", 11.5)) / 2.0;
             assert!((room - SEGMENT_ROOM).abs() < 0.01, "Command has {room}");
@@ -1502,6 +1507,7 @@ mod tests {
             let rect = Rect::from_min_size(Pos2::ZERO, vec2(233.0, 28.0));
             let options = [(0u8, "0.25×"), (1, "0.5×"), (2, "1×"), (3, "2×"), (4, "4×")];
             let (cells, size) = segment_cells(ui, rect, &options);
+            let cells: Vec<Rect> = cells.collect();
             assert_eq!(size, 11.5);
             assert!(
                 cells

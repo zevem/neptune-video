@@ -511,9 +511,19 @@ pub fn arrow_choice(
     cells: &[eframe::egui::Id],
     selected: usize,
 ) -> Option<usize> {
+    arrow_among(ctx, cells.iter().copied(), selected)
+}
+
+/// [`arrow_choice`] among cells a choice names as it goes, so that one
+/// drawn in every frame keeps no list of them.
+pub fn arrow_among(
+    ctx: &eframe::egui::Context,
+    cells: impl ExactSizeIterator<Item = eframe::egui::Id> + Clone,
+    selected: usize,
+) -> Option<usize> {
     use eframe::egui::{Event, Key};
     let focused = ctx.memory(|memory| memory.focused())?;
-    let at = cells.iter().position(|cell| *cell == focused)?;
+    let at = cells.clone().position(|cell| cell == focused)?;
     let step = ctx.input(|input| {
         input.events.iter().fold(0_i32, |step, event| match event {
             Event::Key {
@@ -535,11 +545,12 @@ pub fn arrow_choice(
         return None;
     }
     let to = (at as i32 + step).clamp(0, cells.len() as i32 - 1) as usize;
+    let cell = cells.clone().nth(to)?;
     ctx.memory_mut(|memory| {
         // The keyboard goes to the next cell of this choice, not to
         // whatever egui finds nearest that way.
         memory.move_focus(eframe::egui::FocusDirection::None);
-        memory.request_focus(cells[to]);
+        memory.request_focus(cell);
     });
     (to != selected).then_some(to)
 }

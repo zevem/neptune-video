@@ -392,6 +392,52 @@ fn text_on_a_dark_ground_keeps_its_dark_weight_in_either_appearance() {
     }
 }
 
+/// A second strike follows its first in the layer, so that a shape painted
+/// over the words still covers both, and each strike is a text shape of its
+/// own rather than a list made for it.
+#[test]
+fn a_second_strike_keeps_its_place_under_what_covers_the_words() {
+    let ctx = egui::Context::default();
+    theme::install_fonts(&ctx);
+    theme::apply(&ctx, &Palette::new(Appearance::Light, Accent::Blue));
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let painter = ui.painter();
+        let from = first_shape(painter);
+        let font = theme::mono(15.0);
+        painter.text(
+            pos2(0.0, 0.0),
+            Align2::LEFT_TOP,
+            "under",
+            font.clone(),
+            Color32::WHITE,
+        );
+        painter.rect_filled(
+            Rect::from_min_size(pos2(0.0, 0.0), Vec2::splat(20.0)),
+            0,
+            Color32::BLACK,
+        );
+        painter.text(
+            pos2(0.0, 20.0),
+            Align2::LEFT_TOP,
+            "over",
+            font,
+            Color32::WHITE,
+        );
+        keep_text_weight(painter, from);
+    });
+    output.textures_delta.clear();
+    let order: Vec<String> = (output.shapes.iter())
+        .map(|clipped| match &clipped.shape {
+            Shape::Text(text) => text.galley.text().to_owned(),
+            Shape::Rect(_) => "rect".to_owned(),
+            Shape::Vec(_) => "list".to_owned(),
+            _ => "other".to_owned(),
+        })
+        .filter(|name| name != "other")
+        .collect();
+    assert_eq!(order, ["under", "under", "rect", "over", "over"]);
+}
+
 /// A badge over a picture says its words at their dark weight in either
 /// appearance, and what `on_dark` paints a glyph in is struck the same way,
 /// while the words beside it are not (spec §6).
