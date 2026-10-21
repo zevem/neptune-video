@@ -61,6 +61,8 @@ struct Bench {
     wait: Duration,
     titles: crate::titles::Titles,
     presets: std::sync::Arc<crate::presets::Presets>,
+    /// What the last frame painted.
+    shapes: Vec<egui::epaint::ClippedShape>,
 }
 
 const SHOT_START: &str = "Dissolve at the start of shot.mp4";
@@ -99,6 +101,7 @@ impl Bench {
             wait: Duration::ZERO,
             titles: Default::default(),
             presets: Default::default(),
+            shapes: Vec::new(),
         };
         let track_id = bench.track(TrackKind::Video);
         let mut ids = Vec::new();
@@ -305,6 +308,7 @@ impl Bench {
             );
         });
         output.textures_delta.clear();
+        self.shapes = std::mem::take(&mut output.shapes);
         self.wait = (output.viewport_output.values())
             .map(|viewport| viewport.repaint_delay)
             .min()
@@ -1503,4 +1507,45 @@ fn a_wheel_turned_with_ctrl_zooms_the_timeline_about_the_pointer() {
     bench.frame(vec![wheel(-60.0, Modifiers::NONE)]);
     settle(&mut bench);
     assert_eq!(bench.timeline.zoom, zoom);
+}
+
+#[test]
+fn a_chosen_dissolve_keeps_its_diagonal_in_a_narrow_ring() {
+    // §9.6 and P10 round 4: at the scale of a narrow window a second's
+    // dissolve is a ring a few points wide, which frames its lines. The
+    // diagonal runs across the ring, and gives up its glyph rather than be
+    // broken into stubs round it.
+    let (mut bench, shot, _) = Bench::new();
+    let second = Transition {
+        duration: seconds(1.0),
+        ..default_of(&[], DEFAULT_KIND)
+    };
+    bench.edit(set_command(shot, TransitionEdge::In, Some(second)));
+    bench.timeline.zoom = 33.0;
+    bench
+        .timeline
+        .mark(&mut bench.selection, shot, TransitionEdge::In);
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    let ink = egui::Color32::from_white_alpha(170);
+    // The length of each slanted line of the stage's ink, as much of it as
+    // its clip shows: only a dissolve draws one here.
+    let shown: Vec<f32> = (bench.shapes.iter())
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.color == ink && (points[0].x - points[1].x).abs() > 0.5 =>
+            {
+                let inside = (0..=200)
+                    .filter(|step| {
+                        let at = points[0].lerp(points[1], *step as f32 / 200.0);
+                        clipped.clip_rect.contains(at)
+                    })
+                    .count();
+                Some((points[1] - points[0]).length() * inside as f32 / 201.0)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown.len(), 1, "one whole diagonal, unbroken: {shown:?}");
+    assert!(shown[0] >= 15.0, "{shown:?}");
 }

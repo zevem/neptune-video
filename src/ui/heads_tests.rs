@@ -639,6 +639,37 @@ fn a_head_silenced_by_a_solo_says_so_where_the_mix_leaves_its_track_out() {
     assert!(bench.refused.is_empty());
 }
 
+#[test]
+fn a_head_stays_lit_while_its_menu_is_open() {
+    // P10 round 4: with the pointer on the menu, the head it acts on is
+    // still lit, as a row of Terminal's is while its menu is open.
+    let mut bench = Bench::new();
+    let lit = |bench: &Bench| {
+        let head = bench.head("Video 1");
+        (bench.filled.iter())
+            .any(|(rect, fill)| head.contains_rect(*rect) && *fill == bench.palette.hover)
+    };
+    bench.open_menu("Video 1");
+    let row = bench.find("Add track of this kind").expect("the menu").rect;
+    bench.frame(vec![Event::PointerMoved(row.center())]);
+    for _ in 0..10 {
+        bench.frame(Vec::new());
+    }
+    assert!(
+        bench.has("Add track of this kind"),
+        "the menu is still open"
+    );
+    assert!(lit(&bench), "the head of the menu's track is lit");
+    // Closed with a click away from it, the light fades.
+    let away = bench.head("Video 1").right_bottom() + vec2(300.0, -4.0);
+    bench.click_at(away);
+    for _ in 0..10 {
+        bench.frame(Vec::new());
+    }
+    assert!(!bench.has("Add track of this kind"));
+    assert!(!lit(&bench), "a closed menu leaves its head at rest");
+}
+
 // ---- Volume --------------------------------------------------------------
 
 #[test]

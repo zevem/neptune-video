@@ -2035,6 +2035,33 @@ fn a_chevron_takes_the_ink_of_its_tiles_name_in_the_frame_it_is_drawn() {
     bench.palette = Palette::new(Appearance::Light, Accent::default());
     bench.frame(Vec::new());
     assert_eq!(ink(&bench), bench.palette.fg.gamma_multiply(0.8));
+
+    // A selected tile without a band fills only its name's capsule with
+    // the accent, and the chevron before it stands on the body: the body's
+    // ink, in the light as in the dark.
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        let (mut bench, _) = unkeyed("voice.wav", MediaKind::Audio, true, TrackKind::Audio);
+        bench.palette = Palette::new(appearance, Accent::default());
+        bench.key(Key::U);
+        bench.frame(Vec::new());
+        let toggle = bench
+            .find("Keyframes of voice.wav")
+            .expect("the chevron")
+            .rect;
+        let glyph = (bench.shapes.iter())
+            .find_map(|clipped| match &clipped.shape {
+                Shape::Text(text) if toggle.contains(text.visual_bounding_rect().center()) => {
+                    Some(text.fallback_color)
+                }
+                _ => None,
+            })
+            .expect("the chevron's glyph");
+        assert_eq!(
+            glyph,
+            bench.palette.fg.gamma_multiply(0.8),
+            "{appearance:?}"
+        );
+    }
 }
 
 #[test]

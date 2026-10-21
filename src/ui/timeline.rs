@@ -1895,13 +1895,11 @@ fn track_heads(
         ui.painter()
             .rect_filled(card, radius, if target { p.pressed } else { p.control });
         if let Some(response) = &response {
-            // Lit while the pointer is anywhere on it, its toggles included.
-            let hover = controls::animate(
-                ui.ctx(),
-                id.with("hover"),
-                response.contains_pointer(),
-                theme::motion::HOVER,
-            );
+            // Lit while the pointer is anywhere on it, its toggles included,
+            // and while its menu is open, so the menu's track stays marked
+            // with the pointer on the menu.
+            let lit = response.contains_pointer() || response.context_menu_opened();
+            let hover = controls::animate(ui.ctx(), id.with("hover"), lit, theme::motion::HOVER);
             if hover > 0.0 {
                 ui.painter()
                     .rect_filled(card, radius, p.hover.gamma_multiply(hover));
@@ -3083,7 +3081,9 @@ fn draw_lanes(
     // with sound may be the empty row of its volume.
     let open = (state.keys.lane_rows(project)).and_then(|_| state.keys.lane_clip());
     // Each with the ink of the name it stands before, as its tile is drawn
-    // in this frame.
+    // in this frame. A selected tile without a band fills only its name's
+    // capsule with the accent, so its chevron stands on the body and takes
+    // the body's ink.
     let mut toggles: Vec<(ClipId, [Rect; 2], Color32)> = Vec::new();
     for (row, clip) in clips_drawn(rows, geometry) {
         let selected = selection.contains(clip.id);
@@ -3093,7 +3093,12 @@ fn draw_lanes(
         }
         let tile = clip_rect(geometry, row, clip.start, clip.end());
         if tile.width() >= LANE_TOGGLE_TILE {
-            let ink = name_ink(p, selected, banded(row.track, tile));
+            let banded = banded(row.track, tile);
+            let ink = if selected && !banded {
+                p.fg
+            } else {
+                name_ink(p, selected, banded)
+            };
             let chevron = [lane_toggle_hit(tile), lane_toggle(tile)];
             toggles.push((clip.id, chevron, ink));
         }
@@ -4846,25 +4851,28 @@ fn paint_clip(
             clipped.rect_filled(washed, round, p.accent.gamma_multiply(0.45 * opacity));
             chosen = ring;
         }
-        // The line starts and ends three points in from the marking's
+        // Within a ring the lines are framed by it, so the line runs across
+        // the frame and not the marking, which the ring may cut short.
+        let frame = ring.map_or(mark, |ring| ring.shrink(2.0));
+        // The line starts and ends three points in from the frame's
         // corners, so neither it nor its halo reaches past the round of the
         // tile's corner at the cut.
         let (dx, dy) = (
-            3.0f32.min(mark.width() / 2.0),
-            3.0f32.min(mark.height() / 2.0),
+            3.0f32.min(frame.width() / 2.0),
+            3.0f32.min(frame.height() / 2.0),
         );
         let (rising, end) = match edge {
             TransitionEdge::In => (
                 [
-                    mark.left_bottom() + vec2(dx, -dy),
-                    mark.right_top() + vec2(-dx, dy),
+                    frame.left_bottom() + vec2(dx, -dy),
+                    frame.right_top() + vec2(-dx, dy),
                 ],
                 mark.right() - 0.5,
             ),
             TransitionEdge::Out => (
                 [
-                    mark.right_bottom() + vec2(-dx, -dy),
-                    mark.left_top() + vec2(dx, dy),
+                    frame.right_bottom() + vec2(-dx, -dy),
+                    frame.left_top() + vec2(dx, dy),
                 ],
                 mark.left() + 0.5,
             ),
@@ -4877,19 +4885,22 @@ fn paint_clip(
         // for one: the marking's centre, or within a ring the point of the
         // line nearest the ring's, with a point to spare inside the ring.
         // The line breaks there, two points clear of the glyph's square, so
-        // the glyph is never struck through.
+        // the glyph is never struck through. Where the break would leave
+        // less than five points of line on either side, the line is drawn
+        // whole and the glyph left out: the diagonal is what says dissolve.
         let along = (rising[1] - rising[0]).normalized();
+        let gap = (6.0 + 2.0) / along.x.abs().max(along.y.abs());
         let center = ring.map_or(mark.center(), |ring| {
             rising[0] + along * (ring.center() - rising[0]).dot(along)
         });
         let glyph = mark.width() >= 24.0
             && mark.height() >= 14.0
+            && (rising[1] - rising[0]).length() >= 2.0 * gap + 10.0
             && ring.is_none_or(|ring| {
                 let room = ring.shrink(3.0);
                 room.contains_rect(Rect::from_center_size(center, Vec2::splat(12.0)))
             });
         let (parts, count) = if glyph {
-            let gap = (6.0 + 2.0) / along.x.abs().max(along.y.abs());
             let parts = [
                 [rising[0], center - along * gap],
                 [center + along * gap, rising[1]],
