@@ -2678,9 +2678,13 @@ fn draw_transport(ui: &mut Ui, rect: Rect, input: &Deck, actions: &mut Vec<Actio
             said = said.union(Rect::from_min_size(at, total.size()));
             painter.galley(at, total, total_ink);
         }
-        let name = format!("{} {now_text} of {total_text}", input.names);
+        // Named only when an assistive tool asks, so playback does not
+        // format the statement every frame.
         ui.interact(said, ui.id().with("transport-timecode"), Sense::hover())
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &name));
+            .widget_info(|| {
+                let name = format!("{} {now_text} of {total_text}", input.names);
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name)
+            });
     }
 
     // Transport in the centre, around play. A narrow viewer keeps the frame
