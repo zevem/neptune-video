@@ -485,3 +485,42 @@ fn escape_closes_an_open_list_before_it_leaves_a_search() {
     bench.escape();
     assert!(!bench.says("Results"), "then the search is left");
 }
+
+#[test]
+fn the_editing_and_agent_panes_name_each_control() {
+    let mut bench = Bench::new(Settings::default(), cache(0, 0));
+    // The names the controls always had, each with its role, so a reader
+    // finds them as before the panes were split.
+    for (pane, controls) in [
+        (
+            "Editing",
+            &[
+                ("Snap while dragging", Role::CheckBox),
+                ("Keep a recovery copy", Role::CheckBox),
+            ][..],
+        ),
+        (
+            "Agent",
+            &[
+                ("Claude", Role::RadioButton),
+                ("Codex", Role::RadioButton),
+                ("Default", Role::RadioButton),
+                ("Low", Role::RadioButton),
+                ("Medium", Role::RadioButton),
+                ("High", Role::RadioButton),
+                ("As it works", Role::RadioButton),
+                ("For review", Role::RadioButton),
+                ("Add folder…", Role::Button),
+            ][..],
+        ),
+    ] {
+        let at = bench.get(pane).rect.center();
+        bench.click(at);
+        assert_eq!(bench.get(pane).selected, Some(true), "{pane}");
+        for &(name, role) in controls {
+            assert_eq!(bench.get(name).role, role, "{pane}: {name}");
+        }
+    }
+    // The agent's model is a field named for what it holds.
+    assert!(!bench.all("Model").is_empty());
+}

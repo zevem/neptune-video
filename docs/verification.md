@@ -5,6 +5,32 @@ editing evidence. Production readiness, CapCut/Palmier Pro parity and extreme
 performance remain goals requiring the gates below.
 Neptune Terminal was inspected read-only as the stack and engineering reference.
 
+## Interface revamp: drag, playback and scrubbing recordings (2026-10-21)
+
+The revamp's still captures cannot show a drag, playback or a scrub, so
+these were recorded natively. The host was Linux 7.0 x86_64 (i9-13900HX)
+with a private Xvfb display at window scale 1.0 and lavapipe software
+Vulkan. The build was the desktop `dev` profile of branch
+`t3/revamp-ui-neptune-design` at `32a42f3`. Each recording opened a fresh
+copy of a fixture project with task-owned settings. FFmpeg x11grab recorded
+the window at 30 fps with the pointer drawn while XTest drove the input. The
+live agent protocol read back each result. The recordings are in
+[`recordings/`](../artifacts/interface-revamp-2026-10-21/recordings), in
+`1440x900-dark/` and `760x560-light/`, with contact sheets in `frames/` and
+the readings in `recordings.json`.
+
+| Recording | What it shows | Read back, 1440x900 dark and 760x560 light |
+| --- | --- | --- |
+| `*-clip-drag-snap.mp4` | A 1–5 s title is carried right by its body past the voiceover's edges. It is held 4 px short of the 4 s marker, where the snap guide crosses the ruler and lanes, then dropped. Ctrl+Z follows. `*-guide.png` is a frame taken while the title is held | Start 4.000000 s after the drop, which only a snap reaches from 4 px short. Start 1.000000 s after Ctrl+Z |
+| `*-playback-scrub.mp4` | Space plays the timeline for 3 s. The ruler is scrubbed from 2 s to 12 s and back to 6 s. A library card's Preview opens the source monitor. Its "Source position" bar is scrubbed and Space plays it for 2 s, then Escape | After 3.0 s of play the playhead is at 2.99 s and 3.01 s. The scrub ends on 6 s. The source monitor opens and closes, and the timeline's playhead stays at 6 s |
+
+Sound went to an ALSA `file` output that a reader drained in real time,
+because the harness's plain `null` output let the device clock reach the
+end of the 16 s fixture about a second after Space. Nothing was heard. These
+recordings show the interface's feedback on a software renderer. They do
+not show real-time playback on a GPU, sound output, frame pacing, other
+platforms or the person's 1.5× display.
+
 ## Playback right after opening (2026-10-19)
 
 The [task report](../artifacts/startup-playback-2026-10-19/REPORT.md) records
