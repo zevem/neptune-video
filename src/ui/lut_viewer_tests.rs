@@ -222,6 +222,8 @@ impl Stage {
                     looping: false,
                     media: Some(service),
                     record: Default::default(),
+                    library: true,
+                    quality: Default::default(),
                 },
                 &mut actions,
             );

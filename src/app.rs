@@ -6266,6 +6266,8 @@ impl App {
                     looping: self.looping,
                     media: self.media.as_ref(),
                     record: self.recording.view(),
+                    library: show_library,
+                    quality: self.settings.preview.quality,
                 },
                 actions,
             ),

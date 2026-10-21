@@ -14,9 +14,9 @@ use crate::{
     theme::{self, Accent, Appearance, Palette},
     ui::{Action, ClipDraft, Selection, Transport},
 };
-use editor_core::{Asset, FrameRate, MediaKind, Project, Time};
-use eframe::egui::{self, Pos2, Rect, Shape, Vec2, vec2};
-use std::path::PathBuf;
+use editor_core::{Asset, Clip, FrameRate, MediaKind, Project, Time};
+use eframe::egui::{self, Pos2, Rect, Shape, Vec2, pos2, vec2};
+use std::{path::PathBuf, sync::Arc};
 
 /// The viewer's pane in an 800×600 window with the library and the inspector
 /// both shown and the library at its widest, as in the capture the issue
@@ -37,6 +37,9 @@ struct Painted {
     discs: Vec<(Pos2, f32, egui::Color32)>,
     /// Laid-out text and where it is.
     texts: Vec<(String, Rect)>,
+    /// What accessibility is told: each name, where it is, and whether it
+    /// can be used.
+    names: Vec<(String, Rect, bool)>,
 }
 
 impl Painted {
@@ -65,6 +68,18 @@ impl Painted {
         );
         Some(first.1)
     }
+
+    /// Where the one control or label named `wanted` is, and whether it
+    /// can be used.
+    fn named(&self, wanted: &str) -> Option<(Rect, bool)> {
+        let mut found = self.names.iter().filter(|(name, ..)| name == wanted);
+        let (_, rect, enabled) = found.next()?;
+        assert!(
+            found.next().is_none(),
+            "FIXTURE: \"{wanted}\" is named more than once"
+        );
+        Some((*rect, *enabled))
+    }
 }
 
 /// A pane the viewer or the source monitor is painted in.
@@ -89,6 +104,15 @@ impl Pane {
         let palette = Palette::new(Appearance::Dark, Accent::default());
         theme::install_fonts(&ctx);
         theme::apply(&ctx, &palette);
+        ctx.enable_accesskit();
+        // FIXTURE: a title ten seconds long, so the timeline has something
+        // to play; an empty one offers no play (spec §5.3).
+        let mut project = Project::new("Transport");
+        Arc::make_mut(&mut project.tracks[2]).clips.push(Clip::text(
+            "Transport",
+            Time::ZERO,
+            Time::from_seconds(10.0),
+        ));
         let mut asset = Asset::new(
             PathBuf::from("/media/transport.mp4"),
             MediaKind::Video,
@@ -102,7 +126,7 @@ impl Pane {
             size,
             deck,
             palette,
-            project: Project::new("Transport"),
+            project,
             asset,
             textures: Textures::default(),
             viewer: ViewerState::default(),
@@ -143,6 +167,8 @@ impl Pane {
                         looping: false,
                         media: None,
                         record: self.record,
+                        library: true,
+                        quality: Default::default(),
                     },
                     &mut actions,
                 ),
@@ -168,6 +194,21 @@ impl Pane {
         let mut painted = Painted::default();
         for clipped in &output.shapes {
             painted.collect(&clipped.shape);
+        }
+        if let Some(update) = &output.platform_output.accesskit_update {
+            painted.names = (update.nodes.iter())
+                .filter_map(|(_, node)| {
+                    let bounds = node.bounds()?;
+                    Some((
+                        node.label().or_else(|| node.value())?.to_owned(),
+                        Rect::from_min_max(
+                            pos2(bounds.x0 as f32, bounds.y0 as f32),
+                            pos2(bounds.x1 as f32, bounds.y1 as f32),
+                        ),
+                        !node.is_disabled(),
+                    ))
+                })
+                .collect();
         }
         // No renderer takes this pass's texture changes, the font atlas among
         // them, and epaint refuses to drop them unless told it is meant.
@@ -214,23 +255,27 @@ impl Pane {
         Rect::from_min_size(Pos2::ZERO, self.size)
     }
 
-    /// Where the play disc was painted: the one large disc in the accent.
+    /// Where the play control is: the button named for what it does now.
+    /// Its disc is neutral, so it is found by its name (spec §4.4.2).
     fn play(&self, painted: &Painted) -> Rect {
-        let mut found = painted
-            .discs
-            .iter()
-            .filter(|(_, radius, fill)| *radius >= 12.0 && *fill == self.palette.accent);
-        let Some((centre, radius, _)) = found.next() else {
+        let named = ["Play (Space)", "Pause (Space)"]
+            .into_iter()
+            .find_map(|name| painted.named(name));
+        let Some((rect, _)) = named else {
             panic!(
                 "ISSUE14: no play control is painted in a pane of {:?}",
                 self.size
             );
         };
+        // Its disc fills it, and is not the accent: nothing is at rest.
+        let disc = (painted.discs.iter())
+            .find(|(centre, radius, _)| *radius >= 12.0 && centre.distance(rect.center()) < 0.5);
         assert!(
-            found.next().is_none(),
-            "FIXTURE: more than one disc looks like the play control"
+            disc.is_some_and(|(_, radius, fill)| *radius * 2.0 >= rect.width() - 0.5
+                && *fill != self.palette.accent),
+            "play at {rect:?} is not a neutral disc: {disc:?}"
         );
-        Rect::from_center_size(*centre, Vec2::splat(radius * 2.0))
+        rect
     }
 
     /// Where the speed control was painted: its place around what it reads,
@@ -389,12 +434,13 @@ fn play_reads_as_pause_while_playing_and_still_asks_to_toggle() {
     });
 }
 
-/// Where the record control's icon was painted, if it was: the one
-/// microphone (`Icon::Speech`, Tabler's `microphone` glyph) in the pane.
+/// Where the record control's disc was painted, if it was: the one
+/// `Icon::Disc` (Tabler's filled `circle` glyph) in the pane, which took the
+/// microphone's place (spec §4.4.3).
 fn record_disc(_pane: &Pane, painted: &Painted) -> Option<Pos2> {
-    let mut found = (painted.texts.iter()).filter(|(text, _)| text == "\u{eaf0}");
+    let mut found = (painted.texts.iter()).filter(|(text, _)| text == "\u{f671}");
     let first = found.next().map(|(_, rect)| rect.center());
-    assert!(found.next().is_none(), "FIXTURE: more than one microphone");
+    assert!(found.next().is_none(), "FIXTURE: more than one record disc");
     first
 }
 
@@ -467,4 +513,55 @@ fn a_running_take_shows_its_time_in_speeds_place_and_a_press_stops_it() {
         let (asked, _) = pane.click(disc);
         assert!(asked.is_empty(), "at {size:?}: closing asked for {asked:?}");
     }
+}
+
+#[test]
+fn the_timecode_is_read_out_with_the_duration() {
+    // Spec §4.4.1 and §7.2: the timecode is painted and named as one label.
+    for (deck, name) in [
+        (Deck::Timeline, "Playhead 00:00:00:00 of 00:00:10:00"),
+        (Deck::Source, "Source 00:00:00:00 of 00:00:10:00"),
+    ] {
+        let mut pane = Pane::new(deck, PANES[2]);
+        let painted = pane.rest();
+        let Some((label, _)) = painted.named(name) else {
+            panic!("{deck:?}: no label \"{name}\" among {:?}", painted.names);
+        };
+        let Some(timecode) = painted.text("00:00:00:00") else {
+            panic!("{deck:?}: no timecode painted");
+        };
+        assert!(
+            label.contains_rect(timecode.shrink(0.5)),
+            "{deck:?}: the label {label:?} is not where the timecode {timecode:?} is"
+        );
+    }
+}
+
+#[test]
+fn an_empty_timeline_offers_nothing_to_play() {
+    // Spec §5.3: play and the frame steps wait for something to play.
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    pane.project = Project::new("Empty");
+    let painted = pane.rest();
+    for name in [
+        "Play (Space)",
+        "Previous frame (←)",
+        "Next frame (→)",
+        "Go to start (Home)",
+        "Go to end (End)",
+    ] {
+        let Some((rect, enabled)) = painted.named(name) else {
+            panic!("no \"{name}\" among {:?}", painted.names);
+        };
+        assert!(!enabled, "\"{name}\" can be used on an empty timeline");
+        let (asked, _) = pane.click(rect.center());
+        assert!(asked.is_empty(), "a press on {name} asked for {asked:?}");
+    }
+    assert!(
+        painted
+            .named("No media in the timeline. Import media or drag clips from the library.")
+            .is_some(),
+        "the stage does not say the timeline is empty: {:?}",
+        painted.names
+    );
 }

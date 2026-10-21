@@ -6,7 +6,7 @@
 //! picture drawn steadied, in fractions of the source frame: a box drawn
 //! over something on the canvas is the place of the frame that is drawn
 //! there.
-use super::{Placed, ViewerState};
+use super::{Placed, ViewerState, frame, prompt};
 use crate::{
     compose,
     theme::{self, Palette},
@@ -115,43 +115,35 @@ fn inside(region: &TrackRegion, at: [f32; 2]) -> bool {
     (0..2).all(|axis| (at[axis] - region.center[axis]).abs() <= region.size[axis] * 0.5)
 }
 
-fn outline(painter: &egui::Painter, points: Vec<Pos2>, color: Color32) {
-    painter.add(Shape::closed_line(
-        points.clone(),
-        Stroke::new(3.0, Color32::from_black_alpha(110)),
-    ));
-    painter.add(Shape::closed_line(points, Stroke::new(1.5, color)));
-}
-
 /// The stage while a region is chosen on it: the box is drawn on its clip's
 /// picture, a drag inside it moves it and a drag anywhere else on the
-/// picture draws a new one. Nothing is selected or moved meanwhile.
+/// picture draws a new one. Nothing is selected or moved meanwhile. Returns
+/// where the stage says what to do.
 pub(super) fn choose_region(
     ui: &mut Ui,
     stage: Rect,
     picture: Option<Picture>,
     p: &Palette,
     state: &mut ViewerState,
-) {
+) -> Option<Rect> {
     const NAME: &str = "Drag on the picture to draw the box to track";
-    let Some(region) = state.region else { return };
+    let region = state.region?;
     let response = ui.interact(stage, Id::new("viewer-stage"), Sense::click_and_drag());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, NAME));
-    let painter = ui.painter_at(stage);
-    painter.text(
-        stage.center_top() + vec2(0.0, 3.0),
-        Align2::CENTER_TOP,
+    let said = prompt(
+        ui,
+        stage,
+        p,
         if picture.is_some() {
             NAME
         } else {
             "The clip is not on screen at the playhead"
         },
-        theme::regular(11.0),
-        p.muted,
     );
+    let painter = ui.painter_at(stage);
     let Some(picture) = picture else {
         state.region_hold = None;
-        return;
+        return Some(said);
     };
     let pointer = ui.input(|i| i.pointer.latest_pos());
     if response.drag_started()
@@ -199,14 +191,16 @@ pub(super) fn choose_region(
         [x + w, y + h],
         [x - w, y + h],
     ];
-    outline(
+    frame(
         &painter,
-        corners.map(|corner| picture.to_screen(corner)).to_vec(),
+        corners.map(|corner| picture.to_screen(corner)),
         p.accent,
+        p,
     );
     let centre = picture.to_screen(shown.center);
-    painter.circle_filled(centre, 3.5, Color32::from_black_alpha(110));
+    painter.circle_filled(centre, 3.5, p.frame_halo());
     painter.circle_filled(centre, 2.5, p.accent);
+    Some(said)
 }
 
 /// The paths of the trackers the selected clip has to do with, on the
@@ -245,7 +239,7 @@ pub(super) fn paths(
         if points.len() > 1 {
             painter.add(Shape::line(
                 points.clone(),
-                Stroke::new(3.0, Color32::from_black_alpha(90)),
+                Stroke::new(3.0, p.frame_halo()),
             ));
             painter.add(Shape::line(points, Stroke::new(1.5, color)));
         }
@@ -253,9 +247,10 @@ pub(super) fn paths(
             continue;
         };
         let at = picture.to_screen(now.center);
-        painter.circle_filled(at, 5.5, Color32::from_black_alpha(110));
+        let (fill, _) = p.handle();
+        painter.circle_filled(at, 5.5, p.frame_halo());
         painter.circle_filled(at, 4.0, color);
-        painter.circle_stroke(at, 4.0, Stroke::new(1.0, Color32::WHITE));
+        painter.circle_stroke(at, 4.0, Stroke::new(1.0, fill));
         let label = at + vec2(9.0, -9.0);
         painter.text(
             label + vec2(1.0, 1.0),
