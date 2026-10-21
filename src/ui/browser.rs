@@ -284,8 +284,8 @@ pub fn show(
                         vec2(tile_width, tile_height),
                     );
                     column = (column + 1) % columns;
-                    // Every card is named, so that each can be found and
-                    // reached; only those in view are drawn.
+                    // Every card is named, so that each can be found; one
+                    // reached from the keyboard comes into view.
                     tile(ui, cell, *entry, state, selection, input, enter, actions);
                 }
             });
@@ -316,6 +316,11 @@ fn tile(
     response.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, picked, name));
 
     let picture = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - NAME_HEIGHT));
+    // Tab walks through the cards out of view too: the one it reaches is
+    // scrolled to with room for its ring, and drawn from the next frame.
+    if response.gained_focus() {
+        ui.scroll_to_rect(rect.expand(8.0), None);
+    }
     if ui.is_rect_visible(rect.expand(6.0)) {
         library::card_states(ui, p, rect, picture, &response, picked);
         let painter = ui.painter();
@@ -567,7 +572,11 @@ fn transition_swatch(painter: &Painter, rect: Rect, radius: u8, kind: Transition
             sample_in(painter, rect.translate(half), rect, radius, &grey);
             let incoming = rect.translate(half - size * towards);
             sample_in(painter, incoming, rect, radius, &steel);
-            arrow(incoming.intersect(rect).center() + towards * 2.5, towards);
+            // On a disc of its own, as the play offer is, so that it reads
+            // over whatever of the frame it lands on.
+            let middle = incoming.intersect(rect).center();
+            painter.circle_filled(middle, 9.0, Color32::from_black_alpha(140));
+            arrow(middle + towards * 2.5, towards);
         }
         K::WipeLeft | K::WipeRight | K::WipeUp | K::WipeDown => {
             from(painter, rect);
@@ -631,8 +640,11 @@ fn effect_swatch(painter: &Painter, rect: Rect, radius: u8, kind: EffectKind) {
     match kind {
         K::Glow => {
             frame();
-            for (reach, alpha) in [(0.56, 0.08), (0.4, 0.14), (0.28, 0.24)] {
-                painter.circle_filled(sun, unit * reach, white(alpha));
+            // Many faint discs, one over another: a halo that falls away
+            // smoothly rather than in rings.
+            for step in 0..8 {
+                let reach = 0.6 - step as f32 * 0.045;
+                painter.circle_filled(sun, unit * reach, white(0.055));
             }
         }
         K::Grain => {
@@ -655,14 +667,32 @@ fn effect_swatch(painter: &Painter, rect: Rect, radius: u8, kind: EffectKind) {
         }
         K::Vignette => {
             frame();
-            for (inset, alpha) in [(0.0, 0.55), (0.12, 0.32), (0.24, 0.16)] {
-                painter.rect_stroke(
-                    rect.shrink(unit * inset),
-                    radius,
-                    Stroke::new(unit * 0.22, black(alpha)),
-                    StrokeKind::Inside,
-                );
+            // A falloff, not bands: darkest at the edge and clear three
+            // tenths of the way in. Light enough at the edge that the card
+            // keeps its outline where its neighbours have theirs.
+            // Round the well's own outline, each point drawn in towards
+            // the middle for the clear edge.
+            let mut outline = Vec::new();
+            egui::epaint::tessellator::path::rounded_rectangle(
+                &mut outline,
+                rect,
+                CornerRadius::same(radius).into(),
+            );
+            let middle = rect.center();
+            let mut mesh = egui::Mesh::default();
+            for point in &outline {
+                mesh.colored_vertex(*point, black(0.5));
+                mesh.colored_vertex(middle + (*point - middle) * 0.4, Color32::TRANSPARENT);
             }
+            let count = outline.len() as u32;
+            for index in 0..count {
+                let (o, i) = (index * 2, index * 2 + 1);
+                let next = (index + 1) % count;
+                let (next_o, next_i) = (next * 2, next * 2 + 1);
+                mesh.add_triangle(o, next_o, next_i);
+                mesh.add_triangle(o, next_i, i);
+            }
+            painter.add(Shape::mesh(mesh));
         }
         K::Glitch => {
             frame();

@@ -880,6 +880,35 @@ fn with_no_caption_track_the_tab_says_what_captions_are_and_starts_one() {
 }
 
 #[test]
+fn a_short_library_shows_every_way_to_start_captions_above_its_footer() {
+    let mut bench = Bench::new();
+    // The library of a window of 760 by 560.
+    bench.size = vec2(236.0, 330.0);
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    let foot = bench.size.y - metrics::PANE_FOOTER;
+    let mut widths = Vec::new();
+    for action in [
+        "Generate from speech",
+        "New caption track",
+        "Import SRT or VTT…",
+    ] {
+        let rect = bench.find(action).expect("offered").rect;
+        assert!(
+            rect.bottom() <= foot,
+            "{action} at {rect:?} is under the footer"
+        );
+        widths.push(rect.width());
+    }
+    // They stand as one column.
+    assert!(
+        widths.iter().all(|width| (width - widths[0]).abs() < 0.5),
+        "{widths:?}"
+    );
+    assert!(bench.says("one track for each language"));
+}
+
+#[test]
 fn a_caption_is_added_at_the_playhead_and_typed_into_the_list() {
     let mut bench = Bench::new();
     let (command, track) = new_track(bench.editor.project(), "en");

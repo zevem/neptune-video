@@ -26,8 +26,8 @@ use editor_core::{
     title,
 };
 use eframe::egui::{
-    self, Align, CornerRadius, Id, Key, KeyboardShortcut, Layout, Modifiers, Rect, Sense, Stroke,
-    StrokeKind, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
+    self, Align, Color32, CornerRadius, Id, Key, KeyboardShortcut, Layout, Modifiers, Rect, Sense,
+    Stroke, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 use std::{path::Path, sync::Arc};
 
@@ -640,9 +640,9 @@ pub struct CaptionsTabInput<'a> {
     pub speech: SpeechInput<'a>,
 }
 
-/// A select as wide as `rect`, as the foundation draws one: what is
-/// chosen, and a chevron, outlined at rest and pressed under the pointer
-/// and while its menu is open.
+/// The foundation's select, filling `rect`: what is chosen, and a chevron,
+/// outlined at rest and pressed under the pointer and while its menu is
+/// open.
 fn chooser(
     ui: &mut Ui,
     p: &Palette,
@@ -651,43 +651,9 @@ fn chooser(
     name: &str,
     shown: &str,
 ) -> egui::Response {
-    let response = ui.interact(rect, id, Sense::click());
-    response.widget_info(|| {
-        let mut info = WidgetInfo::labeled(WidgetType::ComboBox, ui.is_enabled(), name);
-        info.current_text_value = Some(shown.to_owned());
-        info
-    });
-    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
-    let radius = metrics::CONTROL_RADIUS;
-    let painter = ui.painter();
-    if response.hovered() || open {
-        painter.rect_filled(rect, radius, p.pressed);
-    }
-    painter.rect_stroke(rect, radius, p.hairline(), StrokeKind::Inside);
-    if response.has_focus() {
-        controls::focus_ring(painter, rect, radius, *p);
-    }
-    icons::paint(
-        painter,
-        Rect::from_center_size(
-            pos2(rect.right() - 16.0, rect.center().y),
-            Vec2::splat(12.0),
-        ),
-        Icon::ChevronDown,
-        p.secondary,
-    );
-    controls::galley_at(
-        painter,
-        pos2(rect.left() + 10.0, rect.center().y),
-        controls::elided(
-            painter,
-            shown,
-            theme::regular(13.0),
-            p.fg,
-            rect.width() - 38.0,
-        ),
-    );
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    controls::place(ui, rect, Layout::left_to_right(Align::Center), id, |ui| {
+        kit::select(ui, p, id, shown, name, rect.size())
+    })
 }
 
 /// The languages to choose from, filtered by what is typed, and a typed
@@ -1097,43 +1063,110 @@ fn empty(
     state: &mut CaptionsTabState,
     actions: &mut Vec<Action>,
 ) {
+    const HINT: &str = "Captions are titles on a caption track, one track for each language. \
+        Generate them from what is said, import a subtitle file, or start a track and type them.";
+    const ACTIONS: [&str; 3] = [
+        "Generate from speech",
+        "New caption track",
+        "Import SRT or VTT…",
+    ];
+    let width = area.width();
+    let wrap = (width - 16.0).clamp(40.0, 260.0);
+    // The three ways in stand as one column, as wide as the widest.
+    let painter = ui.painter();
+    let column = ACTIONS
+        .iter()
+        .map(|words| {
+            painter
+                .layout_no_wrap(
+                    (*words).to_owned(),
+                    theme::medium(13.0),
+                    Color32::PLACEHOLDER,
+                )
+                .size()
+                .x
+                + 32.0
+        })
+        .fold(72.0, f32::max)
+        .min(width - 16.0);
+    let title = painter.layout_no_wrap(
+        "No captions yet".to_owned(),
+        theme::medium(14.0),
+        Color32::PLACEHOLDER,
+    );
+    let hint = painter.layout(
+        HINT.to_owned(),
+        theme::regular(12.0),
+        Color32::PLACEHOLDER,
+        wrap,
+    );
+    let buttons = metrics::CONTROL_HEIGHT * 3.0 + 16.0;
+    let block = 28.0 + 8.0 + title.size().y + 4.0 + hint.size().y + 12.0 + buttons;
+    // Where there is room, the block stands as the other empty states do,
+    // its middle two fifths of the way down. Where there is not, the glyph
+    // goes and the actions come before the words that explain them, so
+    // that they are not below the footer.
+    let roomy = block + 24.0 <= area.height();
+
     let mut body = ui.new_child(egui::UiBuilder::new().max_rect(area));
     body.set_clip_rect(area.intersect(ui.clip_rect()));
-    let width = area.width();
-    egui::ScrollArea::vertical()
+    let output = egui::ScrollArea::vertical()
         .id_salt("captions-empty")
         .auto_shrink([false, false])
         .show(&mut body, |ui| {
             ui.set_width(width);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            ui.add_space((area.height() * 0.16).clamp(16.0, 120.0));
+            let top = if roomy {
+                (area.height() * 0.4 - block * 0.5).max(12.0)
+            } else {
+                12.0
+            };
+            ui.add_space(top);
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
-                let (glyph, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
-                icons::paint(ui.painter(), glyph, Icon::Captions, p.muted);
-                ui.add_space(8.0);
+                if roomy {
+                    let (glyph, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
+                    icons::paint(ui.painter(), glyph, Icon::Captions, p.muted);
+                    ui.add_space(8.0);
+                }
                 ui.label(
                     egui::RichText::new("No captions yet")
                         .font(theme::medium(14.0))
                         .color(p.fg),
                 );
-                ui.add_space(4.0);
-                ui.scope(|ui| {
-                    ui.set_max_width((width - 16.0).clamp(40.0, 260.0));
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(
-                                "Captions are titles on a caption track, one track for each language. Generate them from what is said, import a subtitle file, or start a track and type them.",
+                let hint = |ui: &mut Ui| {
+                    ui.scope(|ui| {
+                        ui.set_max_width(wrap);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(HINT)
+                                    .font(theme::regular(12.0))
+                                    .color(p.secondary),
                             )
-                            .font(theme::regular(12.0))
-                            .color(p.secondary),
-                        )
-                        .halign(Align::Center)
-                        .wrap(),
-                    );
-                });
+                            .halign(Align::Center)
+                            .wrap(),
+                        );
+                    });
+                };
+                if roomy {
+                    ui.add_space(4.0);
+                    hint(ui);
+                }
                 ui.add_space(12.0);
-                let secondary = controls::ButtonKind::Secondary;
-                if controls::button(ui, *p, "Generate from speech", secondary)
+                let button = |ui: &mut Ui, words: &str| {
+                    let response = ui
+                        .allocate_ui_with_layout(
+                            vec2(column, metrics::CONTROL_HEIGHT),
+                            Layout::top_down_justified(Align::Center),
+                            |ui| controls::button(ui, *p, words, controls::ButtonKind::Secondary),
+                        )
+                        .inner;
+                    // Reached by Tab, a button below the fold comes into view.
+                    if response.gained_focus() {
+                        response.scroll_to_me(None);
+                    }
+                    response
+                };
+                if button(ui, ACTIONS[0])
                     .on_hover_text("Write captions from what is said on the timeline")
                     .clicked()
                 {
@@ -1141,7 +1174,7 @@ fn empty(
                     actions.push(Action::LookAtModels);
                 }
                 ui.add_space(8.0);
-                let start = controls::button(ui, *p, "New caption track", secondary);
+                let start = button(ui, ACTIONS[1]);
                 egui::Popup::menu(&start)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show(|ui| {
@@ -1152,12 +1185,17 @@ fn empty(
                         }
                     });
                 ui.add_space(8.0);
-                if controls::button(ui, *p, "Import SRT or VTT…", secondary).clicked() {
+                if button(ui, ACTIONS[2]).clicked() {
                     actions.push(Action::ImportCaptions);
+                }
+                if !roomy {
+                    ui.add_space(12.0);
+                    hint(ui);
                 }
                 ui.add_space(12.0);
             });
         });
+    library::fade_when_clipped(ui, p, &output);
 }
 
 /// The rows of `shown` in `list`, the one under the playhead marked and

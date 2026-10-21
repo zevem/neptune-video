@@ -44,10 +44,11 @@ pub(super) const TRAILING: f32 = 6.0;
 /// The search row under the tab strip, and the kinds row under it.
 const SEARCH: f32 = 28.0;
 const KINDS: f32 = 22.0;
-/// A card's least width with the gap after it: two columns of 147 in the
-/// 302 points of a library at its default width, and still two in one of
-/// 300; three from 456.
-const CARD_PITCH: f32 = 144.0;
+/// A card's least width, beside others: three of 146⅔ fill 456 points.
+/// Two columns of 147 fill the 302 points of a library at its default
+/// width, and two are kept down to the 286 of a library of 300.
+const CARD_LEAST: f32 = (456.0 - 2.0 * CARD_GAP) / 3.0;
+const TWO_COLUMNS: f32 = 286.0;
 pub(super) const CARD_GAP: f32 = 8.0;
 /// Between two rows of cards: the hover of one does not meet the next.
 pub(super) const CARD_ROW_GAP: f32 = 10.0;
@@ -870,9 +871,11 @@ fn footer_row(
 /// comes, its left edge and middle at `left_center`. Its name says all it
 /// opens.
 fn import_button(ui: &mut Ui, p: &Palette, left_center: egui::Pos2) -> Response {
-    let words = ui
-        .painter()
-        .layout_no_wrap("Import…".to_owned(), theme::medium(12.5), p.fg);
+    let words = ui.painter().layout_no_wrap(
+        "Import…".to_owned(),
+        theme::medium(12.5),
+        Color32::PLACEHOLDER,
+    );
     let rect = Rect::from_min_size(
         pos2(left_center.x, left_center.y - metrics::CONTROL_HEIGHT * 0.5),
         vec2(31.0 + words.size().x + 12.0, metrics::CONTROL_HEIGHT),
@@ -1039,6 +1042,12 @@ fn media(
     let output = egui::ScrollArea::vertical()
         .id_salt("library")
         .auto_shrink([false, false])
+        // The last row's rings and fills reach past its slot: room for them
+        // at the foot, so that the list's end does not cut them.
+        .content_margin(egui::Margin {
+            bottom: 8,
+            ..egui::Margin::ZERO
+        })
         .show_rows(&mut area, pitch, rows, |ui, range| {
             for row in range {
                 let (row_rect, _) =
@@ -1075,9 +1084,12 @@ fn media(
 }
 
 /// The columns of cards in `width`, and each card's width: as many of at
-/// least 136 as fit with the gaps between them.
+/// least [`CARD_LEAST`] as fit with the gaps between them, and two from
+/// [`TWO_COLUMNS`].
 pub(super) fn card_columns(width: f32) -> (usize, f32) {
-    let columns = ((width + CARD_GAP) / CARD_PITCH).floor().max(1.0) as usize;
+    // A hair over, so that 456 is three and not two and a rounding.
+    let fit = ((width + CARD_GAP) / (CARD_LEAST + CARD_GAP) + 1e-4).floor() as usize;
+    let columns = fit.max(if width >= TWO_COLUMNS { 2 } else { 1 });
     let cell = (width - CARD_GAP * (columns as f32 - 1.0)) / columns as f32;
     (columns, cell)
 }
@@ -1102,11 +1114,8 @@ pub(super) fn heading(ui: &mut Ui, p: &Palette, text: &str) {
     let words = ui
         .painter()
         .layout_no_wrap(text.to_owned(), theme::medium(11.5), p.secondary);
-    let said = controls::galley_at(
-        ui.painter(),
-        pos2(rect.left() + 4.0, rect.center().y),
-        words,
-    );
+    // On the cards' left edge: they have no inset of their own to meet.
+    let said = controls::galley_at(ui.painter(), pos2(rect.left(), rect.center().y), words);
     ui.interact(said, ui.id().with(("heading", text)), Sense::hover())
         .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
 }
@@ -1190,6 +1199,10 @@ fn cover(painter: &Painter, well: Rect, radius: u8, texture: TextureId, size: Ve
 /// Where in the folders the Media tab is: "Media", then each folder down
 /// to the one in view, each but the last a quiet button that goes there and
 /// takes media let go on it. Gives the place one asked to go to.
+///
+/// The folder in view is given its room first, then the way back to the
+/// top, then the folders between, nearest first. Those that are left
+/// without room are shown as one "…".
 fn breadcrumb(
     ui: &mut Ui,
     p: &Palette,
@@ -1198,6 +1211,9 @@ fn breadcrumb(
     folder: FolderId,
     actions: &mut Vec<Action>,
 ) -> Option<Option<FolderId>> {
+    const PAD: f32 = 12.0;
+    const CHEVRON: f32 = 12.0;
+    const GAP: f32 = 2.0;
     let mut chain: Vec<&MediaFolder> = Vec::new();
     let mut at = project.folders.get(&folder);
     // A folder is never its own parent, but a damaged file is not trusted
@@ -1207,37 +1223,105 @@ fn breadcrumb(
         at = found.parent_id.and_then(|id| project.folders.get(&id));
     }
     chain.reverse();
-    let segments: Vec<(Option<FolderId>, &str)> = std::iter::once((None, "Media"))
-        .chain(
-            chain
-                .iter()
-                .map(|folder| (Some(folder.id), folder.name.as_str())),
-        )
-        .collect();
+    // The top reads "Media", as its tab does, and is named as it always
+    // was, so the two are not confused.
+    let segments: Vec<(Option<FolderId>, &str, &str)> =
+        std::iter::once((None, "Media", "All media"))
+            .chain(chain.iter().map(|folder| {
+                let name = folder.name.as_str();
+                (Some(folder.id), name, name)
+            }))
+            .collect();
     let last = segments.len() - 1;
+    let font = theme::regular(12.0);
+    let natural: Vec<f32> = segments
+        .iter()
+        .map(|(_, words, _)| {
+            ui.painter()
+                .layout_no_wrap((*words).to_owned(), font.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x
+        })
+        .collect();
+    let ellipsis = ui
+        .painter()
+        .layout_no_wrap("…".to_owned(), font.clone(), Color32::PLACEHOLDER);
+    let ellipsis_width = CHEVRON + ellipsis.size().x + PAD + GAP;
+    // How much of each segment's words is shown; none, if it is left out.
+    let mut words_room: Vec<Option<f32>> = vec![None; segments.len()];
+    let whole = |index: usize| natural[index] + PAD + GAP + if index > 0 { CHEVRON } else { 0.0 };
+    if (0..segments.len()).map(whole).sum::<f32>() <= row.width() {
+        for (room, width) in words_room.iter_mut().zip(&natural) {
+            *room = Some(*width);
+        }
+    } else {
+        let between = last > 1;
+        let top = if last > 0 { whole(0) } else { 0.0 };
+        let mut left = row.width();
+        // The folder in view, short enough to leave the way back.
+        let lead = if last > 0 { CHEVRON } else { 0.0 };
+        let reserve = top + if between { ellipsis_width } else { 0.0 };
+        let room = (left - reserve - lead - PAD - GAP)
+            .min(natural[last])
+            .max(24.0);
+        words_room[last] = Some(room);
+        left -= lead + room + PAD + GAP;
+        if last > 0 {
+            let room = (left - PAD - GAP).min(natural[0]);
+            if room >= 12.0 {
+                words_room[0] = Some(room);
+                left -= room + PAD + GAP;
+            }
+        }
+        // The folders between, nearest first, whole while they fit and the
+        // rest left room for "…".
+        for index in (1..last).rev() {
+            let more = index > 1;
+            let need = whole(index) + if more { ellipsis_width } else { 0.0 };
+            if need > left {
+                break;
+            }
+            words_room[index] = Some(natural[index]);
+            left -= whole(index);
+        }
+    }
+
     let mut x = row.left();
     let mut went = None;
-    for (index, (target, name)) in segments.into_iter().enumerate() {
+    let mut elided_run = false;
+    for (index, (target, words, name)) in segments.into_iter().enumerate() {
+        let Some(room) = words_room[index] else {
+            // One "…" stands for every folder left out.
+            if index > 0 && !elided_run {
+                elided_run = true;
+                chevron(ui.painter(), p, x, row);
+                x += CHEVRON;
+                ui.painter().galley(
+                    pos2(x + 6.0, row.center().y - ellipsis.size().y * 0.5),
+                    ellipsis.clone(),
+                    p.muted,
+                );
+                x += ellipsis.size().x + PAD + GAP;
+            }
+            continue;
+        };
         if index > 0 {
-            icons::paint(
-                ui.painter(),
-                Rect::from_center_size(pos2(x + 6.0, row.center().y), Vec2::splat(10.0)),
-                Icon::ChevronRight,
-                p.muted,
-            );
-            x += 12.0;
-        }
-        let room = row.right() - x - 12.0;
-        if room < 12.0 {
-            break;
+            chevron(ui.painter(), p, x, row);
+            x += CHEVRON;
         }
         let here = index == last;
-        let words = controls::elided(ui.painter(), name, theme::regular(12.0), p.fg, room);
+        let galley = controls::elided(
+            ui.painter(),
+            words,
+            font.clone(),
+            Color32::PLACEHOLDER,
+            room,
+        );
         let cell = Rect::from_min_size(
             pos2(x, row.top() + 1.0),
-            vec2(words.size().x + 12.0, row.height() - 2.0),
+            vec2(galley.size().x + PAD, row.height() - 2.0),
         );
-        x = cell.right() + 2.0;
+        x = cell.right() + GAP;
         let sense = if here { Sense::hover() } else { Sense::click() };
         let response = ui.interact(cell, Id::new(("library-crumb", index)), sense);
         let role = if here {
@@ -1274,13 +1358,24 @@ fn breadcrumb(
                 went = Some(target);
             }
         }
+        // The words were laid out without a colour, so that this one holds.
         ui.painter().galley(
-            pos2(cell.left() + 6.0, cell.center().y - words.size().y * 0.5),
-            words,
+            pos2(cell.left() + 6.0, cell.center().y - galley.size().y * 0.5),
+            galley,
             ink,
         );
     }
     went
+}
+
+/// The chevron between two segments of the breadcrumb, at `x`.
+fn chevron(painter: &Painter, p: &Palette, x: f32, row: Rect) {
+    icons::paint(
+        painter,
+        Rect::from_center_size(pos2(x + 6.0, row.center().y), Vec2::splat(10.0)),
+        Icon::ChevronRight,
+        p.muted,
+    );
 }
 
 /// What the Media tab lists: the folders of the folder in view, by name, then
@@ -1463,6 +1558,16 @@ fn asset_cell(
     let poster = textures.poster(asset.id);
     match poster {
         Some(texture) => cover(painter, picture, radius, texture.id(), texture.size_vec2()),
+        // A sound has no picture: the level line its waveform starts from,
+        // across the well, as a tile's is before its peaks are held.
+        None if asset.kind == MediaKind::Audio => {
+            let reach = picture.x_range().shrink(if grid { 10.0 } else { 5.0 });
+            painter.hline(
+                reach,
+                picture.center().y,
+                Stroke::new(1.0, well.wave().gamma_multiply(0.5)),
+            );
+        }
         // Still being looked at, or nothing to show: what it is, quietly.
         None => icons::paint(
             painter,
@@ -1960,8 +2065,11 @@ mod tests {
         sort: LibrarySort,
         size: Vec2,
         seen: Vec<(String, Rect)>,
-        /// The words painted in the last frame, where, and at what size.
-        words: Vec<(String, Rect, f32)>,
+        /// The name of what has the keyboard, as accessibility was told.
+        focused: Option<String>,
+        /// The words painted in the last frame, where, at what size and in
+        /// what ink.
+        words: Vec<(String, Rect, f32, Color32)>,
         actions: Vec<Action>,
     }
 
@@ -1983,6 +2091,7 @@ mod tests {
                 sort: LibrarySort::default(),
                 size: vec2(320.0, 600.0),
                 seen: Vec::new(),
+                focused: None,
                 words: Vec::new(),
                 actions: Vec::new(),
             }
@@ -2038,6 +2147,9 @@ mod tests {
                         ))
                     })
                     .collect();
+                self.focused = (update.nodes.iter())
+                    .find(|(id, _)| *id == update.focus)
+                    .and_then(|(_, node)| node.label().map(str::to_owned));
             }
             self.words = (output.shapes.iter())
                 .filter_map(|clipped| match &clipped.shape {
@@ -2046,6 +2158,12 @@ mod tests {
                         Rect::from_min_size(text.pos, text.galley.size()),
                         (text.galley.job.sections.first())
                             .map_or(0.0, |section| section.format.font_id.size),
+                        // A section laid out without a colour takes the
+                        // shape's.
+                        (text.galley.job.sections.first())
+                            .map(|section| section.format.color)
+                            .filter(|color| *color != Color32::PLACEHOLDER)
+                            .unwrap_or(text.fallback_color),
                     )),
                     _ => None,
                 })
@@ -2063,7 +2181,7 @@ mod tests {
         fn painted(&self, text: &str) -> Option<(Rect, f32)> {
             (self.words.iter())
                 .find(|(painted, ..)| painted == text)
-                .map(|(_, rect, size)| (*rect, *size))
+                .map(|(_, rect, size, _)| (*rect, *size))
         }
 
         fn click(&mut self, at: egui::Pos2, button: egui::PointerButton) {
@@ -2820,5 +2938,176 @@ mod tests {
         shelf.click(at.center(), egui::PointerButton::Primary);
         assert!(shelf.sort.descending);
         assert!(shelf.actions.is_empty(), "the view edits nothing");
+    }
+
+    #[test]
+    fn cards_are_two_across_at_the_default_width_and_three_from_456() {
+        for (width, columns) in [
+            (206.0, 1),
+            (285.0, 1),
+            (286.0, 2),
+            (302.0, 2),
+            (455.0, 2),
+            (456.0, 3),
+            (506.0, 3),
+        ] {
+            assert_eq!(card_columns(width).0, columns, "at {width}");
+        }
+        let (_, cell) = card_columns(302.0);
+        assert!((cell - 147.0).abs() < 0.01, "{cell}");
+        let (_, cell) = card_columns(456.0);
+        assert!(cell >= 146.6, "{cell}");
+    }
+
+    #[test]
+    fn a_deep_folder_keeps_its_own_name_and_the_way_back_in_a_narrow_library() {
+        let mut project = Project::new("Library");
+        let mut parent = None;
+        let mut deepest = None;
+        for name in [
+            "Everything shot on the long summer holiday",
+            "The second week, by the sea and in the hills",
+            "Day 1",
+        ] {
+            let folder = MediaFolder {
+                id: uuid::Uuid::new_v4(),
+                name: name.to_owned(),
+                parent_id: parent,
+            };
+            parent = Some(folder.id);
+            deepest = Some(folder.id);
+            Arc::make_mut(&mut project.folders).insert(folder.id, folder);
+        }
+        let mut shelf = Shelf::new(project, true);
+        shelf.size = vec2(236.0, 600.0);
+        shelf.state.folder = deepest;
+        shelf.frame(Vec::new());
+        shelf.frame(Vec::new());
+        let right = shelf.size.x - TRAILING;
+        let here = shelf.find("Day 1").expect("the folder in view is named");
+        assert!(here.right() <= right, "{here:?}");
+        // The top keeps the name it always had; it reads as its tab does.
+        let top = shelf.find("All media").expect("the way back to the top");
+        assert!(top.right() < here.left(), "{top:?} {here:?}");
+        let p = Palette::new(crate::theme::Appearance::Dark, Default::default());
+        let inks: Vec<(&str, Color32)> = (shelf.words.iter())
+            .filter(|(_, rect, ..)| (rect.center().y - here.center().y).abs() < 6.0)
+            .map(|(text, .., ink)| (text.as_str(), *ink))
+            .collect();
+        assert!(inks.contains(&("Media", p.secondary)), "{inks:?}");
+        assert!(inks.contains(&("Day 1", p.fg)), "{inks:?}");
+        // Nothing of the crumb is drawn past the library's inner edge.
+        for (text, rect, ..) in &shelf.words {
+            if (rect.center().y - here.center().y).abs() < 6.0 {
+                assert!(rect.right() <= right, "{text} at {rect:?}");
+            }
+        }
+
+        // In a wide one, every folder down is there.
+        shelf.size = vec2(900.0, 600.0);
+        shelf.frame(Vec::new());
+        shelf.frame(Vec::new());
+        assert!(
+            shelf
+                .find("Everything shot on the long summer holiday")
+                .is_some()
+        );
+        assert!(
+            shelf
+                .find("The second week, by the sea and in the hills")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_import_button_is_quiet_at_rest() {
+        let mut shelf = Shelf::new(Project::new("Library"), true);
+        shelf.frame(Vec::new());
+        shelf.frame(Vec::new());
+        let p = Palette::new(crate::theme::Appearance::Dark, Default::default());
+        let label = (shelf.words.iter())
+            .find(|(text, rect, ..)| text == "Import…" && rect.top() > 600.0 - metrics::PANE_FOOTER)
+            .expect("the footer says Import…");
+        assert_eq!(
+            label.3, p.secondary,
+            "§3.10: a quiet control rests in secondary"
+        );
+    }
+
+    #[test]
+    fn the_last_card_keeps_its_ring_at_the_end_of_the_list() {
+        let mut project = Project::new("Library");
+        for index in 0..30 {
+            let clip = asset(&format!("clip {index:02}.mp4"), MediaKind::Video, 4.0, 10);
+            Arc::make_mut(&mut project.assets).insert(clip.id, clip);
+        }
+        for grid in [true, false] {
+            let mut shelf = Shelf::new(project.clone(), grid);
+            shelf.frame(Vec::new());
+            shelf.frame(vec![egui::Event::PointerMoved(pos2(160.0, 300.0))]);
+            shelf.frame(vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -20_000.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            for _ in 0..20 {
+                shelf.frame(Vec::new());
+            }
+            let last = shelf.find("clip 29.mp4").expect("the last is in view");
+            // The ring reaches 6 past a card, 2 past a row; the list ends
+            // at the footer's hairline.
+            let reach = if grid { 6.0 } else { 2.0 };
+            let foot = 600.0 - metrics::PANE_FOOTER;
+            assert!(last.bottom() + reach <= foot, "grid {grid}: {last:?}");
+        }
+    }
+
+    #[test]
+    fn a_card_reached_by_tab_out_of_view_is_scrolled_to() {
+        let mut shelf = Shelf::new(Project::new("Library"), true);
+        shelf.state.tab = Tab::Effects;
+        shelf.frame(Vec::new());
+        shelf.frame(Vec::new());
+        let foot = 600.0 - metrics::PANE_FOOTER;
+        let names: Vec<&str> = (browser::entries(Tab::Effects).iter())
+            .map(|(_, entry)| entry.name())
+            .collect();
+        // Where each card stands before anything scrolls.
+        let at_first: Vec<(&str, Rect)> = (names.iter())
+            .filter_map(|name| Some((*name, shelf.find(name)?)))
+            .collect();
+        let first = at_first[0].1;
+        shelf.click(first.center(), egui::PointerButton::Primary);
+        assert_eq!(shelf.focused.as_deref(), Some(at_first[0].0));
+        let tab = egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut brought = 0;
+        for _ in 1..names.len() {
+            shelf.frame(vec![tab.clone()]);
+            for _ in 0..40 {
+                shelf.frame(Vec::new());
+            }
+            let Some(name) = shelf.focused.clone() else {
+                break;
+            };
+            let Some((_, was)) = at_first.iter().find(|(card, _)| *card == name) else {
+                break;
+            };
+            let now = shelf.find(&name).expect("the focused card is named");
+            // In view with its ring, which reaches 6 past it.
+            let ring = now.expand(6.0);
+            assert!(
+                ring.top() >= 0.0 && ring.bottom() <= foot,
+                "{name} at {now:?} is not in view"
+            );
+            brought += usize::from(was.bottom() > foot);
+        }
+        assert!(brought > 0, "Tab reached cards that started out of view");
     }
 }
