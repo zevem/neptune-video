@@ -2924,7 +2924,12 @@ pub fn notices(
 /// does. A drop imports wherever it lands, so no region is singled out.
 pub fn drop_target(ctx: &egui::Context, p: &Palette) {
     let screen = ctx.content_rect();
-    let radius = super::window::corner_radius(ctx).saturating_sub(6);
+    // Concentric with the window's corner, the system's on Windows too.
+    let radius = if super::window::is_round(ctx) {
+        metrics::WINDOW_RADIUS - 6
+    } else {
+        0
+    };
     egui::Area::new(Id::new("drop-target"))
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)

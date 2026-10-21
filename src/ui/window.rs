@@ -16,23 +16,44 @@ use eframe::egui::{
     WidgetInfo, WidgetType, vec2,
 };
 
-/// The window's corner for its state. Windows rounds and outlines the window
-/// itself; elsewhere a maximized or fullscreen window is square, except that
-/// macOS keeps a zoomed window's corners.
-fn radius_for(fullscreen: bool, maximized: bool) -> u8 {
-    let rounded =
-        !cfg!(target_os = "windows") && !fullscreen && (cfg!(target_os = "macos") || !maximized);
-    if rounded { metrics::WINDOW_RADIUS } else { 0 }
+/// Whether the window's corners are round in its state, whoever rounds them:
+/// a maximized or fullscreen window is square, except that macOS keeps a
+/// zoomed window's corners.
+fn round_for(fullscreen: bool, maximized: bool) -> bool {
+    !fullscreen && (cfg!(target_os = "macos") || !maximized)
 }
 
-pub fn corner_radius(ctx: &egui::Context) -> u8 {
+/// The corner the app draws for the window's state. Windows rounds and
+/// outlines the window itself, so the app's is square there.
+fn radius_for(fullscreen: bool, maximized: bool) -> u8 {
+    if !cfg!(target_os = "windows") && round_for(fullscreen, maximized) {
+        metrics::WINDOW_RADIUS
+    } else {
+        0
+    }
+}
+
+fn state(ctx: &egui::Context) -> (bool, bool) {
     ctx.input(|input| {
         let viewport = input.viewport();
-        radius_for(
+        (
             viewport.fullscreen.unwrap_or(false),
             viewport.maximized.unwrap_or(false),
         )
     })
+}
+
+pub fn corner_radius(ctx: &egui::Context) -> u8 {
+    let (fullscreen, maximized) = state(ctx);
+    radius_for(fullscreen, maximized)
+}
+
+/// Whether the window looks round at its corners, drawn by the app or by
+/// the system. What is inset from the window's edge follows this, so it
+/// stays concentric with the corner a person sees.
+pub fn is_round(ctx: &egui::Context) -> bool {
+    let (fullscreen, maximized) = state(ctx);
+    round_for(fullscreen, maximized)
 }
 
 fn toggle_maximized(ctx: &egui::Context) {
@@ -495,6 +516,11 @@ mod tests {
             0
         };
         assert_eq!(radius_for(false, true), zoomed);
+        // Round as a person sees it, whoever draws the corner: Windows'
+        // own corner counts.
+        assert!(round_for(false, false));
+        assert!(!round_for(true, false));
+        assert_eq!(round_for(false, true), cfg!(target_os = "macos"));
     }
 
     #[test]
