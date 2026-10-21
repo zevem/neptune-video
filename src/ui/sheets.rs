@@ -1,9 +1,18 @@
-//! Sheets and messages that sit over the window: settings, the question
-//! asked before unsaved work is replaced, short notices, and the files being
-//! saved above them.
+//! Sheets and messages that sit over the window: Preferences, the questions
+//! asked before work is replaced or given up, toasts in the window's corner,
+//! the cards of work under way over the viewer, and the target that files are
+//! dropped on.
+//!
+//! Every sheet is Terminal's: one elevated surface over a rounded scrim, its
+//! title at the top and its answers at the trailing edge of its foot, the one
+//! that confirms furthest out. Escape gives each sheet's own answer, as it
+//! always has; Enter gives the default only when it is pressed after the sheet
+//! is in sight, and never gives up work.
 use super::{
-    Action, shortcut,
-    widgets::{self, Kind, icon_button, row, section},
+    Action, PreferencesPane,
+    controls::{self, ButtonKind, ButtonSize, Group},
+    kit, shortcut,
+    widgets::Kind,
 };
 use crate::{
     ai::{Effort, Provider},
@@ -11,12 +20,13 @@ use crate::{
     icons::{self, Icon},
     proxies::Cache,
     settings::{PreviewQuality, PreviewSettings, ProxyMode, Scale, Settings},
-    theme::{self, Accent, Appearance, Palette, metrics},
+    theme::{self, Accent, Appearance, Palette, metrics, motion},
 };
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
+    self, Align, Align2, Color32, CursorIcon, Galley, Id, Key, Layout, Pos2, Rect, Sense, Stroke,
+    StrokeKind, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
-use std::path::PathBuf;
+use std::{cell::Cell, path::PathBuf, sync::Arc};
 
 /// What waits for an answer about unsaved work.
 #[derive(Clone, Debug, PartialEq)]
@@ -85,6 +95,16 @@ pub enum Answer {
     Cancel,
 }
 
+/// What the person said to the recovery copy a window found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recovery {
+    Restore,
+    /// The copy is given up and removed.
+    Discard,
+    /// Nothing is decided: the copy stays for next time.
+    Later,
+}
+
 /// A named copy of the project, kept beside its file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Checkpoint {
@@ -114,18 +134,52 @@ pub enum CheckpointAnswer {
 
 pub struct Notice {
     pub text: String,
-    pub problem: bool,
-    /// Seconds since the application started at which it goes away.
+    pub kind: NoticeKind,
+    /// Seconds since the application started at which it goes away: never,
+    /// for a warning or a problem, which stays until it is dismissed.
     pub until: f64,
 }
 
-pub(crate) fn sheet(p: &Palette) -> egui::Frame {
-    egui::Frame::NONE
-        .fill(p.elevated)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(metrics::SHEET_RADIUS))
-        .shadow(p.sheet_shadow())
-        .inner_margin(egui::Margin::same(18))
+/// What a notice tells, from the least to the most pressing, which its mark
+/// says: news, something done, something done that needs a second look, and
+/// something that went wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NoticeKind {
+    Info,
+    Done,
+    Warning,
+    Problem,
+}
+
+impl NoticeKind {
+    /// What a piece of work came to: done, or a problem.
+    pub fn outcome(problem: bool) -> Self {
+        if problem { Self::Problem } else { Self::Done }
+    }
+
+    /// Whether it stays until it is dismissed, rather than going after a
+    /// while: what needs reading, which a Dismiss lets go of.
+    pub fn stays(self) -> bool {
+        matches!(self, Self::Warning | Self::Problem)
+    }
+
+    /// Its mark and the mark's ink, as Terminal marks what it did.
+    fn mark(self, p: &Palette) -> (Icon, Color32) {
+        match self {
+            Self::Info => (Icon::Info, p.secondary),
+            Self::Done => (Icon::CircleCheck, p.green),
+            Self::Warning => (Icon::Warning, p.legible(p.yellow)),
+            Self::Problem => (Icon::AlertCircle, p.red),
+        }
+    }
+}
+
+impl Notice {
+    /// Who the notice is to its Dismiss and to its clock: its words, which
+    /// no two notices share.
+    pub fn id(&self) -> u64 {
+        Id::new(&self.text).value()
+    }
 }
 
 /// Lays `add` out at the cursor in a column exactly `width` wide, for what
@@ -152,32 +206,1257 @@ pub(crate) fn column<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R)
     inner
 }
 
-/// An on/off control drawn as a switch.
-fn switch(ui: &mut Ui, p: &Palette, on: bool, label: &str) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(36.0, 22.0), Sense::click());
-    response
-        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, label));
-    let t = ui.ctx().animate_bool_with_time(response.id, on, 0.14);
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius::same(11),
-        theme::mix(
-            if p.dark {
-                theme::color(0x3a3a40)
-            } else {
-                theme::color(0xc9c9cf)
-            },
-            p.accent,
-            t,
-        ),
+// ---- The scaffold ----------------------------------------------------------
+
+/// The sheets asked over another sheet, each with the one it is asked over.
+/// That one already dims the window: one scrim is enough, so they bring
+/// none of their own. It is still open, and toasts keep clear of both.
+const ASKED_OVER_A_SHEET: [(&str, &str); 1] = [("replace-export-sheet", "export-sheet")];
+
+/// What a sheet heard in one frame besides its own controls.
+struct Heard<R> {
+    inner: R,
+    /// Escape, or a click beside the sheet: each sheet answers them as it
+    /// always has. An Escape that only took the keyboard out of a field, or
+    /// that the sheet took for itself, is not one.
+    dismissed: bool,
+    /// A fresh Enter while nothing has the keyboard: the default answer.
+    enter: bool,
+    /// An Enter carried over from what was there before the sheet, or held
+    /// down: it answers nothing, not even on a button that has the keyboard.
+    carried: bool,
+}
+
+/// How tall a sheet that asks for `requested` is in a window this tall.
+/// Centred, it keeps clear of the title bar, as Preferences does, and is
+/// short only where the window is: in a window under about 600 tall it
+/// gives up height before it covers the toolbar, down to 240. Export and
+/// the render queue are as tall by the same rule.
+pub(super) fn sheet_height(requested: f32, window: f32) -> f32 {
+    let clear = window - 2.0 * (metrics::TOOLBAR_HEIGHT + 4.0);
+    requested
+        .min(clear)
+        .max(requested.min(240.0).min(window - 24.0))
+}
+
+/// Where `scaffold` keeps whether a field of the sheet `id` had the keyboard.
+fn typing_key(id: &str) -> Id {
+    Id::new(id).with("typing")
+}
+
+/// Terminal's sheet under its kept id: elevated, rounded, outlined and
+/// shadowed, `width` wide or the window less 12 on each side, with the
+/// window's rounded scrim under it rather than egui's square one. Assistive tools
+/// know it as a window named `title`. `escape_taken` says the sheet used
+/// this frame's Escape itself.
+fn scaffold<R>(
+    ctx: &egui::Context,
+    p: &Palette,
+    id: &str,
+    title: &str,
+    width: f32,
+    escape_taken: bool,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> Heard<R> {
+    let name = id;
+    let id = Id::new(id);
+    let opening = kit::opening(ctx, id);
+    let typing_id = typing_key(name);
+    // Escape takes the keyboard out of a field before egui shows the frame,
+    // so whether one had it is what the last frame said.
+    let was_typing = ctx.data(|data| data.get_temp::<bool>(typing_id)) == Some(true);
+    let focused = ctx.memory(|memory| memory.focused()).is_some();
+    let (fresh, carried) = kit::enters(ctx, opening);
+    if !ASKED_OVER_A_SHEET.iter().any(|(asked, _)| *asked == name) {
+        kit::sheet_scrim(ctx, p, id, id.with("scrim"));
+    }
+    let modal = controls::sheet(ctx, *p, id, title, width, add);
+    let typing = ctx
+        .memory(|memory| memory.focused())
+        .is_some_and(|focused| egui::text_edit::TextEditState::load(ctx, focused).is_some());
+    ctx.data_mut(|data| data.insert_temp(typing_id, typing));
+    let escape = ctx.input(|input| input.key_pressed(Key::Escape));
+    let dismissed = if escape && (was_typing || escape_taken) {
+        modal.backdrop_response.clicked()
+    } else {
+        modal.should_close()
+    };
+    Heard {
+        enter: fresh && !carried && !focused && modal.is_top_modal && !modal.any_popup_open,
+        inner: modal.inner,
+        dismissed,
+        carried,
+    }
+}
+
+/// A sheet's 52-point title row, with a spinner beside the title while the
+/// sheet waits on work. Returns whether its close control was used.
+fn header(ui: &mut Ui, p: &Palette, title: &str, close: Option<&str>, busy: bool) -> bool {
+    let top = ui.cursor().top();
+    let left = ui.max_rect().left();
+    let closed = controls::sheet_header(ui, *p, title, close);
+    title_said(ui, pos2(left, top), title);
+    if busy {
+        let width = (ui.painter())
+            .layout_no_wrap(title.to_owned(), theme::semibold(15.0), p.fg)
+            .size()
+            .x;
+        kit::spinner(
+            ui,
+            Rect::from_center_size(
+                pos2(left + 20.0 + width + 16.0, top + 26.0),
+                Vec2::splat(14.0),
+            ),
+            p.muted,
+        );
+    }
+    closed
+}
+
+/// Tells assistive tools of the title `controls::sheet_header` painted in
+/// the row whose top leading corner is `at`.
+fn title_said(ui: &Ui, at: Pos2, title: &str) {
+    if !title.is_empty() {
+        let words = painted(
+            ui,
+            pos2(at.x + 20.0, at.y + 26.0),
+            title,
+            theme::semibold(15.0),
+        );
+        kit::said(ui, words, title);
+    }
+}
+
+/// One answer a dialog offers: its words, its kind and what it says. The
+/// kind is the one the areas name buttons by.
+type Offer<'a, A> = (&'a str, Kind, A);
+
+/// The answer a dialog offers apart, at its leading edge, which gives
+/// something up, with what it gives up said when the pointer rests on it.
+type Leading<'a, A> = (Offer<'a, A>, Option<&'a str>);
+
+/// The ported control's kind of a button the areas name: a Plain one is
+/// Terminal's Secondary.
+fn kind(kind: Kind) -> ButtonKind {
+    match kind {
+        Kind::Plain => ButtonKind::Secondary,
+        Kind::Primary => ButtonKind::Primary,
+        Kind::Destructive => ButtonKind::Destructive,
+        Kind::Quiet => ButtonKind::Quiet,
+    }
+}
+
+/// Terminal's dialog foot, 62 tall: the answers at the trailing edge 8
+/// apart and 20 in, the confirming one furthest out, and one that gives
+/// something up alone at the leading edge. Hands back the answer clicked.
+fn footer<A: Copy>(
+    ui: &mut Ui,
+    p: &Palette,
+    leading: Option<Leading<A>>,
+    trailing: &[Offer<A>],
+) -> Option<A> {
+    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), 62.0));
+    let room = rect.shrink2(vec2(20.0, 0.0));
+    let mut answer = None;
+    controls::place(
+        ui,
+        room,
+        Layout::right_to_left(Align::Center),
+        "dialog-actions",
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for &(label, of, said) in trailing {
+                if controls::button(ui, *p, label, kind(of)).clicked() {
+                    answer = Some(said);
+                }
+            }
+        },
     );
-    let knob = pos2(rect.left() + 11.0 + 14.0 * t, rect.center().y);
-    ui.painter().circle_filled(knob, 9.0, Color32::WHITE);
-    response.clicked()
+    if let Some(((label, of, said), hint)) = leading {
+        controls::place(
+            ui,
+            room,
+            Layout::left_to_right(Align::Center),
+            "dialog-leading",
+            |ui| {
+                let button = controls::button(ui, *p, label, kind(of));
+                let button = match hint {
+                    Some(hint) => button.on_hover_text(hint),
+                    None => button,
+                };
+                if button.clicked() {
+                    answer = Some(said);
+                }
+            },
+        );
+    }
+    answer
+}
+
+/// The default of a dialog: its Primary, never what gives work up. A dialog
+/// without one has no default, and Enter does nothing in it.
+fn default_of<A: Copy>(trailing: &[Offer<A>]) -> Option<A> {
+    (trailing.iter())
+        .find(|(_, kind, _)| *kind == Kind::Primary)
+        .map(|(.., said)| *said)
+}
+
+/// A dialog's title, wrapped.
+fn title(ui: &mut Ui, p: &Palette, text: &str, size: f32) {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .font(theme::semibold(size))
+                .color(p.fg),
+        )
+        .wrap()
+        .selectable(false),
+    );
+}
+
+/// A dialog's message under its title, wrapped.
+fn message(ui: &mut Ui, p: &Palette, text: &str) {
+    ui.add_space(6.0);
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .font(theme::regular(13.0))
+                .color(p.secondary),
+        )
+        .wrap()
+        .selectable(false),
+    );
+}
+
+/// The mark that leads a sheet asking about work that could be lost.
+fn warning(ui: &mut Ui, p: &Palette) {
+    let (_, glyph) = ui.allocate_space(Vec2::splat(32.0));
+    icons::paint(ui.painter(), glyph, Icon::Warning, p.legible(p.attention));
+    ui.add_space(12.0);
+}
+
+/// Terminal's confirmation: 22 points of air, then the words `body` lays
+/// out 22 in, then the dialog foot. Escape says `escape`; a fresh Enter
+/// says the Primary, where there is one.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each dialog names its own words and answers; a struct would only rename them"
+)]
+fn dialog<A: Copy>(
+    ctx: &egui::Context,
+    p: &Palette,
+    id: &str,
+    width: f32,
+    name: &str,
+    body: impl FnOnce(&mut Ui),
+    leading: Option<Leading<A>>,
+    trailing: &[Offer<A>],
+    escape: A,
+) -> Option<A> {
+    let heard = scaffold(ctx, p, id, name, width, false, |ui| {
+        // Terminal's dialog: 22 over the body and at its sides (§5.9.5).
+        ui.add_space(22.0);
+        controls::padded(ui, 22.0, body);
+        ui.add_space(6.0);
+        footer(ui, p, leading, trailing)
+    });
+    if heard.carried {
+        // The Enter that opened the dialog is not an answer to it.
+        return None;
+    }
+    heard
+        .inner
+        .or_else(|| heard.enter.then(|| default_of(trailing)).flatten())
+        .or_else(|| heard.dismissed.then_some(escape))
+}
+
+// ---- Confirmations ---------------------------------------------------------
+
+/// Asks what to do with unsaved work before it is replaced.
+pub fn unsaved(ctx: &egui::Context, p: &Palette, name: &str, pending: &Pending) -> Option<Answer> {
+    let question = format!("Save changes to “{name}”?");
+    dialog(
+        ctx,
+        p,
+        "unsaved-sheet",
+        360.0,
+        &question,
+        |ui| {
+            title(ui, p, &question, 15.0);
+            message(
+                ui,
+                p,
+                match pending {
+                    Pending::Quit => "Your changes are lost if you quit without saving.",
+                    _ => "Your changes are lost if you continue without saving.",
+                },
+            );
+        },
+        Some((("Don't save", Kind::Destructive, Answer::Discard), None)),
+        &[
+            ("Save", Kind::Primary, Answer::Save),
+            ("Cancel", Kind::Plain, Answer::Cancel),
+        ],
+        Answer::Cancel,
+    )
+}
+
+/// Asks before an export replaces `file`, which is in `folder`, and `also`,
+/// its caption file, when that is there too. `true` replaces them; Cancel,
+/// Escape and the backdrop answer `false`.
+pub fn replace_export(
+    ctx: &egui::Context,
+    p: &Palette,
+    file: &str,
+    also: Option<&str>,
+    folder: &str,
+) -> Option<bool> {
+    let (question, body) = match also {
+        None => (
+            format!("Replace “{file}”?"),
+            format!(
+                "A file with this name is already in “{folder}”. It is replaced once the \
+                 export has finished; until then it stays as it is."
+            ),
+        ),
+        Some(also) => (
+            format!("Replace “{file}” and “{also}”?"),
+            format!(
+                "Files with these names, the export and its caption file, are already in \
+                 “{folder}”. They are replaced once the export has finished; until then \
+                 they stay as they are."
+            ),
+        ),
+    };
+    dialog(
+        ctx,
+        p,
+        "replace-export-sheet",
+        420.0,
+        &question,
+        |ui| {
+            title(ui, p, &question, 15.0);
+            message(ui, p, &body);
+        },
+        None,
+        &[
+            ("Replace", Kind::Destructive, true),
+            ("Cancel", Kind::Plain, false),
+        ],
+        false,
+    )
+}
+
+/// Asks before quitting stops the `jobs` exports rendering or waiting.
+/// `true` cancels them at once and goes on to quit; Keep rendering, Escape
+/// and the backdrop answer `false`.
+pub fn stop_rendering(ctx: &egui::Context, p: &Palette, jobs: usize) -> Option<bool> {
+    let body = match jobs {
+        1 => "An export is rendering or waiting. Stop and quit cancels it now and \
+              removes its unfinished file; a file it would replace is left as it is. \
+              If you then stay, it can be rendered again from the render queue."
+            .to_owned(),
+        n => format!(
+            "{n} exports are rendering or waiting. Stop and quit cancels them now and \
+             removes their unfinished files; files they would replace are left as they \
+             are. If you then stay, they can be rendered again from the render queue."
+        ),
+    };
+    let question = "Rendering will stop";
+    dialog(
+        ctx,
+        p,
+        "stop-rendering-sheet",
+        380.0,
+        question,
+        |ui| {
+            title(ui, p, question, 15.0);
+            message(ui, p, &body);
+        },
+        None,
+        &[
+            ("Stop and quit", Kind::Destructive, true),
+            ("Keep rendering", Kind::Plain, false),
+        ],
+        false,
+    )
+}
+
+/// Asks whether a duck may replace the volume keyframes of the clips that
+/// have them. `Some(true)` to go on; `Some(false)` when it is given up,
+/// which an Escape or a click outside the sheet also says.
+pub fn replace_keys(ctx: &egui::Context, p: &Palette, keyed: usize) -> Option<bool> {
+    let question = crate::duck::question(keyed);
+    dialog(
+        ctx,
+        p,
+        "duck-sheet",
+        420.0,
+        &question,
+        |ui| {
+            title(ui, p, &question, 15.0);
+            message(
+                ui,
+                p,
+                "Ducking writes new volume keyframes in their place. Undo brings them back.",
+            );
+        },
+        None,
+        &[
+            ("Replace", Kind::Destructive, true),
+            ("Cancel", Kind::Plain, false),
+        ],
+        false,
+    )
+}
+
+/// Says that a save was refused for another writer's sake, and asks what to
+/// do with the edits, which are still in the window. Nothing here writes the
+/// file over what the other writer left, and nothing gives the edits up
+/// unless it is said in so many words.
+pub fn conflict(
+    ctx: &egui::Context,
+    p: &Palette,
+    name: &str,
+    conflict: &Conflict,
+) -> Option<ConflictAnswer> {
+    let file = conflict.path.file_name().map_or_else(
+        || conflict.path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let question = if conflict.busy {
+        format!("“{file}” is being saved elsewhere")
+    } else {
+        format!("“{file}” changed on disk")
+    };
+    let body = if conflict.busy {
+        format!(
+            "Another editor is writing this file right now, so “{name}” was not saved. \
+             Your edits are still here. Try again in a moment, or save them to another \
+             file."
+        )
+    } else if conflict.open {
+        format!(
+            "Something else saved this file after it was opened here, so “{name}” was \
+             not saved over it. Your edits are still here. Save them to another file, \
+             or give them up and reopen the file as it is now."
+        )
+    } else {
+        format!(
+            "Something else wrote this file after it was chosen, so “{name}” was not \
+             saved over it. Your edits are still here. Save them to another file."
+        )
+    };
+    let path = conflict.path.display().to_string();
+    let trailing: &[Offer<ConflictAnswer>] = if conflict.busy {
+        &[
+            ("Try again", Kind::Primary, ConflictAnswer::Retry),
+            ("Save as…", Kind::Plain, ConflictAnswer::SaveAs),
+            ("Not now", Kind::Plain, ConflictAnswer::Later),
+        ]
+    } else {
+        &[
+            ("Save as…", Kind::Primary, ConflictAnswer::SaveAs),
+            ("Not now", Kind::Plain, ConflictAnswer::Later),
+        ]
+    };
+    let reopen = (conflict.open && !conflict.busy).then_some((
+        (
+            "Discard and reopen",
+            Kind::Destructive,
+            ConflictAnswer::Reopen,
+        ),
+        Some("Give up the edits in this window and read the file again"),
+    ));
+    dialog(
+        ctx,
+        p,
+        "conflict-sheet",
+        400.0,
+        &question,
+        |ui| {
+            warning(ui, p);
+            title(ui, p, &question, 15.0);
+            message(ui, p, &body);
+            ui.add_space(6.0);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(path)
+                        .font(theme::mono(11.0))
+                        .color(p.secondary),
+                )
+                .wrap()
+                .selectable(false),
+            );
+        },
+        reopen,
+        trailing,
+        ConflictAnswer::Later,
+    )
+}
+
+/// Offers the recovery copy a window found of unsaved work: of the project
+/// it opened when `project`, or of one that was never saved. Restore, which
+/// keeps the work, is the default; Discard leads, apart. It has no close
+/// control, since it needs an answer, and Escape decides nothing.
+pub fn recovery(ctx: &egui::Context, p: &Palette, project: bool) -> Option<Recovery> {
+    let question = "Restore unsaved changes?";
+    dialog(
+        ctx,
+        p,
+        "recovery-sheet",
+        520.0,
+        question,
+        |ui| {
+            warning(ui, p);
+            title(ui, p, question, 17.0);
+            message(
+                ui,
+                p,
+                if project {
+                    "This project was closed with changes that were not saved. A recovery \
+                     copy of them was kept."
+                } else {
+                    "A project that was never saved was open when Neptune Video last closed. \
+                     A recovery copy of it was kept."
+                },
+            );
+        },
+        Some((("Discard", Kind::Destructive, Recovery::Discard), None)),
+        &[("Restore", Kind::Primary, Recovery::Restore)],
+        Recovery::Later,
+    )
+}
+
+// ---- Checkpoints -----------------------------------------------------------
+
+/// Named checkpoints of the project: make one, or go back to one.
+pub fn checkpoints(
+    ctx: &egui::Context,
+    p: &Palette,
+    state: &mut CheckpointsState,
+    has_file: bool,
+) -> Option<CheckpointAnswer> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let screen = ctx.content_rect();
+    let height = sheet_height(520.0, screen.height());
+    let mut create = false;
+    let heard = scaffold(
+        ctx,
+        p,
+        "checkpoints-sheet",
+        "Checkpoints",
+        520.0,
+        false,
+        |ui| {
+            let top = ui.cursor().top();
+            let mut answer = None;
+            if header(ui, p, "Checkpoints", Some("Close checkpoints"), state.busy) {
+                answer = Some(CheckpointAnswer::Close);
+            }
+            if !has_file {
+                controls::padded(ui, 20.0, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("Checkpoints are kept beside the project file.")
+                                .font(theme::regular(13.0))
+                                .color(p.secondary),
+                        )
+                        .wrap()
+                        .selectable(false),
+                    );
+                });
+                ui.add_space(6.0);
+                let save = footer(ui, p, None, &[("Save project…", Kind::Primary, ())]);
+                return answer.or(save.map(|()| CheckpointAnswer::SaveProject));
+            }
+
+            // The name of the next one, and the button that makes it.
+            controls::padded(ui, 20.0, |ui| {
+                let (_, row) =
+                    ui.allocate_space(vec2(ui.available_width(), metrics::CONTROL_HEIGHT));
+                let save = controls::place(
+                    ui,
+                    row,
+                    Layout::right_to_left(Align::Center),
+                    "checkpoint-save",
+                    |ui| {
+                        ui.add_enabled_ui(!state.busy, |ui| {
+                            controls::button(ui, *p, "Save", ButtonKind::Primary)
+                        })
+                        .inner
+                        .on_hover_text("Save a checkpoint of the project as it is now")
+                    },
+                );
+                let field_rect =
+                    Rect::from_min_max(row.min, pos2(save.rect.left() - 8.0, row.max.y));
+                let field = controls::place(
+                    ui,
+                    field_rect,
+                    Layout::left_to_right(Align::Center),
+                    "checkpoint-field",
+                    |ui| {
+                        controls::text_field(
+                            ui,
+                            *p,
+                            Id::new("checkpoint-name"),
+                            &mut state.name,
+                            "Checkpoint name",
+                            "Checkpoint name",
+                            field_rect.width(),
+                        )
+                    },
+                );
+                // A sheet measures itself in a hidden first pass, where the
+                // keyboard cannot be given.
+                if state.focus && !ui.is_sizing_pass() {
+                    field.request_focus();
+                    state.focus = false;
+                }
+                let entered = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                create = save.clicked() || entered;
+            });
+            // The list's card stands 14 under the field, as Preferences'
+            // cards stand apart (§5.9.2).
+            ui.add_space(14.0);
+
+            // The checkpoints, newest first as the worker lists them, in
+            // the rest of a sheet of one height, so that saving one never
+            // moves the field being typed in.
+            let rest = (height - (ui.cursor().top() - top)).max(108.0);
+            let (_, body) = ui.allocate_space(vec2(ui.available_width(), rest));
+            controls::place(
+                ui,
+                body,
+                Layout::top_down(Align::Min),
+                "checkpoints-body",
+                |ui| match &state.list {
+                    None => {}
+                    Some(Err(problem)) => controls::padded(ui, 20.0, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(problem)
+                                    .font(theme::regular(13.0))
+                                    .color(p.red),
+                            )
+                            .wrap(),
+                        );
+                    }),
+                    Some(Ok(list)) if list.is_empty() => {
+                        kit::empty_state(
+                            ui,
+                            p,
+                            body.with_max_y(body.bottom() - 20.0),
+                            Icon::History,
+                            "No checkpoints yet",
+                            "",
+                            None,
+                        );
+                    }
+                    Some(Ok(list)) => {
+                        let scrolled = egui::ScrollArea::vertical()
+                            .id_salt("checkpoints-list")
+                            .max_height(body.height() - 20.0)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                controls::padded(ui, 20.0, |ui| {
+                                    controls::group(ui, *p, |ui, rows| {
+                                        for checkpoint in list {
+                                            if checkpoint_row(
+                                                ui,
+                                                p,
+                                                rows,
+                                                checkpoint,
+                                                now,
+                                                !state.busy,
+                                            ) {
+                                                answer = Some(CheckpointAnswer::Restore(
+                                                    checkpoint.clone(),
+                                                ));
+                                            }
+                                        }
+                                    });
+                                });
+                            });
+                        kit::scroll_fades(ui, &scrolled, p.elevated);
+                    }
+                },
+            );
+            answer
+        },
+    );
+    if heard.carried {
+        // The Enter that opened the sheet is not an answer to it.
+        return heard.dismissed.then_some(CheckpointAnswer::Close);
+    }
+    // Enter with nothing holding the keyboard is the Primary's.
+    if !has_file && heard.enter {
+        return Some(CheckpointAnswer::SaveProject);
+    }
+    if (create || heard.enter) && has_file && !state.busy {
+        let name = state.name.trim();
+        let name = if name.is_empty() {
+            "Checkpoint".to_owned()
+        } else {
+            name.to_owned()
+        };
+        state.name.clear();
+        return Some(CheckpointAnswer::Create(name));
+    }
+    heard
+        .inner
+        .or_else(|| heard.dismissed.then_some(CheckpointAnswer::Close))
+}
+
+/// One checkpoint, 44 tall: its name, its age and the way back to it, which
+/// is always there for the keyboard to reach.
+fn checkpoint_row(
+    ui: &mut Ui,
+    p: &Palette,
+    rows: &mut Group,
+    checkpoint: &Checkpoint,
+    now: u64,
+    ready: bool,
+) -> bool {
+    let rect = rows.custom(ui, 44.0);
+    let restore = controls::place(
+        ui,
+        rect.shrink2(vec2(12.0, 0.0)),
+        Layout::right_to_left(Align::Center),
+        ("checkpoint", &checkpoint.path),
+        |ui| {
+            let restore = ui
+                .add_enabled_ui(ready, |ui| {
+                    controls::button_sized(
+                        ui,
+                        *p,
+                        "Restore",
+                        ButtonKind::Secondary,
+                        ButtonSize::Compact,
+                    )
+                })
+                .inner;
+            restore.widget_info(|| {
+                WidgetInfo::labeled(
+                    WidgetType::Button,
+                    ready,
+                    format!("Restore {}", checkpoint.label),
+                )
+            });
+            restore
+        },
+    );
+    let painter = ui.painter().clone();
+    let mut right = restore.rect.left() - 12.0;
+    let mut age_at = None;
+    if let Some(made) = checkpoint.made {
+        let words = crate::timefmt::age(now.saturating_sub(made));
+        let age = painter.layout_no_wrap(words.clone(), theme::mono(12.0), p.secondary);
+        right -= age.size().x;
+        let at = pos2(right, rect.center().y);
+        age_at = Some((painted(ui, at, &words, theme::mono(12.0)), words));
+        controls::galley_at(&painter, at, age);
+        right -= 12.0;
+    }
+    let left = rect.left() + 14.0;
+    let name = controls::elided(
+        &painter,
+        &checkpoint.label,
+        theme::medium(13.0),
+        p.fg,
+        right - left,
+    );
+    let name_at = Rect::from_min_size(
+        pos2(left, rect.center().y - name.size().y * 0.5),
+        name.size(),
+    );
+    controls::galley_at(&painter, pos2(left, rect.center().y), name);
+    // Its name and its age are said as they read, before the way back.
+    kit::said(ui, name_at, &checkpoint.label);
+    if let Some((at, words)) = age_at {
+        kit::said(ui, at, &words);
+    }
+    restore.clicked()
+}
+
+// ---- Preferences -----------------------------------------------------------
+
+/// Preferences is this large when the window has room for it.
+const PREFERENCES_WIDTH: f32 = 680.0;
+const PREFERENCES_HEIGHT: f32 = 520.0;
+const HEADER: f32 = 52.0;
+/// The source list sits inside the sheet as a surface of its own.
+const INSET: f32 = 6.0;
+const SIDEBAR: f32 = 176.0;
+/// A sheet too narrow for names keeps the source list as icons.
+const RAIL: f32 = 44.0;
+const COMPACT_BELOW: f32 = 540.0;
+
+/// The glyph of a pane in the source list.
+fn pane_icon(pane: PreferencesPane) -> Icon {
+    match pane {
+        PreferencesPane::Appearance => Icon::Palette,
+        PreferencesPane::Editing => Icon::Pencil,
+        PreferencesPane::Preview => Icon::Film,
+        PreferencesPane::Agent => Icon::Sparkles,
+        PreferencesPane::Keyboard => Icon::Keyboard,
+    }
+}
+
+/// One thing a search can find: a row, or the rows that belong together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Setting {
+    Appearance,
+    Accent,
+    InterfaceSize,
+    ReduceMotion,
+    ResetLayout,
+    Snapping,
+    RecoveryCopy,
+    Quality,
+    Proxies,
+    ProxyCache,
+    Provider,
+    Model,
+    Effort,
+    Edits,
+    Folders,
+    /// A row of the Keyboard pane, by its place in [`SHORTCUTS`].
+    Shortcut(usize),
+}
+
+/// Each setting with its pane, its label and the other words people use for
+/// it. A search reads the pane's name and the label as well as these.
+const INDEX: [(Setting, PreferencesPane, &str, &str); 15] = [
+    (
+        Setting::Appearance,
+        PreferencesPane::Appearance,
+        "Appearance",
+        "theme dark light system mode night day match follow automatic auto colors colours",
+    ),
+    (
+        Setting::Accent,
+        PreferencesPane::Appearance,
+        "Accent",
+        "color colour highlight tint blue indigo purple pink red orange yellow green graphite",
+    ),
+    (
+        Setting::InterfaceSize,
+        PreferencesPane::Appearance,
+        "Interface size",
+        "scale scaling zoom bigger smaller larger magnify text ui dpi percent display",
+    ),
+    (
+        Setting::ReduceMotion,
+        PreferencesPane::Appearance,
+        "Reduce motion",
+        "animation animations animate fade fades slide slides still accessibility",
+    ),
+    (
+        Setting::ResetLayout,
+        PreferencesPane::Appearance,
+        "Reset layout",
+        "layout panels panel library inspector timeline widths sizes default restore",
+    ),
+    (
+        Setting::Snapping,
+        PreferencesPane::Editing,
+        "Snap while dragging",
+        "snapping snap magnet align edges playhead markers clips",
+    ),
+    (
+        Setting::RecoveryCopy,
+        PreferencesPane::Editing,
+        "Keep a recovery copy while editing",
+        "autosave auto save backup crash recover recovery restore unsaved",
+    ),
+    (
+        Setting::Quality,
+        PreferencesPane::Preview,
+        "Preview quality",
+        "resolution playback full half quarter auto detail performance smooth viewer",
+    ),
+    (
+        Setting::Proxies,
+        PreferencesPane::Preview,
+        "Proxies",
+        "proxy smaller copies playback performance optimized media off always auto",
+    ),
+    (
+        Setting::ProxyCache,
+        PreferencesPane::Preview,
+        "Cache size",
+        "proxy proxies cache disk space storage gigabytes gb clear remove",
+    ),
+    (
+        Setting::Provider,
+        PreferencesPane::Agent,
+        "Answered by",
+        "provider claude codex ai assistant model command line",
+    ),
+    (
+        Setting::Model,
+        PreferencesPane::Agent,
+        "Model",
+        "ai claude codex name version default",
+    ),
+    (
+        Setting::Effort,
+        PreferencesPane::Agent,
+        "Effort",
+        "reasoning thinking default low medium high",
+    ),
+    (
+        Setting::Edits,
+        PreferencesPane::Agent,
+        "Edits",
+        "review proposals proposal apply works changes",
+    ),
+    (
+        Setting::Folders,
+        PreferencesPane::Agent,
+        "Folders",
+        "folder add remove access media read save directories roots permissions",
+    ),
+];
+
+/// A group of the Keyboard pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Keys {
+    Playback,
+    Editing,
+    Timeline,
+    Window,
+}
+
+impl Keys {
+    const ALL: [Self; 4] = [Self::Playback, Self::Editing, Self::Timeline, Self::Window];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Playback => "Playback",
+            Self::Editing => "Editing",
+            Self::Timeline => "Timeline",
+            Self::Window => "Project and window",
+        }
+    }
+}
+
+/// A row of the Keyboard pane: what a chord does and the keys, written as
+/// the menus write them, with "Cmd" for the platform's command key. Chords
+/// that differ on macOS beyond that say how they go there.
+struct Chord {
+    group: Keys,
+    what: &'static str,
+    keys: &'static str,
+    mac: Option<&'static str>,
+}
+
+const fn chord(group: Keys, what: &'static str, keys: &'static str) -> Chord {
+    Chord {
+        group,
+        what,
+        keys,
+        mac: None,
+    }
+}
+
+const SHORTCUTS: [Chord; 35] = [
+    chord(Keys::Playback, "Play or pause", "Space"),
+    chord(Keys::Playback, "Previous or next frame", "← →"),
+    chord(Keys::Playback, "Back or forward one second", "Shift+← →"),
+    chord(Keys::Playback, "Start or end", "Home End"),
+    chord(
+        Keys::Playback,
+        "Back one second, stop, play faster",
+        "J K L",
+    ),
+    chord(Keys::Editing, "Select the clip under the playhead", "C"),
+    chord(Keys::Editing, "Select the clip before or after", "Alt+← →"),
+    chord(
+        Keys::Editing,
+        "Select the clip on the track above or below",
+        "Alt+↑ ↓",
+    ),
+    chord(Keys::Editing, "Split at playhead", "S"),
+    chord(Keys::Editing, "Delete", "Delete"),
+    chord(Keys::Editing, "Ripple delete", "Shift+Delete"),
+    chord(Keys::Editing, "Undo", "Cmd+Z"),
+    chord(Keys::Editing, "Redo", "Shift+Cmd+Z"),
+    chord(Keys::Editing, "Cut, copy, paste", "Cmd+X C V"),
+    chord(Keys::Editing, "Duplicate", "Cmd+D"),
+    chord(Keys::Editing, "Select all", "Cmd+A"),
+    chord(Keys::Editing, "Group, ungroup", "Cmd+G, Shift+Cmd+G"),
+    chord(Keys::Timeline, "Add marker", "M"),
+    chord(Keys::Editing, "Add text", "T"),
+    chord(Keys::Editing, "Add transition", "Cmd+T"),
+    chord(Keys::Editing, "Freeze frame", "F"),
+    chord(Keys::Timeline, "Keyframes of the clip", "U"),
+    chord(Keys::Timeline, "Graph editor", "G"),
+    chord(Keys::Timeline, "Snapping", "N"),
+    chord(Keys::Timeline, "Zoom timeline", "Cmd+Scroll, = -"),
+    chord(Keys::Timeline, "Fit timeline", "Shift+Z"),
+    chord(Keys::Window, "Ask the agent", "Shift+Cmd+K"),
+    chord(Keys::Window, "Command line", "Cmd+K"),
+    chord(Keys::Window, "Save", "Cmd+S"),
+    chord(Keys::Window, "Import media", "Cmd+I"),
+    chord(Keys::Window, "Export", "Cmd+E"),
+    chord(Keys::Window, "Render queue", "Shift+Cmd+E"),
+    chord(Keys::Window, "Interface size", "Cmd+= Cmd+- Cmd+0"),
+    Chord {
+        group: Keys::Window,
+        what: "Show or hide the library",
+        keys: "Shift+Cmd+B",
+        mac: Some("Cmd+B"),
+    },
+    Chord {
+        group: Keys::Window,
+        what: "Show or hide the inspector",
+        keys: "Shift+Cmd+O",
+        mac: Some("Alt+Cmd+O"),
+    },
+];
+
+impl Chord {
+    /// The keys on this platform, as the menus write them.
+    fn keys(&self) -> &'static str {
+        match self.mac {
+            Some(mac) if cfg!(target_os = "macos") => mac,
+            _ => self.keys,
+        }
+    }
+}
+
+/// How many slips separate two short words: a letter added, dropped or
+/// replaced, or two neighbours swapped.
+fn edits(a: &[char], b: &[char]) -> usize {
+    let width = b.len() + 1;
+    let mut cost: Vec<usize> = (0..(a.len() + 1) * width).map(|i| i % width).collect();
+    for i in 1..=a.len() {
+        cost[i * width] = i;
+        for j in 1..=b.len() {
+            let mut best = (cost[(i - 1) * width + j - 1] + usize::from(a[i - 1] != b[j - 1]))
+                .min(cost[(i - 1) * width + j] + 1)
+                .min(cost[i * width + j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(cost[(i - 2) * width + j - 2] + 1);
+            }
+            cost[i * width + j] = best;
+        }
+    }
+    cost[a.len() * width + b.len()]
+}
+
+/// Whether `typed` is `word`, or the start of it, give or take a slip of the
+/// keys. Short words must be typed exactly: a slip there is another word.
+fn nearly(typed: &str, word: &str) -> bool {
+    let typed: Vec<char> = typed.chars().collect();
+    let word: Vec<char> = word.chars().collect();
+    let allowed = match typed.len() {
+        0..=3 => return false,
+        4..=7 => 1,
+        _ => 2,
+    };
+    (typed.len().saturating_sub(allowed)..=typed.len() + allowed)
+        .filter(|&length| length <= word.len())
+        .any(|length| edits(&typed, &word[..length]) <= allowed)
+}
+
+fn words(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+}
+
+/// Every setting a search reads, with its pane and the words it is found by.
+fn searched() -> impl Iterator<Item = (Setting, PreferencesPane, Vec<String>)> {
+    let settings = INDEX.iter().map(|&(setting, pane, label, terms)| {
+        let known = words(pane.name())
+            .chain(words(label))
+            .chain(words(terms))
+            .collect();
+        (setting, pane, known)
+    });
+    let chords = SHORTCUTS.iter().enumerate().map(|(index, chord)| {
+        let pane = PreferencesPane::Keyboard;
+        let known = words(pane.name())
+            .chain(words(chord.what))
+            .chain(words(chord.group.name()))
+            .chain(words("shortcut shortcuts keys chord chords hotkey"))
+            .collect();
+        (Setting::Shortcut(index), pane, known)
+    });
+    settings.chain(chords)
+}
+
+/// The settings a query finds, in the order of the panes, or `None` when
+/// there is nothing to search for. Every word typed must be found in a
+/// setting: at the start of one of its words, or inside one once three
+/// letters are typed. Misspellings count only when nothing matches as typed.
+fn search(query: &str) -> Option<Vec<Setting>> {
+    let typed: Vec<String> = words(query).collect();
+    if typed.is_empty() {
+        return None;
+    }
+    let mut exact = Vec::new();
+    let mut near = Vec::new();
+    for (setting, _, known) in searched() {
+        let found = |typed: &String| {
+            known.iter().any(|word| {
+                word.starts_with(typed.as_str())
+                    || (typed.chars().count() >= 3 && word.contains(typed.as_str()))
+            })
+        };
+        if typed.iter().all(found) {
+            exact.push(setting);
+        } else if typed
+            .iter()
+            .all(|typed| found(typed) || known.iter().any(|word| nearly(typed, word)))
+        {
+            near.push(setting);
+        }
+    }
+    Some(if exact.is_empty() { near } else { exact })
+}
+
+fn pane_of(setting: Setting) -> PreferencesPane {
+    match setting {
+        Setting::Shortcut(_) => PreferencesPane::Keyboard,
+        setting => (INDEX.iter())
+            .find(|entry| entry.0 == setting)
+            .map_or(PreferencesPane::Appearance, |entry| entry.1),
+    }
+}
+
+/// Which settings a pane draws: all of its own, or those a search found.
+struct Listed<'a> {
+    found: Option<&'a [Setting]>,
+    cards: Cell<usize>,
+}
+
+impl Listed<'_> {
+    fn has(&self, setting: Setting) -> bool {
+        self.found.is_none_or(|found| found.contains(&setting))
+    }
+}
+
+/// A titled card holding those of `members` that are shown, or nothing when
+/// none are. Search results name the pane each card comes from.
+fn card(
+    ui: &mut Ui,
+    p: &Palette,
+    listed: &Listed,
+    pane: PreferencesPane,
+    title: &str,
+    members: &[Setting],
+    add_rows: impl FnOnce(&mut Ui, &mut Group),
+) {
+    if !members.iter().any(|&setting| listed.has(setting)) {
+        return;
+    }
+    if listed.cards.replace(listed.cards.get() + 1) > 0 {
+        // Cards stand 14 apart, as Terminal's Preferences cards do (§5.9.2).
+        ui.add_space(14.0);
+    }
+    // Every card is titled, as Terminal's are, and never with its pane's
+    // own name, which the header already says; a search says whose each
+    // card is.
+    let label = match listed.found {
+        Some(_) => format!("{} · {title}", pane.name()),
+        None => title.to_owned(),
+    };
+    let at = ui.cursor().min;
+    controls::section_label(ui, *p, &label);
+    kit::said(
+        ui,
+        painted(
+            ui,
+            pos2(at.x + 4.0, at.y + 12.0),
+            &label,
+            theme::medium(11.5),
+        ),
+        &label,
+    );
+    controls::group(ui, *p, add_rows);
+}
+
+/// Where words painted from the middle of their leading edge at `at` are.
+fn painted(ui: &Ui, at: Pos2, words: &str, font: egui::FontId) -> Rect {
+    let size = (ui.painter())
+        .layout_no_wrap(words.to_owned(), font, Color32::PLACEHOLDER)
+        .size();
+    Rect::from_min_size(pos2(at.x, at.y - size.y * 0.5), size)
+}
+
+/// A row of a Preferences card, as tall as Terminal's, its label said too.
+fn row<R>(ui: &mut Ui, rows: &mut Group, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    row_of(ui, rows, label, metrics::PREFERENCES_ROW, add)
+}
+
+/// A row as `row` draws it, `height` tall.
+fn row_of<R>(
+    ui: &mut Ui,
+    rows: &mut Group,
+    label: &str,
+    height: f32,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let at = ui.cursor().min;
+    let words = painted(
+        ui,
+        pos2(at.x + 14.0, at.y + height * 0.5),
+        label,
+        theme::regular(13.0),
+    );
+    kit::said(ui, words, label);
+    rows.row_with_height(ui, label, height, add)
+}
+
+/// A note of a card as `Group::note` draws it, its words said too.
+fn note(ui: &mut Ui, rows: &mut Group, text: &str) {
+    let at = ui.cursor().min;
+    let width = ui.available_width();
+    rows.note(ui, text);
+    let bottom = ui.min_rect().bottom();
+    kit::said(
+        ui,
+        Rect::from_min_max(
+            pos2(at.x + 14.0, at.y + 10.0),
+            pos2(at.x + width - 14.0, bottom - 10.0),
+        ),
+        text,
+    );
+}
+
+/// Terminal's segmented control, whose options Left and Right also choose
+/// while one of them has the keyboard (Terminal behaviour). Returns whether
+/// the choice changed.
+fn choice<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    p: &Palette,
+    name: &str,
+    value: &mut T,
+    options: &[(T, &str)],
+    width: f32,
+) -> bool {
+    controls::segmented_choice(ui, *p, name, value, options, width)
 }
 
 /// The proxy cache sizes offered, in GiB.
 const PROXY_BUDGETS: [u32; 7] = [5, 10, 20, 50, 100, 200, 500];
+
+/// What the note under a System appearance says: that the system's light or
+/// dark mode chooses, or that the system has not said, so the window is
+/// dark (`Appearance::resolve`).
+fn system_note(reported: bool) -> &'static str {
+    if reported {
+        "Your system's light or dark mode chooses the appearance of the window."
+    } else {
+        "Your system has not reported light or dark mode, so Neptune Video is dark."
+    }
+}
 
 /// What a note under a control says of each quality.
 fn quality_note(quality: PreviewQuality) -> &'static str {
@@ -205,96 +1484,10 @@ pub(crate) fn cache_usage(bytes: u64, budget_gib: u32) -> String {
     format!("{used} of {budget_gib} GB")
 }
 
-/// A line of muted text under a control, wrapped.
-fn note(ui: &mut Ui, p: &Palette, text: &str) {
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(text)
-                .font(theme::regular(11.5))
-                .color(p.muted),
-        )
-        .wrap(),
-    );
-}
-
-/// The rows of the settings sheet's Preview section.
-fn preview(
-    ui: &mut Ui,
-    p: &Palette,
-    preview: &PreviewSettings,
-    cache: Cache,
-    actions: &mut Vec<Action>,
-) {
-    row(ui, p, "Quality", |ui| {
-        let mut quality = preview.quality;
-        let options = PreviewQuality::ALL.map(|quality| (quality, quality.name()));
-        if widgets::segmented(ui, p, &mut quality, &options, 236.0) {
-            actions.push(Action::SetPreviewQuality(quality));
-        }
-    });
-    note(ui, p, quality_note(preview.quality));
-    row(ui, p, "Proxies", |ui| {
-        let mut mode = preview.proxies;
-        let options = ProxyMode::ALL.map(|mode| (mode, mode.name()));
-        if widgets::segmented(ui, p, &mut mode, &options, 180.0) {
-            actions.push(Action::SetProxyMode(mode));
-        }
-    });
-    note(
-        ui,
-        p,
-        "Proxies are smaller copies used only for preview; exports always use the \
-         original media.",
-    );
-    if !cache.available {
-        note(ui, p, "Proxies are unavailable on this computer.");
-        return;
-    }
-    row(ui, p, "Cache size", |ui| {
-        let chosen = preview.proxy_budget_gib;
-        let mut pick = chosen;
-        egui::ComboBox::from_id_salt("proxy-budget")
-            .icon(widgets::combo_icon)
-            .selected_text(format!("{chosen} GB"))
-            .width(96.0)
-            .show_ui(ui, |ui| {
-                // A size kept from elsewhere stays offered.
-                if !PROXY_BUDGETS.contains(&chosen) {
-                    ui.selectable_value(&mut pick, chosen, format!("{chosen} GB"));
-                }
-                for gib in PROXY_BUDGETS {
-                    ui.selectable_value(&mut pick, gib, format!("{gib} GB"));
-                }
-            })
-            .response
-            .widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Proxy cache size")
-            });
-        if pick != chosen {
-            actions.push(Action::SetProxyBudget(pick));
-        }
-    });
-    let usage = cache_usage(cache.bytes, preview.proxy_budget_gib);
-    row(ui, p, &usage, |ui| {
-        let empty = cache.proxies == 0;
-        let clear = ui
-            .add_enabled_ui(!empty, |ui| {
-                widgets::button(ui, p, Some(Icon::Trash), "Clear proxies", Kind::Plain)
-            })
-            .inner
-            .on_hover_text(
-                "Remove every proxy. None is made again until you ask for one or reopen the \
-                 project.",
-            )
-            .on_disabled_hover_text("There are no proxies to clear");
-        if clear.clicked() {
-            actions.push(Action::ClearProxies);
-        }
-    });
-}
-
-/// The settings sheet. `cache` is what the proxy cache holds now. Returns
-/// whether it should close.
+/// Preferences: a source list of panes whose settings apply as they change.
+/// `cache` is what the proxy cache holds now. Returns whether it should
+/// close. The pane in view is the one `PreferencesPane` keeps for the
+/// window's session.
 pub fn settings(
     ctx: &egui::Context,
     p: &Palette,
@@ -302,864 +1495,1014 @@ pub fn settings(
     cache: Cache,
     actions: &mut Vec<Action>,
 ) -> bool {
+    let screen = ctx.content_rect();
+    let query_id = Id::new("preferences-query");
+    // A search is left behind when Preferences closes.
+    let focus_id = Id::new("preferences-focus-search");
+    let mut query = if kit::opening(ctx, Id::new("settings-sheet")) {
+        // Preferences opens ready to search, as Terminal's does.
+        ctx.data_mut(|data| data.insert_temp(focus_id, true));
+        String::new()
+    } else {
+        ctx.data(|data| data.get_temp::<String>(query_id))
+            .unwrap_or_default()
+    };
+    // Escape leaves a search before it leaves the sheet, but only once what
+    // is inside it is closed: an open list, or a field other than the
+    // search that had the keyboard, takes that Escape for itself.
+    let elsewhere_id = Id::new("preferences-typing-elsewhere");
+    let inner_open = egui::Popup::is_any_open(ctx)
+        || ctx.data(|data| data.get_temp::<bool>(elsewhere_id)) == Some(true);
+    let escape_taken =
+        !query.is_empty() && !inner_open && ctx.input(|input| input.key_pressed(Key::Escape));
+    if escape_taken {
+        query.clear();
+    }
+    let mut pane = PreferencesPane::shown(ctx);
     let mut close = false;
-    let response = egui::Modal::new(Id::new("settings-sheet"))
-        .backdrop_color(p.scrim)
-        .frame(sheet(p))
-        .show(ctx, |ui| {
-            let screen = ui.ctx().content_rect();
-            ui.set_width(400.0f32.min(screen.width() - 64.0));
-            ui.spacing_mut().item_spacing.y = 6.0;
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Settings")
-                        .font(theme::semibold(15.0))
-                        .color(p.fg),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icon_button(ui, p, Icon::Close, "Close settings").clicked() {
-                        close = true;
-                    }
-                });
-            });
-
-            // One scroll for the whole sheet: at a short window every section
-            // stays reachable.
-            let room = (screen.height() - 150.0).max(160.0);
-            egui::ScrollArea::vertical()
-                .max_height(room)
-                // A sheet has no height of its own to offer: without this
-                // the list scrolls long before the window is full.
-                .min_scrolled_height(room)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    section(ui, p, "Appearance");
-                    group(ui, p, |ui| {
-                        row(ui, p, "Theme", |ui| {
-                            let mut appearance = settings.appearance;
-                            if widgets::segmented(
-                                ui,
-                                p,
-                                &mut appearance,
-                                &[(Appearance::Dark, "Dark"), (Appearance::Light, "Light")],
-                                150.0,
-                            ) {
-                                actions.push(Action::SetAppearance(appearance));
-                            }
-                        });
-                        row(ui, p, "Accent", |ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            for (accent, name) in Accent::ALL.into_iter().rev() {
-                                let (rect, response) =
-                                    ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
-                                let selected = settings.accent == accent;
-                                response.widget_info(|| {
-                                    egui::WidgetInfo::selected(
-                                        egui::WidgetType::RadioButton,
-                                        true,
-                                        selected,
-                                        name,
-                                    )
-                                });
-                                let color = accent.color(p.dark);
-                                ui.painter().circle_filled(rect.center(), 8.0, color);
-                                if selected {
-                                    ui.painter().circle_stroke(
-                                        rect.center(),
-                                        10.5,
-                                        Stroke::new(1.5, color),
-                                    );
-                                }
-                                if response.on_hover_text(name).clicked() {
-                                    actions.push(Action::SetAccent(accent));
-                                }
-                            }
-                        });
-                        row(ui, p, "Interface size", |ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            // The scale as shown, which the window may hold
-                            // below the one asked for.
-                            let room = super::largest_scale(ui.ctx());
-                            let scale = settings.interface_scale.min(room);
-                            // A step that would change nothing is not offered.
-                            let step = |ui: &mut Ui, step: Scale, icon, label: &str| {
-                                let to = step.applied_to(scale).min(room);
-                                let label = shortcut(label);
-                                let button = ui
-                                    .add_enabled_ui(to != scale, |ui| {
-                                        icon_button(ui, p, icon, &label)
-                                    })
-                                    .inner;
-                                button.clicked().then_some(to)
-                            };
-                            let larger = step(ui, Scale::Larger, Icon::ZoomIn, "Larger (Cmd+=)");
-                            // The size itself, which goes back to 100%.
-                            let size = format!("{:.0}%", scale * 100.0);
-                            let actual = ui
-                                .add_enabled_ui(scale != 1.0, |ui| {
-                                    ui.add_sized(
-                                        [48.0, metrics::CONTROL_HEIGHT],
-                                        egui::Button::new(
-                                            egui::RichText::new(size)
-                                                .font(theme::regular(12.0))
-                                                .color(p.fg),
-                                        )
-                                        .frame(false),
-                                    )
-                                    .on_hover_text(shortcut("Actual size (Cmd+0)"))
-                                })
-                                .inner
-                                .clicked()
-                                .then(|| Scale::Actual.applied_to(scale));
-                            let smaller =
-                                step(ui, Scale::Smaller, Icon::ZoomOut, "Smaller (Cmd+-)");
-                            if let Some(to) = larger.or(actual).or(smaller) {
-                                actions.push(Action::ScaleInterface(to));
-                            }
-                        });
-                    });
-
-                    section(ui, p, "Agent");
-                    group(ui, p, |ui| {
-                        row(ui, p, "Answered by", |ui| {
-                            let mut provider = settings.ai.provider;
-                            if widgets::segmented(
-                                ui,
-                                p,
-                                &mut provider,
-                                &[(Provider::Claude, "Claude"), (Provider::Codex, "Codex")],
-                                150.0,
-                            ) {
-                                actions.push(Action::SetAiProvider(provider));
-                            }
-                        });
-                        row(ui, p, "Model", |ui| {
-                            let mut model = settings.ai.model().to_owned();
-                            let field = egui::Frame::NONE
-                                .fill(p.pressed)
-                                .corner_radius(CornerRadius::same(metrics::CONTROL_RADIUS - 2))
-                                .inner_margin(egui::Margin::symmetric(8, 4))
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut model)
-                                            .hint_text("Provider's default")
-                                            .frame(egui::Frame::NONE)
-                                            .desired_width(150.0)
-                                            .font(theme::regular(12.5)),
-                                    )
-                                })
-                                .inner;
-                            if field.changed() {
-                                actions.push(Action::SetAiModel(model));
-                            }
-                        });
-                        row(ui, p, "Effort", |ui| {
-                            let mut effort = settings.ai.effort;
-                            let options = Effort::ALL.map(|effort| (effort, effort.name()));
-                            if widgets::segmented(ui, p, &mut effort, &options, 236.0) {
-                                actions.push(Action::SetAiEffort(effort));
-                            }
-                        });
-                        row(ui, p, "Edits", |ui| {
-                            let mut review = settings.ai.review;
-                            if widgets::segmented(
-                                ui,
-                                p,
-                                &mut review,
-                                &[(false, "As it works"), (true, "For review")],
-                                190.0,
-                            ) {
-                                actions.push(Action::SetAiReview(review));
-                            }
-                        });
-                        // Like --root for an outside agent: folders the
-                        // agent may use besides the project's and the
-                        // person's usual places.
-                        for (index, folder) in settings.ai.folders.iter().enumerate() {
-                            let name = folder.file_name().map_or_else(
-                                || folder.display().to_string(),
-                                |name| name.to_string_lossy().into_owned(),
-                            );
-                            row(ui, p, &name, |ui| {
-                                if widgets::button(ui, p, Some(Icon::Trash), "Remove", Kind::Plain)
-                                    .on_hover_text(folder.display().to_string())
-                                    .clicked()
-                                {
-                                    actions.push(Action::RemoveAgentFolder(index));
-                                }
-                            });
-                        }
-                        row(ui, p, "Folders", |ui| {
-                            if widgets::button(ui, p, Some(Icon::Plus), "Add folder…", Kind::Plain)
-                                .on_hover_text(
-                                    "Let the agent read media from and save to this folder, \
-                                     besides the project's folders and your usual ones",
-                                )
-                                .clicked()
-                            {
-                                actions.push(Action::AddAgentFolder);
-                            }
-                        });
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(
-                                    "Requests go through the Claude or Codex command line \
-                                 installed on this computer, with the sign-in it already \
-                                 has. Neptune Video keeps no key or password. As it works, the \
-                                 agent edits with every tool an outside agent has, and \
-                                 each edit is a step you can undo. It may use the \
-                                 project's folders, your Movies, Music, Pictures, \
-                                 Desktop, Documents and Downloads folders, and those \
-                                 added here. For review, it proposes edits from the \
-                                 project's data alone, and nothing changes until you \
-                                 apply them.",
-                                )
-                                .font(theme::regular(11.5))
-                                .color(p.muted),
-                            )
-                            .wrap(),
-                        );
-                    });
-
-                    section(ui, p, "Editing");
-                    group(ui, p, |ui| {
-                        row(ui, p, "Snap while dragging", |ui| {
-                            if switch(ui, p, settings.snapping, "Snap while dragging") {
-                                actions.push(Action::ToggleSnapping);
-                            }
-                        });
-                        row(ui, p, "Keep a recovery copy while editing", |ui| {
-                            if switch(ui, p, settings.autosave, "Keep a recovery copy") {
-                                actions.push(Action::SetAutosave(!settings.autosave));
-                            }
-                        });
-                    });
-
-                    section(ui, p, "Preview");
-                    group(ui, p, |ui| {
-                        preview(ui, p, &settings.preview, cache, actions)
-                    });
-
-                    section(ui, p, "Keyboard");
-                    group(ui, p, |ui| {
-                        for (what, keys) in SHORTCUTS {
-                            row(ui, p, what, |ui| {
-                                ui.label(
-                                    egui::RichText::new(shortcut(keys))
-                                        .font(theme::regular(12.0))
-                                        .color(p.fg),
-                                );
-                            });
-                        }
-                    });
-                });
-        });
-    close || response.should_close()
-}
-
-const SHORTCUTS: [(&str, &str); 33] = [
-    ("Play or pause", "Space"),
-    ("Previous or next frame", "← →"),
-    ("Back or forward one second", "Shift+← →"),
-    ("Start or end", "Home End"),
-    ("Back one second, stop, play faster", "J K L"),
-    ("Select the clip under the playhead", "C"),
-    ("Select the clip before or after", "Alt+← →"),
-    ("Select the clip on the track above or below", "Alt+↑ ↓"),
-    ("Split at playhead", "S"),
-    ("Delete", "Delete"),
-    ("Ripple delete", "Shift+Delete"),
-    ("Undo", "Cmd+Z"),
-    ("Redo", "Shift+Cmd+Z"),
-    ("Cut, copy, paste", "Cmd+X C V"),
-    ("Duplicate", "Cmd+D"),
-    ("Select all", "Cmd+A"),
-    ("Group, ungroup", "Cmd+G, Shift+Cmd+G"),
-    ("Add marker", "M"),
-    ("Add text", "T"),
-    ("Add transition", "Cmd+T"),
-    ("Freeze frame", "F"),
-    ("Keyframes of the clip", "U"),
-    ("Graph editor", "G"),
-    ("Snapping", "N"),
-    ("Zoom timeline", "Cmd+Scroll, = -"),
-    ("Fit timeline", "Shift+Z"),
-    ("Ask the agent", "Shift+Cmd+K"),
-    ("Command line", "Cmd+K"),
-    ("Save", "Cmd+S"),
-    ("Import media", "Cmd+I"),
-    ("Export", "Cmd+E"),
-    ("Render queue", "Shift+Cmd+E"),
-    ("Interface size", "Cmd+= Cmd+- Cmd+0"),
-];
-
-pub(crate) fn group(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
-    egui::Frame::NONE
-        .fill(p.control)
-        .corner_radius(CornerRadius::same(metrics::CONTROL_RADIUS + 2))
-        .inner_margin(egui::Margin::symmetric(12, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 2.0;
-            add(ui);
-        });
-}
-
-/// Asks what to do with unsaved work before it is replaced.
-pub fn unsaved(ctx: &egui::Context, p: &Palette, name: &str, pending: &Pending) -> Option<Answer> {
-    let mut answer = None;
-    let response = egui::Modal::new(Id::new("unsaved-sheet"))
-        .backdrop_color(p.scrim)
-        .frame(sheet(p))
-        .show(ctx, |ui| {
-            ui.set_width(360.0f32.min(ui.ctx().content_rect().width() - 64.0));
-            ui.label(
-                egui::RichText::new(format!("Save changes to “{name}”?"))
-                    .font(theme::semibold(15.0))
-                    .color(p.fg),
-            );
-            ui.add_space(2.0);
-            ui.label(
-                egui::RichText::new(match pending {
-                    Pending::Quit => "Your changes are lost if you quit without saving.",
-                    _ => "Your changes are lost if you continue without saving.",
-                })
-                .font(theme::regular(12.5))
-                .color(p.secondary),
-            );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if widgets::button(ui, p, None, "Don't save", Kind::Destructive).clicked() {
-                    answer = Some(Answer::Discard);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::button(ui, p, None, "Save", Kind::Primary).clicked() {
-                        answer = Some(Answer::Save);
-                    }
-                    if widgets::button(ui, p, None, "Cancel", Kind::Plain).clicked() {
-                        answer = Some(Answer::Cancel);
-                    }
-                });
-            });
-        });
-    if answer.is_none() && response.should_close() {
-        answer = Some(Answer::Cancel);
-    }
-    answer
-}
-
-/// How a short question was answered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Choice {
-    /// The primary button, on the right.
-    Primary,
-    /// The button on the left that gives something up.
-    GiveUp,
-    /// The plain button, Escape or the backdrop.
-    Dismissed,
-}
-
-/// A short question with a primary answer on the right, an optional plain
-/// one beside it and an optional one on the left that gives something up.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each question names its own words; a struct would only rename them"
-)]
-fn question(
-    ctx: &egui::Context,
-    p: &Palette,
-    id: &str,
-    title: &str,
-    body: &str,
-    give_up: Option<&str>,
-    primary: &str,
-    plain: Option<&str>,
-) -> Option<Choice> {
-    let mut answer = None;
-    let response = egui::Modal::new(Id::new(id))
-        .backdrop_color(p.scrim)
-        .frame(sheet(p))
-        .show(ctx, |ui| {
-            ui.set_width(380.0f32.min(ui.ctx().content_rect().width() - 64.0));
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(title)
-                        .font(theme::semibold(15.0))
-                        .color(p.fg),
-                )
-                .wrap(),
-            );
-            ui.add_space(2.0);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(body)
-                        .font(theme::regular(12.5))
-                        .color(p.secondary),
-                )
-                .wrap(),
-            );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if let Some(text) = give_up
-                    && widgets::button(ui, p, None, text, Kind::Destructive).clicked()
-                {
-                    answer = Some(Choice::GiveUp);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::button(ui, p, None, primary, Kind::Primary).clicked() {
-                        answer = Some(Choice::Primary);
-                    }
-                    if let Some(text) = plain
-                        && widgets::button(ui, p, None, text, Kind::Plain).clicked()
-                    {
-                        answer = Some(Choice::Dismissed);
-                    }
-                });
-            });
-        });
-    if answer.is_none() && response.should_close() {
-        answer = Some(Choice::Dismissed);
-    }
-    answer
-}
-
-/// Asks before an export replaces `file`, which is in `folder`, and `also`,
-/// its caption file, when that is there too. `true` replaces them; Cancel,
-/// Escape and the backdrop answer `false`.
-pub fn replace_export(
-    ctx: &egui::Context,
-    p: &Palette,
-    file: &str,
-    also: Option<&str>,
-    folder: &str,
-) -> Option<bool> {
-    let (title, body) = match also {
-        None => (
-            format!("Replace “{file}”?"),
-            format!(
-                "A file with this name is already in “{folder}”. It is replaced once the \
-                 export has finished; until then it stays as it is."
-            ),
-        ),
-        Some(also) => (
-            format!("Replace “{file}” and “{also}”?"),
-            format!(
-                "Files with these names, the export and its caption file, are already in \
-                 “{folder}”. They are replaced once the export has finished; until then \
-                 they stay as they are."
-            ),
-        ),
-    };
-    let choice = question(
+    let heard = scaffold(
         ctx,
         p,
-        "replace-export-sheet",
-        &title,
-        &body,
-        None,
-        "Replace",
-        Some("Cancel"),
-    );
-    choice.map(|choice| choice == Choice::Primary)
-}
-
-/// Asks before quitting stops the `jobs` exports rendering or waiting.
-/// `true` cancels them at once and goes on to quit; Keep rendering, Escape
-/// and the backdrop answer `false`.
-pub fn stop_rendering(ctx: &egui::Context, p: &Palette, jobs: usize) -> Option<bool> {
-    let body = match jobs {
-        1 => "An export is rendering or waiting. Stop and quit cancels it now and \
-              removes its unfinished file; a file it would replace is left as it is. \
-              If you then stay, it can be rendered again from the render queue."
-            .to_owned(),
-        n => format!(
-            "{n} exports are rendering or waiting. Stop and quit cancels them now and \
-             removes their unfinished files; files they would replace are left as they \
-             are. If you then stay, they can be rendered again from the render queue."
-        ),
-    };
-    let choice = question(
-        ctx,
-        p,
-        "stop-rendering-sheet",
-        "Rendering will stop",
-        &body,
-        Some("Stop and quit"),
-        "Keep rendering",
-        None,
-    );
-    choice.map(|choice| choice == Choice::GiveUp)
-}
-
-/// Asks whether a duck may replace the volume keyframes of the clips that
-/// have them. `Some(true)` to go on; `Some(false)` when it is given up,
-/// which an Escape or a click outside the sheet also says.
-pub fn replace_keys(ctx: &egui::Context, p: &Palette, keyed: usize) -> Option<bool> {
-    let mut answer = None;
-    let response = egui::Modal::new(Id::new("duck-sheet"))
-        .backdrop_color(p.scrim)
-        .frame(sheet(p))
-        .show(ctx, |ui| {
-            ui.set_width(360.0f32.min(ui.ctx().content_rect().width() - 64.0));
-            ui.label(
-                egui::RichText::new(crate::duck::question(keyed))
-                    .font(theme::semibold(15.0))
-                    .color(p.fg),
+        "settings-sheet",
+        "Preferences",
+        PREFERENCES_WIDTH,
+        escape_taken,
+        |ui| {
+            // Leave the window visible around the sheet when there is room;
+            // a short window gives most of that margin back to the settings.
+            let chrome = HEADER + 60.0;
+            let body_height = (screen.height() - chrome - 96.0)
+                .max((screen.height() - chrome - 24.0).min(260.0))
+                .clamp(120.0, 560.0);
+            // One height for every pane, so choosing one never moves the sheet.
+            let height = (body_height + chrome).min(PREFERENCES_HEIGHT);
+            let (_, rect) = ui.allocate_space(vec2(ui.available_width(), height));
+            let compact = rect.width() < COMPACT_BELOW;
+            let list = Rect::from_min_size(
+                rect.min + Vec2::splat(INSET),
+                vec2(if compact { RAIL } else { SIDEBAR }, height - INSET * 2.0),
             );
-            ui.add_space(2.0);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(
-                        "Ducking writes new volume keyframes in their place. \
-                         Undo brings them back.",
-                    )
-                    .font(theme::regular(12.5))
-                    .color(p.secondary),
+            let content = Rect::from_min_max(pos2(list.right(), rect.top()), rect.max);
+            // Concentric with the sheet's corner.
+            let radius = metrics::SHEET_RADIUS - INSET as u8;
+            ui.painter().rect_filled(list, radius, p.chrome);
+            ui.painter()
+                .rect_stroke(list, radius, p.hairline(), StrokeKind::Inside);
+
+            // Beside the names while there is room; otherwise the search
+            // titles the content, and the rail says which pane is in view.
+            let (field, panes) = if compact {
+                (
+                    Rect::from_min_max(
+                        pos2(content.left() + 20.0, content.top() + 11.0),
+                        pos2(content.right() - 50.0, content.top() + 41.0),
+                    ),
+                    list.with_min_y(list.top() + INSET),
                 )
-                .wrap(),
-            );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::button(ui, p, None, "Replace", Kind::Primary).clicked() {
-                        answer = Some(true);
-                    }
-                    if widgets::button(ui, p, None, "Cancel", Kind::Plain).clicked() {
-                        answer = Some(false);
-                    }
-                });
-            });
-        });
-    if answer.is_none() && response.should_close() {
-        answer = Some(false);
-    }
-    answer
-}
-
-/// Says that a save was refused for another writer's sake, and asks what to
-/// do with the edits, which are still in the window. Nothing here writes the
-/// file over what the other writer left.
-pub fn conflict(
-    ctx: &egui::Context,
-    p: &Palette,
-    name: &str,
-    conflict: &Conflict,
-) -> Option<ConflictAnswer> {
-    let mut answer = None;
-    let file = conflict.path.file_name().map_or_else(
-        || conflict.path.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    let response = egui::Modal::new(Id::new("conflict-sheet"))
-        .backdrop_color(p.scrim)
-        .frame(sheet(p))
-        .show(ctx, |ui| {
-            ui.set_width(400.0f32.min(ui.ctx().content_rect().width() - 64.0));
-            ui.horizontal(|ui| {
-                let (glyph, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
-                icons::paint(ui.painter(), glyph, Icon::Warning, p.yellow);
-                ui.label(
-                    egui::RichText::new(if conflict.busy {
-                        format!("“{file}” is being saved elsewhere")
-                    } else {
-                        format!("“{file}” changed on disk")
-                    })
-                    .font(theme::semibold(15.0))
-                    .color(p.fg),
-                );
-            });
-            ui.add_space(2.0);
-            ui.label(
-                egui::RichText::new(if conflict.busy {
-                    format!(
-                        "Another editor is writing this file right now, so “{name}” was \
-                         not saved. Your edits are still here. Try again in a moment, \
-                         or save them to another file."
-                    )
-                } else if conflict.open {
-                    format!(
-                        "Something else saved this file after it was opened here, so \
-                         “{name}” was not saved over it. Your edits are still here. Save \
-                         them to another file, or give them up and reopen the file as \
-                         it is now."
-                    )
-                } else {
-                    format!(
-                        "Something else wrote this file after it was chosen, so \
-                         “{name}” was not saved over it. Your edits are still here. \
-                         Save them to another file."
-                    )
-                })
-                .font(theme::regular(12.5))
-                .color(p.secondary),
-            );
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new(conflict.path.display().to_string())
-                    .font(theme::mono(10.5))
-                    .color(p.muted),
-            );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if conflict.open && !conflict.busy {
-                    let reopen =
-                        widgets::button(ui, p, None, "Discard and reopen", Kind::Destructive)
-                            .on_hover_text(
-                                "Give up the edits in this window and read the file again",
-                            );
-                    if reopen.clicked() {
-                        answer = Some(ConflictAnswer::Reopen);
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if conflict.busy {
-                        if widgets::button(ui, p, None, "Try again", Kind::Primary).clicked() {
-                            answer = Some(ConflictAnswer::Retry);
-                        }
-                        if widgets::button(ui, p, None, "Save as…", Kind::Plain).clicked() {
-                            answer = Some(ConflictAnswer::SaveAs);
-                        }
-                    } else if widgets::button(ui, p, Some(Icon::Save), "Save as…", Kind::Primary)
-                        .clicked()
-                    {
-                        answer = Some(ConflictAnswer::SaveAs);
-                    }
-                    if widgets::button(ui, p, None, "Not now", Kind::Plain).clicked() {
-                        answer = Some(ConflictAnswer::Later);
-                    }
-                });
-            });
-        });
-    if answer.is_none() && response.should_close() {
-        answer = Some(ConflictAnswer::Later);
-    }
-    answer
-}
-
-/// Named checkpoints of the project: make one, or go back to one.
-pub fn checkpoints(
-    ctx: &egui::Context,
-    p: &Palette,
-    state: &mut CheckpointsState,
-    has_file: bool,
-) -> Option<CheckpointAnswer> {
-    let mut answer = None;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
-    let response = egui::Modal::new(Id::new("checkpoints-sheet"))
-        .backdrop_color(p.scrim)
-        .frame(sheet(p))
-        .show(ctx, |ui| {
-            ui.set_width(400.0f32.min(ui.ctx().content_rect().width() - 64.0));
-            ui.spacing_mut().item_spacing.y = 8.0;
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Checkpoints")
-                        .font(theme::semibold(15.0))
-                        .color(p.fg),
-                );
-                if state.busy {
-                    ui.add(egui::Spinner::new().size(12.0).color(p.muted));
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icon_button(ui, p, Icon::Close, "Close checkpoints").clicked() {
-                        answer = Some(CheckpointAnswer::Close);
-                    }
-                });
-            });
-            if !has_file {
-                ui.label(
-                    egui::RichText::new("Checkpoints are kept beside the project file.")
-                        .font(theme::regular(12.5))
-                        .color(p.secondary),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::button(ui, p, Some(Icon::Save), "Save project…", Kind::Primary)
-                        .clicked()
-                    {
-                        answer = Some(CheckpointAnswer::SaveProject);
-                    }
-                });
-                return;
-            }
-
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let add = ui
-                        .add_enabled_ui(!state.busy, |ui| {
-                            widgets::button(ui, p, Some(Icon::Plus), "Save", Kind::Primary)
-                        })
-                        .inner
-                        .on_hover_text("Save a checkpoint of the project as it is now");
-                    let field = egui::Frame::NONE
-                        .fill(p.control)
-                        .corner_radius(CornerRadius::same(metrics::CONTROL_RADIUS))
-                        .inner_margin(egui::Margin::symmetric(9, 5))
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut state.name)
-                                    .hint_text("Checkpoint name")
-                                    .frame(egui::Frame::NONE)
-                                    .desired_width(f32::INFINITY)
-                                    .font(theme::regular(12.5)),
-                            )
-                        })
-                        .inner;
-                    if std::mem::take(&mut state.focus) {
-                        field.request_focus();
-                    }
-                    let entered =
-                        field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (add.clicked() || entered) && !state.busy {
-                        let name = state.name.trim();
-                        answer = Some(CheckpointAnswer::Create(if name.is_empty() {
-                            "Checkpoint".to_owned()
-                        } else {
-                            name.to_owned()
-                        }));
-                        state.name.clear();
-                    }
-                });
-            });
-
-            match &state.list {
-                None => {}
-                Some(Err(problem)) => {
-                    ui.label(
-                        egui::RichText::new(problem)
-                            .font(theme::regular(12.5))
-                            .color(p.red),
-                    );
-                }
-                Some(Ok(list)) if list.is_empty() => {
-                    ui.label(
-                        egui::RichText::new("No checkpoints yet")
-                            .font(theme::regular(12.5))
-                            .color(p.muted),
-                    );
-                }
-                Some(Ok(list)) => {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    egui::ScrollArea::vertical()
-                        .max_height(264.0)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            for checkpoint in list {
-                                if checkpoint_row(ui, p, checkpoint, now, !state.busy) {
-                                    answer = Some(CheckpointAnswer::Restore(checkpoint.clone()));
-                                }
-                            }
-                        });
-                }
-            }
-        });
-    if answer.is_none() && response.should_close() {
-        answer = Some(CheckpointAnswer::Close);
-    }
-    answer
-}
-
-/// One checkpoint: its name, its age and the way back to it.
-fn checkpoint_row(
-    ui: &mut Ui,
-    p: &Palette,
-    checkpoint: &Checkpoint,
-    now: u64,
-    ready: bool,
-) -> bool {
-    ui.horizontal(|ui| {
-        ui.set_min_height(metrics::CONTROL_HEIGHT + 6.0);
-        let (glyph, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-        icons::paint(ui.painter(), glyph, Icon::History, p.secondary);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let restore = ui
-                .add_enabled_ui(ready, |ui| {
-                    widgets::button(ui, p, None, "Restore", Kind::Plain)
-                })
-                .inner;
-            restore.widget_info(|| {
-                egui::WidgetInfo::labeled(
-                    egui::WidgetType::Button,
-                    ready,
-                    format!("Restore {}", checkpoint.label),
-                )
-            });
-            if let Some(made) = checkpoint.made {
-                ui.label(
-                    egui::RichText::new(crate::timefmt::age(now.saturating_sub(made)))
-                        .font(theme::regular(11.5))
-                        .color(p.muted),
-                );
-            }
-            let room = ui.available_width() - 6.0;
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let name =
-                    widgets::truncated(ui, &checkpoint.label, theme::medium(12.5), p.fg, room);
-                let (rect, _) = ui.allocate_exact_size(
-                    vec2(room.max(0.0), metrics::CONTROL_HEIGHT),
-                    Sense::hover(),
-                );
-                ui.painter().galley(
-                    pos2(rect.left(), rect.center().y - name.size().y * 0.5),
-                    name,
+            } else {
+                let top = list.top() + HEADER - INSET;
+                let at = pos2(list.left() + 14.0, (list.top() + top) * 0.5);
+                ui.painter().text(
+                    at,
+                    Align2::LEFT_CENTER,
+                    "Preferences",
+                    theme::semibold(15.0),
                     p.fg,
                 );
-            });
-            restore.clicked()
-        })
-        .inner
-    })
-    .inner
+                let words = painted(ui, at, "Preferences", theme::semibold(15.0));
+                kit::said(ui, words, "Preferences");
+                (
+                    Rect::from_min_size(
+                        pos2(list.left() + 8.0, top),
+                        vec2(list.width() - 16.0, metrics::CONTROL_HEIGHT),
+                    ),
+                    list.with_min_y(top + metrics::CONTROL_HEIGHT + 8.0),
+                )
+            };
+            let searched = controls::place(
+                ui,
+                field,
+                Layout::left_to_right(Align::Center),
+                "preferences-search",
+                |ui| {
+                    controls::search_field(
+                        ui,
+                        *p,
+                        Id::new("preferences-search"),
+                        &mut query,
+                        "Search",
+                        "Search settings",
+                        field.width(),
+                    )
+                },
+            );
+            // A sheet measures itself in a hidden first pass, where focus
+            // cannot be held.
+            if ui.is_enabled()
+                && !ui.is_sizing_pass()
+                && ui.data_mut(|data| data.remove_temp::<bool>(focus_id)) == Some(true)
+            {
+                searched.request_focus();
+            }
+            let mut found = search(&query);
+            // Enter opens the pane of the first setting found.
+            if searched.lost_focus()
+                && ui.input(|input| input.key_pressed(Key::Enter))
+                && let Some(&first) = found.as_ref().and_then(|found| found.first())
+            {
+                pane = pane_of(first);
+                query.clear();
+                found = None;
+            }
+
+            controls::place(
+                ui,
+                panes,
+                Layout::top_down(Align::Min),
+                "preferences-sidebar",
+                |ui| sidebar(ui, p, &mut pane, &mut query, found.as_deref(), compact),
+            );
+            // Choosing a pane leaves the search.
+            if query.is_empty() {
+                found = None;
+            }
+            controls::place(
+                ui,
+                content,
+                Layout::top_down(Align::Min),
+                "preferences-pane",
+                |ui| {
+                    let title = match (compact, &found) {
+                        (true, _) => "",
+                        (false, Some(_)) => "Results",
+                        (false, None) => pane.name(),
+                    };
+                    let at = ui.cursor().min;
+                    close |= controls::sheet_header(ui, *p, title, Some("Close preferences"));
+                    title_said(ui, at, title);
+                    if found.as_ref().is_some_and(Vec::is_empty) {
+                        nothing_found(ui, p, height - HEADER);
+                        return;
+                    }
+                    let listed = Listed {
+                        found: found.as_deref(),
+                        cards: Cell::new(0),
+                    };
+                    // A search lists every pane; otherwise the one in view.
+                    let shows = |shown: PreferencesPane| listed.found.is_some() || shown == pane;
+                    let scrolled = egui::ScrollArea::vertical()
+                        .id_salt((
+                            "preferences-body",
+                            listed.found.is_none().then_some(pane.name()),
+                        ))
+                        .max_height(height - HEADER)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            controls::padded(ui, 20.0, |ui| {
+                                if shows(PreferencesPane::Appearance) {
+                                    appearance(ui, p, &listed, settings, actions);
+                                }
+                                if shows(PreferencesPane::Editing) {
+                                    editing(ui, p, &listed, settings, actions);
+                                }
+                                if shows(PreferencesPane::Preview) {
+                                    preview(ui, p, &listed, &settings.preview, cache, actions);
+                                }
+                                if shows(PreferencesPane::Agent) {
+                                    agent(ui, p, &listed, settings, actions);
+                                }
+                                if shows(PreferencesPane::Keyboard) {
+                                    keyboard(ui, p, &listed);
+                                }
+                                ui.add_space(20.0);
+                            });
+                        });
+                    kit::scroll_fades(ui, &scrolled, p.elevated);
+                },
+            );
+        },
+    );
+    pane.show(ctx);
+    // Escape takes the keyboard out of a field before the next frame shows,
+    // so whether one other than the search had it is kept from this one.
+    let elsewhere = ctx
+        .memory(|memory| memory.focused())
+        .is_some_and(|focused| {
+            focused != controls::viewport_id(ctx, Id::new("preferences-search"))
+                && egui::text_edit::TextEditState::load(ctx, focused).is_some()
+        });
+    ctx.data_mut(|data| {
+        data.insert_temp(query_id, query);
+        data.insert_temp(elsewhere_id, elsewhere);
+        // The search leaves with the sheet: with nothing in it, one Escape
+        // closes Preferences, as in Terminal. Only another field keeps that
+        // Escape for itself.
+        data.insert_temp(typing_key("settings-sheet"), elsewhere);
+    });
+    close || heard.dismissed
 }
 
-/// The width of a notice or a card over a viewer this wide.
-fn notice_width(viewer: Rect) -> f32 {
+/// What the content says when a search finds no setting.
+fn nothing_found(ui: &mut Ui, p: &Palette, height: f32) {
+    let (_, area) = ui.allocate_space(vec2(ui.available_width(), height));
+    kit::empty_state(
+        ui,
+        p,
+        area,
+        Icon::Search,
+        "No settings found",
+        "Try another word for it.",
+        None,
+    );
+}
+
+/// The source list: the panes by name, or by icon alone in a narrow sheet.
+/// During a search each pane counts what was found in it.
+fn sidebar(
+    ui: &mut Ui,
+    p: &Palette,
+    pane: &mut PreferencesPane,
+    query: &mut String,
+    found: Option<&[Setting]>,
+    compact: bool,
+) {
+    let width = ui.available_width();
+    egui::ScrollArea::vertical()
+        .id_salt("preferences-panes")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for entry in PreferencesPane::ALL {
+                let (_, slot) = ui.allocate_space(vec2(width, 32.0));
+                let row = slot.shrink2(vec2(INSET, 1.0));
+                let response = ui.interact(
+                    row,
+                    Id::new(("preferences-pane", entry.name())),
+                    Sense::click(),
+                );
+                if response.clicked() {
+                    *pane = entry;
+                    query.clear();
+                }
+                let matches = found.map(|found| {
+                    (found.iter())
+                        .filter(|&&setting| pane_of(setting) == entry)
+                        .count()
+                });
+                // Results take the content; no single pane is in view then.
+                let selected = matches.is_none() && *pane == entry;
+                response.widget_info(|| {
+                    WidgetInfo::selected(WidgetType::RadioButton, true, selected, entry.name())
+                });
+                let painter = ui.painter();
+                if selected || response.is_pointer_button_down_on() {
+                    painter.rect_filled(row, metrics::ROW_RADIUS, p.pressed);
+                } else if response.hovered() {
+                    painter.rect_filled(row, metrics::ROW_RADIUS, p.hover);
+                }
+                if response.has_focus() {
+                    controls::focus_ring(painter, row.shrink(2.0), metrics::ROW_RADIUS - 2, *p);
+                }
+                let ink = if selected || response.hovered() {
+                    p.fg
+                } else if matches == Some(0) {
+                    p.muted
+                } else {
+                    p.secondary
+                };
+                let icon = if compact {
+                    row.center()
+                } else {
+                    pos2(row.left() + 16.0, row.center().y)
+                };
+                icons::paint(
+                    painter,
+                    Rect::from_center_size(icon, Vec2::splat(16.0)),
+                    pane_icon(entry),
+                    ink,
+                );
+                if !compact {
+                    let mut trailing = row.right() - 10.0;
+                    if let Some(count) = matches.filter(|&count| count > 0) {
+                        let count =
+                            painter.layout_no_wrap(count.to_string(), theme::medium(11.5), ink);
+                        trailing -= count.size().x;
+                        controls::galley_at(painter, pos2(trailing, row.center().y), count);
+                        trailing -= 6.0;
+                    }
+                    let left = row.left() + 32.0;
+                    controls::galley_at(
+                        painter,
+                        pos2(left, row.center().y),
+                        controls::elided(
+                            painter,
+                            entry.name(),
+                            theme::medium(13.0),
+                            ink,
+                            trailing - left,
+                        ),
+                    );
+                }
+                let response = response.on_hover_cursor(CursorIcon::PointingHand);
+                if compact {
+                    response.on_hover_text(entry.name());
+                }
+            }
+        });
+}
+
+/// Appearance: the look of the window, its size and its motion.
+fn appearance(
+    ui: &mut Ui,
+    p: &Palette,
+    listed: &Listed,
+    settings: &Settings,
+    actions: &mut Vec<Action>,
+) {
+    let pane = PreferencesPane::Appearance;
+    card(
+        ui,
+        p,
+        listed,
+        pane,
+        "Window",
+        &[Setting::Appearance, Setting::Accent, Setting::InterfaceSize],
+        |ui, rows| {
+            if listed.has(Setting::Appearance) {
+                row(ui, rows, "Appearance", |ui| {
+                    let mut appearance = settings.appearance;
+                    if choice(
+                        ui,
+                        p,
+                        "Appearance",
+                        &mut appearance,
+                        &[
+                            (Appearance::Light, "Light"),
+                            (Appearance::Dark, "Dark"),
+                            (Appearance::System, "System"),
+                        ],
+                        228.0,
+                    ) {
+                        actions.push(Action::SetAppearance(appearance));
+                    }
+                });
+                // Which the system chose, or that it said nothing, as
+                // Terminal tells it.
+                if settings.appearance == Appearance::System {
+                    let reported = ui.ctx().system_theme().is_some();
+                    note(ui, rows, system_note(reported));
+                }
+            }
+            if listed.has(Setting::Accent) {
+                row(ui, rows, "Accent", |ui| {
+                    // A strip as wide as the nine discs at the trailing
+                    // edge, laid out leading to trailing so that Tab and a
+                    // screen reader go as the eye does: Blue leads.
+                    let count = Accent::ALL.len() as f32;
+                    let strip = vec2(count * 20.0 + (count - 1.0) * 8.0, 20.0);
+                    ui.allocate_ui_with_layout(strip, Layout::left_to_right(Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        for (accent, name) in Accent::ALL {
+                            if swatch(ui, p, accent, name, settings.accent == accent)
+                                && settings.accent != accent
+                            {
+                                actions.push(Action::SetAccent(accent));
+                            }
+                        }
+                    });
+                });
+            }
+            if listed.has(Setting::InterfaceSize) {
+                row(ui, rows, "Interface size", |ui| {
+                    if let Some(to) = size_stepper(ui, p, settings.interface_scale) {
+                        actions.push(Action::ScaleInterface(to));
+                    }
+                });
+            }
+        },
+    );
+    card(
+        ui,
+        p,
+        listed,
+        pane,
+        "Motion and layout",
+        &[Setting::ReduceMotion, Setting::ResetLayout],
+        |ui, rows| {
+            if listed.has(Setting::ReduceMotion) {
+                row(ui, rows, "Reduce motion", |ui| {
+                    let mut on = settings.reduce_motion;
+                    if controls::toggle(ui, *p, &mut on, "Reduce motion").changed() {
+                        actions.push(Action::SetReduceMotion(on));
+                    }
+                });
+            }
+            if listed.has(Setting::ResetLayout) {
+                row(ui, rows, "Layout", |ui| {
+                    let reset = controls::button(ui, *p, "Reset layout", ButtonKind::Secondary)
+                        .on_hover_text(
+                            "Show the library and the inspector again at their first widths, \
+                             over a timeline of its first height",
+                        );
+                    if reset.clicked() {
+                        actions.push(Action::ResetLayout);
+                    }
+                });
+            }
+        },
+    );
+}
+
+/// One accent as a coloured disc, as Neptune Finder offers it. The one
+/// chosen is ringed in the ink of the text, three points out, so that it
+/// reads whatever its colour.
+fn swatch(ui: &mut Ui, p: &Palette, accent: Accent, name: &str, selected: bool) -> bool {
+    let (_, rect) = ui.allocate_space(Vec2::splat(20.0));
+    let response = ui.interact(rect, ui.id().with(("accent", name)), Sense::click());
+    response.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, selected, name));
+    let painter = ui.painter();
+    let fill = accent.color(p.dark);
+    let center = rect.center();
+    painter.circle_filled(center, 7.5, fill);
+    painter.circle_stroke(center, 7.5, Stroke::new(0.5, Color32::from_black_alpha(40)));
+    if selected {
+        painter.circle_stroke(center, 10.5, Stroke::new(2.0, p.fg));
+    } else if response.hovered() {
+        painter.circle_stroke(center, 9.5, Stroke::new(1.0, p.border));
+    }
+    if response.has_focus() {
+        painter.circle_stroke(center, 13.0, Stroke::new(2.0, theme::tint(p.accent, 0.55)));
+    }
+    response
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(name)
+        .clicked()
+}
+
+/// The interface size as Terminal's stepper, 112 by 28: Smaller, the size,
+/// which goes back to 100%, and Larger. A step that would change nothing is
+/// not offered, and the size shown is the one the window holds, which may
+/// be under the one asked for. Returns the size asked for.
+fn size_stepper(ui: &mut Ui, p: &Palette, asked: f32) -> Option<f32> {
+    let room = super::largest_scale(ui.ctx());
+    let scale = asked.min(room);
+    let (_, rect) = ui.allocate_space(vec2(112.0, 28.0));
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, 8, p.control);
+    let mut asked = None;
+    // `label` names the cell; `tip` says what it does, keys and all.
+    let mut cell = |rect: Rect, label: &str, tip: &str, to: f32, icon: Option<Icon>| {
+        let enabled = to != scale;
+        let response = ui.interact(rect, ui.id().with(("interface-size", tip)), Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
+        let surface = rect.shrink(2.0);
+        if enabled && response.is_pointer_button_down_on() {
+            painter.rect_filled(surface, 6, p.pressed);
+        } else if enabled && response.hovered() {
+            painter.rect_filled(surface, 6, p.hover);
+        }
+        if response.has_focus() {
+            controls::focus_ring(&painter, surface, 6, *p);
+        }
+        let ink = if !enabled {
+            p.muted
+        } else if response.hovered() {
+            p.fg
+        } else {
+            p.secondary
+        };
+        match icon {
+            Some(icon) => icons::paint(
+                &painter,
+                Rect::from_center_size(rect.center(), Vec2::splat(12.0)),
+                icon,
+                ink,
+            ),
+            // The size itself.
+            None => {
+                painter.text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    label,
+                    theme::medium(12.5),
+                    p.fg,
+                );
+            }
+        }
+        if response.clicked() && enabled {
+            asked = Some(to);
+        }
+        if enabled {
+            let (name, keys) = kit::name_and_keys(tip);
+            icons::hint(
+                response.on_hover_cursor(CursorIcon::PointingHand),
+                name,
+                keys,
+            );
+        }
+    };
+    let left = Rect::from_min_size(rect.min, vec2(30.0, rect.height()));
+    let right = Rect::from_min_size(pos2(rect.right() - 30.0, rect.top()), left.size());
+    let middle = Rect::from_min_max(
+        pos2(left.right(), rect.top()),
+        pos2(right.left(), rect.bottom()),
+    );
+    let smaller = shortcut("Smaller (Cmd+-)");
+    cell(
+        left,
+        &smaller,
+        &smaller,
+        Scale::Smaller.applied_to(scale).min(room),
+        Some(Icon::Minus),
+    );
+    // Today's format, as the size was always written.
+    cell(
+        middle,
+        &format!("{:.0}%", scale * 100.0),
+        &shortcut("Actual size (Cmd+0)"),
+        Scale::Actual.applied_to(scale),
+        None,
+    );
+    let larger = shortcut("Larger (Cmd+=)");
+    cell(
+        right,
+        &larger,
+        &larger,
+        Scale::Larger.applied_to(scale).min(room),
+        Some(Icon::Plus),
+    );
+    asked
+}
+
+/// Editing: what dragging does, and the copy kept of unsaved work.
+fn editing(
+    ui: &mut Ui,
+    p: &Palette,
+    listed: &Listed,
+    settings: &Settings,
+    actions: &mut Vec<Action>,
+) {
+    card(
+        ui,
+        p,
+        listed,
+        PreferencesPane::Editing,
+        "While editing",
+        &[Setting::Snapping, Setting::RecoveryCopy],
+        |ui, rows| {
+            if listed.has(Setting::Snapping) {
+                row(ui, rows, "Snap while dragging", |ui| {
+                    let mut on = settings.snapping;
+                    if controls::toggle(ui, *p, &mut on, "Snap while dragging").changed() {
+                        actions.push(Action::ToggleSnapping);
+                    }
+                });
+            }
+            if listed.has(Setting::RecoveryCopy) {
+                row(ui, rows, "Keep a recovery copy while editing", |ui| {
+                    let mut on = settings.autosave;
+                    if controls::toggle(ui, *p, &mut on, "Keep a recovery copy").changed() {
+                        actions.push(Action::SetAutosave(on));
+                    }
+                });
+            }
+        },
+    );
+}
+
+/// Preview: how much of the pictures the preview decodes, and the proxies
+/// it may read in their place.
+fn preview(
+    ui: &mut Ui,
+    p: &Palette,
+    listed: &Listed,
+    preview: &PreviewSettings,
+    cache: Cache,
+    actions: &mut Vec<Action>,
+) {
+    let pane = PreferencesPane::Preview;
+    card(
+        ui,
+        p,
+        listed,
+        pane,
+        "Quality",
+        &[Setting::Quality],
+        |ui, rows| {
+            row(ui, rows, "Preview quality", |ui| {
+                let mut quality = preview.quality;
+                let options = PreviewQuality::ALL.map(|quality| (quality, quality.name()));
+                if choice(ui, p, "Preview quality", &mut quality, &options, 236.0) {
+                    actions.push(Action::SetPreviewQuality(quality));
+                }
+            });
+            note(ui, rows, quality_note(preview.quality));
+        },
+    );
+    card(
+        ui,
+        p,
+        listed,
+        pane,
+        "Proxy media",
+        &[Setting::Proxies, Setting::ProxyCache],
+        |ui, rows| {
+            if listed.has(Setting::Proxies) {
+                row(ui, rows, "Proxies", |ui| {
+                    let mut mode = preview.proxies;
+                    let options = ProxyMode::ALL.map(|mode| (mode, mode.name()));
+                    if choice(ui, p, "Proxies", &mut mode, &options, 180.0) {
+                        actions.push(Action::SetProxyMode(mode));
+                    }
+                });
+                note(
+                    ui,
+                    rows,
+                    "Proxies are smaller copies used only for preview; exports always use the \
+                     original media.",
+                );
+            }
+            if !cache.available {
+                note(ui, rows, "Proxies are unavailable on this computer.");
+                return;
+            }
+            if !listed.has(Setting::ProxyCache) {
+                return;
+            }
+            row(ui, rows, "Cache size", |ui| {
+                let chosen = preview.proxy_budget_gib;
+                // A size kept from elsewhere stays offered.
+                let sizes: Vec<(u32, String)> = (!PROXY_BUDGETS.contains(&chosen))
+                    .then_some(chosen)
+                    .into_iter()
+                    .chain(PROXY_BUDGETS)
+                    .map(|gib| (gib, format!("{gib} GB")))
+                    .collect();
+                let options: Vec<(u32, &str)> = (sizes.iter())
+                    .map(|(gib, name)| (*gib, name.as_str()))
+                    .collect();
+                let mut pick = chosen;
+                let list = kit::select_list(
+                    ui,
+                    p,
+                    Id::new("proxy-budget"),
+                    "Proxy cache size",
+                    &mut pick,
+                    &options,
+                    vec2(180.0, metrics::CONTROL_HEIGHT),
+                );
+                if list.changed() {
+                    actions.push(Action::SetProxyBudget(pick));
+                }
+            });
+            let usage = cache_usage(cache.bytes, preview.proxy_budget_gib);
+            row(ui, rows, &usage, |ui| {
+                let empty = cache.proxies == 0;
+                let clear = ui
+                    .add_enabled_ui(!empty, |ui| {
+                        controls::button(ui, *p, "Clear proxies", ButtonKind::Secondary)
+                    })
+                    .inner
+                    .on_hover_text(
+                        "Remove every proxy. None is made again until you ask for one or \
+                         reopen the project.",
+                    )
+                    .on_disabled_hover_text("There are no proxies to clear");
+                if clear.clicked() {
+                    actions.push(Action::ClearProxies);
+                }
+            });
+        },
+    );
+}
+
+/// Agent: who answers, how, and the folders it may use.
+fn agent(
+    ui: &mut Ui,
+    p: &Palette,
+    listed: &Listed,
+    settings: &Settings,
+    actions: &mut Vec<Action>,
+) {
+    let pane = PreferencesPane::Agent;
+    card(
+        ui,
+        p,
+        listed,
+        pane,
+        "Requests",
+        &[
+            Setting::Provider,
+            Setting::Model,
+            Setting::Effort,
+            Setting::Edits,
+        ],
+        |ui, rows| {
+            if listed.has(Setting::Provider) {
+                row(ui, rows, "Answered by", |ui| {
+                    let mut provider = settings.ai.provider;
+                    let options = Provider::ALL.map(|provider| (provider, provider.name()));
+                    if choice(ui, p, "Answered by", &mut provider, &options, 150.0) {
+                        actions.push(Action::SetAiProvider(provider));
+                    }
+                });
+            }
+            if listed.has(Setting::Model) {
+                row(ui, rows, "Model", |ui| {
+                    let mut model = settings.ai.model().to_owned();
+                    let field = controls::text_field(
+                        ui,
+                        *p,
+                        Id::new("preferences-model"),
+                        &mut model,
+                        "Provider's default",
+                        "Model",
+                        180.0,
+                    );
+                    if field.changed() {
+                        actions.push(Action::SetAiModel(model));
+                    }
+                });
+            }
+            if listed.has(Setting::Effort) {
+                row(ui, rows, "Effort", |ui| {
+                    let mut effort = settings.ai.effort;
+                    let options = Effort::ALL.map(|effort| (effort, effort.name()));
+                    if choice(ui, p, "Effort", &mut effort, &options, 236.0) {
+                        actions.push(Action::SetAiEffort(effort));
+                    }
+                });
+            }
+            if listed.has(Setting::Edits) {
+                row(ui, rows, "Edits", |ui| {
+                    let mut review = settings.ai.review;
+                    if choice(
+                        ui,
+                        p,
+                        "Edits",
+                        &mut review,
+                        &[(false, "As it works"), (true, "For review")],
+                        190.0,
+                    ) {
+                        actions.push(Action::SetAiReview(review));
+                    }
+                });
+            }
+            note(
+                ui,
+                rows,
+                "Requests go through the Claude or Codex command line installed on this \
+                 computer, with the sign-in it already has. Neptune Video keeps no key or \
+                 password.",
+            );
+            // What the agent may do and see, as it always said, one click away.
+            let open_id = Id::new("preferences-agent-sees");
+            let mut open = ui.ctx().data(|data| data.get_temp::<bool>(open_id)) == Some(true);
+            if rows
+                .disclosure(ui, "What the agent can see", &mut open)
+                .changed()
+            {
+                ui.ctx().data_mut(|data| data.insert_temp(open_id, open));
+            }
+            if open {
+                note(
+                    ui,
+                    rows,
+                    "As it works, the agent edits with every tool an outside agent has, and \
+                     each edit is a step you can undo. It may use the project's folders, your \
+                     Movies, Music, Pictures, Desktop, Documents and Downloads folders, and \
+                     those added here. For review, it proposes edits from the project's data \
+                     alone, and nothing changes until you apply them.",
+                );
+            }
+        },
+    );
+    card(
+        ui,
+        p,
+        listed,
+        pane,
+        "Folders",
+        &[Setting::Folders],
+        |ui, rows| {
+            // Like --root for an outside agent: folders the agent may use
+            // besides the project's and the person's usual places.
+            for (index, folder) in settings.ai.folders.iter().enumerate() {
+                let name = folder.file_name().map_or_else(
+                    || folder.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                row(ui, rows, &name, |ui| {
+                    // Two folders may share a name; each Remove is its own.
+                    ui.push_id(("agent-folder", index), |ui| {
+                        let remove = controls::button(ui, *p, "Remove", ButtonKind::Quiet)
+                            .on_hover_text(folder.display().to_string());
+                        if remove.clicked() {
+                            actions.push(Action::RemoveAgentFolder(index));
+                        }
+                    });
+                });
+            }
+            row(ui, rows, "Let the agent use a folder", |ui| {
+                let add = controls::button(ui, *p, "Add folder…", ButtonKind::Secondary)
+                    .on_hover_text(
+                        "Let the agent read media from and save to this folder, besides the \
+                         project's folders and your usual ones",
+                    );
+                if add.clicked() {
+                    actions.push(Action::AddAgentFolder);
+                }
+            });
+        },
+    );
+}
+
+/// Keyboard: every chord, grouped, with its keys as keycaps. Read only.
+fn keyboard(ui: &mut Ui, p: &Palette, listed: &Listed) {
+    for group in Keys::ALL {
+        let members: Vec<Setting> = (SHORTCUTS.iter().enumerate())
+            .filter(|(_, chord)| chord.group == group)
+            .map(|(index, _)| Setting::Shortcut(index))
+            .collect();
+        card(
+            ui,
+            p,
+            listed,
+            PreferencesPane::Keyboard,
+            group.name(),
+            &members,
+            |ui, rows| {
+                for setting in &members {
+                    let Setting::Shortcut(index) = *setting else {
+                        continue;
+                    };
+                    if !listed.has(*setting) {
+                        continue;
+                    }
+                    let chord = &SHORTCUTS[index];
+                    row_of(ui, rows, chord.what, 32.0, |ui| {
+                        let room = ui.max_rect();
+                        // The keys are what the row says, so they are ink
+                        // to read rather than a hint beside a command.
+                        let center = pos2(room.right(), room.center().y);
+                        let width = keys(ui.painter(), center, chord.keys(), p.secondary);
+                        // Said as the menus write them, apart from what
+                        // they do, as they always were.
+                        let written = shortcut(chord.keys());
+                        let caps = Rect::from_x_y_ranges(
+                            (center.x - width)..=center.x,
+                            (center.y - 9.0)..=(center.y + 9.0),
+                        );
+                        let response =
+                            ui.interact(caps, ui.id().with(("chord", index)), Sense::hover());
+                        response
+                            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &written));
+                    });
+                }
+            },
+        );
+    }
+}
+
+/// Paints the keys of a row as keycaps, right-aligned at `right_center`:
+/// chords apart from one another by more than the keys of one chord, and
+/// alternatives, written after a comma, set apart by a slash. The command
+/// key is "Ctrl" here and ⌘ on macOS, where Shift and Alt are ⇧ and ⌥, and
+/// a minus is the sign rather than a hyphen, which a cap shows as a dash.
+/// Returns how wide the keys are.
+fn keys(painter: &egui::Painter, right_center: Pos2, keys: &str, ink: Color32) -> f32 {
+    let mac = cfg!(target_os = "macos");
+    let cap = |key: &str| -> String {
+        match key {
+            "Cmd" if mac => "⌘".to_owned(),
+            "Cmd" => "Ctrl".to_owned(),
+            "Shift" if mac => "⇧".to_owned(),
+            "Alt" if mac => "⌥".to_owned(),
+            "-" => "−".to_owned(),
+            key => key.to_owned(),
+        }
+    };
+    let mut right = right_center.x;
+    let alternatives: Vec<&str> = keys.split(", ").collect();
+    for (alternative, chords) in alternatives.into_iter().rev().enumerate() {
+        if alternative > 0 {
+            let slash = painter.layout_no_wrap("/".to_owned(), theme::regular(11.0), ink);
+            right -= 6.0 + slash.size().x;
+            controls::galley_at(painter, pos2(right, right_center.y), slash);
+            right -= 6.0;
+        }
+        for (step, chord) in held_over(chords).iter().rev().enumerate() {
+            if step > 0 {
+                right -= 8.0;
+            }
+            // Elsewhere Ctrl leads the keys held with it, as Terminal writes
+            // them; on macOS ⇧⌘ is Apple's order.
+            let mut chord = chord.clone();
+            if !mac {
+                chord.sort_by_key(|key| *key != "Cmd");
+            }
+            let joined = (chord.iter().copied())
+                .map(cap)
+                .collect::<Vec<_>>()
+                .join("+");
+            right -= controls::keycaps(painter, pos2(right, right_center.y), &joined, ink);
+        }
+    }
+    right_center.x - right
+}
+
+/// The keys of each chord of one alternative, written apart by spaces. A
+/// key written alone after a chord with modifiers is held with the same
+/// ones, as the shorthand means it: "Shift+← →" is Shift+← and Shift+→,
+/// and "Cmd+X C V" is Cmd+X, Cmd+C and Cmd+V. A bare → or C is another
+/// shortcut, so a cap never stands without the keys held for it.
+fn held_over(chords: &str) -> Vec<Vec<&str>> {
+    let mut held: Vec<&str> = Vec::new();
+    chords
+        .split(' ')
+        .filter(|chord| !chord.is_empty())
+        .map(|chord| {
+            let mut keys = controls::chord_keys(chord);
+            if keys.len() > 1 {
+                held = keys[..keys.len() - 1].to_vec();
+            } else {
+                keys.splice(0..0, held.iter().copied());
+            }
+            keys
+        })
+        .collect()
+}
+
+// ---- Work cards and toasts --------------------------------------------------
+
+/// The width of a card over a viewer this wide.
+fn card_width(viewer: Rect) -> f32 {
     (viewer.width() - 20.0).clamp(160.0, 360.0)
+}
+
+/// The surface of a toast and of a card of work under way: Terminal's
+/// notice, elevated and rounded, outlined and shadowed.
+fn toast_surface(painter: &egui::Painter, rect: Rect, p: &Palette) {
+    let radius = metrics::TOAST_RADIUS;
+    painter.add(p.popup_shadow().as_shape(rect, radius));
+    painter.rect_filled(rect, radius, p.elevated);
+    painter.rect_stroke(rect, radius, Stroke::new(1.0, p.border), StrokeKind::Inside);
+}
+
+/// The area a work card for `request` is drawn in, which the viewer reads
+/// back to lay its capsules under the cards.
+pub(crate) fn card_id(request: u64) -> Id {
+    Id::new(("save-audio", request))
 }
 
 /// Files being written, each with its progress and Cancel, and written ones
 /// offered to the project, each with Add to project and a way to dismiss
-/// it: at the top of the viewer, where the notices are, and in their shape.
-/// Hands back where the notices start, under them.
+/// it: at the top of the viewer, in the shape of a toast. Hands back where
+/// the cards are, for the toasts to keep clear of.
 pub fn saves(
     ctx: &egui::Context,
     p: &Palette,
     cards: &[Card],
     viewer: Rect,
     actions: &mut Vec<Action>,
-) -> f32 {
+) -> Vec<Rect> {
     let mut y = viewer.top() + 10.0;
-    let width = notice_width(viewer);
+    let width = card_width(viewer);
+    let mut shown_at = Vec::with_capacity(cards.len());
     for card in cards {
-        let shown = egui::Area::new(Id::new(("save-audio", card.request)))
+        let shown = egui::Area::new(card_id(card.request))
             .order(egui::Order::Foreground)
             .fixed_pos(pos2(viewer.center().x - width * 0.5, y))
             .show(ctx, |ui| {
                 egui::Frame::NONE
                     .fill(p.elevated)
                     .stroke(Stroke::new(1.0, p.border))
-                    .corner_radius(CornerRadius::same(metrics::MENU_RADIUS))
-                    .inner_margin(egui::Margin::symmetric(11, 9))
+                    .corner_radius(metrics::TOAST_RADIUS)
+                    .shadow(p.popup_shadow())
+                    .inner_margin(egui::Margin {
+                        left: 14,
+                        right: 8,
+                        top: 8,
+                        bottom: 8,
+                    })
                     .show(ui, |ui| {
                         ui.set_width(width - 22.0);
                         card_rows(ui, p, card, actions);
                     });
             });
         y = shown.response.rect.bottom() + 8.0;
+        shown_at.push(shown.response.rect);
     }
-    y
+    shown_at
 }
 
 /// One card's words and controls.
 fn card_rows(ui: &mut Ui, p: &Palette, card: &Card, actions: &mut Vec<Action>) {
-    ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+    ui.spacing_mut().item_spacing = vec2(10.0, 6.0);
     ui.horizontal_top(|ui| {
-        let (glyph, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+        let (glyph, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
         let (icon, tint) = match card.shown {
             Shown::Writing(_) => (Icon::Save, p.secondary),
-            Shown::Written => (Icon::Check, p.green),
+            Shown::Written => (Icon::CircleCheck, p.green),
             Shown::Separating(_) => (Icon::Music, p.secondary),
         };
         icons::paint(ui.painter(), glyph, icon, tint);
@@ -1172,6 +2515,7 @@ fn card_rows(ui: &mut Ui, p: &Palette, card: &Card, actions: &mut Vec<Action>) {
             .wrap(),
         );
     });
+    ui.spacing_mut().item_spacing.x = 8.0;
     // Work under way: how far it is, when it is known, and Cancel.
     let working = match card.shown {
         Shown::Writing(done) => Some((
@@ -1195,50 +2539,50 @@ fn card_rows(ui: &mut Ui, p: &Palette, card: &Card, actions: &mut Vec<Action>) {
                 || "…".to_owned(),
                 |done| format!("{} %", (done * 100.0).round() as i32),
             );
-            let done = known.unwrap_or(0.0);
             ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let cancel =
-                        widgets::button(ui, p, None, "Cancel", Kind::Plain).on_hover_text(stop);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let cancel = controls::button_sized(
+                        ui,
+                        *p,
+                        "Cancel",
+                        ButtonKind::Quiet,
+                        ButtonSize::Compact,
+                    )
+                    .on_hover_text(stop);
                     if cancel.clicked() {
                         actions.push(cancelled);
                     }
                     ui.label(
                         egui::RichText::new(figure)
-                            .font(theme::regular(11.5))
-                            .color(p.muted),
+                            .font(theme::mono(11.0))
+                            .color(p.secondary),
                     );
-                    let (bar, response) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
-                    response.widget_info(|| {
-                        let mut info = egui::WidgetInfo::labeled(
-                            egui::WidgetType::ProgressIndicator,
-                            true,
-                            &card.text,
-                        );
-                        // No value while the tool has said nothing.
-                        info.value = known.map(f64::from);
-                        info
-                    });
-                    ui.painter()
-                        .rect_filled(bar, CornerRadius::same(2), p.pressed);
-                    let mut filled = bar;
-                    filled.set_width(bar.width() * done);
-                    ui.painter()
-                        .rect_filled(filled, CornerRadius::same(2), p.accent);
+                    kit::progress_bar(ui, p, known, p.accent, &card.text);
                 });
             });
         }
         None => {
             ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let add =
-                        widgets::button(ui, p, Some(Icon::Import), "Add to project", Kind::Primary)
-                            .on_hover_text("Import the file into the library");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let add = controls::button_sized(
+                        ui,
+                        *p,
+                        "Add to project",
+                        ButtonKind::Secondary,
+                        ButtonSize::Compact,
+                    )
+                    .on_hover_text("Import the file into the library");
                     if add.clicked() {
                         actions.push(Action::AddSavedAudio(card.request));
                     }
-                    if widgets::button(ui, p, None, "Dismiss", Kind::Plain).clicked() {
+                    let dismiss = controls::button_sized(
+                        ui,
+                        *p,
+                        "Dismiss",
+                        ButtonKind::Quiet,
+                        ButtonSize::Compact,
+                    );
+                    if dismiss.clicked() {
                         actions.push(Action::DismissSavedAudio(card.request));
                     }
                 });
@@ -1247,143 +2591,383 @@ fn card_rows(ui: &mut Ui, p: &Palette, card: &Card, actions: &mut Vec<Action>) {
     }
 }
 
-/// Notices at the top of the viewer from `top`, newest last: over the
-/// picture's margin, where they cover no control. While a sheet is open
-/// (`over_sheet`, or any modal egui knows of) they go to the bottom of the
-/// window, under the sheet, so that they cover neither it nor its
-/// controls: as many as fit there, the newest nearest the edge. They take
-/// no input.
+/// The most notices kept at once, which is as many as are shown.
+const MOST_NOTICES: usize = 4;
+
+/// Adds `notice` to those being shown. The same words twice are one notice
+/// of the more pressing kind that stays the longer of the two, and a
+/// problem said again as information is still a problem, which stays until
+/// it is dismissed, as a warning does. Past four, the oldest notice that
+/// goes by itself makes room first, never the notice just told. Brief news
+/// never makes room by taking away one that stays: with four of those in
+/// sight, news is not shown at all, and a fifth that stays takes the place
+/// of the oldest, which has been in sight the longest.
+pub fn tell(notices: &mut Vec<Notice>, notice: Notice) {
+    if let Some(told) = (notices.iter_mut()).find(|told| told.text == notice.text) {
+        told.kind = told.kind.max(notice.kind);
+        told.until = if told.kind.stays() {
+            f64::INFINITY
+        } else {
+            told.until.max(notice.until)
+        };
+        return;
+    }
+    notices.push(notice);
+    if notices.len() > MOST_NOTICES {
+        let told = notices.len() - 1;
+        let oldest = (notices[..told].iter()).position(|notice| !notice.kind.stays());
+        let gone = match oldest {
+            Some(oldest) => oldest,
+            // Brief news does not compete with a failure still to be seen.
+            None if !notices[told].kind.stays() => told,
+            None => 0,
+        };
+        notices.remove(gone);
+    }
+}
+
+/// Where the toasts whose clocks stand still are kept: those under the
+/// pointer and those waiting for room, each with the time it had left.
+fn paused_id() -> Id {
+    Id::new("notice-paused")
+}
+
+fn paused(ctx: &egui::Context) -> Vec<(u64, f64)> {
+    ctx.data(|data| data.get_temp(paused_id()))
+        .unwrap_or_default()
+}
+
+/// Lets the notices whose time is up go, and hands back when the next one
+/// that is not paused is up, if one is. A notice under the pointer or
+/// waiting for room keeps the time it had left; a warning or a problem
+/// stays until it is dismissed.
+pub fn expire(ctx: &egui::Context, notices: &mut Vec<Notice>) -> Option<f64> {
+    let now = ctx.input(|input| input.time);
+    let paused = paused(ctx);
+    let left = |notice: &Notice| {
+        let id = notice.id();
+        (paused.iter())
+            .find(|(paused, _)| *paused == id)
+            .map(|(_, left)| *left)
+    };
+    for notice in notices.iter_mut() {
+        // A later deadline told since the clock stopped is kept.
+        if let Some(left) = left(notice) {
+            notice.until = notice.until.max(now + left);
+        }
+    }
+    notices.retain(|notice| notice.until > now);
+    (notices.iter())
+        .filter(|notice| left(notice).is_none() && notice.until.is_finite())
+        .map(|notice| notice.until)
+        .min_by(f64::total_cmp)
+}
+
+/// Where the open sheets are: the one on top, and the one a question
+/// asked over it lies on, which the toasts keep clear of as well.
+fn open_sheets(ctx: &egui::Context) -> Vec<Rect> {
+    ctx.memory(|memory| {
+        let Some(top) = memory.top_modal_layer() else {
+            return Vec::new();
+        };
+        let beneath = (ASKED_OVER_A_SHEET.iter())
+            .filter(|(asked, _)| top.id == Id::new(*asked))
+            .map(|(_, over)| egui::LayerId::new(egui::Order::Foreground, Id::new(*over)))
+            .filter(|layer| memory.areas().is_visible(layer));
+        std::iter::once(top)
+            .chain(beneath)
+            .filter_map(|layer| memory.area_rect(layer.id))
+            .collect()
+    })
+}
+
+/// Where the toast of `notice` was in the last frame, surface and all, if
+/// it was shown.
+#[cfg(test)]
+fn toast_rect(ctx: &egui::Context, notice: &Notice) -> Option<Rect> {
+    let id = Id::new(("notice", notice.id()));
+    let layer = egui::LayerId::new(egui::Order::Foreground, id);
+    ctx.memory(|memory| {
+        (memory.areas().visible_last_frame(&layer))
+            .then(|| memory.area_rect(id))
+            .flatten()
+    })
+}
+
+/// One toast, laid out: its words and its size.
+struct Toast {
+    galley: Arc<Galley>,
+    size: Vec2,
+}
+
+/// Toasts at the window's top trailing corner under the toolbar, stacked
+/// downward 8 apart, newest last, and pushed down past any of the `cards`
+/// over the viewer they would cover. While a sheet is open (`over_sheet`, or
+/// any modal egui knows of) they go to the bottom trailing corner and stack
+/// upward, the newest nearest the edge, so that none is over the sheet;
+/// those that do not fit wait, their clocks stopped, until there is room.
+/// They are kept over the sheet's layer, so that a Dismiss in sight can be
+/// pressed. A toast takes no input, so what is under it can still be
+/// clicked; the pointer resting on it stops its clock all the same. A toast
+/// is not an accessibility node; the Dismiss of one that stays is.
 pub fn notices(
     ctx: &egui::Context,
     p: &Palette,
-    notices: &[Notice],
-    viewer: Rect,
-    top: f32,
+    notices: &mut [Notice],
+    cards: &[Rect],
     over_sheet: bool,
+    actions: &mut Vec<Action>,
 ) {
+    let mut paused = paused(ctx);
     if notices.is_empty() {
+        if !paused.is_empty() {
+            ctx.data_mut(|data| data.remove::<Vec<(u64, f64)>>(paused_id()));
+        }
         return;
     }
+    let now = ctx.input(|input| input.time);
+    let screen = ctx.content_rect();
+    let sheets = open_sheets(ctx);
+    let covers = |rect: Rect| sheets.iter().any(|sheet| sheet.intersects(rect));
+    let under = over_sheet || !sheets.is_empty();
+    let widest = (screen.width() - 96.0).clamp(160.0, 440.0);
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         Id::new("notices"),
     ));
-    let now = ctx.input(|i| i.time);
-    let sheet = ctx
-        .memory(|memory| (memory.top_modal_layer()).and_then(|layer| memory.area_rect(layer.id)));
-    let screen = ctx.content_rect();
-    let under = over_sheet || sheet.is_some();
-    let area = if under { screen } else { viewer };
-    let width = notice_width(area);
-    let laid: Vec<_> = (notices.iter())
+    let laid: Vec<Toast> = (notices.iter())
         .map(|notice| {
-            let galley = painter.layout(
+            // Mark, 10, words, and the Dismiss of one that stays after 10
+            // more.
+            let dismiss = if notice.kind.stays() {
+                10.0 + 28.0 + 8.0
+            } else {
+                14.0
+            };
+            let mut job = egui::text::LayoutJob::simple(
                 notice.text.clone(),
                 theme::regular(12.5),
                 p.fg,
-                width - 46.0,
+                widest - 14.0 - 16.0 - 10.0 - dismiss,
             );
-            let height = (galley.size().y + 18.0).max(36.0);
-            (notice, galley, height)
+            // One that goes by itself says it in up to three lines. One that
+            // stays is there to be read, so it wraps whole, as Terminal's
+            // notice does: its words are said nowhere else.
+            if !notice.kind.stays() {
+                job.wrap.max_rows = 3;
+            }
+            let galley = painter.layout_job(job);
+            let least = if notice.kind.stays() { 28.0 } else { 20.0 };
+            let size = vec2(
+                14.0 + 16.0 + 10.0 + galley.size().x + dismiss,
+                galley.size().y.max(least) + 16.0,
+            );
+            Toast { galley, size }
         })
         .collect();
-    let at = |top: f32, height: f32| {
-        Rect::from_min_size(
-            pos2(area.center().x - width * 0.5, top),
-            vec2(width, height),
-        )
-    };
-    let mut placed = Vec::with_capacity(laid.len());
+
+    // Where each is shown, by its place in `notices`; the rest wait.
+    let right = screen.right() - 14.0;
+    let mut placed: Vec<(usize, Rect)> = Vec::new();
     if under {
-        // Up from the window's edge, newest first, while they stay under
-        // the sheet; the newest is shown even where there is no room.
-        let newest = laid.last().map_or(36.0, |(.., height)| *height);
-        let floor = match sheet {
-            Some(sheet) => ((screen.bottom() - sheet.bottom() - newest) * 0.5).clamp(0.0, 8.0),
-            None => 8.0,
-        };
-        let ceiling = sheet.map_or(screen.top(), |sheet| sheet.bottom());
-        let mut bottom = screen.bottom() - floor;
-        for (notice, galley, height) in laid.into_iter().rev() {
-            let rect = at(bottom - height, height);
-            if rect.top() < ceiling && !placed.is_empty() {
+        let mut bottom = screen.bottom() - 14.0;
+        for (index, toast) in laid.iter().enumerate().rev() {
+            let at = |bottom: f32| {
+                Rect::from_min_size(
+                    pos2(right - toast.size.x, bottom - toast.size.y),
+                    toast.size,
+                )
+            };
+            let mut rect = at(bottom);
+            // Beside a sheet that comes near the window's foot, the first
+            // goes into the room left under it.
+            if placed.is_empty() && covers(rect) {
+                let lowest =
+                    (sheets.iter()).fold(screen.top(), |lowest, sheet| lowest.max(sheet.bottom()));
+                let gap = screen.bottom() - lowest - toast.size.y;
+                rect = at(screen.bottom() - (gap * 0.5).clamp(0.0, 14.0));
+            }
+            if covers(rect) || rect.top() < screen.top() {
                 break;
             }
             bottom = rect.top() - 8.0;
-            placed.push((notice, galley, rect));
+            placed.push((index, rect));
         }
     } else {
-        let mut top = top;
-        for (notice, galley, height) in laid {
-            let rect = at(top, height);
+        let mut top = screen.top() + metrics::TOOLBAR_HEIGHT + 8.0;
+        // At most four, the newest.
+        let first = laid.len().saturating_sub(MOST_NOTICES);
+        for (index, toast) in laid.iter().enumerate().skip(first) {
+            let mut rect = Rect::from_min_size(pos2(right - toast.size.x, top), toast.size);
+            // Never over a card of work, whose controls it would hide.
+            while let Some(card) = (cards.iter()).find(|card| card.intersects(rect)) {
+                rect = rect.translate(vec2(0.0, card.bottom() + 8.0 - rect.top()));
+            }
+            if rect.bottom() > screen.bottom() - 14.0 {
+                break;
+            }
             top = rect.bottom() + 8.0;
-            placed.push((notice, galley, rect));
+            placed.push((index, rect));
         }
     }
-    for (notice, galley, rect) in placed {
-        // The last 200 ms fade the notice out.
-        let alpha = ((notice.until - now) / 0.2).clamp(0.0, 1.0) as f32;
-        painter.rect_filled(
-            rect,
-            CornerRadius::same(metrics::MENU_RADIUS),
-            p.elevated.gamma_multiply(alpha),
-        );
-        painter.rect_stroke(
-            rect,
-            CornerRadius::same(metrics::MENU_RADIUS),
-            Stroke::new(1.0, p.border.gamma_multiply(alpha)),
-            StrokeKind::Inside,
-        );
-        icons::paint(
-            &painter,
-            Rect::from_center_size(
-                pos2(rect.left() + 18.0, rect.top() + 18.0),
-                Vec2::splat(14.0),
-            ),
-            if notice.problem {
-                Icon::Warning
-            } else {
-                Icon::Check
-            },
-            if notice.problem { p.red } else { p.green }.gamma_multiply(alpha),
-        );
-        painter.galley_with_override_text_color(
-            pos2(rect.left() + 34.0, rect.top() + 9.0),
-            galley,
-            p.fg.gamma_multiply(alpha),
-        );
+
+    let still = kit::reduced_motion(ctx);
+    let mut stopped: Vec<u64> = Vec::new();
+    for (index, notice) in notices.iter().enumerate() {
+        let Some(&(_, rect)) = placed.iter().find(|(placed, _)| *placed == index) else {
+            stopped.push(notice.id());
+            continue;
+        };
+        let id = notice.id();
+        let was_paused = paused.iter().any(|(paused, _)| *paused == id);
+        // The last moments fade it out, unless its clock stands still.
+        let opacity = if still || was_paused || !notice.until.is_finite() {
+            1.0
+        } else {
+            ((notice.until - now) / f64::from(motion::TOAST)).clamp(0.0, 1.0) as f32
+        };
+        let galley = laid[index].galley.clone();
+        let shown = egui::Area::new(Id::new(("notice", id)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .constrain(false)
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.multiply_opacity(opacity);
+                let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
+                let painter = ui.painter();
+                toast_surface(painter, rect, p);
+                let text_top = rect.center().y - galley.size().y * 0.5;
+                let (mark, ink) = notice.kind.mark(p);
+                // The mark and the Dismiss share the toast's centre line, as
+                // in Terminal's notice, however many lines the words take.
+                icons::paint(
+                    painter,
+                    Rect::from_center_size(
+                        pos2(rect.left() + 14.0 + 8.0, rect.center().y),
+                        Vec2::splat(16.0),
+                    ),
+                    mark,
+                    ink,
+                );
+                painter.galley(pos2(rect.left() + 40.0, text_top), galley, p.fg);
+            });
+        // A sheet that opened after the toast went over it; it comes back up
+        // over the sheet, which it never covers.
+        if under {
+            ctx.move_to_top(shown.response.layer_id);
+        }
+        // Only the Dismiss of one that stays takes the pointer, in its own
+        // layer over the toast's.
+        if notice.kind.stays() {
+            let button = Rect::from_center_size(
+                pos2(rect.right() - 8.0 - 14.0, rect.center().y),
+                Vec2::splat(28.0),
+            );
+            let dismiss = egui::Area::new(Id::new(("notice-dismiss", id)))
+                .order(egui::Order::Foreground)
+                .fixed_pos(button.min)
+                .constrain(false)
+                .show(ctx, |ui| {
+                    ui.multiply_opacity(opacity);
+                    icons::button(ui, Icon::Close, "Dismiss").clicked()
+                });
+            if under {
+                ctx.move_to_top(dismiss.response.layer_id);
+            }
+            if dismiss.inner {
+                actions.push(Action::DismissNotice(id));
+            }
+        }
+        // Resting on it holds it.
+        if ctx
+            .pointer_hover_pos()
+            .is_some_and(|pointer| rect.contains(pointer))
+        {
+            stopped.push(id);
+        }
+    }
+
+    // A clock that stops keeps the time it had left; one that runs again
+    // goes on from there.
+    let resumed = (paused.iter()).any(|(id, _)| !stopped.contains(id));
+    paused.retain(|(id, _)| stopped.contains(id));
+    for notice in notices.iter_mut() {
+        let id = notice.id();
+        if !stopped.contains(&id) {
+            continue;
+        }
+        // A later deadline told meanwhile is kept.
+        let left = notice.until - now;
+        let left = match paused.iter_mut().find(|(paused, _)| *paused == id) {
+            Some((_, kept)) => {
+                *kept = kept.max(left);
+                *kept
+            }
+            None => {
+                paused.push((id, left));
+                left
+            }
+        };
+        notice.until = now + left;
+    }
+    ctx.data_mut(|data| data.insert_temp(paused_id(), paused));
+    // The clocks are counted before the toasts are drawn, so one that runs
+    // again needs another frame to be counted, and to be woken for.
+    if resumed {
+        ctx.request_repaint();
     }
 }
 
-/// Tints the window while files are held over it.
+/// Tints the window while files are held over it: a rounded outline inset
+/// from the window's edge, and a capsule in its middle that says what a drop
+/// does. A drop imports wherever it lands, so no region is singled out.
 pub fn drop_target(ctx: &egui::Context, p: &Palette) {
     let screen = ctx.content_rect();
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
-        Id::new("drop-target"),
-    ));
-    painter.rect_filled(screen, CornerRadius::ZERO, theme::tint(p.accent, 0.12));
-    painter.rect_stroke(
-        screen.shrink(6.0),
-        CornerRadius::same(metrics::PANEL_RADIUS),
-        Stroke::new(2.0, p.accent),
-        StrokeKind::Inside,
-    );
-    let pill = Rect::from_center_size(screen.center(), vec2(220.0, 44.0));
-    painter.rect_filled(pill, CornerRadius::same(22), p.elevated);
-    icons::paint(
-        &painter,
-        Rect::from_center_size(pos2(pill.left() + 26.0, pill.center().y), Vec2::splat(16.0)),
-        Icon::Import,
-        p.accent,
-    );
-    painter.text(
-        pos2(pill.left() + 44.0, pill.center().y),
-        Align2::LEFT_CENTER,
-        "Drop to import media",
-        theme::medium(13.0),
-        p.fg,
-    );
+    // Concentric with the window's corner, the system's on Windows too.
+    let radius = if super::window::is_round(ctx) {
+        metrics::WINDOW_RADIUS - 6
+    } else {
+        0
+    };
+    egui::Area::new(Id::new("drop-target"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.min)
+        .constrain(false)
+        .interactable(false)
+        .show(ctx, |ui| {
+            let (window, _) = ui.allocate_exact_size(screen.size(), Sense::hover());
+            let painter = ui.painter();
+            let outline = window.shrink(6.0);
+            painter.rect_filled(outline, radius, theme::tint(p.accent, 0.08));
+            painter.rect_stroke(
+                outline,
+                radius,
+                Stroke::new(1.5, theme::tint(p.accent, 0.9)),
+                StrokeKind::Inside,
+            );
+            let words = "Drop to import media";
+            let text = painter.layout_no_wrap(words.to_owned(), theme::medium(12.5), p.fg);
+            let capsule =
+                Rect::from_center_size(window.center(), vec2(36.0 + text.size().x + 16.0, 36.0));
+            controls::capsule(painter, capsule, *p);
+            icons::paint(
+                painter,
+                Rect::from_center_size(
+                    pos2(capsule.left() + 16.0 + 7.0, capsule.center().y),
+                    Vec2::splat(14.0),
+                ),
+                Icon::Import,
+                p.secondary,
+            );
+            controls::galley_at(
+                painter,
+                pos2(capsule.left() + 36.0, capsule.center().y),
+                text,
+            );
+            let said = ui.interact(capsule, Id::new("drop-target-words"), Sense::hover());
+            said.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, words));
+        });
 }
 
 #[cfg(test)]
@@ -1485,8 +3069,63 @@ mod tests {
         }
     }
 
+    // N27: the Checkpoints sheet keeps one height whatever its list holds,
+    // so its field and its title do not move as the list is read, as its
+    // first checkpoint appears or as more do.
+    #[test]
+    fn the_checkpoints_sheet_holds_still_as_its_list_fills() {
+        let ctx = egui::Context::default();
+        let palette = Palette::new(Appearance::Dark, Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &palette);
+        ctx.enable_accesskit();
+        let mut state = CheckpointsState::default();
+        let mut time = 0.0;
+        let mut frame = |state: &mut CheckpointsState| {
+            let mut seen = Vec::new();
+            for _ in 0..3 {
+                time += 0.1;
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 700.0))),
+                    time: Some(time),
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    checkpoints(ui.ctx(), &palette, state, true);
+                });
+                output.textures_delta.clear();
+                if let Some(update) = &output.platform_output.accesskit_update {
+                    seen = (update.nodes.iter())
+                        .filter_map(|(_, node)| {
+                            let bounds = node.bounds()?;
+                            let name = node.label()?.to_owned();
+                            Some((name, [bounds.x0, bounds.y0, bounds.x1, bounds.y1]))
+                        })
+                        .filter(|(name, _)| name == "Checkpoints" || name == "Checkpoint name")
+                        .collect::<Vec<_>>();
+                    seen.sort_by(|a, b| a.0.cmp(&b.0));
+                }
+            }
+            seen
+        };
+        let checkpoint = |index: u64| Checkpoint {
+            path: format!("/projects/film.{index}.nvp").into(),
+            label: format!("Checkpoint {index}"),
+            made: Some(index),
+        };
+        let reading = frame(&mut state);
+        assert!(!reading.is_empty(), "FIXTURE: the sheet is named");
+        state.list = Some(Ok(Vec::new()));
+        assert_eq!(frame(&mut state), reading, "none yet");
+        state.list = Some(Ok(vec![checkpoint(1)]));
+        assert_eq!(frame(&mut state), reading, "the first");
+        state.list = Some(Ok((1..20).map(checkpoint).collect()));
+        assert_eq!(frame(&mut state), reading, "more than fit");
+    }
+
     /// The cards of files being saved, and a notice, drawn in real egui
-    /// passes over a viewer `width` wide.
+    /// passes over a viewer `width` wide that reaches the window's trailing
+    /// edge, where the toasts are.
     struct Cards {
         ctx: egui::Context,
         palette: Palette,
@@ -1494,8 +3133,9 @@ mod tests {
         viewer: Rect,
         seen: Vec<(String, Option<f64>, Rect)>,
         actions: Vec<Action>,
-        /// Where the notices began, in the last frame.
-        top: f32,
+        /// Where the cards were drawn, and the notice's toast, last frame.
+        drawn: Vec<Rect>,
+        notice: Option<Rect>,
     }
 
     impl Cards {
@@ -1509,10 +3149,11 @@ mod tests {
                 ctx,
                 palette,
                 time: 0.0,
-                viewer: Rect::from_min_size(pos2(200.0, 40.0), vec2(width, 400.0)),
+                viewer: Rect::from_min_size(pos2(1000.0 - width, 40.0), vec2(width, 400.0)),
                 seen: Vec::new(),
                 actions: Vec::new(),
-                top: 0.0,
+                drawn: Vec::new(),
+                notice: None,
             }
         }
 
@@ -1525,18 +3166,22 @@ mod tests {
                 ..Default::default()
             };
             let (ctx, palette, viewer) = (self.ctx.clone(), self.palette, self.viewer);
-            let shown = [Notice {
+            let mut shown = [Notice {
                 text: "Imported 1 file".to_owned(),
-                problem: false,
+                kind: NoticeKind::Done,
                 until: f64::MAX,
             }];
-            let (mut actions, mut top) = (Vec::new(), 0.0);
+            let mut actions = Vec::new();
+            let mut drawn = Vec::new();
             let mut output = ctx.run_ui(input, |ui| {
-                top = saves(ui.ctx(), &palette, cards, viewer, &mut actions);
-                notices(ui.ctx(), &palette, &shown, viewer, top, false);
+                drawn = saves(ui.ctx(), &palette, cards, viewer, &mut actions);
+                notices(ui.ctx(), &palette, &mut shown, &drawn, false, &mut actions);
             });
             self.actions.extend(actions);
-            self.top = top;
+            self.drawn = drawn;
+            // The whole toast, not only its words: its surface reaches past
+            // its mark and above and below them.
+            self.notice = toast_rect(&self.ctx, &shown[0]);
             output.textures_delta.clear();
             if let Some(update) = &output.platform_output.accesskit_update {
                 self.seen = (update.nodes.iter())
@@ -1593,7 +3238,7 @@ mod tests {
                 drawn.frame(&cards, Vec::new());
             }
             // The words, the progress by its value and each named control,
-            // within the viewer, and the notice under both cards.
+            // within the viewer.
             let bar = (drawn.seen.iter())
                 .find(|(name, value, _)| name == "Saving Answer as talk.wav" && value.is_some())
                 .expect("the progress is named");
@@ -1610,15 +3255,21 @@ mod tests {
                 named[0].bottom() < named[1].top(),
                 "the writing card is first"
             );
-            assert!(
-                drawn.top > named[1].bottom(),
-                "the notices start under the cards"
-            );
+            // §5.8: toasts left the viewer for the window's corner, and
+            // keep clear of the cards there.
             let notice = drawn.at("Imported 1 file");
             assert!(
                 notice.is_empty(),
                 "a notice takes no input and is not a widget"
             );
+            let notice = drawn.notice.expect("the notice is shown");
+            assert_eq!(drawn.drawn.len(), 2, "both cards are handed back");
+            for card in &drawn.drawn {
+                assert!(
+                    !card.intersects(notice),
+                    "the notice at {notice:?} is not over the card at {card:?} in {width}"
+                );
+            }
 
             drawn.click(&cards, named[0].center());
             drawn.click(&cards, named[1].center());
@@ -1636,10 +3287,6 @@ mod tests {
                 drawn.actions
             );
         }
-        // Without cards the notices start where they always did.
-        let mut drawn = Cards::new(900.0);
-        drawn.frame(&[], Vec::new());
-        assert_eq!(drawn.top, drawn.viewer.top() + 10.0);
     }
 
     #[test]
@@ -1709,6 +3356,8 @@ mod tests {
                 .iter()
                 .any(|(name, _)| name == "Replace the volume keyframes of 2 clips?")
         );
+        // §5.9.5: the answer that replaces is at the trailing edge.
+        assert!(asked.at("Replace").x > asked.at("Cancel").x);
         assert!(asked.click(2, "Cancel").contains(&Some(false)));
 
         // An Escape gives it up, as Cancel does.
@@ -1722,5 +3371,312 @@ mod tests {
             modifiers: Modifiers::NONE,
         };
         assert_eq!(asked.frame(1, vec![escape]), Some(false));
+    }
+
+    /// Draws `ask` in real egui passes, one for each list of events, and
+    /// hands back what it answered in each.
+    fn answers<A>(
+        mut ask: impl FnMut(&egui::Context, &Palette) -> Option<A>,
+        frames: Vec<Vec<Event>>,
+    ) -> Vec<Option<A>> {
+        let ctx = egui::Context::default();
+        let palette = Palette::new(Appearance::Dark, Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &palette);
+        let mut said = Vec::new();
+        for (at, events) in frames.into_iter().enumerate() {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                time: Some(at as f64 * 0.1),
+                events,
+                ..Default::default()
+            };
+            let mut answer = None;
+            let output = ctx.run_ui(input, |ui| answer = ask(ui.ctx(), &palette));
+            output.drop_without_applying_deltas();
+            said.push(answer);
+        }
+        said
+    }
+
+    fn key(key: Key, pressed: bool) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    /// A key pressed and let go within one frame.
+    fn struck(on: Key) -> Vec<Event> {
+        vec![key(on, true), key(on, false)]
+    }
+
+    #[test]
+    fn enter_confirms_only_a_primary_and_only_when_pressed_afresh() {
+        // The Enter that opened the question, held down and repeating,
+        // answers nothing; one pressed afresh gives the Primary.
+        let unsaved = |ctx: &egui::Context, p: &Palette| unsaved(ctx, p, "Film", &Pending::Quit);
+        let said = answers(
+            unsaved,
+            vec![
+                vec![key(Key::Enter, true)],
+                vec![],
+                vec![key(Key::Enter, true)],
+                vec![key(Key::Enter, false)],
+                struck(Key::Enter),
+            ],
+        );
+        assert_eq!(said, [None, None, None, None, Some(Answer::Save)]);
+        let said = answers(unsaved, vec![vec![], vec![], struck(Key::Escape)]);
+        assert_eq!(said, [None, None, Some(Answer::Cancel)]);
+
+        // Where every answer but Cancel gives something up, Enter does
+        // nothing, and Escape still says what it always did.
+        let ducked = |ctx: &egui::Context, p: &Palette| replace_keys(ctx, p, 2);
+        let said = answers(
+            ducked,
+            vec![
+                vec![],
+                vec![],
+                struck(Key::Enter),
+                vec![],
+                struck(Key::Escape),
+            ],
+        );
+        assert_eq!(said, [None, None, None, None, Some(false)]);
+        let stopping = |ctx: &egui::Context, p: &Palette| stop_rendering(ctx, p, 1);
+        let said = answers(
+            stopping,
+            vec![vec![], vec![], struck(Key::Enter), struck(Key::Escape)],
+        );
+        assert_eq!(said, [None, None, None, Some(false)]);
+        let replacing = |ctx: &egui::Context, p: &Palette| {
+            replace_export(ctx, p, "Film.mp4", Some("Film.srt"), "Exports")
+        };
+        let said = answers(
+            replacing,
+            vec![
+                vec![],
+                vec![],
+                struck(Key::Enter),
+                vec![],
+                struck(Key::Escape),
+            ],
+        );
+        assert_eq!(said, [None, None, None, None, Some(false)]);
+
+        // Recovery's default keeps the work; Escape decides nothing.
+        let recovering = |ctx: &egui::Context, p: &Palette| recovery(ctx, p, true);
+        let said = answers(recovering, vec![vec![], vec![], struck(Key::Enter)]);
+        assert_eq!(said, [None, None, Some(Recovery::Restore)]);
+        let said = answers(recovering, vec![vec![], vec![], struck(Key::Escape)]);
+        assert_eq!(said, [None, None, Some(Recovery::Later)]);
+
+        // A conflict never gives the edits up from the keyboard: its default
+        // saves them elsewhere.
+        let changed = Conflict {
+            path: PathBuf::from("/home/someone/Film.nvp"),
+            busy: false,
+            open: true,
+        };
+        let conflicted = |ctx: &egui::Context, p: &Palette| conflict(ctx, p, "Film", &changed);
+        let said = answers(conflicted, vec![vec![], vec![], struck(Key::Enter)]);
+        assert_eq!(said, [None, None, Some(ConflictAnswer::SaveAs)]);
+        let said = answers(conflicted, vec![vec![], vec![], struck(Key::Escape)]);
+        assert_eq!(said, [None, None, Some(ConflictAnswer::Later)]);
+    }
+
+    /// Draws `ask` until it has settled and hands back where assistive
+    /// tools are told each named thing is.
+    fn laid_out<A>(
+        mut ask: impl FnMut(&egui::Context, &Palette) -> Option<A>,
+    ) -> Vec<(String, Rect)> {
+        let ctx = egui::Context::default();
+        let palette = Palette::new(Appearance::Dark, Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &palette);
+        ctx.enable_accesskit();
+        let mut seen = Vec::new();
+        for at in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                time: Some(at as f64 * 0.1),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                ask(ui.ctx(), &palette);
+            });
+            output.textures_delta.clear();
+            if let Some(update) = &output.platform_output.accesskit_update {
+                seen = (update.nodes.iter())
+                    .filter_map(|(_, node)| {
+                        let bounds = node.bounds()?;
+                        let name = node.label().or_else(|| node.value())?.to_owned();
+                        let rect = Rect::from_min_max(
+                            pos2(bounds.x0 as f32, bounds.y0 as f32),
+                            pos2(bounds.x1 as f32, bounds.y1 as f32),
+                        );
+                        Some((name, rect))
+                    })
+                    .collect();
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn a_dialog_foot_puts_the_default_last_and_what_gives_up_apart() {
+        // §5.9.5, §9.12: the answer that gives something up alone at the
+        // leading edge, Cancel before the confirming answer, and that one
+        // furthest out, 20 in from the sheet's edges and 8 apart. Each is
+        // found by its widest rect: the sheet's window, not its title.
+        let rect = |seen: &[(String, Rect)], name: &str| {
+            (seen.iter())
+                .filter(|(seen, _)| seen == name)
+                .map(|(_, rect)| *rect)
+                .max_by(|a, b| a.width().total_cmp(&b.width()))
+                .unwrap_or_else(|| panic!("FIXTURE: nothing is named \"{name}\""))
+        };
+        let seen = laid_out(|ctx, p| unsaved(ctx, p, "Film", &Pending::Quit));
+        // The window is told of with its 1-point border outside it.
+        let sheet = rect(&seen, "Save changes to “Film”?").shrink(1.0);
+        let (gives_up, cancel, save) = (
+            rect(&seen, "Don't save"),
+            rect(&seen, "Cancel"),
+            rect(&seen, "Save"),
+        );
+        assert!(
+            (gives_up.left() - sheet.left() - 20.0).abs() < 1.0,
+            "{gives_up:?} in {sheet:?}"
+        );
+        assert!(
+            gives_up.right() < cancel.left(),
+            "{gives_up:?} before {cancel:?}"
+        );
+        assert!(
+            (save.left() - cancel.right() - 8.0).abs() < 1.0,
+            "{cancel:?} then {save:?}"
+        );
+        assert!(
+            (sheet.right() - save.right() - 20.0).abs() < 1.0,
+            "{save:?} in {sheet:?}"
+        );
+        assert_eq!(cancel.center().y, save.center().y);
+        assert_eq!(gives_up.center().y, save.center().y);
+
+        // With nothing apart, the destructive answer still stands last and
+        // Cancel before it.
+        let question = crate::duck::question(2);
+        let seen = laid_out(|ctx, p| replace_keys(ctx, p, 2));
+        let sheet = rect(&seen, &question).shrink(1.0);
+        let (cancel, replace) = (rect(&seen, "Cancel"), rect(&seen, "Replace"));
+        assert!(
+            (replace.left() - cancel.right() - 8.0).abs() < 1.0,
+            "{cancel:?} then {replace:?}"
+        );
+        assert!(
+            (sheet.right() - replace.right() - 20.0).abs() < 1.0,
+            "{replace:?} in {sheet:?}"
+        );
+    }
+
+    #[test]
+    fn a_key_written_alone_after_a_chord_is_held_with_its_modifiers() {
+        // §5.9.2, §7.3: every chord as it is, and a bare → or C is another
+        // shortcut, so the shorthand's modifiers carry over.
+        let caps = |chords| held_over(chords);
+        assert_eq!(caps("Shift+← →"), [vec!["Shift", "←"], vec!["Shift", "→"]]);
+        assert_eq!(caps("Alt+↑ ↓"), [vec!["Alt", "↑"], vec!["Alt", "↓"]]);
+        assert_eq!(
+            caps("Cmd+X C V"),
+            [vec!["Cmd", "X"], vec!["Cmd", "C"], vec!["Cmd", "V"]]
+        );
+        assert_eq!(caps("Shift+Cmd+Z"), [vec!["Shift", "Cmd", "Z"]]);
+        // With nothing held first, each key is its own shortcut.
+        assert_eq!(caps("Home End"), [vec!["Home"], vec!["End"]]);
+        assert_eq!(caps("J K L"), [vec!["J"], vec!["K"], vec!["L"]]);
+        assert_eq!(caps("= -"), [vec!["="], vec!["-"]]);
+        assert_eq!(
+            caps("Cmd+= Cmd+- Cmd+0"),
+            [vec!["Cmd", "="], vec!["Cmd", "-"], vec!["Cmd", "0"]]
+        );
+        // Every row of the pane comes apart into keys.
+        for chord in &SHORTCUTS {
+            for alternative in chord.keys().split(", ") {
+                assert!(
+                    held_over(alternative).iter().all(|keys| !keys.is_empty()),
+                    "{}",
+                    chord.what
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_short_window_keeps_a_sheet_clear_of_the_title_bar() {
+        // §5.9.1 in a window under about 600 tall: centred, the sheet's top
+        // is under the toolbar, as Preferences' is.
+        for window in [560.0, 600.0, 900.0] {
+            let height = sheet_height(520.0, window);
+            let top = (window - height) * 0.5;
+            assert!(top >= metrics::TOOLBAR_HEIGHT + 3.0, "{window}: {top}");
+        }
+        assert_eq!(sheet_height(520.0, 900.0), 520.0);
+        assert_eq!(sheet_height(520.0, 560.0), 464.0);
+        // Too short for both, it is still a sheet to use.
+        assert_eq!(sheet_height(520.0, 300.0), 240.0);
+    }
+
+    #[test]
+    fn the_drop_target_is_rounded_and_says_what_a_drop_does() {
+        let ctx = egui::Context::default();
+        let palette = Palette::new(Appearance::Dark, Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &palette);
+        ctx.enable_accesskit();
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let mut shapes = Vec::new();
+        let mut names = Vec::new();
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let output = ctx.run_ui(input, |ui| drop_target(ui.ctx(), &palette));
+            shapes = output
+                .shapes
+                .iter()
+                .map(|clipped| clipped.shape.clone())
+                .collect();
+            if let Some(update) = &output.platform_output.accesskit_update {
+                names = (update.nodes.iter())
+                    .filter_map(|(_, node)| {
+                        node.label().or_else(|| node.value()).map(str::to_owned)
+                    })
+                    .collect();
+            }
+            output.drop_without_applying_deltas();
+        }
+        let rects: Vec<_> = (shapes.iter())
+            .filter_map(|shape| match shape {
+                egui::Shape::Rect(rect) => Some(rect.clone()),
+                _ => None,
+            })
+            .collect();
+        let outline = (rects.iter())
+            .find(|rect| rect.rect == screen.shrink(6.0) && rect.stroke.width > 0.0)
+            .expect("an outline inset from the window's edge");
+        assert_eq!(outline.corner_radius, egui::CornerRadius::same(10));
+        assert!(
+            !rects.iter().any(|rect| rect.rect == screen),
+            "no square fill covers the window"
+        );
+        assert!(
+            names.iter().any(|name| name == "Drop to import media"),
+            "{names:?}"
+        );
     }
 }

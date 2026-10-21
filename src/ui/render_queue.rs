@@ -1,14 +1,21 @@
 //! The render queue panel: every export queued, rendering or finished, and
 //! what can be done with each. It reads the queue's snapshot and answers what
 //! the person asked; the application tells the queue. It asks for no repaint
-//! of its own: the queue wakes the window while a job renders.
+//! of its own beyond its scrim's fade as it opens: the queue wakes the window
+//! while a job renders.
+//!
+//! It is drawn on the export sheet's scaffold, as tall in every state so that
+//! nothing in it moves as jobs come and go: a 52-point header with Clear
+//! finished beside the close control, the jobs as one card of hairline rows,
+//! and a fixed footer.
 use super::{
-    sheets,
-    widgets::{self, Kind, icon_button},
+    controls::{self, ButtonKind},
+    export_sheet::{header, refusal_line, scaffold, scrolled},
+    kit,
 };
 use crate::{
     icons::{self, Icon},
-    theme::{self, Palette, metrics},
+    theme::{self, Accent, Palette, metrics},
     timefmt,
 };
 use editor_core::{
@@ -16,18 +23,37 @@ use editor_core::{
     export::{ExportSettings, RenderJobInfo, RenderState, Resolution},
 };
 use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, Ui,
-    Vec2, WidgetInfo, WidgetType, pos2, vec2,
+    self, Align, Align2, Id, Layout, Rect, Sense, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 use std::{
     collections::HashMap,
-    f32::consts::TAU,
     path::{Component, MAIN_SEPARATOR, Path},
 };
 use uuid::Uuid;
 
-/// About how tall a job's row is, for the first frame the queue is shown.
-const ROW_ESTIMATE: f32 = 96.0;
+/// The sheet at its widest and tallest. A narrower window keeps 12 points
+/// clear of it on each side, and a shorter one keeps its title bar clear,
+/// as Preferences does (`sheets::sheet_height`).
+const WIDTH: f32 = 560.0;
+const HEIGHT: f32 = 480.0;
+const HEADER: f32 = 52.0;
+const FOOTER: f32 = 60.0;
+/// The sheet's margin.
+const PAD: f32 = 20.0;
+/// The summary's line under the title.
+const SUMMARY: f32 = 22.0;
+/// Where a row's words begin: after its 64-point poster and 12 on either
+/// side of it.
+const TEXT: f32 = 12.0 + 64.0 + 12.0;
+/// A row's padding over and under what it holds.
+const ROW_PAD: f32 = 8.0;
+/// The lines of a row: its name and actions, its status, its progress and
+/// its folder.
+const NAME_LINE: f32 = 22.0;
+const LINE: f32 = 18.0;
+const BAR_LINE: f32 = 14.0;
+/// The room between a row's actions.
+const ACTION_GAP: f32 = 2.0;
 
 /// What the person asked of the queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,148 +81,156 @@ pub enum QueueAnswer {
 /// Shows the render queue. `waiting` is the queue's waiting jobs in the
 /// order they render, held ones included: a waiting job that reads Paused is
 /// held, queued by Add to queue and started only when the person says so.
-/// Returns what the person asked for, if anything; Escape and the backdrop
-/// close it.
+/// `refusal` is why what was last asked of the queue failed, said at the
+/// footer's leading edge. Returns what the person asked for, if anything;
+/// Escape and the backdrop close it.
 pub fn show(
     ctx: &egui::Context,
     p: &Palette,
     jobs: &[RenderJobInfo],
     waiting: &[Uuid],
+    refusal: Option<&str>,
 ) -> Option<QueueAnswer> {
     let mut answer = None;
     let home = directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
-    let response = egui::Modal::new(Id::new("render-queue-sheet"))
-        .backdrop_color(p.scrim)
-        .frame(sheets::sheet(p))
-        .show(ctx, |ui| {
-            let screen = ui.ctx().content_rect();
-            ui.set_width(560.0f32.min(screen.width() - 64.0).max(240.0));
-            ui.spacing_mut().item_spacing.y = 8.0;
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("Render queue")
-                        .font(theme::semibold(15.0))
-                        .color(p.fg),
-                );
-                let summary = summary(jobs, waiting);
-                if !summary.is_empty() {
-                    ui.label(
-                        RichText::new(summary)
-                            .font(theme::regular(12.0))
-                            .color(p.muted),
-                    );
-                }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if icon_button(ui, p, Icon::Close, "Close render queue").clicked() {
-                        answer = Some(QueueAnswer::Close);
-                    }
-                });
-            });
-
+    let screen = ctx.content_rect();
+    let width = WIDTH.min(screen.width() - 24.0).max(240.0);
+    let most = super::sheets::sheet_height(HEIGHT, screen.height());
+    let id = Id::new("render-queue-sheet");
+    let response = scaffold(ctx, p, id, "Render queue", width, |ui| {
+        let finished = jobs.iter().any(|job| job.state.is_finished());
+        if header(ui, p, "Render queue", "Close render queue", |ui| {
+            // Nothing is listed to clear in an empty queue.
             if jobs.is_empty() {
-                let (rect, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 170.0), Sense::hover());
-                widgets::empty_state(
-                    ui,
-                    p,
-                    rect,
-                    Icon::Export,
-                    "Nothing to render",
-                    "Exports wait here and render one at a time in the background while \
-                     you keep editing.",
-                );
-                ui.vertical_centered(|ui| {
-                    if widgets::button(ui, p, Some(Icon::Export), "New export…", Kind::Primary)
-                        .clicked()
-                    {
-                        answer = Some(QueueAnswer::NewExport);
-                    }
-                });
-                ui.add_space(8.0);
                 return;
             }
-
-            let room = (screen.height() - 190.0).clamp(140.0, 520.0);
-            // The sheet is centred by its height, and the list is as tall as
-            // its rows up to the room there is. Their height is known only
-            // once they are laid out: it is kept from the frame before, and a
-            // list whose height changed is laid out again before it is shown,
-            // so the sheet does not creep into place over several frames.
-            let known_id = Id::new("render-queue-height");
-            let known: Option<f32> = ui.data(|data| data.get_temp(known_id));
-            let height = known.unwrap_or(ROW_ESTIMATE * jobs.len() as f32).min(room);
-            let order_id = Id::new("render-queue-order");
-            let mut order: Order = ui.data_mut(|data| data.get_temp(order_id).unwrap_or_default());
-            let rows = order.listed(jobs, waiting);
-            // A job that has just started is scrolled into sight once.
-            let under_way = rows
-                .first()
-                .filter(|job| under_way(job, waiting))
-                .map(|job| job.id);
-            let reveal = under_way.filter(|id| order.shown_under_way != Some(*id));
-            let list = egui::ScrollArea::vertical()
-                .id_salt("render-queue-jobs")
-                .max_height(room)
-                .min_scrolled_height(height)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    for job in &rows {
-                        let place = waiting
-                            .iter()
-                            .position(|id| *id == job.id)
-                            .map(|at| (at, waiting.len()));
-                        let row = ui.scope(|ui| job_row(ui, p, job, place, home.as_deref()));
-                        if let Some(asked) = row.inner {
-                            answer = Some(asked);
-                        }
-                        if reveal == Some(job.id) {
-                            ui.scroll_to_rect(row.response.rect, Some(Align::Min));
-                        }
-                    }
-                });
-            order.shown_under_way = under_way;
-            ui.data_mut(|data| data.insert_temp(order_id, order));
-            let content = list.content_size.y;
-            if known.is_none_or(|known| (known - content).abs() > 0.5) {
-                ui.data_mut(|data| data.insert_temp(known_id, content));
-                ui.ctx()
-                    .request_discard("the render queue's rows changed height");
+            let clear = ui
+                .add_enabled_ui(finished, |ui| {
+                    controls::button(ui, *p, "Clear finished", ButtonKind::Quiet)
+                })
+                .inner
+                .on_hover_text("Take finished, failed and cancelled jobs off the list")
+                .on_disabled_hover_text("No job has finished");
+            if clear.clicked() && finished {
+                answer = Some(QueueAnswer::ClearFinished);
             }
+        }) {
+            answer = Some(QueueAnswer::Close);
+        }
 
-            ui.horizontal(|ui| {
-                let finished = jobs.iter().any(|job| job.state.is_finished());
-                let clear = ui
-                    .add_enabled_ui(finished, |ui| {
-                        widgets::button(ui, p, None, "Clear finished", Kind::Plain)
-                    })
-                    .inner
-                    .on_hover_text("Take finished, failed and cancelled jobs off the list")
-                    .on_disabled_hover_text("No job has finished");
-                if clear.clicked() && finished {
-                    answer = Some(QueueAnswer::ClearFinished);
+        if jobs.is_empty() {
+            let (_, rect) = ui.allocate_space(vec2(width, most - HEADER));
+            if kit::empty_state(
+                ui,
+                p,
+                rect,
+                Icon::List,
+                "Nothing to render",
+                "Exports wait here and render one at a time in the background while you keep \
+                 editing.",
+                Some("New export…"),
+            ) {
+                answer = Some(QueueAnswer::NewExport);
+            }
+            return;
+        }
+
+        // With nothing under way or waiting there is nothing to count, and
+        // its line stays, so that the list does not move up.
+        let summary = summary(jobs, waiting);
+        let (_, line) = ui.allocate_space(vec2(width, SUMMARY));
+        if !summary.is_empty() {
+            let words = ui.painter().text(
+                pos2(line.left() + PAD, line.top() - 4.0),
+                Align2::LEFT_TOP,
+                &summary,
+                theme::regular(12.0),
+                p.secondary,
+            );
+            kit::said(ui, words, &summary);
+        }
+
+        let order_id = Id::new("render-queue-order");
+        let mut order: Order = ui.data_mut(|data| data.get_temp(order_id).unwrap_or_default());
+        let rows = order.listed(jobs, waiting);
+        // A job that has just started is scrolled into sight once.
+        let under_way = rows
+            .first()
+            .filter(|job| under_way(job, waiting))
+            .map(|job| job.id);
+        let reveal = under_way.filter(|id| order.shown_under_way != Some(*id));
+        order.shown_under_way = under_way;
+        ui.data_mut(|data| data.insert_temp(order_id, order));
+
+        // Every row's height is known before it is drawn, so that a row is
+        // as tall as it will be from its first frame and does not creep.
+        let card = width - PAD * 2.0;
+        let heights: Vec<f32> = (rows.iter())
+            .map(|job| row_height(ui, job, waiting, card))
+            .collect();
+        let (_, list) =
+            ui.allocate_space(vec2(width, (most - HEADER - SUMMARY - FOOTER).max(80.0)));
+        let area = Rect::from_min_max(
+            pos2(list.left() + PAD, list.top()),
+            pos2(list.right() - 6.0, list.bottom()),
+        );
+        // The list stays where it was left: a job under way is scrolled to.
+        let salt = "render-queue-jobs";
+        scrolled(ui, p.elevated, area, card, salt, false, |ui| {
+            controls::group(ui, *p, |ui, group| {
+                for (job, height) in rows.iter().zip(&heights) {
+                    let place = waiting
+                        .iter()
+                        .position(|id| *id == job.id)
+                        .map(|at| (at, waiting.len()));
+                    let rect = group.custom(ui, *height);
+                    if let Some(asked) = job_row(ui, p, rect, job, place, home.as_deref()) {
+                        answer = Some(asked);
+                    }
+                    if reveal == Some(job.id) {
+                        // With the room over it, so that the first row
+                        // shows the card's top edge as well.
+                        ui.scroll_to_rect(rect.expand2(vec2(0.0, 4.0)), Some(Align::Min));
+                    }
                 }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if widgets::button(ui, p, Some(Icon::Export), "New export…", Kind::Plain)
-                        .clicked()
-                    {
-                        answer = Some(QueueAnswer::NewExport);
-                    }
-                    // Held jobs start only when asked: all of them at once.
-                    let held = (jobs.iter()).filter(|job| is_held(job, waiting)).count();
-                    if held > 0
-                        && widgets::button(ui, p, Some(Icon::Play), "Start all", Kind::Plain)
-                            .on_hover_text(match held {
-                                1 => "Start the held job".to_owned(),
-                                n => format!("Start the {n} held jobs, in the order listed"),
-                            })
-                            .clicked()
-                    {
-                        answer = Some(QueueAnswer::StartAll);
-                    }
-                });
             });
         });
+
+        let bar = controls::sheet_footer(ui, *p).shrink2(vec2(PAD - 16.0, 0.0));
+        controls::place(
+            ui,
+            bar,
+            Layout::right_to_left(Align::Center),
+            "render-queue-footer",
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if controls::button(ui, *p, "New export…", ButtonKind::Secondary).clicked() {
+                    answer = Some(QueueAnswer::NewExport);
+                }
+                // Held jobs start only when asked: all of them at once.
+                let held = (jobs.iter()).filter(|job| is_held(job, waiting)).count();
+                if held > 0
+                    && controls::button(ui, *p, "Start all", ButtonKind::Secondary)
+                        .on_hover_text(match held {
+                            1 => "Start the held job".to_owned(),
+                            n => format!("Start the {n} held jobs, in the order listed"),
+                        })
+                        .clicked()
+                {
+                    answer = Some(QueueAnswer::StartAll);
+                }
+                // What is left at the leading edge says why the last
+                // request failed.
+                if let Some(refusal) = refusal {
+                    let room = Rect::from_min_max(
+                        bar.left_top(),
+                        pos2(bar.left() + ui.available_width() - 8.0, bar.bottom()),
+                    );
+                    refusal_line(ui, p, room, refusal);
+                }
+            },
+        );
+    });
     if answer.is_none() && response.should_close() {
         answer = Some(QueueAnswer::Close);
     }
@@ -336,6 +370,78 @@ pub(super) fn short_folder(folder: &Path, home: Option<&Path>) -> String {
     )
 }
 
+/// `short_folder` cut to what `fits`: the folders over the last go first,
+/// leaving `~/…/Exports`, then the middle of the last folder's own name, so
+/// that its start and its end, which tell one folder from the next, stay
+/// seen. Whatever still does not fit is cut short at its end where it is
+/// painted.
+pub(super) fn fitted_folder(
+    folder: &Path,
+    home: Option<&Path>,
+    fits: impl Fn(&str) -> bool,
+) -> String {
+    let short = short_folder(folder, home);
+    if fits(&short) {
+        return short;
+    }
+    let sep = MAIN_SEPARATOR;
+    let inside = home.and_then(|home| folder.strip_prefix(home).ok());
+    let Some(last) = (inside.unwrap_or(folder).components())
+        .filter_map(|part| match part {
+            Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .next_back()
+    else {
+        return short;
+    };
+    // What stands before the last folder: `~` or the root as written, and
+    // `…` for any folders between.
+    let lead = match inside {
+        Some(_) => format!("~{sep}"),
+        None => {
+            let root: String = (folder.components())
+                .take_while(|part| !matches!(part, Component::Normal(_)))
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            if root.ends_with(sep) || root.is_empty() {
+                root
+            } else {
+                format!("{root}{sep}")
+            }
+        }
+    };
+    let lead = if short == format!("{lead}{last}") {
+        lead
+    } else {
+        format!("{lead}…{sep}")
+    };
+    let whole = format!("{lead}{last}");
+    if fits(&whole) {
+        return whole;
+    }
+    // The most of the name's start and end that fits, found by halves.
+    let chars: Vec<char> = last.chars().collect();
+    let cut = |keep: usize| -> String {
+        let head: String = chars[..keep.div_ceil(2)].iter().collect();
+        let tail: String = chars[chars.len() - keep / 2..].iter().collect();
+        format!("{lead}{head}…{tail}")
+    };
+    let (mut low, mut high) = (1, chars.len().saturating_sub(1));
+    if low > high || !fits(&cut(low)) {
+        return whole;
+    }
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        if fits(&cut(mid)) {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    cut(low)
+}
+
 /// What a job makes, in a few words: "MP4 · H.264 · 1080p".
 fn made(settings: &ExportSettings) -> String {
     let mut parts = vec![settings.container.label().to_owned()];
@@ -428,54 +534,82 @@ fn capitalized(text: &str) -> String {
     }
 }
 
-/// The state as a word, its ink and its fill.
-fn badge_of(p: &Palette, job: &RenderJobInfo, held: bool) -> (String, Color32, Color32) {
-    let tinted = |color: Color32| (color, theme::tint(color, 0.16));
-    let (text, (ink, fill)) = match job.state {
-        RenderState::Paused if held => ("Held".to_owned(), tinted(p.yellow)),
-        RenderState::Queued => ("Queued".to_owned(), (p.secondary, p.control)),
-        RenderState::Preparing => ("Preparing".to_owned(), tinted(p.accent)),
-        RenderState::Rendering => (
-            format!("{:.0} %", (job.progress.clamp(0.0, 1.0) * 100.0).floor()),
-            tinted(p.accent),
-        ),
-        RenderState::Paused => ("Paused".to_owned(), tinted(p.yellow)),
-        RenderState::Finalizing => ("Finishing".to_owned(), tinted(p.accent)),
-        RenderState::Done => ("Done".to_owned(), tinted(p.green)),
-        RenderState::Failed => ("Failed".to_owned(), tinted(p.red)),
-        RenderState::Cancelled => ("Cancelled".to_owned(), (p.muted, p.control)),
+/// Whether a job shows how far it has got: started and not finished. A
+/// held job has not started.
+fn moving(job: &RenderJobInfo, held: bool) -> bool {
+    !held
+        && matches!(
+            job.state,
+            RenderState::Preparing
+                | RenderState::Rendering
+                | RenderState::Paused
+                | RenderState::Finalizing
+        )
+}
+
+/// The folder a job's file goes in.
+fn folder_of(job: &RenderJobInfo) -> Option<&Path> {
+    (job.destination.parent()).filter(|folder| !folder.as_os_str().is_empty())
+}
+
+/// What the queue says of a job besides its state, such as why it failed.
+fn message_of(job: &RenderJobInfo) -> Option<&str> {
+    job.message.as_deref().filter(|m| !m.trim().is_empty())
+}
+
+/// The message laid out for a row whose card is `card` wide: two lines at
+/// most, cut short where it runs on, so that a long FFmpeg error does not
+/// push the other jobs out of sight. The whole of it is on hover.
+fn message_galley(
+    ui: &Ui,
+    p: &Palette,
+    job: &RenderJobInfo,
+    card: f32,
+) -> Option<std::sync::Arc<egui::Galley>> {
+    let message = message_of(job)?;
+    let color = if job.state == RenderState::Failed {
+        p.failure_ink()
+    } else {
+        p.secondary
     };
-    (text, ink, fill)
+    let mut layout =
+        egui::text::LayoutJob::simple(message.to_owned(), theme::regular(12.0), color, 0.0);
+    layout.wrap = egui::text::TextWrapping {
+        max_width: (card - TEXT - 12.0).max(40.0),
+        max_rows: 2,
+        break_anywhere: false,
+        overflow_character: Some('…'),
+    };
+    Some(ui.painter().layout_job(layout))
 }
 
-/// The state, as a small pill.
-fn badge(ui: &mut Ui, p: &Palette, job: &RenderJobInfo, held: bool) {
-    let (text, ink, fill) = badge_of(p, job, held);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.clone(), theme::medium(11.0), ink);
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(galley.size().x + 14.0, 20.0), Sense::hover());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
-    if ui.is_rect_visible(rect) {
-        ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
-        ui.painter().galley(
-            pos2(
-                rect.center().x - galley.size().x * 0.5,
-                rect.center().y - galley.size().y * 0.5,
-            ),
-            galley,
-            ink,
-        );
+/// How tall the row of `job` is in a card `card` wide: its name and status,
+/// then the lines its state has.
+fn row_height(ui: &Ui, job: &RenderJobInfo, waiting: &[Uuid], card: f32) -> f32 {
+    let held = is_held(job, waiting);
+    let mut height = ROW_PAD + NAME_LINE + LINE;
+    if moving(job, held) {
+        height += BAR_LINE;
     }
+    if folder_of(job).is_some() {
+        height += LINE;
+    }
+    // Its colour does not change its height.
+    let p = Palette::stage_palette(Accent::default());
+    if let Some(galley) = message_galley(ui, &p, job, card) {
+        height += 2.0 + galley.size().y;
+    }
+    (height + ROW_PAD).max(56.0)
 }
 
-/// One job: its name, where it goes, its state and progress, and the
-/// actions its state allows. `place` is its place among waiting jobs, held
+/// One job, in `rect`: its poster, its name and the actions its state
+/// allows, then what it is doing, how far it has got, where it goes, and
+/// what the queue says of it. `place` is its place among waiting jobs, held
 /// ones included, and how many wait; a paused job with a place is held.
 fn job_row(
     ui: &mut Ui,
     p: &Palette,
+    rect: Rect,
     job: &RenderJobInfo,
     place: Option<(usize, usize)>,
     home: Option<&Path>,
@@ -483,299 +617,323 @@ fn job_row(
     let mut answer = None;
     let name = job.name.as_str();
     let held = job.state == RenderState::Paused && place.is_some();
-    sheets::group(ui, p, |ui| {
-        ui.spacing_mut().item_spacing.y = 3.0;
-        ui.horizontal(|ui| {
-            ui.set_min_height(metrics::CONTROL_HEIGHT);
-            let (glyph, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-            let (icon, tint) = match job.state {
-                RenderState::Done => (Icon::Check, p.green),
-                RenderState::Failed => (Icon::Warning, p.red),
-                _ if job.settings.video.is_none() => (Icon::Music, p.secondary),
-                _ => (Icon::Film, p.secondary),
-            };
-            icons::paint(ui.painter(), glyph, icon, tint);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                // Trailing first: the actions, then the state.
-                let mut act = |ui: &mut Ui, icon, label: String, enabled: bool, asked| {
-                    let clicked = ui
-                        .add_enabled_ui(enabled, |ui| icon_button(ui, p, icon, &label))
-                        .inner
-                        .clicked();
-                    if clicked && enabled {
-                        answer = Some(asked);
-                    }
-                };
-                let id = job.id;
-                match job.state {
-                    RenderState::Done => {
-                        act(
-                            ui,
-                            Icon::Trash,
-                            format!("Remove “{name}” from the list"),
-                            true,
-                            QueueAnswer::Remove(id),
-                        );
-                        act(
-                            ui,
-                            Icon::Folder,
-                            format!("Show “{name}” in its folder"),
-                            true,
-                            QueueAnswer::Reveal(id),
-                        );
-                    }
-                    RenderState::Failed | RenderState::Cancelled => {
-                        act(
-                            ui,
-                            Icon::Trash,
-                            format!("Remove “{name}” from the list"),
-                            true,
-                            QueueAnswer::Remove(id),
-                        );
-                        act(
-                            ui,
-                            Icon::Loop,
-                            format!("Render “{name}” again"),
-                            true,
-                            QueueAnswer::Retry(id),
-                        );
-                    }
-                    // Waiting its turn, or held until started.
-                    RenderState::Queued | RenderState::Paused
-                        if held || job.state == RenderState::Queued =>
-                    {
-                        act(
-                            ui,
-                            Icon::Close,
-                            format!("Cancel “{name}”"),
-                            true,
-                            QueueAnswer::Cancel(id),
-                        );
-                        if held {
-                            act(
-                                ui,
-                                Icon::Play,
-                                format!("Start “{name}”"),
-                                true,
-                                QueueAnswer::Resume(id),
-                            );
-                        }
-                        if let Some((at, of)) = place {
-                            act(
-                                ui,
-                                Icon::ArrowDown,
-                                format!("Render “{name}” later"),
-                                at + 1 < of,
-                                QueueAnswer::MoveDown(id),
-                            );
-                            act(
-                                ui,
-                                Icon::ArrowUp,
-                                format!("Render “{name}” sooner"),
-                                at > 0,
-                                QueueAnswer::MoveUp(id),
-                            );
-                        }
-                    }
-                    // Started, then paused.
-                    RenderState::Queued | RenderState::Paused => {
-                        act(
-                            ui,
-                            Icon::Stop,
-                            format!("Cancel “{name}”"),
-                            true,
-                            QueueAnswer::Cancel(id),
-                        );
-                        act(
-                            ui,
-                            Icon::Play,
-                            format!("Resume “{name}”"),
-                            true,
-                            QueueAnswer::Resume(id),
-                        );
-                    }
-                    RenderState::Preparing | RenderState::Rendering => {
-                        act(
-                            ui,
-                            Icon::Stop,
-                            format!("Cancel “{name}”"),
-                            true,
-                            QueueAnswer::Cancel(id),
-                        );
-                        act(
-                            ui,
-                            Icon::Pause,
-                            format!("Pause “{name}”"),
-                            true,
-                            QueueAnswer::Pause(id),
-                        );
-                    }
-                    RenderState::Finalizing => {
-                        act(
-                            ui,
-                            Icon::Stop,
-                            format!("Cancel “{name}”"),
-                            true,
-                            QueueAnswer::Cancel(id),
-                        );
-                    }
+    let painter = ui.painter().clone();
+    let card = rect.width();
+
+    // The poster: what the job makes, on the stage.
+    let poster = Rect::from_min_size(
+        pos2(rect.left() + 12.0, rect.top() + ROW_PAD + 2.0),
+        vec2(64.0, 36.0),
+    );
+    if ui.is_rect_visible(poster) {
+        let stage = Palette::stage_palette(Accent::default());
+        painter.rect_filled(poster, 6, p.stage());
+        let glyph = if job.settings.video.is_none() {
+            Icon::Music
+        } else {
+            Icon::Film
+        };
+        kit::on_dark(&painter, || {
+            icons::paint(
+                &painter,
+                Rect::from_center_size(poster.center(), Vec2::splat(16.0)),
+                glyph,
+                stage.muted,
+            );
+        });
+    }
+
+    let left = rect.left() + TEXT;
+    let right = rect.right() - 12.0;
+    let mut y = rect.top() + ROW_PAD;
+
+    // The name, cut short before the actions at the trailing end of its
+    // line, which are always shown. It is made first, and the actions
+    // leading to trailing, so that Tab and a screen reader take the row as
+    // it is read (§7.4).
+    let offered = actions(job, name, held, place);
+    let count = offered.len() as f32;
+    let width = count * metrics::SMALL_BUTTON + (count - 1.0).max(0.0) * ACTION_GAP;
+    let line = Rect::from_min_max(pos2(left, y), pos2(right, y + NAME_LINE));
+    let room = (right - width - 8.0 - left).max(0.0);
+    let galley = controls::elided(&painter, name, theme::medium(13.0), p.fg, room);
+    let cut = galley.elided;
+    let words = Rect::from_min_size(
+        pos2(left, line.center().y - galley.size().y * 0.5),
+        galley.size(),
+    );
+    painter.galley(words.min, galley, p.fg);
+    let named = ui.interact(words, ui.id().with(("job-name", job.id)), Sense::hover());
+    named.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, name));
+    if cut {
+        named.on_hover_text(name);
+    }
+    controls::place(
+        ui,
+        Rect::from_min_max(pos2(right - width, line.top()), line.max),
+        Layout::left_to_right(Align::Center),
+        ("render-queue-actions", job.id),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = ACTION_GAP;
+            for (icon, label, enabled, asked) in offered {
+                let clicked = ui
+                    .add_enabled_ui(enabled, |ui| kit::small_icon_button(ui, p, icon, &label))
+                    .inner
+                    .clicked();
+                if clicked && enabled {
+                    answer = Some(asked);
                 }
-                ui.add_space(4.0);
-                badge(ui, p, job, held);
-                ui.add_space(6.0);
-                let room = ui.available_width();
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    let galley = widgets::truncated(ui, name, theme::medium(12.5), p.fg, room);
-                    let (rect, response) = ui.allocate_exact_size(
-                        vec2(room.max(0.0), metrics::CONTROL_HEIGHT),
-                        Sense::hover(),
-                    );
-                    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, name));
-                    ui.painter().galley(
-                        pos2(rect.left(), rect.center().y - galley.size().y * 0.5),
-                        galley,
-                        p.fg,
-                    );
-                    if job.name.len() > 24 {
-                        response.on_hover_text(&job.name);
-                    }
-                });
-            });
-        });
-
-        // Where it goes, under the name: the last folders, which tell jobs
-        // apart, with the whole path on hover.
-        let folder = (job.destination.parent())
-            .filter(|folder| !folder.as_os_str().is_empty())
-            .map(|folder| short_folder(folder, home));
-        if let Some(folder) = folder {
-            let width = ui.available_width() - 22.0;
-            ui.horizontal(|ui| {
-                // The folder glyph under the job's, the folder under its name,
-                // where the lines below begin.
-                ui.spacing_mut().item_spacing.x = 0.0;
-                let (gutter, _) = ui.allocate_exact_size(vec2(22.0, 15.0), Sense::hover());
-                icons::paint(
-                    ui.painter(),
-                    Rect::from_center_size(
-                        pos2(gutter.left() + 8.0, gutter.center().y),
-                        Vec2::splat(12.0),
-                    ),
-                    Icon::Folder,
-                    p.muted,
-                );
-                let galley = widgets::truncated(ui, &folder, theme::regular(11.5), p.muted, width);
-                let (rect, response) =
-                    ui.allocate_exact_size(vec2(width.max(0.0), 15.0), Sense::hover());
-                response.widget_info(|| {
-                    WidgetInfo::labeled(
-                        WidgetType::Label,
-                        true,
-                        format!("Saved in {}", job.destination.display()),
-                    )
-                });
-                ui.painter().galley(rect.left_top(), galley, p.muted);
-                response.on_hover_text(job.destination.display().to_string());
-            });
-        }
-
-        // A held job has not started: it has no progress to show.
-        let moving = !held
-            && matches!(
-                job.state,
-                RenderState::Preparing
-                    | RenderState::Rendering
-                    | RenderState::Paused
-                    | RenderState::Finalizing
-            );
-        if moving {
-            ui.horizontal(|ui| {
-                ui.add_space(22.0);
-                ui.vertical(|ui| {
-                    ui.add_space(3.0);
-                    let fill = if job.state == RenderState::Paused {
-                        p.secondary
-                    } else {
-                        p.accent
-                    };
-                    widgets::progress(ui, p, job.progress, fill, &format!("Progress of “{name}”"));
-                    ui.add_space(1.0);
-                });
-            });
-        }
-
-        ui.horizontal(|ui| {
-            ui.add_space(22.0);
-            ui.label(
-                RichText::new(status(job, held))
-                    .font(theme::regular(11.5))
-                    .color(p.secondary),
-            );
-            if let Some(encoder) = &job.encoder {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(
-                        RichText::new(encoder)
-                            .font(theme::mono(10.5))
-                            .color(p.muted),
-                    );
-                });
             }
+        },
+    );
+    y += NAME_LINE;
+
+    // What it is doing: done with a check, failed in the problem colour,
+    // and the encoder at the trailing end.
+    let status = status(job, held);
+    let line = Rect::from_min_max(pos2(left, y), pos2(right, y + LINE));
+    let mut x = left;
+    if job.state == RenderState::Done {
+        icons::paint(
+            &painter,
+            Rect::from_center_size(pos2(x + 7.0, line.center().y), Vec2::splat(14.0)),
+            Icon::CircleCheck,
+            p.green,
+        );
+        x += 14.0 + 5.0;
+    }
+    let mut end = right;
+    let mut encoder_shown = None;
+    if let Some(encoder) = &job.encoder {
+        let galley = painter.layout_no_wrap(encoder.clone(), theme::mono(11.0), p.secondary);
+        end -= galley.size().x;
+        let at = pos2(end, line.center().y - galley.size().y * 0.5);
+        let shown = Rect::from_min_size(at, galley.size());
+        painter.galley(at, galley, p.secondary);
+        encoder_shown = Some((shown, encoder));
+        end -= 12.0;
+    }
+    let ink = if job.state == RenderState::Failed {
+        p.failure_ink()
+    } else {
+        p.secondary
+    };
+    let galley = controls::elided(&painter, &status, theme::regular(12.0), ink, end - x);
+    let stated = Rect::from_min_max(
+        pos2(left, line.center().y - galley.size().y * 0.5),
+        pos2(x + galley.size().x, line.center().y + galley.size().y * 0.5),
+    );
+    painter.galley(pos2(x, stated.top()), galley, ink);
+    ui.interact(stated, ui.id().with(("job-status", job.id)), Sense::hover())
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &status));
+    // The encoder is read after the status, as it is seen.
+    if let Some((shown, encoder)) = encoder_shown {
+        kit::said(ui, shown, encoder);
+    }
+    y += LINE;
+
+    // How far it has got.
+    if moving(job, held) {
+        let line = Rect::from_min_max(pos2(left, y), pos2(right, y + BAR_LINE));
+        let percent = format!("{:.0} %", (job.progress.clamp(0.0, 1.0) * 100.0).floor());
+        let galley = painter.layout_no_wrap(percent, theme::mono(11.0), p.secondary);
+        let bar = Rect::from_min_max(
+            pos2(left, line.center().y - 2.0),
+            pos2(right - 40.0, line.center().y + 2.0),
+        );
+        painter.galley(
+            pos2(
+                right - galley.size().x,
+                line.center().y - galley.size().y * 0.5,
+            ),
+            galley,
+            p.secondary,
+        );
+        let fill = if job.state == RenderState::Paused {
+            p.secondary
+        } else {
+            p.accent
+        };
+        controls::place(
+            ui,
+            bar,
+            Layout::left_to_right(Align::Center),
+            ("render-queue-progress", job.id),
+            |ui| {
+                kit::progress_bar(
+                    ui,
+                    p,
+                    Some(job.progress),
+                    fill,
+                    &format!("Progress of “{name}”"),
+                )
+            },
+        );
+        y += BAR_LINE;
+    }
+
+    // Where it goes, under its status: the last folders, which tell jobs
+    // apart, with the whole path on hover.
+    if let Some(folder) = folder_of(job) {
+        let line = Rect::from_min_max(pos2(left, y), pos2(right, y + LINE));
+        icons::paint(
+            &painter,
+            Rect::from_center_size(pos2(left + 7.0, line.center().y), Vec2::splat(12.0)),
+            Icon::Folder,
+            p.muted,
+        );
+        let room = right - left - 19.0;
+        let font = theme::regular(11.5);
+        let folder = fitted_folder(folder, home, |text| {
+            let galley = painter.layout_no_wrap(text.to_owned(), font.clone(), p.secondary);
+            galley.size().x <= room
         });
-        if let Some(message) = job.message.as_deref().filter(|m| !m.trim().is_empty()) {
-            ui.horizontal(|ui| {
-                ui.add_space(22.0);
-                let color = if job.state == RenderState::Failed {
-                    p.red
-                } else {
-                    p.secondary
-                };
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(message)
-                            .font(theme::regular(11.5))
-                            .color(color),
-                    )
-                    .wrap(),
-                );
-            });
+        let galley = controls::elided(&painter, &folder, font, p.secondary, room);
+        let shown = Rect::from_min_max(
+            pos2(left, line.center().y - galley.size().y * 0.5),
+            pos2(
+                left + 19.0 + galley.size().x,
+                line.center().y + galley.size().y * 0.5,
+            ),
+        );
+        painter.galley(pos2(left + 19.0, shown.top()), galley, p.secondary);
+        let saved = format!("Saved in {}", job.destination.display());
+        let response = ui.interact(shown, ui.id().with(("job-folder", job.id)), Sense::hover());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &saved));
+        response.on_hover_text(job.destination.display().to_string());
+        y += LINE;
+    }
+
+    // What the queue says of it: why it failed, or a note.
+    if let Some(galley) = message_galley(ui, p, job, card) {
+        let at = pos2(left, y + 2.0);
+        let shown = Rect::from_min_size(at, galley.size());
+        let message = galley.text().to_owned();
+        let color = if job.state == RenderState::Failed {
+            p.failure_ink()
+        } else {
+            p.secondary
+        };
+        let cut = galley.elided;
+        painter.galley(at, galley, color);
+        let response = ui.interact(shown, ui.id().with(("job-message", job.id)), Sense::hover());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &message));
+        if cut {
+            response.on_hover_text(message);
         }
-    });
+    }
     answer
 }
 
-/// A small ring for the toolbar's queue button: the track, the share of the
-/// work done as an arc from the top, and the number of jobs under way when
-/// more than one is. Painted only; the button around it carries the name.
+/// The actions a job's state allows, leading to trailing: each one's
+/// glyph, name, whether it can be taken now and what it asks.
+fn actions(
+    job: &RenderJobInfo,
+    name: &str,
+    held: bool,
+    place: Option<(usize, usize)>,
+) -> Vec<(Icon, String, bool, QueueAnswer)> {
+    let id = job.id;
+    let cancel = |icon| {
+        (
+            icon,
+            format!("Cancel “{name}”"),
+            true,
+            QueueAnswer::Cancel(id),
+        )
+    };
+    let remove = (
+        Icon::Trash,
+        format!("Remove “{name}” from the list"),
+        true,
+        QueueAnswer::Remove(id),
+    );
+    match job.state {
+        RenderState::Done => vec![
+            (
+                Icon::Folder,
+                format!("Show “{name}” in its folder"),
+                true,
+                QueueAnswer::Reveal(id),
+            ),
+            remove,
+        ],
+        RenderState::Failed | RenderState::Cancelled => vec![
+            (
+                Icon::Loop,
+                format!("Render “{name}” again"),
+                true,
+                QueueAnswer::Retry(id),
+            ),
+            remove,
+        ],
+        // Waiting its turn, or held until started.
+        RenderState::Queued | RenderState::Paused if held || job.state == RenderState::Queued => {
+            let mut offered = Vec::with_capacity(4);
+            if let Some((at, of)) = place {
+                offered.push((
+                    Icon::ArrowUp,
+                    format!("Render “{name}” sooner"),
+                    at > 0,
+                    QueueAnswer::MoveUp(id),
+                ));
+                offered.push((
+                    Icon::ArrowDown,
+                    format!("Render “{name}” later"),
+                    at + 1 < of,
+                    QueueAnswer::MoveDown(id),
+                ));
+            }
+            if held {
+                offered.push((
+                    Icon::Play,
+                    format!("Start “{name}”"),
+                    true,
+                    QueueAnswer::Resume(id),
+                ));
+            }
+            offered.push(cancel(Icon::Close));
+            offered
+        }
+        // Started, then paused.
+        RenderState::Queued | RenderState::Paused => vec![
+            (
+                Icon::Play,
+                format!("Resume “{name}”"),
+                true,
+                QueueAnswer::Resume(id),
+            ),
+            cancel(Icon::Stop),
+        ],
+        RenderState::Preparing | RenderState::Rendering => vec![
+            (
+                Icon::Pause,
+                format!("Pause “{name}”"),
+                true,
+                QueueAnswer::Pause(id),
+            ),
+            cancel(Icon::Stop),
+        ],
+        RenderState::Finalizing => vec![cancel(Icon::Stop)],
+    }
+}
+
+/// A small ring for the toolbar's queue button: the share of the work done
+/// as an arc from the top, and the number of jobs under way when more than
+/// one is. Painted only; the button around it carries the name.
 pub fn summary_ring(ui: &Ui, p: &Palette, rect: Rect, progress: f32, active: usize) {
     if !ui.is_rect_visible(rect) {
         return;
     }
     let painter = ui.painter();
     let center = rect.center();
-    let radius = rect.width().min(rect.height()) * 0.5 - 1.5;
-    painter.circle_stroke(center, radius, Stroke::new(2.0, p.pressed));
-    let done = if progress.is_finite() {
-        progress.clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    if done > 0.0 {
-        let steps = ((done * 48.0).ceil() as usize).max(2);
-        let points: Vec<_> = (0..=steps)
-            .map(|step| {
-                let angle = -TAU / 4.0 + TAU * done * step as f32 / steps as f32;
-                center + radius * Vec2::angled(angle)
-            })
-            .collect();
-        painter.add(egui::Shape::line(points, Stroke::new(2.0, p.accent)));
-    }
+    kit::progress_ring(painter, p, center, progress);
     if active > 1 {
         painter.text(
             center,
             Align2::CENTER_CENTER,
             active.min(99).to_string(),
-            theme::medium((radius * 1.1).clamp(7.0, 11.0)),
+            theme::mono(11.0),
             p.fg,
         );
     }

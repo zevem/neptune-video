@@ -9,8 +9,11 @@
 use super::*;
 use crate::theme::{Accent, Appearance};
 use editor_core::export::ExportSettings;
-use eframe::egui::{Event, Key, Modifiers, PointerButton, Pos2, Shape, accesskit::Role};
-use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use eframe::egui::{Color32, Event, Key, Modifiers, PointerButton, Pos2, Shape, accesskit::Role};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{MAIN_SEPARATOR, Path, PathBuf},
+};
 
 const WIDE: Vec2 = vec2(1440.0, 900.0);
 const NARROW: Vec2 = vec2(760.0, 560.0);
@@ -93,7 +96,13 @@ struct Bench {
     jobs: Vec<RenderJobInfo>,
     /// Paused jobs that are held: waiting, never started.
     held: Vec<Uuid>,
+    /// Why the last request failed, as the application hands it in.
+    refusal: Option<String>,
     seen: Vec<Seen>,
+    /// The names AccessKit gives, in the order a screen reader takes them.
+    reading: Vec<String>,
+    /// The name of the node with the keyboard.
+    focused: Option<String>,
     painted: Vec<(String, Color32)>,
     answers: Vec<QueueAnswer>,
 }
@@ -112,7 +121,10 @@ impl Bench {
             time: 0.0,
             jobs,
             held: Vec::new(),
+            refusal: None,
             seen: Vec::new(),
+            reading: Vec::new(),
+            focused: None,
             painted: Vec::new(),
             answers: Vec::new(),
         };
@@ -143,7 +155,13 @@ impl Bench {
             .collect();
         let mut answer = None;
         let output = ctx.run_ui(raw, |ui| {
-            answer = show(ui.ctx(), &self.palette, &self.jobs, &waiting);
+            answer = show(
+                ui.ctx(),
+                &self.palette,
+                &self.jobs,
+                &waiting,
+                self.refusal.as_deref(),
+            );
         });
         if let Some(update) = &output.platform_output.accesskit_update {
             self.seen = (update.nodes.iter())
@@ -161,6 +179,25 @@ impl Bench {
                     })
                 })
                 .collect();
+            let nodes: HashMap<_, _> = update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+            let name = |node: &egui::accesskit::Node| {
+                node.label().or_else(|| node.value()).map(str::to_owned)
+            };
+            self.focused = nodes.get(&update.focus).and_then(|node| name(node));
+            // The root is the one node that is no other's child.
+            let children: HashSet<_> = (nodes.values())
+                .flat_map(|node| node.children().iter().copied())
+                .collect();
+            let mut walk: Vec<_> = (nodes.keys())
+                .filter(|id| !children.contains(id))
+                .copied()
+                .collect();
+            self.reading.clear();
+            while let Some(id) = walk.pop() {
+                let Some(node) = nodes.get(&id) else { continue };
+                self.reading.extend(name(node));
+                walk.extend(node.children().iter().rev().copied());
+            }
         }
         self.painted.clear();
         for clipped in &output.shapes {
@@ -202,9 +239,11 @@ impl Bench {
         for _ in 0..8 {
             self.frame(Vec::new());
             let top = self.get("Close render queue").rect.bottom();
+            // Spec §5.9.4: Clear finished moved into the header; the list
+            // ends at the footer's New export….
             let bottom = self
-                .find("Clear finished")
-                .map_or(self.size.y, |clear| clear.rect.top());
+                .find("New export…")
+                .map_or(self.size.y, |new| new.rect.top());
             let rect = self.get(name).rect;
             // The header's and the footer's controls do not scroll.
             let chrome = [
@@ -244,6 +283,17 @@ impl Bench {
         self.frame(vec![Event::PointerMoved(at)]);
         self.frame(vec![button(true)]);
         self.frame(vec![button(false)]);
+        self.frame(Vec::new());
+    }
+
+    fn key(&mut self, key: Key, modifiers: Modifiers) {
+        self.frame(vec![Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }]);
         self.frame(Vec::new());
     }
 
@@ -426,17 +476,134 @@ fn a_job_says_how_far_it_has_got_and_why_it_failed() {
         bench.says("3 rendering · 1 paused · 2 waiting"),
         "the header counts the work"
     );
-    let red = bench.palette.red;
+    // Spec §7.1: the count and the encoder are painted, and still said to
+    // those who do not see them.
+    let label =
+        |text: &str| (bench.seen.iter()).any(|seen| seen.role == Role::Label && seen.name == text);
+    assert!(
+        label("3 rendering · 1 paused · 2 waiting"),
+        "the count is a label"
+    );
+    assert!(label("h264_nvenc"), "the encoder is a label");
+    assert!(label("Render queue"), "the title is a label");
+    // Spec §3.1: where a job goes is read, not disabled, ink.
+    assert_eq!(
+        bench.painted_in("/home/someone/Exports"),
+        Some(bench.palette.secondary)
+    );
+    let red = bench.palette.failure_ink();
     let mut bench = bench;
     // The failed job's message is just over the last row, the job done
     // first.
     bench.reveal("Remove “done.mp4” from the list");
+    assert_eq!(bench.painted_in("Failed after 0:12"), Some(red));
     assert_eq!(bench.painted_in("No space left on device"), Some(red));
     assert_ne!(
         bench.painted_in("rendered in software"),
         Some(red),
         "a note is not a failure"
     );
+}
+
+#[test]
+fn a_failure_is_red_that_reads_on_the_card() {
+    // §6: the failure's words are 12 points, so they hold 4.5:1 on the
+    // queue's card, `control` over the sheet, in either appearance, and
+    // stay red.
+    for appearance in [Appearance::Dark, Appearance::Light] {
+        let p = Palette::new(appearance, Accent::default());
+        let ink = p.failure_ink();
+        let card = p.elevated.blend(p.control);
+        let ratio = theme::contrast(ink, card);
+        assert!(ratio >= 4.5, "{appearance:?}: {ink:?} at {ratio:.2}:1");
+        assert!(
+            ink.r() > ink.g().saturating_add(80) && ink.r() > ink.b().saturating_add(80),
+            "{appearance:?}: {ink:?} is still red"
+        );
+    }
+}
+
+#[test]
+fn a_row_reads_and_tabs_as_it_is_laid_out() {
+    // §7.4: each row's name, then its actions leading to trailing, as the
+    // eye goes, for a held job, one waiting, one paused, one rendering and
+    // ones finished.
+    let jobs = vec![
+        job("b.mp4", RenderState::Queued),
+        job("a.mp4", RenderState::Paused),
+        job("c.mp4", RenderState::Queued),
+    ];
+    let a = jobs[1].id;
+    let mut bench = Bench::new(WIDE, jobs);
+    bench.held = vec![a];
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    let names = [
+        "a.mp4",
+        "Render “a.mp4” sooner",
+        "Render “a.mp4” later",
+        "Start “a.mp4”",
+        "Cancel “a.mp4”",
+    ];
+    let lefts: Vec<_> = (names.iter())
+        .map(|name| {
+            (bench.seen.iter())
+                .find(|seen| seen.name == *name)
+                .unwrap_or_else(|| panic!("FIXTURE: {name} is listed"))
+                .rect
+                .left()
+        })
+        .collect();
+    assert!(lefts.is_sorted(), "{lefts:?}");
+    let read: Vec<_> = (bench.reading.iter())
+        .map(String::as_str)
+        .filter(|name| names.contains(name))
+        .collect();
+    assert_eq!(read, names, "read");
+    // Tab takes the held job's actions from Render sooner to Cancel. The
+    // first waiting job's actions come before them, as its row does.
+    let actions = &names[1..];
+    let mut tabbed: Vec<String> = Vec::new();
+    for _ in 0..20 {
+        if tabbed.len() == actions.len() {
+            break;
+        }
+        bench.key(Key::Tab, Modifiers::NONE);
+        if let Some(name) = (bench.focused.as_deref()).filter(|name| actions.contains(name))
+            && tabbed.last().map(String::as_str) != Some(name)
+        {
+            tabbed.push(name.to_owned());
+        }
+    }
+    assert_eq!(tabbed, actions, "tabbed");
+
+    // Every other state's row reads its name, then its actions in the
+    // order they stand.
+    let bench = Bench::new(WIDE, every_state());
+    for job in [
+        "rendering.mp4",
+        "paused.mp4",
+        "first.mp4",
+        "finalizing.mp4",
+        "done.mp4",
+        "failed.mp4",
+    ] {
+        let quoted = format!("“{job}”");
+        let row: Vec<&str> = (bench.reading.iter())
+            .map(String::as_str)
+            .filter(|name| {
+                *name == job || (name.contains(&quoted) && !name.starts_with("Progress"))
+            })
+            .collect();
+        assert_eq!(row.first(), Some(&job), "{row:?}");
+        let lefts: Vec<f32> = (row.iter().skip(1))
+            .map(|name| bench.get(name).rect.left())
+            .collect();
+        assert!(
+            !lefts.is_empty() && lefts.is_sorted(),
+            "{job}: {row:?} at {lefts:?}"
+        );
+    }
 }
 
 #[test]
@@ -459,6 +626,31 @@ fn the_panel_is_in_place_from_its_first_frame() {
         first,
         "it does not creep"
     );
+}
+
+#[test]
+fn the_sheet_keeps_its_place_as_jobs_come_and_go() {
+    // Spec §5.9.4: the sheet is as tall whatever it lists, so that its
+    // header's controls stay where they are as a job starts and finishes.
+    for size in [WIDE, NARROW] {
+        let mut bench = Bench::new(size, Vec::new());
+        let empty = bench.get("Close render queue").rect;
+        let seen = |bench: &mut Bench, jobs: Vec<RenderJobInfo>| {
+            bench.jobs = jobs;
+            for _ in 0..4 {
+                bench.frame(Vec::new());
+            }
+            (
+                bench.get("Close render queue").rect,
+                bench.get("Clear finished").rect,
+            )
+        };
+        let (rendering, clear) = seen(&mut bench, vec![job("first.mp4", RenderState::Rendering)]);
+        let (done, cleared) = seen(&mut bench, vec![job("first.mp4", RenderState::Done)]);
+        assert_eq!(empty, rendering, "at {size:?}");
+        assert_eq!(rendering, done, "at {size:?}");
+        assert_eq!(clear, cleared, "Clear finished stays put at {size:?}");
+    }
 }
 
 #[test]
@@ -612,6 +804,35 @@ fn a_folder_is_shown_by_its_last_folders_from_home() {
     );
 }
 
+#[test]
+fn a_long_failure_is_cut_to_two_lines_and_said_whole() {
+    // A raw FFmpeg error runs to many lines; the row shows two of them and
+    // the rest of the queue stays in sight.
+    let long = (0..10)
+        .map(|at| format!("[out#0/mp4 @ 0x5581] line {at} of what FFmpeg said on stopping"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut failed = job("failed.mp4", RenderState::Failed);
+    failed.message = Some(long.clone());
+    let bench = Bench::new(NARROW, vec![failed, job("next.mp4", RenderState::Queued)]);
+    let message = (bench.seen.iter())
+        .find(|seen| seen.role == Role::Label && seen.name == long)
+        .expect("the whole message is said");
+    assert!(
+        message.rect.height() <= 2.0 * 16.0,
+        "the message is two lines at most: {:?}",
+        message.rect
+    );
+    assert_eq!(
+        bench.painted_in("line 0 of what FFmpeg said"),
+        Some(bench.palette.failure_ink())
+    );
+    assert!(
+        in_sight(&bench, "Cancel “next.mp4”"),
+        "the next job is in sight"
+    );
+}
+
 /// Where the row of `job` begins: the top of its name.
 fn row_top(bench: &Bench, job: &str) -> f32 {
     (bench.seen.iter())
@@ -624,7 +845,9 @@ fn row_top(bench: &Bench, job: &str) -> f32 {
 /// Whether `name` is shown whole between the header and the footer.
 fn in_sight(bench: &Bench, name: &str) -> bool {
     let top = bench.get("Close render queue").rect.bottom();
-    let bottom = bench.get("Clear finished").rect.top();
+    // Spec §5.9.4: Clear finished moved into the header; the list ends at
+    // the footer's New export….
+    let bottom = bench.get("New export…").rect.top();
     let rect = bench.get(name).rect;
     rect.top() >= top && rect.bottom() <= bottom
 }
@@ -746,4 +969,106 @@ fn a_job_that_starts_is_scrolled_into_sight_once() {
         !in_sight(&bench, "Pause “next.mp4”"),
         "it is not held in sight"
     );
+}
+
+#[test]
+fn a_refusal_is_said_in_the_footer_of_a_short_window() {
+    // Spec §5.8: a toast waits under a sheet that leaves it no room, so what
+    // the queue refused is said in its own footer.
+    let why = "The file manager could not be opened: no handler for the folder";
+    let mut bench = Bench::new(NARROW, every_state());
+    bench.refusal = Some(why.to_owned());
+    bench.frame(Vec::new());
+    let said = (bench.seen.iter())
+        .find(|seen| seen.name == why && seen.role == Role::Label)
+        .unwrap_or_else(|| panic!("the refusal is read out"))
+        .rect;
+    let new = bench.get("New export…").rect;
+    assert!(
+        said.bottom() <= NARROW.y && said.top() >= new.top() - 12.0,
+        "in the footer, in sight: {said:?}, {new:?}"
+    );
+    assert!(said.right() <= new.left(), "beside the buttons: {said:?}");
+    assert_eq!(bench.painted_in("file manager"), Some(bench.palette.red));
+    bench.refusal = None;
+    bench.frame(Vec::new());
+    assert!(!bench.says("file manager"));
+}
+
+#[test]
+fn a_short_window_keeps_the_queue_clear_of_the_title_bar() {
+    // §5.9.1: as tall as Preferences in a window under about 600 tall.
+    let bench = Bench::new(NARROW, Vec::new());
+    let sheet = (bench.seen.iter())
+        .find(|seen| seen.name == "Render queue" && seen.role == Role::Window)
+        .expect("the sheet is a window")
+        .rect;
+    assert!(
+        sheet.top() >= crate::theme::metrics::TOOLBAR_HEIGHT + 3.0,
+        "{sheet:?}"
+    );
+}
+
+#[test]
+fn a_long_folder_gives_up_its_parents_before_its_own_name() {
+    // Each character is a point wide, so that `room` is how many fit.
+    let fitted = |path: &str, room: usize| {
+        fitted_folder(Path::new(path), Some(Path::new("/home/someone")), |text| {
+            text.chars().count() <= room
+        })
+    };
+    if MAIN_SEPARATOR == '/' {
+        let run = "/tmp/runs/20261021-042123-d123-p4085471/1440x900-dark-fixture";
+        // With room, as the queue has always shown it.
+        assert_eq!(
+            fitted(run, 80),
+            "/…/20261021-042123-d123-p4085471/1440x900-dark-fixture"
+        );
+        // Then the parents go, and the folder's own name stays whole.
+        assert_eq!(fitted(run, 40), "/…/1440x900-dark-fixture");
+        assert_eq!(
+            fitted(
+                "/home/someone/Client Projects/Wedding 2026 Final/Exports",
+                20
+            ),
+            "~/…/Exports"
+        );
+        // Then the middle of its name, keeping how it starts and ends.
+        assert_eq!(fitted(run, 16), "/…/1440x9…ixture");
+        assert_eq!(
+            fitted("/home/someone/Wedding 2026 Final", 16),
+            "~/Wedding… Final"
+        );
+        // The home folder is named whatever the room.
+        assert_eq!(fitted("/home/someone", 4), "Home folder");
+    }
+}
+
+#[test]
+fn a_job_name_cut_short_is_shown_whole_on_hover() {
+    let long = "the whole of the trip, from the first morning to the last night, cut.mp4";
+    let mut bench = Bench::new(
+        NARROW,
+        vec![
+            job(long, RenderState::Queued),
+            job("a.mp4", RenderState::Queued),
+        ],
+    );
+    // A text shape keeps its whole text, cut or not, so a name is counted
+    // where it is painted: once in its row, and again in a tooltip.
+    let mut rest_on = |name: &str| {
+        let row = (bench.seen.iter())
+            .find(|seen| seen.name == name && seen.role == Role::Label)
+            .unwrap_or_else(|| panic!("FIXTURE: the row of {name} is listed"))
+            .rect;
+        bench.frame(vec![Event::PointerMoved(row.center())]);
+        for _ in 0..30 {
+            bench.frame(Vec::new());
+        }
+        (bench.painted.iter())
+            .filter(|(text, _)| text == name)
+            .count()
+    };
+    assert_eq!(rest_on(long), 2, "the long name is shown whole on hover");
+    assert_eq!(rest_on("a.mp4"), 1, "a name that fits has no tooltip");
 }

@@ -838,9 +838,10 @@ fn every_colour_control_is_named_and_fits_a_narrow_panel() {
                 continue;
             }
             controls += 1;
+            // Cards span the panel and their key column ends 8 in (spec
+            // §5.4, §4.3.3).
             assert!(
-                seen.rect.left() >= panel.left() + 11.0
-                    && seen.rect.right() <= panel.right() - 11.0,
+                fits_cards(seen, panel),
                 "at {width}: \"{}\" is at {:?}",
                 seen.name,
                 seen.rect

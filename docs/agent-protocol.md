@@ -64,8 +64,9 @@ ignoring the advisory `.write-lock` can race the final check and rename. See
 
 The native app owns an `AgentHost` and publishes a session descriptor for its
 local transport. The descriptor contains the loopback address, protocol
-version, instance ID and session token. Connect to the descriptor path shown
-by the desktop or supplied for an isolated verification run:
+version, instance ID and session token. Connect to the descriptor path the
+desktop copies with **More › Copy the connect command** in the Agent tab's
+session row, or one supplied for an isolated verification run:
 
 ```sh
 target/debug/neptune-video-agent --connect /absolute/session.json

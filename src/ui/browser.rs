@@ -1,30 +1,40 @@
 //! The library's effects, transitions and looks: what a clip can be given,
-//! as tiles.
+//! as cards.
 //!
-//! A tile is listed from the project's own tables, drawn with a few shapes
-//! (nothing is decoded for it), and applied to the selected clips with a
-//! double click or Enter, or to the clip it is dragged onto. Either way the
-//! clips are captured when the tile is let go of, and what is made is a
-//! command or an [`Action::AddTransitions`] like any other.
+//! A card is listed from the project's own tables, drawn with a few shapes
+//! on a sample frame (nothing is decoded for it), and applied to the
+//! selected clips with a double click or Enter, or to the clip it is dragged
+//! onto. Either way the clips are captured when the card is let go of, and
+//! what is made is a command or an [`Action::AddTransitions`] like any
+//! other.
 use super::{
-    Action, Selection, inspector,
-    library::Tab,
+    Action, Selection, inspector, kit,
+    library::{self, Tab},
     transitions,
-    widgets::{self},
 };
-use crate::theme::{self, Palette, metrics};
+use crate::{
+    icons::Icon,
+    theme::{self, Palette, metrics},
+};
 use editor_core::{
     ClipContent, ClipId, Command, Effect, EffectKind, LookPreset, Project, Time, TrackKind,
     TransitionEdge, TransitionKind,
 };
 use eframe::egui::{
-    self, Color32, CornerRadius, Id, Key, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2,
-    WidgetInfo, WidgetType, pos2, vec2,
+    self, Color32, CornerRadius, Id, Key, Painter, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
+    Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 
-const TILE_MIN: f32 = 84.0;
-const TILE_GAP: f32 = 8.0;
-const NAME_HEIGHT: f32 = 22.0;
+/// What a card has under its well: its name, 6 below it.
+const NAME_HEIGHT: f32 = 24.0;
+/// Round the cards: room for their rings, which stand 6 out from them,
+/// and the same on either side (see [`library::cards_width`]).
+const MARGIN: egui::Margin = egui::Margin {
+    left: library::LEADING as i8,
+    right: library::LEADING as i8,
+    top: 6,
+    bottom: 8,
+};
 /// How soon after a double click gave a tile another click is part of it.
 const AGAIN: f64 = 0.35;
 
@@ -207,7 +217,7 @@ pub struct BrowserInput<'a> {
     pub tab: Tab,
 }
 
-/// The tiles of one tab in `rect`, filtered by what is searched for.
+/// The cards of one tab in `rect`, filtered by what is searched for.
 pub fn show(
     ui: &mut Ui,
     rect: Rect,
@@ -225,65 +235,63 @@ pub fn show(
             || family.to_lowercase().contains(&query)
     };
     if !listed.iter().any(shown) {
-        widgets::empty_state(
+        kit::empty_state(
             ui,
             p,
-            rect,
-            crate::icons::Icon::Search,
+            library::inset(rect),
+            Icon::Search,
             "No matches",
             "Nothing here has that name.",
+            None,
         );
         return;
     }
 
-    let mut body = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(10.0, 0.0))));
-    body.set_clip_rect(rect);
+    let mut body = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    body.set_clip_rect(rect.intersect(ui.clip_rect()));
     body.spacing_mut().item_spacing = Vec2::ZERO;
-    // The scroll bar has the last points of the panel to itself.
-    let width = body.available_width() - 6.0;
-    let columns = ((width + TILE_GAP) / (TILE_MIN + TILE_GAP))
-        .floor()
-        .max(1.0) as usize;
-    let tile_width = (width - TILE_GAP * (columns as f32 - 1.0)) / columns as f32;
-    let tile_height = (tile_width * 0.58).round() + NAME_HEIGHT;
+    let width = library::cards_width(rect.width());
+    let (columns, tile_width) = library::card_columns(width);
+    let well = tile_width * 9.0 / 16.0;
+    let tile_height = well + NAME_HEIGHT;
     let enter = ui.input(|i| i.key_pressed(Key::Enter));
-    egui::ScrollArea::vertical()
+    let output = egui::ScrollArea::vertical()
         .id_salt(("browser", input.tab))
         .auto_shrink([false, false])
         .show(&mut body, |ui| {
-            let mut heading = "";
-            let mut column = 0;
-            let mut row = Rect::NOTHING;
-            for (family, entry) in listed.iter().filter(|listed| shown(listed)) {
-                if *family != heading {
-                    heading = family;
-                    column = 0;
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(heading)
-                            .font(theme::medium(11.5))
-                            .color(p.muted),
+            egui::Frame::NONE.inner_margin(MARGIN).show(ui, |ui| {
+                ui.set_width(width);
+                let mut heading = "";
+                let mut column = 0;
+                let mut row = Rect::NOTHING;
+                for (family, entry) in listed.iter().filter(|listed| shown(listed)) {
+                    if *family != heading {
+                        heading = family;
+                        column = 0;
+                        library::heading(ui, p, heading);
+                        ui.add_space(4.0);
+                    }
+                    if column == 0 {
+                        (row, _) = ui.allocate_exact_size(
+                            vec2(width, tile_height + library::CARD_ROW_GAP),
+                            Sense::hover(),
+                        );
+                    }
+                    let cell = Rect::from_min_size(
+                        pos2(
+                            row.left() + column as f32 * (tile_width + library::CARD_GAP),
+                            row.top(),
+                        ),
+                        vec2(tile_width, tile_height),
                     );
-                    ui.add_space(4.0);
+                    column = (column + 1) % columns;
+                    // Every card is named, so that each can be found; one
+                    // reached from the keyboard comes into view.
+                    tile(ui, cell, *entry, state, selection, input, enter, actions);
                 }
-                if column == 0 {
-                    (row, _) =
-                        ui.allocate_exact_size(vec2(width, tile_height + TILE_GAP), Sense::hover());
-                }
-                let cell = Rect::from_min_size(
-                    pos2(
-                        row.left() + column as f32 * (tile_width + TILE_GAP),
-                        row.top(),
-                    ),
-                    vec2(tile_width, tile_height),
-                );
-                column = (column + 1) % columns;
-                if !ui.is_rect_visible(cell) {
-                    continue;
-                }
-                tile(ui, cell, *entry, state, selection, input, enter, actions);
-            }
+            });
         });
+    kit::scroll_fades(ui, &output, p.chrome);
 }
 
 #[expect(clippy::too_many_arguments, reason = "one call site per tile")]
@@ -309,28 +317,23 @@ fn tile(
     response.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, picked, name));
 
     let picture = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - NAME_HEIGHT));
-    let radius = CornerRadius::same(metrics::CONTROL_RADIUS);
-    let painter = ui.painter();
-    painter.rect_filled(picture, radius, p.sunken);
-    swatch(
-        &painter.with_clip_rect(picture.intersect(painter.clip_rect())),
-        picture.shrink(1.0),
-        entry,
-        p,
-    );
-    let outline = if response.has_focus() || picked {
-        Stroke::new(1.5, p.accent)
-    } else if response.hovered() {
-        Stroke::new(1.0, p.secondary)
-    } else if p.dark {
-        Stroke::new(1.0, Color32::from_white_alpha(26))
-    } else {
-        Stroke::new(1.0, Color32::from_black_alpha(26))
-    };
-    painter.rect_stroke(picture, radius, outline, StrokeKind::Inside);
-    let label = widgets::truncated(ui, name, theme::medium(11.5), p.fg, rect.width());
-    ui.painter()
-        .galley(pos2(rect.left() + 1.0, picture.bottom() + 4.0), label, p.fg);
+    // Tab walks through the cards out of view too: the one it reaches is
+    // scrolled to with room for its ring, and drawn from the next frame.
+    if response.gained_focus() {
+        ui.scroll_to_rect(rect.expand(8.0), None);
+    }
+    if ui.is_rect_visible(rect.expand(6.0)) {
+        library::card_states(ui, p, rect, picture, &response, picked);
+        let painter = ui.painter();
+        painter.rect_filled(picture, metrics::CONTROL_RADIUS, p.stage());
+        swatch(
+            &within(painter, picture),
+            picture,
+            metrics::CONTROL_RADIUS,
+            entry,
+        );
+        library::card_name(ui, p, picture, name, None);
+    }
 
     if response.clicked() || response.drag_started() {
         state.picked = Some(entry);
@@ -359,22 +362,18 @@ fn tile(
     if response.drag_started() {
         egui::DragAndDrop::set_payload(ui.ctx(), EntryDrag(entry));
     }
-    // What is being carried follows the pointer.
+    // What is being carried follows the pointer: its card's picture,
+    // lifted.
     if response.dragged()
         && let Some(pos) = ui.ctx().pointer_latest_pos()
     {
         let layer = egui::LayerId::new(egui::Order::Tooltip, Id::new("browser-carry"));
-        let carry = ui.ctx().layer_painter(layer);
-        let label = carry.layout_no_wrap(name.to_owned(), theme::medium(12.0), p.fg);
-        let chip = Rect::from_min_size(pos + vec2(12.0, 10.0), label.size() + vec2(20.0, 10.0));
-        carry.rect_filled(chip, CornerRadius::same(8), p.elevated);
-        carry.rect_stroke(
-            chip,
-            CornerRadius::same(8),
-            Stroke::new(1.0, p.border),
-            StrokeKind::Inside,
-        );
-        carry.galley(chip.min + vec2(10.0, 5.0), label, p.fg);
+        let mut carry = ui.ctx().layer_painter(layer);
+        let lifted = Rect::from_min_size(pos + vec2(12.0, 10.0), vec2(64.0, 36.0));
+        carry.add(p.popup_shadow().as_shape(lifted, 6));
+        carry.set_opacity(0.85);
+        carry.rect_filled(lifted, 6, p.stage());
+        swatch(&within(&carry, lifted), lifted, 6, entry);
     }
     response.on_hover_text(match entry {
         Entry::Effect(kind) if kind.is_audio() => {
@@ -403,14 +402,121 @@ fn part(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect {
     Rect::from_min_max(at(rect, left, top), at(rect, right, bottom))
 }
 
-/// A small picture of what an entry does. It is drawn with a handful of
-/// shapes from the palette, the same in every frame.
-fn swatch(painter: &egui::Painter, rect: Rect, entry: Entry, p: &Palette) {
+/// The outgoing picture of a transition: the sample frame in greys.
+fn grey(level: f32) -> Color32 {
+    Color32::from_gray((14.0 + level.clamp(0.0, 1.0) * 206.0).round() as u8)
+}
+
+/// The incoming picture, and the picture effects are shown on: the sample
+/// frame in the steel of video's tone.
+fn steel(level: f32) -> Color32 {
+    theme::mix(
+        Color32::from_rgb(14, 16, 24),
+        Color32::from_rgb(198, 210, 240),
+        level,
+    )
+}
+
+fn white(alpha: f32) -> Color32 {
+    Color32::from_white_alpha((alpha.clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+
+fn black(alpha: f32) -> Color32 {
+    Color32::from_black_alpha((alpha.clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+
+/// The sample frame every card of the tabs shows what it does to: a sky
+/// lightening toward the horizon, a sun, two ridges and the ground. Each is
+/// a level of `ink`, from dark (0) to light (1), so that a look can grade
+/// it and a transition can show two of it. Rounded at `radius`, as the
+/// well it fills is. Drawn with a handful of shapes, the same every frame.
+fn sample(painter: &Painter, rect: Rect, radius: u8, ink: &dyn Fn(f32) -> Color32) {
+    sample_in(painter, rect, rect, radius, ink);
+}
+
+/// The sample frame laid out over `frame` and seen through the well
+/// `bounds`, rounded at `radius` where the well is. A picture pushed half
+/// out of the well keeps the well's corners, and shows none of its own in
+/// the middle of it. The painter is to clip to `bounds`.
+fn sample_in(
+    painter: &Painter,
+    frame: Rect,
+    bounds: Rect,
+    radius: u8,
+    ink: &dyn Fn(f32) -> Color32,
+) {
+    // Each band runs half a point under the next, so no seam shows, and is
+    // rounded at the corners of the well it reaches. In a pushed picture it
+    // runs a radius under, so that a sliver of it at the top of the well
+    // still has room for the corner; such a picture is never seen through.
+    let under = if frame == bounds {
+        0.5
+    } else {
+        f32::from(radius).max(0.5)
+    };
+    let band = |top: f32, bottom: f32, level: f32| {
+        let mut band = part(frame, 0.0, top, 1.0, bottom);
+        if bottom < 1.0 {
+            band.max.y += under;
+        }
+        let band = band.intersect(bounds);
+        if !band.is_positive() {
+            return;
+        }
+        let reaches = |a: f32, b: f32| (a - b).abs() < 0.5;
+        let left = reaches(band.min.x, bounds.min.x);
+        let right = reaches(band.max.x, bounds.max.x);
+        let top = reaches(band.min.y, bounds.min.y);
+        let bottom = reaches(band.max.y, bounds.max.y);
+        let round = |at: bool| if at { radius } else { 0 };
+        let corners = CornerRadius {
+            nw: round(top && left),
+            ne: round(top && right),
+            sw: round(bottom && left),
+            se: round(bottom && right),
+        };
+        painter.rect_filled(band, corners, ink(level));
+    };
+    band(0.0, 0.36, 0.3);
+    band(0.36, 0.56, 0.38);
+    band(0.56, 0.74, 0.47);
+    painter.circle_filled(at(frame, 0.72, 0.34), frame.height() * 0.12, ink(0.95));
+    let ridge = |points: [(f32, f32); 3], level: f32| {
+        painter.add(Shape::convex_polygon(
+            points.iter().map(|(x, y)| at(frame, *x, *y)).collect(),
+            ink(level),
+            Stroke::NONE,
+        ));
+    };
+    ridge([(-0.06, 0.76), (0.32, 0.44), (0.74, 0.76)], 0.24);
+    ridge([(0.34, 0.76), (0.7, 0.52), (1.08, 0.76)], 0.17);
+    band(0.74, 1.0, 0.1);
+}
+
+/// A painter of `painter`'s that draws only inside `area` as well.
+fn within(painter: &Painter, area: Rect) -> Painter {
+    painter.with_clip_rect(area.intersect(painter.clip_rect()))
+}
+
+/// What an entry does, on the sample frame in `rect`, rounded at `radius`.
+/// Its inks are neutral and the tones' own, never the accent: a card at
+/// rest does not take it.
+fn swatch(painter: &Painter, rect: Rect, radius: u8, entry: Entry) {
     match entry {
-        Entry::Effect(kind) => effect_swatch(painter, rect, kind, p),
-        Entry::Transition(kind) => transition_swatch(painter, rect, kind, p),
-        Entry::Look(preset) => look_swatch(painter, rect, preset),
+        Entry::Effect(kind) => effect_swatch(painter, rect, radius, kind),
+        Entry::Transition(kind) => transition_swatch(painter, rect, radius, kind),
+        Entry::Look(preset) => look_sample(painter, rect, radius, preset),
     }
+}
+
+/// A look on the sample frame in `rect`, rounded at `radius`: its shadows
+/// and its lights toned as the look leaves them. The library's look cards
+/// and the inspector's are drawn by it alike.
+pub(crate) fn look_sample(painter: &Painter, rect: Rect, radius: u8, preset: LookPreset) {
+    let (dark, light) = look_colours(preset);
+    sample(painter, rect, radius, &|level| {
+        theme::mix(dark, light, level)
+    });
 }
 
 /// The two colours a look leaves in the shadows and in the lights.
@@ -427,56 +533,37 @@ fn look_colours(preset: LookPreset) -> (Color32, Color32) {
     }
 }
 
-fn look_swatch(painter: &egui::Painter, rect: Rect, preset: LookPreset) {
-    const STEPS: usize = 8;
-    let (dark, light) = look_colours(preset);
-    let outer = metrics::CONTROL_RADIUS - 1;
-    for step in 0..STEPS {
-        let from = step as f32 / STEPS as f32;
-        let to = (step + 1) as f32 / STEPS as f32;
-        let radius = CornerRadius {
-            nw: if step == 0 { outer } else { 0 },
-            sw: if step == 0 { outer } else { 0 },
-            ne: if step + 1 == STEPS { outer } else { 0 },
-            se: if step + 1 == STEPS { outer } else { 0 },
-        };
-        // Half a point over the next, so no seam shows between two.
-        let mut stripe = part(rect, from, 0.0, to, 1.0);
-        stripe.max.x += 0.5;
-        let amount = step as f32 / (STEPS - 1) as f32;
-        painter.rect_filled(
-            stripe.intersect(rect),
-            radius,
-            theme::mix(dark, light, amount),
-        );
-    }
-}
-
-fn transition_swatch(painter: &egui::Painter, rect: Rect, kind: TransitionKind, p: &Palette) {
+/// A transition between two pictures of the sample frame: the outgoing in
+/// greys, the incoming in steel.
+fn transition_swatch(painter: &Painter, rect: Rect, radius: u8, kind: TransitionKind) {
     use TransitionKind as K;
-    let from = theme::mix(p.sunken, p.secondary, 0.45);
-    let to = p.accent;
-    let frame = rect.shrink2(vec2(rect.width() * 0.14, rect.height() * 0.18));
-    let radius = CornerRadius::same(3);
-    let fill = |rect: Rect, color: Color32| painter.rect_filled(rect, radius, color);
+    let from = |painter: &Painter, rect: Rect| sample(painter, rect, radius, &grey);
+    let to = |painter: &Painter, rect: Rect| sample(painter, rect, radius, &steel);
     // An arrowhead at `tip`, pointing along `towards`.
     let arrow = |tip: Pos2, towards: Vec2| {
         let back = tip - towards * 5.0;
         let side = towards.rot90() * 3.5;
         painter.add(Shape::line(
             vec![back + side, tip, back - side],
-            Stroke::new(1.5, p.on_accent),
+            Stroke::new(1.5, white(0.9)),
         ));
     };
     match kind {
         K::Dissolve => {
-            fill(part(frame, 0.0, 0.0, 0.64, 1.0), from);
-            fill(part(frame, 0.36, 0.0, 1.0, 1.0), to.gamma_multiply(0.72));
+            from(&within(painter, part(rect, 0.0, 0.0, 0.62, 1.0)), rect);
+            to(&within(painter, part(rect, 0.62, 0.0, 1.0, 1.0)), rect);
+            // Where the two are seen through each other.
+            sample(
+                &within(painter, part(rect, 0.38, 0.0, 0.62, 1.0)),
+                rect,
+                radius,
+                &|level| steel(level).gamma_multiply(0.5),
+            );
         }
         K::Fade => {
-            fill(part(frame, 0.0, 0.0, 0.36, 1.0), from);
-            fill(part(frame, 0.4, 0.0, 0.6, 1.0), from.gamma_multiply(0.3));
-            fill(part(frame, 0.64, 0.0, 1.0, 1.0), to);
+            from(&within(painter, part(rect, 0.0, 0.0, 0.42, 1.0)), rect);
+            to(&within(painter, part(rect, 0.58, 0.0, 1.0, 1.0)), rect);
+            painter.rect_filled(part(rect, 0.42, 0.0, 0.58, 1.0), 0, Color32::from_gray(6));
         }
         K::SlideLeft | K::SlideRight | K::SlideUp | K::SlideDown => {
             let towards = match kind {
@@ -486,219 +573,250 @@ fn transition_swatch(painter: &egui::Painter, rect: Rect, kind: TransitionKind, 
                 _ => vec2(0.0, 1.0),
             };
             // The incoming picture has pushed the outgoing one half way.
-            let half = vec2(frame.width(), frame.height()) * towards * 0.5;
-            let clipped = painter.with_clip_rect(frame.intersect(painter.clip_rect()));
-            clipped.rect_filled(frame.translate(half), CornerRadius::ZERO, from);
-            let incoming = frame.translate(half - vec2(frame.width(), frame.height()) * towards);
-            clipped.rect_filled(incoming, CornerRadius::ZERO, to);
-            arrow(incoming.intersect(frame).center() + towards * 2.5, towards);
+            let size = vec2(rect.width(), rect.height());
+            let half = size * towards * 0.5;
+            sample_in(painter, rect.translate(half), rect, radius, &grey);
+            let incoming = rect.translate(half - size * towards);
+            sample_in(painter, incoming, rect, radius, &steel);
+            // On a disc of its own, as the play offer is, on the seam the
+            // two pictures meet at, where neither's sun is.
+            let middle = rect.center();
+            painter.circle_filled(middle, 9.0, Color32::from_black_alpha(140));
+            arrow(middle + towards * 2.5, towards);
         }
         K::WipeLeft | K::WipeRight | K::WipeUp | K::WipeDown => {
-            fill(frame, from);
+            from(painter, rect);
             let (shown, edge) = match kind {
-                K::WipeLeft => (part(frame, 0.5, 0.0, 1.0, 1.0), [0.5, 0.0, 0.5, 1.0]),
-                K::WipeRight => (part(frame, 0.0, 0.0, 0.5, 1.0), [0.5, 0.0, 0.5, 1.0]),
-                K::WipeUp => (part(frame, 0.0, 0.5, 1.0, 1.0), [0.0, 0.5, 1.0, 0.5]),
-                _ => (part(frame, 0.0, 0.0, 1.0, 0.5), [0.0, 0.5, 1.0, 0.5]),
+                K::WipeLeft => (part(rect, 0.5, 0.0, 1.0, 1.0), [0.5, 0.0, 0.5, 1.0]),
+                K::WipeRight => (part(rect, 0.0, 0.0, 0.5, 1.0), [0.5, 0.0, 0.5, 1.0]),
+                K::WipeUp => (part(rect, 0.0, 0.5, 1.0, 1.0), [0.0, 0.5, 1.0, 0.5]),
+                _ => (part(rect, 0.0, 0.0, 1.0, 0.5), [0.0, 0.5, 1.0, 0.5]),
             };
-            fill(shown, to);
+            to(&within(painter, shown), rect);
             painter.line_segment(
-                [at(frame, edge[0], edge[1]), at(frame, edge[2], edge[3])],
-                Stroke::new(1.5, p.fg),
+                [at(rect, edge[0], edge[1]), at(rect, edge[2], edge[3])],
+                Stroke::new(1.5, white(0.9)),
             );
         }
         K::ZoomIn | K::ZoomOut => {
-            let (outer, inner) = if kind == K::ZoomIn {
-                (from, to)
+            let inner = part(rect, 0.24, 0.22, 0.76, 0.78);
+            if kind == K::ZoomIn {
+                from(painter, rect);
+                sample(painter, inner, 4, &steel);
             } else {
-                (to, from)
-            };
-            fill(frame, outer);
-            fill(part(frame, 0.26, 0.24, 0.74, 0.76), inner);
-            painter.rect_stroke(
-                part(frame, 0.13, 0.12, 0.87, 0.88),
-                radius,
-                Stroke::new(1.0, inner.gamma_multiply(0.6)),
-                StrokeKind::Inside,
-            );
+                to(painter, rect);
+                sample(painter, inner, 4, &grey);
+            }
+            painter.rect_stroke(inner, 4, Stroke::new(1.0, white(0.5)), StrokeKind::Outside);
         }
         K::Blur => {
-            fill(frame, from);
-            for (inset, alpha) in [(0.0, 0.2), (0.1, 0.3), (0.2, 0.45), (0.3, 0.7)] {
-                let soft = part(
-                    frame,
-                    0.3 + inset * 0.5,
-                    inset,
-                    1.0 - inset * 0.3,
-                    1.0 - inset,
+            from(&within(painter, part(rect, 0.0, 0.0, 0.5, 1.0)), rect);
+            to(&within(painter, part(rect, 0.5, 0.0, 1.0, 1.0)), rect);
+            // The seam, soft where the two run into each other.
+            let haze = theme::mix(grey(0.4), steel(0.4), 0.5);
+            for (reach, alpha) in [(0.2, 0.2), (0.14, 0.3), (0.09, 0.45), (0.04, 0.7)] {
+                painter.rect_filled(
+                    part(rect, 0.5 - reach, 0.0, 0.5 + reach, 1.0),
+                    0,
+                    haze.gamma_multiply(alpha),
                 );
-                painter.rect_filled(soft, CornerRadius::same(6), to.gamma_multiply(alpha));
             }
         }
         K::Glitch => {
-            fill(frame, from);
-            let bands = [
+            from(painter, rect);
+            for (top, bottom, left) in [
                 (0.0, 0.22, 0.55),
                 (0.3, 0.44, 0.2),
                 (0.52, 0.7, 0.7),
                 (0.8, 1.0, 0.35),
-            ];
-            for (top, bottom, left) in bands {
-                painter.rect_filled(
-                    part(frame, left, top, (left + 0.5_f32).min(1.08), bottom),
-                    CornerRadius::ZERO,
-                    to,
-                );
+            ] {
+                let band = part(rect, left, top, (left + 0.5_f32).min(1.0), bottom);
+                to(&within(painter, band), rect);
             }
         }
     }
 }
 
-fn effect_swatch(painter: &egui::Painter, rect: Rect, kind: EffectKind, p: &Palette) {
+/// An effect, shown on the sample frame in steel; one of sound, on a plot.
+fn effect_swatch(painter: &Painter, rect: Rect, radius: u8, kind: EffectKind) {
     use EffectKind as K;
-    let ink = p.secondary;
-    let soft = theme::mix(p.sunken, p.secondary, 0.4);
-    let centre = rect.center();
     let unit = rect.height() * 0.5;
-    let thin = Stroke::new(1.5, ink);
-    let subject = Rect::from_center_size(centre, vec2(unit * 0.9, unit * 0.9));
+    let sun = at(rect, 0.72, 0.34);
+    let frame = || sample(painter, rect, radius, &steel);
     match kind {
         K::Glow => {
-            for (reach, alpha) in [(0.78, 0.1), (0.6, 0.18), (0.44, 0.3)] {
-                painter.circle_filled(centre, unit * reach, p.accent.gamma_multiply(alpha));
+            frame();
+            // Many faint discs, one over another: a halo that falls away
+            // smoothly rather than in rings.
+            for step in 0..8 {
+                let reach = 0.6 - step as f32 * 0.045;
+                painter.circle_filled(sun, unit * reach, white(0.055));
             }
-            painter.circle_filled(centre, unit * 0.26, p.fg);
         }
         K::Grain => {
+            frame();
             // The same specks in every frame: a fixed sequence, not noise.
             let mut seed: u32 = 0x9E37_79B9;
-            for _ in 0..42 {
+            for index in 0..64 {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 let x = (seed >> 8 & 0xFFFF) as f32 / 65_535.0;
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 let y = (seed >> 8 & 0xFFFF) as f32 / 65_535.0;
-                let alpha = 0.35 + 0.6 * ((seed >> 26) as f32 / 63.0);
-                painter.circle_filled(
-                    at(rect, 0.08 + x * 0.84, 0.1 + y * 0.8),
-                    0.9,
-                    ink.gamma_multiply(alpha),
-                );
+                let alpha = 0.25 + 0.4 * ((seed >> 26) as f32 / 63.0);
+                let speck = if index % 2 == 0 {
+                    white(alpha)
+                } else {
+                    black(alpha)
+                };
+                painter.circle_filled(at(rect, 0.04 + x * 0.92, 0.06 + y * 0.88), 0.9, speck);
             }
         }
         K::Vignette => {
-            painter.rect_filled(rect.shrink(3.0), CornerRadius::same(5), soft);
-            for (inset, alpha) in [(0.0, 0.55), (0.12, 0.35), (0.24, 0.2)] {
-                painter.rect_stroke(
-                    rect.shrink(3.0 + unit * inset),
-                    CornerRadius::same(8),
-                    Stroke::new(unit * 0.16, Color32::BLACK.gamma_multiply(alpha)),
-                    StrokeKind::Inside,
-                );
+            frame();
+            // A falloff, not bands: darkest at the edge and clear three
+            // tenths of the way in. Light enough at the edge that the card
+            // keeps its outline where its neighbours have theirs.
+            // Round the well's own outline, each point drawn in towards
+            // the middle for the clear edge.
+            let mut outline = Vec::new();
+            egui::epaint::tessellator::path::rounded_rectangle(
+                &mut outline,
+                rect,
+                CornerRadius::same(radius).into(),
+            );
+            let middle = rect.center();
+            let mut mesh = egui::Mesh::default();
+            for point in &outline {
+                mesh.colored_vertex(*point, black(0.5));
+                mesh.colored_vertex(middle + (*point - middle) * 0.4, Color32::TRANSPARENT);
             }
+            let count = outline.len() as u32;
+            for index in 0..count {
+                let (o, i) = (index * 2, index * 2 + 1);
+                let next = (index + 1) % count;
+                let (next_o, next_i) = (next * 2, next * 2 + 1);
+                mesh.add_triangle(o, next_o, next_i);
+                mesh.add_triangle(o, next_i, i);
+            }
+            painter.add(Shape::mesh(mesh));
         }
         K::Glitch => {
-            for (top, bottom, shift, color) in [
-                (0.2, 0.36, -0.08, ink),
-                (0.36, 0.5, 0.1, p.accent),
-                (0.5, 0.66, -0.03, ink),
-                (0.66, 0.8, 0.07, ink),
-            ] {
-                painter.rect_filled(
-                    part(rect, 0.26 + shift, top, 0.74 + shift, bottom),
-                    CornerRadius::ZERO,
-                    color,
+            frame();
+            for (top, bottom, shift) in [(0.18, 0.3, -0.1), (0.46, 0.56, 0.12), (0.7, 0.8, -0.06)] {
+                sample(
+                    &within(painter, part(rect, 0.0, top, 1.0, bottom)),
+                    rect.translate(vec2(rect.width() * shift, 0.0)),
+                    radius,
+                    &steel,
                 );
             }
+            painter.rect_filled(part(rect, 0.0, 0.56, 1.0, 0.6), 0, white(0.35));
         }
         K::Shadow => {
-            let offset = vec2(unit * 0.18, unit * 0.18);
-            painter.rect_filled(
-                subject.translate(offset),
-                CornerRadius::same(4),
-                Color32::BLACK.gamma_multiply(0.55),
-            );
-            painter.rect_filled(subject, CornerRadius::same(4), ink);
+            frame();
+            let subject = Rect::from_center_size(at(rect, 0.44, 0.5), vec2(unit * 0.9, unit * 0.9));
+            let offset = vec2(unit * 0.16, unit * 0.16);
+            painter.rect_filled(subject.translate(offset), 4, black(0.55));
+            painter.rect_filled(subject, 4, white(0.9));
         }
         K::Blur => {
-            for (reach, alpha) in [(0.7, 0.16), (0.55, 0.26), (0.4, 0.42), (0.24, 0.7)] {
-                painter.circle_filled(centre, unit * reach, ink.gamma_multiply(alpha));
+            frame();
+            painter.rect_filled(rect, radius, steel(0.38).gamma_multiply(0.6));
+            for (reach, alpha) in [(0.4, 0.1), (0.3, 0.16), (0.2, 0.26)] {
+                painter.circle_filled(sun, unit * reach, white(alpha));
             }
         }
         K::MotionBlur => {
-            for (shift, alpha) in [(-0.9, 0.14), (-0.6, 0.24), (-0.3, 0.4)] {
-                painter.rect_filled(
-                    subject.translate(vec2(unit * shift, 0.0)),
-                    CornerRadius::same(4),
-                    ink.gamma_multiply(alpha),
+            frame();
+            for (shift, alpha) in [(-0.21, 0.14), (-0.14, 0.24), (-0.07, 0.4)] {
+                painter.circle_filled(
+                    sun + vec2(rect.width() * shift, 0.0),
+                    rect.height() * 0.12,
+                    steel(0.95).gamma_multiply(alpha),
                 );
             }
-            painter.rect_filled(
-                subject.translate(vec2(unit * 0.2, 0.0)),
-                CornerRadius::same(4),
-                ink,
-            );
         }
         K::Sharpen => {
-            painter.add(Shape::convex_polygon(
-                vec![
-                    centre + vec2(0.0, -unit * 0.58),
-                    centre + vec2(unit * 0.62, unit * 0.5),
-                    centre + vec2(-unit * 0.62, unit * 0.5),
-                ],
-                soft,
-                Stroke::new(1.5, p.fg),
-            ));
+            frame();
+            let edge = Stroke::new(1.2, white(0.85));
+            for points in [
+                [(-0.06, 0.76), (0.32, 0.44), (0.74, 0.76)],
+                [(0.34, 0.76), (0.7, 0.52), (1.08, 0.76)],
+            ] {
+                painter.add(Shape::line(
+                    points.iter().map(|(x, y)| at(rect, *x, *y)).collect(),
+                    edge,
+                ));
+            }
+            painter.circle_stroke(sun, rect.height() * 0.12, edge);
         }
         K::Shake => {
-            for (shift, alpha) in [(vec2(-0.2, 0.12), 0.35), (vec2(0.2, -0.1), 0.6)] {
+            frame();
+            let subject = rect.shrink2(vec2(rect.width() * 0.18, rect.height() * 0.2));
+            for (shift, alpha) in [(vec2(-0.1, 0.07), 0.35), (vec2(0.1, -0.06), 0.55)] {
                 painter.rect_stroke(
                     subject.translate(shift * unit),
-                    CornerRadius::same(4),
-                    Stroke::new(1.5, ink.gamma_multiply(alpha)),
+                    4,
+                    Stroke::new(1.5, white(alpha)),
                     StrokeKind::Inside,
                 );
             }
-            painter.rect_stroke(subject, CornerRadius::same(4), thin, StrokeKind::Inside);
+            painter.rect_stroke(subject, 4, Stroke::new(1.5, white(0.9)), StrokeKind::Inside);
         }
         K::Distort => {
-            for row in [0.34, 0.5, 0.66] {
+            frame();
+            for row in [0.3, 0.5, 0.7] {
                 let wave: Vec<Pos2> = (0..=24)
                     .map(|step| {
                         let x = step as f32 / 24.0;
-                        let lift = (x * std::f32::consts::TAU * 1.5).sin() * 0.07;
-                        at(rect, 0.14 + x * 0.72, row + lift)
+                        let lift = (x * std::f32::consts::TAU * 1.5).sin() * 0.06;
+                        at(rect, 0.08 + x * 0.84, row + lift)
                     })
                     .collect();
-                painter.add(Shape::line(wave, thin));
+                painter.add(Shape::line(wave, Stroke::new(1.5, white(0.75))));
             }
         }
         K::ChromaKey | K::DifferenceMatte => {
             let green = Color32::from_rgb(52, 168, 83);
-            painter.rect_filled(rect.shrink(3.0), CornerRadius::same(5), green);
+            painter.rect_filled(rect, radius, green);
             // A figure cut out of the screen behind it.
-            painter.circle_filled(at(rect, 0.5, 0.36), unit * 0.2, p.fg);
+            painter.circle_filled(at(rect, 0.5, 0.36), unit * 0.2, white(0.92));
             painter.rect_filled(
-                part(rect, 0.34, 0.56, 0.66, 1.0).intersect(rect.shrink(3.0)),
+                part(rect, 0.34, 0.56, 0.66, 1.0),
                 CornerRadius {
                     nw: 8,
                     ne: 8,
                     sw: 0,
                     se: 0,
                 },
-                p.fg,
+                white(0.92),
             );
         }
         K::Grade | K::Lut => {
-            let wheels = [
-                (0.3, Color32::from_rgb(232, 96, 84)),
-                (0.5, Color32::from_rgb(92, 190, 120)),
-                (0.7, Color32::from_rgb(88, 142, 240)),
-            ];
-            for (x, color) in wheels {
-                painter.circle_filled(at(rect, x, 0.5), unit * 0.3, color.gamma_multiply(0.85));
-            }
+            // Before and after: the frame as it is, and graded.
+            sample(
+                &within(painter, part(rect, 0.0, 0.0, 0.5, 1.0)),
+                rect,
+                radius,
+                &steel,
+            );
+            let (shadows, lights) = (
+                Color32::from_rgb(10, 44, 52),
+                Color32::from_rgb(250, 196, 132),
+            );
+            sample(
+                &within(painter, part(rect, 0.5, 0.0, 1.0, 1.0)),
+                rect,
+                radius,
+                &|level| theme::mix(shadows, lights, level),
+            );
+            painter.line_segment(
+                [at(rect, 0.5, 0.0), at(rect, 0.5, 1.0)],
+                Stroke::new(1.5, white(0.9)),
+            );
         }
         K::HslBand => {
+            frame();
             let hues = [
                 Color32::from_rgb(232, 80, 80),
                 Color32::from_rgb(236, 190, 70),
@@ -709,31 +827,29 @@ fn effect_swatch(painter: &egui::Painter, rect: Rect, kind: EffectKind, p: &Pale
             ];
             for (index, color) in hues.into_iter().enumerate() {
                 let left = 0.14 + index as f32 * 0.12;
-                painter.rect_filled(
-                    part(rect, left, 0.36, left + 0.12, 0.64),
-                    CornerRadius::ZERO,
-                    color,
-                );
+                painter.rect_filled(part(rect, left, 0.8, left + 0.12, 0.9), 0, color);
             }
             // One band of them is the one that is changed.
             painter.rect_stroke(
-                part(rect, 0.36, 0.28, 0.52, 0.72),
-                CornerRadius::same(3),
-                Stroke::new(1.5, p.fg),
+                part(rect, 0.38, 0.76, 0.5, 0.94),
+                2,
+                Stroke::new(1.5, white(0.95)),
                 StrokeKind::Outside,
             );
         }
         K::CurveMaster | K::CurveRed | K::CurveGreen | K::CurveBlue => {
+            frame();
+            painter.rect_filled(rect, radius, black(0.45));
             let color = match kind {
                 K::CurveRed => Color32::from_rgb(236, 100, 90),
                 K::CurveGreen => Color32::from_rgb(96, 196, 120),
                 K::CurveBlue => Color32::from_rgb(96, 148, 244),
-                _ => p.fg,
+                _ => white(0.95),
             };
             let graph = part(rect, 0.22, 0.16, 0.78, 0.84);
             painter.line_segment(
                 [graph.left_bottom(), graph.right_top()],
-                Stroke::new(1.0, soft),
+                Stroke::new(1.0, white(0.3)),
             );
             let curve: Vec<Pos2> = (0..=24)
                 .map(|step| {
@@ -746,29 +862,42 @@ fn effect_swatch(painter: &egui::Painter, rect: Rect, kind: EffectKind, p: &Pale
             painter.add(Shape::line(curve, Stroke::new(1.5, color)));
         }
         K::Stabilize => {
-            painter.rect_stroke(subject, CornerRadius::same(4), thin, StrokeKind::Inside);
+            frame();
+            let held = rect.shrink2(vec2(rect.width() * 0.2, rect.height() * 0.2));
+            painter.rect_stroke(held, 3, Stroke::new(1.5, white(0.9)), StrokeKind::Inside);
         }
         K::HighPass | K::EqBand | K::Compressor | K::Limiter | K::Denoise | K::Pitch => {
-            audio_swatch(painter, rect, kind, p);
+            audio_swatch(painter, rect, kind);
         }
         K::CenterCut => {
+            let stage = Palette::stage_palette(Default::default());
             // Left, centre and right: the centre is what is taken down.
             for (x, alpha) in [(0.26, 1.0), (0.5, 0.25), (0.74, 1.0)] {
-                painter.circle_filled(at(rect, x, 0.5), unit * 0.18, ink.gamma_multiply(alpha));
+                painter.circle_filled(
+                    at(rect, x, 0.5),
+                    unit * 0.18,
+                    stage.wave().gamma_multiply(alpha),
+                );
             }
-            painter.circle_stroke(at(rect, 0.5, 0.5), unit * 0.18, Stroke::new(1.0, p.accent));
+            painter.circle_stroke(
+                at(rect, 0.5, 0.5),
+                unit * 0.18,
+                Stroke::new(1.0, stage.secondary),
+            );
         }
     }
 }
 
 /// What an audio kind does to a sound, as a line on a plot: what passes at
 /// each frequency for a filter, what comes out for what goes in for a level,
-/// a quieter noise under a waveform for noise reduction.
-fn audio_swatch(painter: &egui::Painter, rect: Rect, kind: EffectKind, p: &Palette) {
+/// a quieter noise under a waveform for noise reduction. In the stage's
+/// inks, on the well.
+fn audio_swatch(painter: &Painter, rect: Rect, kind: EffectKind) {
     use EffectKind as K;
+    let stage = Palette::stage_palette(Default::default());
     let plot = part(rect, 0.16, 0.2, 0.84, 0.8);
-    let axis = Stroke::new(1.0, theme::mix(p.sunken, p.secondary, 0.4));
-    let line = Stroke::new(1.5, p.accent);
+    let axis = Stroke::new(1.0, stage.separator);
+    let line = Stroke::new(1.5, stage.wave());
     painter.line_segment([plot.left_bottom(), plot.right_bottom()], axis);
     // A curve of 24 steps over the plot, from `y(x)`, both in `0..=1`.
     let curve = |y: &dyn Fn(f32) -> f32| {
@@ -790,7 +919,7 @@ fn audio_swatch(painter: &egui::Painter, rect: Rect, kind: EffectKind, p: &Palet
             // What is left of the noise along the floor.
             for step in 0..9 {
                 let x = 0.06 + step as f32 * 0.11;
-                painter.circle_filled(at(plot, x, 0.92), 0.9, p.secondary.gamma_multiply(0.5));
+                painter.circle_filled(at(plot, x, 0.92), 0.9, stage.secondary.gamma_multiply(0.5));
             }
         }
         _ => {}

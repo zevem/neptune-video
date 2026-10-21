@@ -5,6 +5,278 @@ editing evidence. Production readiness, CapCut/Palmier Pro parity and extreme
 performance remain goals requiring the gates below.
 Neptune Terminal was inspected read-only as the stack and engineering reference.
 
+## Interface revamp: acceptance (2026-10-21)
+
+The revamp gives Neptune Video Neptune Terminal's look and behaviour. This
+record holds the final review round, round 6, of branch
+`t3/revamp-ui-neptune-design` at `5e6fb77`: its §9 verdicts, what was
+fixed since round 4, and what it did not verify. Round 6 left six low
+findings. The final polish, `93569b0` and `263bd4d`, closes them; its
+checks and captures are under "Final polish" below, and the §9 rows it
+changed say so.
+
+**Host and build.** Linux 7.0.0-38-generic x86_64 (i9-13900HX) with Rust
+1.97.1. The captures come from the `dev` binary `target/debug/neptune-video`,
+built with `cargo build --locked --bin neptune-video` (through the shared
+build wrapper) in a clean worktree at `5e6fb77`. Cargo found nothing to
+recompile, so the binary was current for that tree. Its source is
+`85a1364`'s, because `5e6fb77` changes only this document.
+
+**Checks.** At `5e6fb77` the desktop library tests passed 1,356, with none
+failing or ignored. The `main.rs` tests passed 2 and `tests/mcp.rs` 16.
+`clippy --locked -p neptune-video --all-targets -- -D warnings`,
+`cargo fmt --all --check` and `scripts/check-architecture.py` passed. The
+whole workspace was last checked by the validation owner at `6a5a45e`:
+workspace checks, formatting, the architecture check and
+`scripts/test-workspace.py --profile ci` passed **2,300 tests in 36
+binaries**, with none failing or ignored (1,349 desktop and 456 media), and
+denied-warning workspace all-target Clippy and the locked CI-profile build
+of the three binaries passed. Since `6a5a45e` only `src/ui` and docs have
+changed.
+
+**Captures.** The revamp's harness ran that binary in place on a private
+Xvfb display (`:127`, screen 1600x1000) at window scale 1.0, with lavapipe
+software Vulkan and no compositor. The manifest's build label is
+"t3/revamp-ui-neptune-design at 5e6fb77". The matrix holds 162 captures of
+41 states at 1440x900 and 760x560, in dark and light, each with its AT-SPI
+tree. `export-scrolled` is taken at 760 only. Every state settled and none
+was missed. Against round 4's 154 captures it adds `render-queue-jobs` and
+`render-queue-jobs-scrolled`. The captures, manifest, AT-SPI trees, one
+contact sheet per size and appearance, the round-6 test, Clippy, format and
+accessible-name logs (`gates/round6-review/`) and the `6a5a45e` workspace
+logs (`gates/`) are in
+[`artifacts/interface-revamp-2026-10-21/`](../artifacts/interface-revamp-2026-10-21),
+which is local because `artifacts/` is not tracked.
+
+### §9 verdicts
+
+Seven reviewers each read one part of the round-6 captures against the
+design's §9 checklist, at both sizes and in both appearances, measuring
+pixels and AT-SPI rects. They built nothing and ran no tests. The test
+verdicts in §9.12 and §9.13 come from the gate review's run named above.
+"Not verifiable" means no captured state shows the item; where the code or
+a test covers it, the test is named.
+
+| Check | Verdict | Evidence |
+| --- | --- | --- |
+| §9.1 No square corner; wells, sheets and scrim rounded | Pass | Window and scrim corners are transparent in every sampled capture and equal Terminal's in dark and light. The 760 pane wells and the three sheets are rounded |
+| §9.1 No clipped or overlapping text; long names elide with "…" | Pass for clipping and overlap; elision not verifiable | All 82 captures at 760 and the 1440 states were read. Text is cut only under the designed scroll fades. The fixture's names fit everywhere, so no capture elides one |
+| §9.1 No accent in `project` with nothing selected | Pass | 0 accent pixels outside media in `project` and `empty`, at both sizes and in both appearances |
+| §9.1 Glyphs optically centred | Pass (spot check) | Toolbar, transport, tool strip, inspector layout cells, sheet closes and queue actions sit within 0.5 pt of their cells |
+| §9.1 Type per §3.5 | Pass | Geist for labels. JetBrains Mono for the timecode, durations, inspector times, progress, the queue count, encoder ids and agent commands |
+| §9.1 Light per §6 | Pass for the captured rows | Placeholder, keycap, toggle and title inks equal Terminal's. `legible()` status inks are under §9.11 |
+| §9.2 Toolbar 44 pt, no hairline, lights at 22/42/62 | Pass | `empty`, `project`, `project-menu`: toolbar (0,0,W,44), lights at (12/32/52,12,20,20) and equal to Terminal's |
+| §9.2 Library toggle at `lerp(94, lib − 22)`; inspector toggle rightmost and pressed | Pass | 294 at 1440, 94 at 760 with the inspector, 252 in the 760 `library-*` states. The inspector toggle is checked with Terminal's pressed fill |
+| §9.2 Title button | Pass | Name, muted chevron and "Saved", no app mark. `empty` has no project, so no save words |
+| §9.2 Launcher | Pass | 568–888 at 1440, centred on the viewer. A 28-pt icon at 760 |
+| §9.2 Export quiet and labelled | Pass | Control fill with glyph and label, 0 accent pixels |
+| §9.2 Regions per §2.2 and §2.3 | Pass | 1440: library 0–316, viewer 316–1140, inspector 1140–1440, timeline 6–1434. 760: viewer 6–486, inspector 492–752, timeline 6–754; the `library-*` states dock the library instead |
+| §9.2 `project-menu` order and fit | Pass | §5.7.2 order with group gaps. "Open recent" and "Checkpoints…" have different glyphs. At 760 the menu ends at x 386 and y 457 |
+| §9.3 Tab strip | Pass | Six names at 316 (1440 `library-*`). Six 41-pt icon cells at 760, glyphs within 0.5 pt. The hover name is not captured; every AT-SPI tab keeps its name |
+| §9.3 Search row 28 pt with the tab's own actions | Pass | Media shows "View options"; Captions shows "Captions from speech", then "Import SRT or VTT"; Effects, Transitions and Looks show none |
+| §9.3 Kind filter one 22-pt row | Pass | `library-media` at both sizes |
+| §9.3 Grid and selection | Pass 147×83 r8 wells at 1440 and 71-pt wells at 760 in round 6. `library-media-selected` shows the pressed backing and the 2-pt accent ring. The final polish keeps cards 8 pt in from both sides (146×82 at 1440), so a chosen card's backing ends 4 pt before the viewer |
+| §9.3 "Missing" in yellow | Not verifiable | No worker publishes a missing status yet (out of scope), and the fixture has no missing media |
+| §9.3 Footer | Pass | Hairline, "Import media or add a folder" and the gear stay in place over scrolling bodies. At 760 the footer line shares row 289 with the transport line |
+| §9.3 `empty` | Pass at 1440 | Library empty state with a Secondary "Import…", the viewer's "Import media…" also Secondary, no accent. At 760 the inspector is the panel shown, so the library's empty state is off screen |
+| §9.3 Text tiles, Looks glyph, Transitions | Pass | Stage wells, the colour-swatch glyph, and 0 accent pixels in all four `library-transitions` |
+| §9.4 Stage pane, picture inset 18 with a keyline | Pass | Stage in both appearances. The light transport is within 3 per channel of dark |
+| §9.4 Transport | Pass | 34-pt neutral disc, mono 15 timecode with muted leading groups, red record disc right before "1×", muted detail. Duration and detail show at 1440 only, as the ladder says |
+| §9.4 `video-selected` frame | Pass | 1.5-pt accent frame with a dark halo, 9×9 white handles, rotate knob flipped inside for the full-frame clip. In `title-selected` the stem starts at the frame |
+| §9.4 Capsules 12 above the picture | Not verifiable | No fixture state shows one. Tests cover their wording and timing; none pins the 12-pt position |
+| §9.4 Work cards at `viewer.top + 10` | Not verifiable | None present. `the_capsules_at_the_top_go_under_the_work_cards`, `toasts_keep_clear_of_the_cards_of_work` |
+| §9.5 Tab strip, 44-pt header with thumbnail, section switch | Pass | Every 1440 inspector state. 760 uses the one-line compact header. Sound and transitions have no switch, as specified |
+| §9.5 Cards, rows, hairlines, inks | Pass | `control` r10, 32-pt rows (36 with a select), hairlines inset 12, `fg` labels, `secondary` notes, in both appearances |
+| §9.5 Keyed rows ‹ ◆ › | Pass | One diamond column; the full cluster in `keyframes-lane-keyed`. No accent diamond in any of the 48 inspector captures |
+| §9.5 Chosen look pressed with a check | Not verifiable | The fixture applies no look. The code paints a pressed back and a check, never Primary |
+| §9.5 Colour curve frame and points | Not verifiable from pixels | The frame is below the fold in `inspector-video-color`. Its AT-SPI geometry matches the spec |
+| §9.5 Speed graph inset | Pass, partly visible | The top of the well and its AT-SPI rects in `inspector-video-speed`. The speed graph did not change after round 4 |
+| §9.5 Audio cards | Partly verifiable | `audio-selected` shows the Playback card, then Ducking and the empty "Audio effects" card. The fixture has no audio effect, so effect rows are not seen |
+| §9.5 `inspector-video-scrolled` | Pass | Header and switch stay. Rows fade under the switch; the bottom fade shows where rows are clipped (`video-selected`) |
+| §9.5 About 170 pt of rows at 760 | Pass | 189 pt, and 221 in `audio-selected` |
+| §9.6 Tool strip, groups, ruler | Pass | Strip 34, ruler 24 with labels in the upper half. Gaps of 2 within a group and 12 between. Toggles neutral pressed |
+| §9.6 Playhead and pin | Pass | `fg` with its halo. The 12×11 pin sits in the ruler's lower half and does not cover "0:00"; the marker flag does not cover "0:04" |
+| §9.6 Heads | Pass | Tone stripe, `secondary` glyphs, neutral cells, the target track's card pressed |
+| §9.6 Solo as a pressed cell with an accent headphones glyph | Not verifiable | The fixture solos no track. `heads_tests::a_soloed_head_shows_its_solo_cell_pressed_with_its_glyph_in_the_accent`, and since the final polish `heads_tests::a_soloed_heads_glyph_reads_on_its_cell_under_every_accent` and `theme::tests::a_switch_that_is_on_keeps_the_accent_and_reads_on_its_cell` (3:1 for all nine accents in both appearances) |
+| §9.6 Adjacent cuts readable | Pass | A 1-px lane gap between clips |
+| §9.6 Selected tile | Pass | Accent ring, keyline, lifted body and band, with the focus ring nested outside |
+| §9.6 Trim bars only on hover | Pass at rest | No bar on an unselected tile. Hover is not captured. Since the final polish the selected tile's bars stand on a keyline rim, which the final `video-selected` captures show unbroken over the poster in light (P10R6-TL-1) |
+| §9.6 Waveform in `wave()`, one mesh per tile | Pass | Inks sampled in both appearances. The mesh count is a §9.13 test |
+| §9.6 Fades and beat ticks | Not verifiable | The fixture's fades are 0 s and it has no beat grid. Fade handles are correct in `audio-selected`; mesh and tick counts are §9.13 tests |
+| §9.6 `transition-selected` | Pass | At 760 the dissolve diagonal runs whole inside its 2-pt ring, which stands 3 px clear of the trim bar |
+| §9.6 `clip-context-menu` | Pass | Editing rows at the top level, "Audio ▸", red destructive rows. The menu opens upward and fits at 760 |
+| §9.6 `track-head-menu` | Pass | "Volume" row with the "Track volume" field, "Reset volume" disabled at 100 %, "Add track of this kind", "Remove track" in red. The head stays lit while the menu is open |
+| §9.6 `add-track-menu` | Pass | `secondary` kind glyphs; "Add track" pressed while open |
+| §9.7 Lane rows, names and keys | Pass | 18-pt sub-rows, names right-aligned at the card's edge − 8, 9-pt `fg` diamonds |
+| §9.7 Selected key in the accent | Not verifiable | No key is selected. `keyframes_tests::a_selected_key_on_a_locked_track_is_still_seen_to_be_selected` |
+| §9.7 Graph | Pass | `curve(i)` colours in both appearances, legend in the heads column, "Fit values" and "Keyframe options" top trailing, empty state inside the plot only (`graph-editor`) |
+| §9.7 U and G pressed while open | Pass | Checked in the AT-SPI trees, neutral pressed fill |
+| §9.8 Session row | Pass | Status dot, words and "More", no CLI line. The connect command is in "More" |
+| §9.8 Intro copy | Pass | Whole at 1440. At 760 it scrolls and fades out at the bottom |
+| §9.8 Command examples in a card | Pass | `agent-command`: rows of at least 32 with mono commands |
+| §9.8 Composer | Pass | One `control` surface with "Ask │ Command" at one width in both modes, "Model: …" in Ask only, and a 28-pt round send. Its disabled state is `the_send_button_is_named_for_what_it_does`, because AT-SPI reports every node enabled |
+| §9.8 User bubbles `control` | Not verifiable | No conversation in the fixture. `the_persons_lines_are_control_bubbles_at_the_trailing_edge` |
+| §9.9 Every sheet | Pass | Every sheet capture: r14 corners and scrim equal Terminal's, close at right − 26, 60-pt footer with the confirming action first. Preferences has no footer, as in Terminal |
+| §9.9 `settings`, `settings-scrolled`, `settings-bottom` | Pass | Appearance selected, rows 42, nine swatches, Light │ Dark │ System; both "Auto" choices and "Proxy cache size"; the grouped Keyboard pane with keycaps. Fills equal Terminal's |
+| §9.9 `export`, `export-scrolled` | Pass | Two columns at both sizes. Chips are neutral pressed with a check. The only accent besides the poster is the on switch and the Export Primary. The footer stays while the body scrolls |
+| §9.9 `render-queue` | Pass, except a running bar | `render-queue-jobs`: one card with hairline rows, 4-pt bars, "33 %" in mono, failure text in red (since the final polish `Palette::failure_ink`, 4.5:1 on the card), and the empty state's Secondary "New export…". A rendering job never holds still for a capture, so its accent bar is not seen. Rows are 74–92 tall rather than 56, because each carries its folder line |
+| §9.10 Exactly one side panel; a fresh window shows the inspector | Pass for stills | One toggle is checked in each of the 82 captures at 760: the inspector in 68, the library in the 14 `library-*`. The swap's motion is by the panel-slide tests in §9.12 |
+| §9.10 Lanes at least 592 wide; timeline full width | Pass | Ruler (162,373,592,24) and timeline 6–754 in every 760 capture |
+| §9.10 No control under 22 pt; menus and sheets fit | Pass after the final polish | Round 6 failed this on the inspector's 20×20 speed and colour-curve points (P10R6-W1). Speed points now have 22×22 targets. Curve points stay 20×20 and §9.10 pins them: a 22-pt end point would reach the inspector's edge at 760. Every other control under 22 pt is pinned, including the 12×13 marker flag. Menus fit with more than 8 pt, sheets with 12 or more (Export 12–748) |
+| §9.11 Cards #e0e0e3 on #ececef | Pass | Sheet cards are #f2f2f2 on white, as in Terminal |
+| §9.11 Viewer stays dark | Pass | Stage #101012; the transport is within 8 per channel of dark |
+| §9.11 Timeline white with #f7f7f7 lanes | Pass | Also the ruler, head cards and playhead halo |
+| §9.11 Status inks follow `legible()` | Not verifiable | No light capture shows the snap guide, "Missing", a count pill, a warning toast, a stale plan, recovery or solo. The code routes them through `legible()`. Solo uses `Palette::switch_ink()`, Terminal's `readable` rule at 3:1, since the final polish (P10R6-LT-1) |
+| §9.11 Lighter shadows, black(70) scrim | Pass | The scrim and sheet corner equal Terminal's light Preferences |
+| §9.12 Evidence the harness does not capture | Pass | The tests and recordings in the table below |
+| §9.13 Focused test modules | Pass | 1,356 desktop library tests at `5e6fb77`; 1,361 at `263bd4d` |
+| §9.13 Mesh-count tests unchanged | Pass | Fades 0/1/2/1, volume `shaded.len() == 2`, beats `ticks == [12]`, one wave mesh per sound tile |
+| §9.13 `add_space` steps | Pass | Every literal outside the §1.1 steps names the geometry it reproduces |
+| §9.13 Accent budget | Pass | 91 grep hits, the same set as `6a5a45e`, all in allowed classes |
+| §9.13 No `ComboBox::from`; no `surface` or `sunken` | Pass | 0 hits each |
+| Guard rails | Pass | The plan collector's closed 4-point path count, `ProgressIndicator` names and values, the percent strings, and accessible names (162 AT-SPI trees against the baseline's 134: every change is a §7.2 rename, a row moved into a submenu, or another change the design asks for) |
+
+### Final polish
+
+The final polish closes round 6's six findings. None changes a command,
+the project or history.
+
+- **P10R6-LIB-1.** Library cards keep the 8-pt leading inset on both sides
+  (`library::cards_width`), in Media, Text, Effects, Transitions and Looks.
+  A chosen right-column card's backing now ends 4 pt before the viewer.
+- **P10R6-TL-1.** Every trim bar is drawn on a rim of the keyline, so a
+  selected tile's bars read over dark and light frames in both
+  appearances.
+- **P10R6-LT-1.** The solo glyph, on a track head and in the graph legend,
+  is the accent made readable on its pressed cell with Terminal's
+  `readable` rule (`Palette::switch_ink`). It stays the accent where that
+  already reads; light Yellow becomes #866500, as `legible` has it. No
+  painted-frame test measures the graph legend's glyph; the theme test
+  covers the colour it uses.
+- **P10R6-SH-1.** Each render-queue row makes its name first and its
+  actions leading to trailing, so Tab and a screen reader take the row as
+  it is read. Nothing moved on screen.
+  `render_queue_tests::a_row_reads_and_tabs_as_it_is_laid_out` fails on
+  the old order.
+- **P10R6-LT-2.** A failed job's words use `Palette::failure_ink`: red
+  made readable at 4.5:1 on the queue card, #ce3228 in light and #ff736c
+  in dark. The Export sheet's footer refusal line and its other red text
+  are still `red` on the bare sheet, 4.27:1 in light.
+- **P10R6-W1.** Speed points have 22×22 targets, drawn as before. Colour
+  curve points stay 20×20 and are pinned in §9.10.
+
+**Checks at `263bd4d`.** On the same host, the desktop library tests passed
+1,361, with none failing or ignored.
+`clippy --locked -p neptune-video --all-targets -- -D warnings`,
+`cargo fmt --all --check` and `scripts/check-architecture.py` passed. The
+whole workspace was not rerun.
+
+**Captures at `263bd4d`.** The harness ran the `dev` binary built at
+`263bd4d` on a private Xvfb display (`:129`) for the six states the polish
+changed: `library-media-selected`, `video-selected`,
+`transition-selected`, `render-queue-jobs`, `inspector-video-speed` and
+`inspector-video-color`. It took 24 captures at both sizes in both
+appearances, with none missed, now in `captures-final/` beside the round-6
+matrix. The full matrix was not captured again, and no verifier other
+than the fixing agents and the integrator read these captures.
+
+P10R6-G1, which found this record still describing the round-4 build, is
+closed.
+
+### Fixed since round 4
+
+- **Gates.** Double-struck text on dark grounds is thinned and shifted in
+  place, without a shape list built each frame. Segmented label widths are
+  kept between frames. The transport timecode's accessible name is
+  formatted only when an assistive tool asks. Every §9.12 row names its
+  tests.
+- **Library.** The Captions search-row actions are laid out leading to
+  trailing, so Tab follows reading order. The empty Captions tab's scroll
+  bar sits in the same lane as the other tabs'. At 760 the footer line is
+  drawn on the transport line's row.
+- **Inspector.** The "Track a region" heading is back. The scroll bar has
+  its own lane, clear of the cards, the outline and the resize band. The
+  Blend select ends with the keyed fields.
+- **Timeline.** A chosen dissolve keeps its diagonal in a narrow ring at
+  760. A selected bandless tile's keyframe chevron is inked for its body
+  (by code and test; no capture shows it). A track head stays lit while its
+  menu is open.
+- **Sheets.** Export's Preset and Speed controls start on the trailing
+  column. A cut summary value, preset note or job name shows whole on
+  hover. The harness now captures a render queue with jobs.
+- **Narrow window.** §9.10 pins the ruler's 12×13 marker flag, which
+  §5.5.4 keeps in the ruler's lower half, clear of the time labels.
+
+### Evidence the harness does not capture
+
+§9.12 lists the states the harness cannot reach. Each is covered by these
+desktop library tests, which passed in the round-4 review at `6a5a45e` and
+again at `5e6fb77` (1,356 passed, none failing or ignored):
+
+| Behaviour | Evidence |
+| --- | --- |
+| Hover, pressed and focus of buttons, tabs, rows and cells | `ui::widgets::tests::hover_and_press_fill_with_the_hover_and_pressed_tokens`, `ui::widgets::tests::a_control_reached_with_the_keyboard_shows_the_focus_ring`, `ui::panel::tests::a_tab_lights_as_terminal_s_do_and_shows_the_keyboard`, `ui::controls::tests::a_segmented_label_lights_under_the_pointer_and_its_cell_rings_with_the_keyboard`, `ui::kit::tests::a_menu_row_lies_on_the_accent_under_the_pointer_and_with_the_keyboard`, `ui::kit::tests::a_chip_lies_on_hover_and_pressed_and_the_chosen_one_is_checked`, `ui::kit::tests::a_select_lies_on_pressed_under_the_pointer_and_rings_with_the_keyboard`, `ui::timeline::heads::a_head_cell_is_lit_under_the_pointer_and_ringed_when_tab_reaches_it`, `ui::library::tests::a_card_lies_on_hover_under_the_pointer_and_on_pressed_once_chosen`, `ui::sheets::settings_sheet_tests::a_source_row_lies_on_hover_and_pressed_and_rings_with_the_keyboard`, `ui::viewer::transport_tests::play_speed_and_record_light_on_hover_press_and_focus`, `ui::inspector::tests::a_card_s_head_eases_to_hover_lies_on_pressed_and_rings_with_the_keyboard` |
+| Panel slide in 0.16 s, at once under Reduce motion | `ui::window::tests::a_panel_settles_in_its_slide_and_at_once_under_reduce_motion`, `ui::window::tests::a_slide_reversed_midway_turns_around_without_a_jump` |
+| Drag feedback | The `*-clip-drag-snap.mp4` recordings below, for a move with a snap guide. The trim capsule and the drop caret were not recorded: `ui::timeline::beating::a_held_trim_says_how_far_its_edge_has_gone_above_the_tile`, `ui::timeline::beating::a_library_item_held_over_a_lane_shows_where_and_when_it_would_land` |
+| Toasts: anchor, persistence, hover pause, under a sheet | `ui::sheets::notices_tests::toasts_sit_at_the_window_s_top_trailing_corner`, `…::a_problem_stays_until_it_is_dismissed`, `…::a_toast_under_the_pointer_keeps_the_time_it_had_left`, `…::notices_go_under_an_open_sheet_rather_than_over_it`, `…::toasts_keep_clear_of_a_sheet_a_question_was_asked_over`, `…::a_window_showing_toasts_that_stay_goes_idle` |
+| Level capsule | `app::tests::cmd_or_ctrl_with_plus_minus_and_0_scale_the_interface`, `ui::window::tests::the_interface_size_is_said_in_a_capsule_that_lets_the_window_sleep` |
+| Dialogs: footer order, fresh Enter, Destructive never default, Escape | `ui::sheets::tests::enter_confirms_only_a_primary_and_only_when_pressed_afresh` (unsaved changes, duck, stop rendering, replace export, recovery and conflict), `ui::sheets::tests::a_dialog_foot_puts_the_default_last_and_what_gives_up_apart`, `ui::export_sheet::tests::a_fresh_enter_exports_when_nothing_has_the_keyboard` |
+| Record take: pill, level bar, 10 Hz repaint | `ui::viewer::transport_tests::a_take_is_a_pill_with_its_level_in_the_colour_of_its_loudness`, `ui::viewer::transport_tests::a_running_take_shows_its_time_in_speeds_place_and_a_press_stops_it`, `record::tests::no_repaint_is_asked_for_once_the_take_is_placed`, `app::tests::r_asks_for_a_take_or_ends_it_and_is_a_letter_in_a_field` |
+| Drop target | `ui::sheets::tests::the_drop_target_is_rounded_and_says_what_a_drop_does` |
+| Playback and scrubbing | The `*-playback-scrub.mp4` recordings below |
+| Idle | `ui::toolbar::toolbar_tests::the_bar_lets_the_window_sleep_at_rest` (the launcher), `ui::panel::tests::a_strip_at_rest_asks_for_no_frame`, `ui::viewer::tests::the_stage_s_capsules_at_rest_ask_for_no_frame`, `ui::library::tests::the_library_at_rest_asks_for_no_frame`, `ui::sheets::notices_tests::a_window_showing_toasts_that_stay_goes_idle`, and the inspector, keyframe and transition tests that ask for no frame when nothing is done |
+
+These tests paint each state in an egui pass and read back what was
+painted or asked for. They do not show a native window, and the recordings
+show a software renderer, not real-time playback on a GPU or sound.
+
+### Not verified by the revamp's review
+
+Nothing here covers macOS or Windows, a real GPU or compositor, or a HiDPI
+window scale. Native hover, pressed, tooltip and animation states were not
+seen in a native window; the kittest tests above paint them in an egui pass
+only. The menu highlight, toasts, the level capsule, Reduce motion, the
+System appearance and accents other than Blue are in no capture. The
+AT-SPI trees were read, but no screen reader was used. The recordings in
+the next section were made from `302f2c2`, before the polish that followed
+round 4, which changed timeline painting but not dragging or snapping.
+Offline or missing media marks are out of the revamp's scope: they wait on
+a status that no worker publishes yet.
+
+## Interface revamp: drag, playback and scrubbing recordings (2026-10-21)
+
+The revamp's still captures cannot show a drag, playback or a scrub, so
+these were recorded natively. The host was Linux 7.0 x86_64 (i9-13900HX)
+with a private Xvfb display at window scale 1.0 and lavapipe software
+Vulkan. The build was the desktop `dev` profile of branch
+`t3/revamp-ui-neptune-design` at `302f2c2`. Each recording opened a fresh
+copy of a fixture project with task-owned settings. FFmpeg x11grab recorded
+the window at 30 fps with the pointer drawn while XTest drove the input. The
+live agent protocol read back each result. The recordings are in
+[`recordings/`](../artifacts/interface-revamp-2026-10-21/recordings), in
+`1440x900-dark/` and `760x560-light/`, with contact sheets in `frames/` and
+the readings in `recordings.json`.
+
+| Recording | What it shows | Read back, 1440x900 dark and 760x560 light |
+| --- | --- | --- |
+| `*-clip-drag-snap.mp4` | A 1–5 s title is carried right by its body past the voiceover's edges. It is held 4 px short of the 4 s marker, where the snap guide crosses the ruler and lanes, then dropped. Ctrl+Z follows. `*-guide.png` is a frame taken while the title is held | Start 4.000000 s after the drop, which only a snap reaches from 4 px short. Start 1.000000 s after Ctrl+Z |
+| `*-playback-scrub.mp4` | Space plays the timeline for 3 s. The ruler is scrubbed from 2 s to 12 s and back to 6 s. A library card's Preview opens the source monitor. Its "Source position" bar is scrubbed and Space plays it for 2 s, then Escape | After 3.0 s of play the playhead is at 3.00 s and 3.01 s. The scrub ends on 6 s. The source monitor opens and closes, and the timeline's playhead stays at 6 s |
+
+Sound went to an ALSA `file` output that a reader drained in real time,
+because the harness's plain `null` output let the device clock reach the
+end of the 16 s fixture about a second after Space. Nothing was heard. These
+recordings show the interface's feedback on a software renderer. They do
+not show real-time playback on a GPU, sound output, frame pacing, other
+platforms or the person's 1.5× display.
+
+Two kinds of drag feedback were not recorded. A held trim's "+00:00:00:NN"
+capsule, and the accent caret and timecode capsule of a library item held
+over a lane, are covered by
+`ui::timeline::beating::a_held_trim_says_how_far_its_edge_has_gone_above_the_tile`
+and `…::a_library_item_held_over_a_lane_shows_where_and_when_it_would_land`.
+These tests paint the timeline in an egui pass and read back the shapes it
+painted. Neither was seen in a native window.
+
 ## Playback right after opening (2026-10-19)
 
 The [task report](../artifacts/startup-playback-2026-10-19/REPORT.md) records

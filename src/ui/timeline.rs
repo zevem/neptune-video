@@ -33,13 +33,14 @@
 use super::{
     Action, Selection,
     browser::{self, Entry, EntryDrag},
+    controls,
     fades::{self, FadeEdge},
     icon_of_track,
     keyframes::{self, KeyframesState},
-    shortcut,
+    kit, shortcut,
     text_tab::{self, LookDrag},
     tone_of_track, tracks, transitions,
-    widgets::{self, icon_button, icon_button_tinted, icon_toggle, menu_item, menu_style},
+    widgets::{self, icon_button, icon_toggle, menu_item, menu_style},
 };
 use crate::{
     duck,
@@ -58,12 +59,13 @@ use editor_core::{
 };
 use editor_media::{BeatGrid, MediaService, Peaks};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui,
-    Vec2, pos2, vec2,
+    self, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Response, Sense, Stroke,
+    StrokeKind, Ui, Vec2, pos2, vec2,
 };
+use std::sync::Arc;
 
-const STRIP: f32 = metrics::PANEL_HEADER;
-const RULER: f32 = 26.0;
+const STRIP: f32 = metrics::PANE_HEADER;
+const RULER: f32 = 24.0;
 const HEAD_WIDTH: f32 = 156.0;
 /// The side of a toggle in a track head, and how far one stands from the
 /// next.
@@ -95,6 +97,10 @@ const MARK_HANDLE: f32 = 10.0;
 const FADE_TILE: f32 = 40.0;
 /// How tall the handle of a fade is.
 const FADE_HANDLE: f32 = 12.0;
+/// How far in from a tile's edge the handle of a fade may stand: past the
+/// grip, and two points past it, so some of the sound shows between the
+/// handle and the trim bar beside it and the two never read as one.
+const FADE_GRIP: f32 = EDGE_GRIP + 2.0;
 /// How far apart the points of a fade's curve are drawn.
 const FADE_STEP: f32 = 2.0;
 /// How much of the height of a tile's sound a volume of 100% stands at, and
@@ -117,6 +123,11 @@ const ADD_TILE: f32 = 36.0;
 const ADD_BADGE: f32 = 16.0;
 /// The height of the row a tall tile writes its clip's name in.
 const NAME_ROW: f32 = 18.0;
+/// How much further than eight points in a tile's name starts with no
+/// chevron before it: clear of the trim bar at the tile's start, with room
+/// between them for a selected name's capsule and some of the tile beside
+/// it, so the capsule never meets the bar.
+const NAME_STEP: f32 = 6.0;
 /// How far the pointer travels before a press on the badge is a drag of the
 /// clip under it.
 const OFFER_TRAVEL: f32 = 3.0;
@@ -223,6 +234,9 @@ pub struct TimelineState {
     /// The beats the tiles of this frame show, by clip, where they fall on
     /// the timeline: what snapping takes besides edges and markers.
     beats: Vec<(ClipId, Time)>,
+    /// The tracks edits go to, found again only when the selection or a
+    /// track changes.
+    targets: Targets,
 }
 
 /// The clip a key asks for, from the one selected and the playhead.
@@ -344,6 +358,7 @@ impl Default for TimelineState {
             keyboard: None,
             reveal: None,
             beats: Vec::new(),
+            targets: Targets::default(),
         }
     }
 }
@@ -611,8 +626,15 @@ fn wave_columns(
 
 /// Draws the sound of a clip over the part of `area` that is in view, as
 /// one mesh: a column a point wide from the least to the greatest sample of
-/// the source it shows. Silence is a line through the middle.
-fn paint_wave(painter: &egui::Painter, area: Rect, clip: &Clip, wave: &Wave, ink: Color32) {
+/// the source it shows. Silence is a line through the middle; a column that
+/// reaches full scale is drawn in `peak`.
+fn paint_wave(
+    painter: &egui::Painter,
+    area: Rect,
+    clip: &Clip,
+    wave: &Wave,
+    (ink, peak): (Color32, Color32),
+) {
     let visible = area.intersect(painter.clip_rect());
     if !visible.is_positive() {
         return;
@@ -638,12 +660,18 @@ fn paint_wave(painter: &egui::Painter, area: Rect, clip: &Clip, wave: &Wave, ink
             (top, bottom) = (centre - 0.5, centre + 0.5);
         }
         let column = Rect::from_min_max(pos2(x, top), pos2((x + 1.0).min(visible.right()), bottom));
-        mesh.add_colored_rect(column, ink);
+        // A tenth of a decibel under full scale or more.
+        let clipping = max == CLIPPING || min <= -CLIPPING;
+        mesh.add_colored_rect(column, if clipping { peak } else { ink });
     }
     if !mesh.is_empty() {
         painter.add(egui::Shape::mesh(mesh));
     }
 }
+
+/// The sample, of 128, at which a column of a waveform reaches 0.1 dB under
+/// full scale.
+const CLIPPING: i8 = 127;
 
 /// The beats of `grid` a tile of `clip` shows from `from` up to `to` at
 /// `zoom` points a second: those [`peaks::beats_through`] puts on the
@@ -803,11 +831,13 @@ pub fn show(
     actions: &mut Vec<Action>,
 ) {
     let p = input.p;
-    widgets::panel(ui, rect, p);
+    // The timeline is a content pane, as the viewer is: the darkest ground,
+    // with the tool strip on it and a hairline under the strip.
+    kit::pane_well(ui.painter(), rect, p.bg, p);
     let strip = Rect::from_min_size(rect.min, vec2(rect.width(), STRIP));
     let body = Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max);
     ui.painter()
-        .hline(rect.x_range(), strip.bottom(), p.hairline());
+        .hline(rect.x_range(), strip.bottom() - 0.5, p.hairline());
 
     let heads = Rect::from_min_max(
         pos2(body.left(), body.top() + RULER),
@@ -901,14 +931,18 @@ pub fn show(
         scroll: state.scroll.x,
     };
 
-    // The corner over the track heads.
-    let corner = Rect::from_min_max(body.min, pos2(heads.right(), ruler.bottom()));
-    ui.painter().text(
-        pos2(corner.left() + 14.0, corner.center().y),
-        Align2::LEFT_CENTER,
-        timefmt::timecode(input.playhead, project.settings.frame_rate),
-        theme::mono(11.5),
-        p.secondary,
+    // The ruler's band runs over the corner above the heads too, which
+    // stays empty: the transport says the playhead's time. A hairline
+    // under the band, and one between the heads and the lanes.
+    let band = Rect::from_min_max(body.min, pos2(body.right(), ruler.bottom()));
+    ui.painter()
+        .rect_filled(band, CornerRadius::ZERO, p.ruler());
+    ui.painter()
+        .hline(band.x_range(), band.bottom() - 0.5, p.hairline());
+    ui.painter().vline(
+        heads.right() - 0.5,
+        band.top()..=body.bottom(),
+        p.hairline(),
     );
 
     // The beats the tiles show, which the ruler and the lanes snap to.
@@ -919,34 +953,49 @@ pub fn show(
     };
     draw_ruler(ui, ruler, &geometry, state, input, actions);
     state.keys.begin(ui, &geometry, selection, input, actions);
+    let mut over_tiles = None;
     if state.keys.graph {
         (state.keys).show_graph(ui, heads, lanes, &geometry, selection, input, actions);
     } else {
-        track_heads(ui, heads, &rows, &geometry, &mut state.keys, input, actions);
-        draw_lanes(
-            ui, lanes, &rows, &geometry, state, selection, textures, peaks, input, actions,
-        );
+        let mut targets = std::mem::take(&mut state.targets);
+        let found = targets.of(project, selection);
+        let keys = &mut state.keys;
+        track_heads(ui, heads, &rows, &geometry, keys, found, input, actions);
+        over_tiles = Some(draw_lanes(
+            ui, lanes, &rows, &geometry, state, selection, found, textures, peaks, input, actions,
+        ));
+        state.targets = targets;
     }
 
-    // The playhead runs through the ruler and the lanes.
-    let x = geometry.x(input.playhead);
-    if x >= lanes.left() - 1.0 && x <= lanes.right() {
-        let painter = ui.painter_at(Rect::from_min_max(ruler.min, lanes.max));
-        painter.vline(
-            x,
-            ruler.center().y..=lanes.bottom(),
-            Stroke::new(1.5, p.accent),
-        );
-        let head = Rect::from_center_size(pos2(x, ruler.top() + 10.0), vec2(11.0, 14.0));
-        painter.rect_filled(head, CornerRadius::same(3), p.accent);
+    // The playhead runs through the ruler and the lanes, in ink and not the
+    // accent: it says where, not what is chosen. A guide a held drag rests
+    // against runs the same way while the drag lasts.
+    // The pin may stand over the corner at the first frame, so it is not
+    // cut in half there. The guide and the playhead are drawn over the
+    // tiles and under the clips a drag carries, in the place the lanes kept
+    // for them.
+    let painter = ui.painter_at(Rect::from_min_max(
+        pos2(ruler.left() - PIN.x * 0.5 - 1.0, ruler.top()),
+        lanes.max,
+    ));
+    // Both go into the one list the painter keeps for the frame, made at
+    // its size: a guide and the playhead are three shapes each.
+    let mut marks = Vec::with_capacity(6);
+    // Each only where the lanes show its time: the painter reaches into the
+    // corner for the pin alone.
+    if let Some(x) = (state.snap_guide)
+        .map(|guide| geometry.x(guide))
+        .filter(|x| (lanes.left()..=lanes.right()).contains(x))
+    {
+        snap_guide_shapes(&painter, ruler, lanes, x, p, &mut marks);
     }
-    if let Some(guide) = state.snap_guide {
-        let x = geometry.x(guide);
-        ui.painter_at(lanes).vline(
-            x,
-            lanes.y_range(),
-            Stroke::new(1.0, p.yellow.gamma_multiply(0.9)),
-        );
+    let x = geometry.x(input.playhead);
+    if x >= lanes.left() - 1.0 && x <= lanes.right() + 1.0 {
+        playhead_shapes(&painter, ruler, lanes, x, p, &mut marks);
+    }
+    match over_tiles {
+        Some(slot) => painter.set(slot, egui::Shape::Vec(marks)),
+        None => painter.extend(marks),
     }
 
     // Wheel, trackpad and pinch over the timeline. A wheel turned with Cmd
@@ -978,6 +1027,175 @@ pub fn show(
     }
 }
 
+/// The playhead's pin: a 12 by 6 head over a 5-point point, which is as
+/// tall as the ruler's lower half leaves room for.
+const PIN: Vec2 = vec2(12.0, 11.0);
+const PIN_POINT: f32 = 5.0;
+
+/// The x of a vertical line one point wide at `x`, set on a pixel's middle so
+/// it is drawn sharp.
+fn sharp(painter: &egui::Painter, x: f32) -> f32 {
+    painter.round_to_pixel_center(x)
+}
+
+/// A line one point wide down `ys` at `x`, between two lines of `halo` that
+/// keep it clear of what it crosses: two rectangles, no mesh.
+fn haloed_line(x: f32, ys: egui::Rangef, ink: Color32, halo: Color32) -> [egui::Shape; 2] {
+    let span = |half: f32| Rect::from_x_y_ranges(x - half..=x + half, ys);
+    [
+        egui::Shape::rect_filled(span(1.5), CornerRadius::ZERO, halo),
+        egui::Shape::rect_filled(span(0.5), CornerRadius::ZERO, ink),
+    ]
+}
+
+/// The playhead at `x`: a line from its pin's top down through the lanes,
+/// and the pin wholly in the ruler's lower half with its point on the
+/// ruler's foot. The labels end above the middle, so the two never share a
+/// row of pixels. Its shapes are put in `shapes`.
+fn playhead_shapes(
+    painter: &egui::Painter,
+    ruler: Rect,
+    lanes: Rect,
+    x: f32,
+    p: &Palette,
+    shapes: &mut Vec<egui::Shape>,
+) {
+    let (ink, halo) = (p.playhead(), p.playhead_halo());
+    let x = sharp(painter, x);
+    let (half, foot) = (PIN.x * 0.5, ruler.bottom());
+    // Its top and shoulders on a pixel's middle, as its sides are, so the
+    // halo round it is one sharp pixel and not two faint ones.
+    let shoulder = painter.round_to_pixel_center(foot - PIN_POINT);
+    let top = painter.round_to_pixel_center(foot - PIN.y);
+    // The line starts inside the pin, behind it, so none of it, nor its
+    // feathered edge, stands above the pin.
+    shapes.extend(haloed_line(
+        x,
+        egui::Rangef::new(top + 1.5, lanes.bottom()),
+        ink,
+        halo,
+    ));
+    shapes.push(egui::Shape::convex_polygon(
+        vec![
+            pos2(x - half, top),
+            pos2(x + half, top),
+            pos2(x + half, shoulder),
+            pos2(x, foot),
+            pos2(x - half, shoulder),
+        ],
+        ink,
+        Stroke::new(1.0, halo),
+    ));
+}
+
+/// The guide a held drag rests against at `x`: a line through the ruler and
+/// the lanes, and a small diamond on the ruler's foot at the time, put in
+/// `shapes`.
+fn snap_guide_shapes(
+    painter: &egui::Painter,
+    ruler: Rect,
+    lanes: Rect,
+    x: f32,
+    p: &Palette,
+    shapes: &mut Vec<egui::Shape>,
+) {
+    let ink = p.snap();
+    let x = sharp(painter, x);
+    shapes.extend(haloed_line(
+        x,
+        egui::Rangef::new(ruler.top(), lanes.bottom()),
+        ink,
+        p.playhead_halo(),
+    ));
+    let foot = ruler.bottom() - 0.5;
+    shapes.push(egui::Shape::convex_polygon(
+        vec![
+            pos2(x, foot - 2.5),
+            pos2(x + 2.5, foot),
+            pos2(x, foot + 2.5),
+            pos2(x - 2.5, foot),
+        ],
+        ink,
+        Stroke::NONE,
+    ));
+}
+
+/// The side of a tool strip button, the room between two of one group and
+/// the room between groups.
+const TOOL: f32 = metrics::ICON_BUTTON;
+const TOOL_GAP: f32 = 2.0;
+const GROUP_GAP: f32 = 12.0;
+/// How far the strip's first and last controls stand from the pane's edges.
+const STRIP_INSET: f32 = 8.0;
+/// The room between the zoom controls, and the widths the zoom slider takes.
+const ZOOM_GAP: f32 = 4.0;
+const ZOOM_SLIDER: f32 = 120.0;
+const ZOOM_SLIDER_NARROW: f32 = 64.0;
+/// The least room left between the strip's leading groups and its trailing
+/// controls.
+const STRIP_ROOM: f32 = 10.0;
+/// The name of the snapping toggle, which says whether it is on as a check
+/// box does rather than in its name.
+const SNAPPING: &str = "Snapping (N)";
+
+/// What of the tool strip folds away in a pane too narrow for all of it, in
+/// the order it goes: the zoom slider narrows, then goes; then the Insert
+/// group folds into a menu at the end of the leading groups, then the Edit
+/// group joins it. The keyframe and graph toggles, snapping, zoom and Fit
+/// never fold. At an interface scale of one every window has room for all of
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Fold {
+    Nothing,
+    NarrowSlider,
+    NoSlider,
+    Insert,
+    Edit,
+}
+
+impl Fold {
+    /// The least that folds in a strip `width` wide.
+    fn of(width: f32) -> Self {
+        [
+            Self::Nothing,
+            Self::NarrowSlider,
+            Self::NoSlider,
+            Self::Insert,
+        ]
+        .into_iter()
+        .find(|fold| fold.leading() + fold.trailing() + STRIP_ROOM <= width)
+        .unwrap_or(Self::Edit)
+    }
+
+    /// How wide the zoom slider is, where it is shown.
+    fn slider(self) -> Option<f32> {
+        match self {
+            Self::Nothing => Some(ZOOM_SLIDER),
+            Self::NarrowSlider => Some(ZOOM_SLIDER_NARROW),
+            _ => None,
+        }
+    }
+
+    /// How wide the leading groups are, from the pane's edge: Edit, Insert
+    /// and Animate, or what of them is left beside the menu they fold into.
+    fn leading(self) -> f32 {
+        let group = |buttons: f32| buttons * TOOL + (buttons - 1.0) * TOOL_GAP;
+        let groups: &[f32] = match self {
+            Self::Insert => &[group(3.0), group(2.0), TOOL],
+            Self::Edit => &[group(2.0), TOOL],
+            _ => &[group(3.0), group(3.0), group(2.0)],
+        };
+        STRIP_INSET + groups.iter().sum::<f32>() + GROUP_GAP * (groups.len() - 1) as f32
+    }
+
+    /// How wide the trailing controls are, to the pane's edge: snapping,
+    /// then zoom out, the slider and zoom in, then Fit.
+    fn trailing(self) -> f32 {
+        let slider = self.slider().map_or(0.0, |width| width + ZOOM_GAP);
+        TOOL + GROUP_GAP + TOOL + ZOOM_GAP + slider + TOOL + ZOOM_GAP + TOOL + STRIP_INSET
+    }
+}
+
 fn tool_strip(
     ui: &mut Ui,
     strip: Rect,
@@ -987,62 +1205,55 @@ fn tool_strip(
     actions: &mut Vec<Action>,
 ) {
     let p = input.p;
+    let fold = Fold::of(strip.width());
     let mut ui = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(strip.shrink2(vec2(10.0, 0.0)))
+            .max_rect(strip.shrink2(vec2(STRIP_INSET, 0.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     let ui = &mut ui;
-    ui.spacing_mut().item_spacing.x = 2.0;
+    ui.spacing_mut().item_spacing.x = 0.0;
     let has_selection = !selection.clips.is_empty();
+    let split = format!("Split at playhead ({})", "S");
+    let duplicate = format!("Duplicate ({})", shortcut("Cmd+D"));
 
-    if icon_button(
-        ui,
-        p,
-        Icon::Scissors,
-        &format!("Split at playhead ({})", "S"),
-    )
-    .clicked()
-    {
-        actions.push(Action::SplitAtPlayhead);
-    }
-    ui.add_enabled_ui(has_selection, |ui| {
-        if icon_button(ui, p, Icon::Trash, "Delete (Delete)").clicked() {
-            actions.push(Action::Delete { ripple: false });
+    // Edit.
+    if fold < Fold::Edit {
+        if icon_button(ui, p, Icon::Scissors, &split).clicked() {
+            actions.push(Action::SplitAtPlayhead);
         }
-        if icon_button(
-            ui,
-            p,
-            Icon::Copy,
-            &format!("Duplicate ({})", shortcut("Cmd+D")),
-        )
-        .clicked()
-        {
-            actions.push(Action::Duplicate);
-        }
-    });
-    ui.add_space(8.0);
-    if icon_button(ui, p, Icon::Flag, "Add marker at playhead (M)").clicked() {
-        actions.push(Action::AddMarker);
-    }
-    if icon_button(ui, p, Icon::Text, "Add text at playhead (T)").clicked() {
-        actions.push(Action::AddText);
-    }
-    let add = icon_button(ui, p, Icon::Layers, "Add track");
-    egui::Popup::menu(&add).show(|ui| {
-        menu_style(ui, 180.0);
-        for (kind, icon, label) in [
-            (TrackKind::Video, Icon::Film, "Video track"),
-            (TrackKind::Audio, Icon::Music, "Audio track"),
-            (TrackKind::Text, Icon::Text, "Text track"),
-        ] {
-            if menu_item(ui, p, Some(icon), label, "").clicked() {
-                actions.push(Action::AddTrack(kind));
-                ui.close();
+        ui.add_space(TOOL_GAP);
+        ui.add_enabled_ui(has_selection, |ui| {
+            if icon_button(ui, p, Icon::Trash, "Delete (Delete)").clicked() {
+                actions.push(Action::Delete { ripple: false });
             }
+            ui.add_space(TOOL_GAP);
+            if icon_button(ui, p, Icon::Copy, &duplicate).clicked() {
+                actions.push(Action::Duplicate);
+            }
+        });
+        ui.add_space(GROUP_GAP);
+    }
+    // Insert.
+    if fold < Fold::Insert {
+        if icon_button(ui, p, Icon::Flag, "Add marker at playhead (M)").clicked() {
+            actions.push(Action::AddMarker);
         }
-    });
-    ui.add_space(8.0);
+        ui.add_space(TOOL_GAP);
+        if icon_button(ui, p, Icon::Text, "Add text at playhead (T)").clicked() {
+            actions.push(Action::AddText);
+        }
+        ui.add_space(TOOL_GAP);
+        let surface = ui.painter().add(egui::Shape::Noop);
+        let add = icon_button(ui, p, Icon::Layers, "Add track");
+        open_surface(ui, p, surface, &add);
+        egui::Popup::menu(&add).show(|ui| {
+            menu_style(ui, 180.0);
+            add_track_rows(ui, p, actions);
+        });
+        ui.add_space(GROUP_GAP);
+    }
+    // Animate: toggles that stay pressed while what they show is open.
     let keys = &mut state.keys;
     let lane = keys.can_toggle_lane(input.project, selection) && !keys.graph;
     ui.add_enabled_ui(lane, |ui| {
@@ -1059,15 +1270,66 @@ fn tool_strip(
             keys.toggle_lane(input.project, selection);
         }
     });
+    ui.add_space(TOOL_GAP);
     if icon_toggle(ui, p, Icon::Curve, keys.graph, "Graph editor (G)").clicked() {
         keys.graph = !keys.graph;
     }
+    // What folded, in a menu after them.
+    if fold >= Fold::Insert {
+        ui.add_space(GROUP_GAP);
+        let surface = ui.painter().add(egui::Shape::Noop);
+        let more = icon_button(ui, p, Icon::Dots, "More timeline actions");
+        open_surface(ui, p, surface, &more);
+        egui::Popup::menu(&more).show(|ui| {
+            menu_style(ui, 240.0);
+            let mut item = |ui: &mut Ui, icon: Icon, text: &str, keys: &str, action: Action| {
+                // A row that removes is red, as the clip menu's is.
+                let row = if matches!(action, Action::Delete { .. }) {
+                    widgets::menu_item_destructive(ui, p, Some(icon), text, &shortcut(keys))
+                } else {
+                    menu_item(ui, p, Some(icon), text, &shortcut(keys))
+                };
+                if row.clicked() {
+                    actions.push(action);
+                    ui.close();
+                }
+            };
+            if fold >= Fold::Edit {
+                item(
+                    ui,
+                    Icon::Scissors,
+                    "Split at playhead",
+                    "S",
+                    Action::SplitAtPlayhead,
+                );
+                ui.add_enabled_ui(has_selection, |ui| {
+                    let delete = Action::Delete { ripple: false };
+                    item(ui, Icon::Trash, "Delete", "Delete", delete);
+                    item(ui, Icon::Copy, "Duplicate", "Cmd+D", Action::Duplicate);
+                });
+                widgets::menu_separator(ui, p);
+            }
+            item(
+                ui,
+                Icon::Flag,
+                "Add marker at playhead",
+                "M",
+                Action::AddMarker,
+            );
+            item(ui, Icon::Text, "Add text at playhead", "T", Action::AddText);
+            controls::menu_submenu(ui, *p, Icon::Layers, "Add track", |ui| {
+                menu_style(ui, 180.0);
+                add_track_rows(ui, p, actions);
+            });
+        });
+    }
 
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.spacing_mut().item_spacing.x = 0.0;
         if icon_button(ui, p, Icon::Fit, "Fit timeline to window (Shift+Z)").clicked() {
             actions.push(Action::FitTimeline);
         }
+        ui.add_space(ZOOM_GAP);
         if icon_button(
             ui,
             p,
@@ -1078,17 +1340,16 @@ fn tool_strip(
         {
             actions.push(Action::ZoomTimeline(1.4));
         }
-        // The slider works on a logarithmic scale, as zoom is perceived.
-        let mut level = (state.zoom / MIN_ZOOM).ln() / (MAX_ZOOM / MIN_ZOOM).ln();
-        let slider = ui.add_sized(
-            [96.0, 18.0],
-            egui::Slider::new(&mut level, 0.0..=1.0).show_value(false),
-        );
-        if slider.changed() {
-            let zoom = MIN_ZOOM * (MAX_ZOOM / MIN_ZOOM).powf(level);
-            state.zoom_centered(zoom / state.zoom);
+        ui.add_space(ZOOM_GAP);
+        if let Some(width) = fold.slider() {
+            // The slider works on a logarithmic scale, as zoom is perceived.
+            let mut level = (state.zoom / MIN_ZOOM).ln() / (MAX_ZOOM / MIN_ZOOM).ln();
+            if zoom_slider(ui, p, &mut level, width).changed() {
+                let zoom = MIN_ZOOM * (MAX_ZOOM / MIN_ZOOM).powf(level);
+                state.zoom_centered(zoom / state.zoom);
+            }
+            ui.add_space(ZOOM_GAP);
         }
-        slider.on_hover_text("Timeline zoom");
         if icon_button(
             ui,
             p,
@@ -1099,22 +1360,175 @@ fn tool_strip(
         {
             actions.push(Action::ZoomTimeline(1.0 / 1.4));
         }
-        ui.add_space(8.0);
-        let snap = icon_button_tinted(
-            ui,
-            p,
-            Icon::Magnet,
-            if input.snapping {
-                "Snapping is on (N)"
-            } else {
-                "Snapping is off (N)"
-            },
-            input.snapping.then_some(p.accent),
-        );
-        if snap.clicked() {
+        ui.add_space(GROUP_GAP);
+        if snapping_toggle(ui, p, input.snapping).clicked() {
             actions.push(Action::ToggleSnapping);
         }
     });
+}
+
+/// Fills the place kept under a strip button whose menu is open, as a
+/// pressed button is filled, so the menu says where it came from.
+fn open_surface(ui: &Ui, p: &Palette, surface: egui::layers::ShapeIdx, button: &Response) {
+    if egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(button)) {
+        ui.painter().set(
+            surface,
+            egui::Shape::rect_filled(button.rect.shrink(1.0), 7, p.pressed),
+        );
+    }
+}
+
+/// The snapping toggle: pressed while snapping is on, named the same either
+/// way, with its state said by its role and its tooltip.
+fn snapping_toggle(ui: &mut Ui, p: &Palette, on: bool) -> Response {
+    let (_, response) = ui.allocate_exact_size(Vec2::splat(TOOL), Sense::click());
+    kit::paint_icon_button(ui, p, &response, Icon::Magnet, on, None);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, SNAPPING)
+    });
+    let said = if on {
+        "Snapping is on"
+    } else {
+        "Snapping is off"
+    };
+    icons::hint(
+        response.on_hover_cursor(CursorIcon::PointingHand),
+        said,
+        "N",
+    )
+}
+
+/// The zoom slider: Terminal's slider without the fill, since a zoom is not
+/// an amount; `level` runs from nought, the widest view, to one.
+fn zoom_slider(ui: &mut Ui, p: &Palette, level: &mut f32, width: f32) -> Response {
+    const KNOB: f32 = 8.0;
+    let (rect, mut response) = ui.allocate_exact_size(vec2(width, 22.0), Sense::click_and_drag());
+    let left = rect.left() + KNOB;
+    let travel = (rect.width() - KNOB * 2.0).max(1.0);
+    let mut next = *level;
+    if let Some(pos) = response.interact_pointer_pos() {
+        next = ((pos.x - left) / travel).clamp(0.0, 1.0);
+    }
+    // The left and right arrows are the slider's while it has the focus,
+    // and do not take the focus on to its neighbours. A screen reader steps
+    // it, or sets it, as it would egui's own.
+    let focused = response.has_focus();
+    if focused {
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                response.id,
+                egui::EventFilter {
+                    horizontal_arrows: true,
+                    ..Default::default()
+                },
+            );
+        });
+        // Nor do they step the playhead as well.
+        crate::ui::ChoiceArrows::hold(ui.ctx(), response.id);
+    }
+    let nudge = ui.input(|input| {
+        use egui::accesskit::Action;
+        let keys = if focused {
+            input.num_presses(egui::Key::ArrowRight) as f32
+                - input.num_presses(egui::Key::ArrowLeft) as f32
+        } else {
+            0.0
+        };
+        keys + input.num_accesskit_action_requests(response.id, Action::Increment) as f32
+            - input.num_accesskit_action_requests(response.id, Action::Decrement) as f32
+    });
+    next = (next + nudge * 0.05).clamp(0.0, 1.0);
+    ui.input(|input| {
+        use egui::accesskit::{Action, ActionData};
+        for request in input.accesskit_action_requests(response.id, Action::SetValue) {
+            if let Some(ActionData::NumericValue(value)) = request.data {
+                next = (value as f32).clamp(0.0, 1.0);
+            }
+        }
+    });
+    if next != *level {
+        *level = next;
+        response.mark_changed();
+    }
+    let current = *level;
+    response.widget_info(|| {
+        egui::WidgetInfo::slider(ui.is_enabled(), f64::from(current), "Timeline zoom")
+    });
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        use egui::accesskit::Action;
+        node.set_min_numeric_value(0.0);
+        node.set_max_numeric_value(1.0);
+        node.set_numeric_value_step(0.05);
+        node.add_action(Action::SetValue);
+        if current < 1.0 {
+            node.add_action(Action::Increment);
+        }
+        if current > 0.0 {
+            node.add_action(Action::Decrement);
+        }
+    });
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let knob = pos2(left + travel * current.clamp(0.0, 1.0), rect.center().y);
+        let track = Rect::from_min_max(
+            pos2(rect.left(), rect.center().y - 2.0),
+            pos2(rect.right(), rect.center().y + 2.0),
+        );
+        painter.rect_filled(track, 2, p.pressed);
+        if focused {
+            painter.circle_stroke(
+                knob,
+                KNOB + 2.0,
+                Stroke::new(2.0, theme::tint(p.accent, 0.55)),
+            );
+        }
+        painter.circle_filled(knob + vec2(0.0, 1.0), KNOB, Color32::from_black_alpha(50));
+        painter.circle_filled(knob, KNOB, Color32::WHITE);
+        // On the light strip a white knob needs an edge of its own, a
+        // shade firmer than a border's so it stands off the pale track.
+        if !p.dark {
+            painter.circle_stroke(
+                knob,
+                KNOB - 0.5,
+                Stroke::new(1.0, Color32::from_black_alpha(56)),
+            );
+        }
+    }
+    icons::hint(
+        response.on_hover_cursor(CursorIcon::PointingHand),
+        "Timeline zoom",
+        "",
+    )
+}
+
+/// The rows that add a track of each kind, each with the glyph its heads
+/// show, quieter than the row's words.
+fn add_track_rows(ui: &mut Ui, p: &Palette, actions: &mut Vec<Action>) {
+    for (kind, label) in [
+        (TrackKind::Video, "Video track"),
+        (TrackKind::Audio, "Audio track"),
+        (TrackKind::Text, "Text track"),
+    ] {
+        let row = kit::menu_row(ui, p, None, label, "", false, None);
+        let ink = if row.hovered() || row.has_focus() {
+            p.on_accent
+        } else {
+            p.secondary
+        };
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(
+                pos2(row.rect.left() + 15.0, row.rect.center().y),
+                Vec2::splat(14.0),
+            ),
+            icon_of_track(kind),
+            ink,
+        );
+        if row.clicked() {
+            actions.push(Action::AddTrack(kind));
+            ui.close();
+        }
+    }
 }
 
 /// The part of a row a track's head is drawn in.
@@ -1171,8 +1585,8 @@ fn head_name_room(head: Rect, toggles: usize) -> egui::Rangef {
     )
 }
 
-/// A 22-point toggle inside a track head. `ink` is its glyph's colour where
-/// that says more than on or off.
+/// A 22-point toggle inside a track head: bare while off, pressed while on.
+/// `ink` is its glyph's colour where that says more than on or off.
 #[expect(clippy::too_many_arguments, reason = "a toggle is all of these")]
 fn head_toggle(
     ui: &mut Ui,
@@ -1187,34 +1601,36 @@ fn head_toggle(
     let response = ui.interact(rect, id, Sense::click());
     response
         .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, label));
-    if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(6), p.hover);
+    let hover = kit::hover_amount(ui, &response);
+    let painter = ui.painter();
+    if on || response.is_pointer_button_down_on() {
+        painter.rect_filled(rect, CornerRadius::same(6), p.pressed);
+    } else if hover > 0.0 {
+        painter.rect_filled(rect, CornerRadius::same(6), p.hover.gamma_multiply(hover));
     }
     if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            CornerRadius::same(6),
-            Stroke::new(1.5, p.accent),
-            StrokeKind::Inside,
-        );
+        controls::focus_ring(painter, rect, 6, *p);
     }
-    let color = if let Some(ink) = ink {
-        ink
-    } else if on {
-        p.fg
-    } else if response.hovered() {
-        p.secondary
+    // Off, its glyph is in the secondary ink, as a small icon toggle's and
+    // the kind's glyph beside it are: a control, legible on the pressed
+    // card of a track edits go to.
+    let color = if on {
+        ink.unwrap_or(p.fg)
+    } else if hover > 0.0 {
+        theme::mix(p.secondary, p.fg, hover)
     } else {
-        p.muted
+        ink.unwrap_or(p.secondary)
     };
     icons::paint(
-        ui.painter(),
+        painter,
         Rect::from_center_size(rect.center(), Vec2::splat(14.0)),
         icon,
         color,
     );
-    response.on_hover_text(label).clicked()
+    response
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(label)
+        .clicked()
 }
 
 /// What the mute toggle of a head is named. A track that another's solo
@@ -1237,33 +1653,33 @@ fn volume_menu(ui: &mut Ui, p: &Palette, track: &Track, actions: &mut Vec<Action
     let read = tracks::percent(track);
     let dragging = ui.data(|data| data.get_temp::<f32>(held));
     let mut shown = dragging.unwrap_or(read);
-    let field = ui
-        .horizontal(|ui| {
-            ui.add_space(30.0);
-            ui.label(
-                egui::RichText::new("Volume")
-                    .font(theme::regular(13.0))
-                    .color(p.fg),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(8.0);
-                let field = ui.add_sized(
-                    [72.0, 22.0],
-                    egui::DragValue::new(&mut shown)
-                        .range(0.0..=tracks::MOST)
-                        .speed(1.0)
-                        .suffix(" %")
-                        .max_decimals(2)
-                        .update_while_editing(false),
+    // A row as the others are: its word where theirs are, the field at the
+    // trailing edge where their shortcuts are.
+    let row = ui.allocate_ui_with_layout(
+        vec2(ui.available_width(), metrics::COMPACT_HEIGHT),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            ui.set_min_size(vec2(ui.available_width(), metrics::COMPACT_HEIGHT));
+            // A menu row's shortcut stands 10 in from its trailing edge.
+            ui.add_space(10.0);
+            let field = volume_field(ui, p, &mut shown);
+            // The word is a label, as it is read out.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                // A menu row's label stands at +32, after its glyph.
+                ui.add_space(32.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("Volume")
+                            .font(theme::regular(13.0))
+                            .color(p.fg),
+                    )
+                    .selectable(false),
                 );
-                field.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, "Track volume")
-                });
-                field
-            })
-            .inner
-        })
-        .inner;
+            });
+            field
+        },
+    );
+    let field = row.inner;
     // Escape gives a drag up, as it gives up what is typed: egui ends the
     // drag on that frame with the button still down, which is no release.
     let given_up = ui.input(|input| input.key_pressed(egui::Key::Escape));
@@ -1300,12 +1716,150 @@ fn volume_menu(ui: &mut Ui, p: &Palette, track: &Track, actions: &mut Vec<Action
     });
 }
 
+/// The track volume's field: a number in percent, dragged or typed, on the
+/// surface of the editor's other fields and with their quieter unit. What is
+/// typed is the field's until it is entered. It is `kit::number_field`
+/// but for that: the kit's field updates as it is typed in and rounds to
+/// fixed decimals.
+fn volume_field(ui: &mut Ui, p: &Palette, value: &mut f32) -> Response {
+    const FIELD: Vec2 = vec2(72.0, metrics::INSPECTOR_CONTROL);
+    const UNIT: &str = " %";
+    let surface = ui.painter().add(egui::Shape::Noop);
+    let unit_font = theme::regular(12.5);
+    // The unit is in the value's ink, as Terminal's fields write it.
+    let ink = if ui.is_enabled() { p.fg } else { p.muted };
+    let unit = ui
+        .painter()
+        .layout_no_wrap(UNIT.to_owned(), unit_font.clone(), ink);
+    let field = ui
+        .scope(|ui| {
+            // The drag value draws no surface of its own: this one is drawn
+            // beneath it.
+            let style = ui.style_mut();
+            style
+                .text_styles
+                .insert(style.drag_value_text_style.clone(), theme::regular(12.5));
+            // The value ends 8 points in from the unit.
+            style.spacing.interact_size = FIELD;
+            style.spacing.button_padding = vec2(8.0, 0.0);
+            let visuals = &mut style.visuals;
+            visuals.text_edit_bg_color = Some(Color32::TRANSPARENT);
+            visuals.selection.stroke = Stroke::NONE;
+            for widget in [
+                &mut visuals.widgets.inactive,
+                &mut visuals.widgets.hovered,
+                &mut visuals.widgets.active,
+                &mut visuals.widgets.open,
+            ] {
+                widget.weak_bg_fill = Color32::TRANSPARENT;
+                widget.bg_fill = Color32::TRANSPARENT;
+                widget.bg_stroke = Stroke::NONE;
+                widget.corner_radius = CornerRadius::same(7);
+            }
+            // The unit is laid out unseen after the value, which keeps the
+            // value clear of it and its text in the value read out; it is
+            // painted over that place below.
+            let drag = egui::DragValue::new(value)
+                .range(0.0..=tracks::MOST)
+                .speed(1.0)
+                .suffix(
+                    egui::RichText::new(UNIT)
+                        .font(unit_font.clone())
+                        .color(Color32::TRANSPARENT),
+                )
+                .max_decimals(2)
+                .update_while_editing(false);
+            let layout = egui::Layout::centered_and_justified(egui::Direction::LeftToRight)
+                .with_main_align(egui::Align::Max);
+            ui.allocate_ui_with_layout(FIELD, layout, |ui| ui.add(drag))
+                .inner
+        })
+        .inner;
+    field.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, "Track volume")
+    });
+    let rect = Rect::from_center_size(field.rect.center(), FIELD);
+    let mut shapes = vec![egui::Shape::rect_filled(rect, 7, p.control)];
+    let editing = field.has_focus();
+    if field.hovered() && !editing {
+        shapes.push(egui::Shape::rect_filled(rect, 7, p.hover));
+    }
+    if editing {
+        // A field being typed in: an accent outline with a soft halo.
+        shapes.push(egui::Shape::rect_stroke(
+            rect.expand(2.5),
+            9,
+            Stroke::new(3.0, theme::tint(p.accent, 0.28)),
+            StrokeKind::Inside,
+        ));
+        shapes.push(egui::Shape::rect_stroke(
+            rect,
+            7,
+            Stroke::new(1.0, p.accent),
+            StrokeKind::Inside,
+        ));
+    }
+    ui.painter().set(surface, egui::Shape::Vec(shapes));
+    // While it is typed in, the field holds only the number.
+    if !editing && ui.is_rect_visible(rect) {
+        let at = pos2(
+            rect.right() - 8.0 - unit.size().x,
+            rect.center().y - unit.size().y * 0.5,
+        );
+        ui.painter().galley(at, unit, ink);
+    }
+    field
+}
+
+/// A context menu on `response`, opened where the secondary click was and
+/// kept 8 points inside the window: below and after the pointer where it
+/// fits, above it where there is more room above, and before it where the
+/// window's trailing edge is too near.
+fn context_menu(response: &Response) -> egui::Popup<'static> {
+    let ctx = response.ctx.clone();
+    let menu = egui::Popup::context_menu(response);
+    let origin = menu.get_id().with("origin");
+    if response.secondary_clicked()
+        && let Some(pos) = ctx.pointer_interact_pos()
+    {
+        ctx.data_mut(|data| data.insert_temp(origin, pos));
+    }
+    let Some(at) = ctx.data(|data| data.get_temp::<Pos2>(origin)) else {
+        return menu;
+    };
+    let size = menu.get_expected_size().unwrap_or(Vec2::ZERO);
+    let room = ctx.content_rect().shrink(8.0);
+    let left = if at.x + size.x <= room.right() {
+        at.x
+    } else {
+        at.x - size.x
+    };
+    let (below, above) = (room.bottom() - at.y, at.y - room.top());
+    let top = if size.y <= below || below >= above {
+        at.y
+    } else {
+        at.y - size.y
+    };
+    let corner = pos2(
+        left.clamp(room.left(), (room.right() - size.x).max(room.left())),
+        top.clamp(room.top(), (room.bottom() - size.y).max(room.top())),
+    );
+    menu.at_position(corner)
+        .align(egui::RectAlign::BOTTOM_START)
+        .align_alternatives(&[])
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site; the heads need the rows and where edits go"
+)]
 fn track_heads(
     ui: &mut Ui,
     heads: Rect,
     rows: &[Row],
     geometry: &Geometry,
     keys: &mut KeyframesState,
+    targets: &[TrackId],
     input: &TimelineInput,
     actions: &mut Vec<Action>,
 ) {
@@ -1315,46 +1869,75 @@ fn track_heads(
     let ui = &mut ui;
     for row in rows {
         let rect = head_rect(heads, row);
+        // The card runs on down beside the keyframe lane open under the
+        // track's clips, which names its rows there.
+        let card = rect.with_max_y(rect.bottom() + row.lane);
+        if !ui.is_rect_visible(card) {
+            continue;
+        }
+        let track = row.track;
+        let id = Id::new(("track-head", track.id));
+        let response = ui.is_rect_visible(rect).then(|| {
+            let response = ui.interact(rect, id, Sense::click());
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    format!("Track {}", track.name),
+                )
+            });
+            response
+        });
+        // A track that holds a selected clip is the one edits go to: its
+        // card is pressed, as its row is lit.
+        let target = targets.contains(&track.id);
+        let radius = CornerRadius::same(8);
+        ui.painter()
+            .rect_filled(card, radius, if target { p.pressed } else { p.control });
+        if let Some(response) = &response {
+            // Lit while the pointer is anywhere on it, its toggles included,
+            // and while its menu is open, so the menu's track stays marked
+            // with the pointer on the menu.
+            let lit = response.contains_pointer() || response.context_menu_opened();
+            let hover = controls::animate(ui.ctx(), id.with("hover"), lit, theme::motion::HOVER);
+            if hover > 0.0 {
+                ui.painter()
+                    .rect_filled(card, radius, p.hover.gamma_multiply(hover));
+            }
+            if response.has_focus() {
+                controls::focus_ring(ui.painter(), card, 8, *p);
+            }
+        }
         if row.lane > 0.0 {
             // What each row of the keyframe lane holds, under the head.
             let below = Rect::from_min_size(rect.left_bottom(), vec2(rect.width(), row.lane));
             keys.lane_heads(ui, below, geometry, input, actions);
         }
-        if !ui.is_rect_visible(rect) {
+        let Some(response) = response else {
             continue;
-        }
-        let track = row.track;
-        let id = Id::new(("track-head", track.id));
-        let response = ui.interact(rect, id, Sense::click());
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                true,
-                format!("Track {}", track.name),
-            )
-        });
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(metrics::CLIP_RADIUS + 2),
-            p.control,
+        };
+        // The track's tone in a stripe at the leading edge, and the glyph of
+        // its kind, quieter than its name.
+        let stripe = Rect::from_min_size(
+            pos2(
+                rect.left() + 4.0,
+                rect.center().y - (rect.height() - 12.0) * 0.5,
+            ),
+            vec2(3.0, rect.height() - 12.0),
         );
-        if response.has_focus() {
-            ui.painter().rect_stroke(
-                rect,
-                CornerRadius::same(metrics::CLIP_RADIUS + 2),
-                Stroke::new(1.5, p.accent),
-                StrokeKind::Inside,
-            );
-        }
-        let tone = p.tone(tone_of_track(track.kind));
+        ui.painter().rect_filled(
+            stripe,
+            CornerRadius::same(2),
+            p.tone(tone_of_track(track.kind)),
+        );
         icons::paint(
             ui.painter(),
-            Rect::from_center_size(pos2(rect.left() + 15.0, rect.center().y), Vec2::splat(14.0)),
+            Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(14.0)),
             icon_of_track(track.kind),
             if track.hidden && track.kind != TrackKind::Audio {
                 p.muted
             } else {
-                tone
+                p.secondary
             },
         );
 
@@ -1430,75 +2013,118 @@ fn track_heads(
                 },
                 track.muted,
                 mute_label(track, silenced),
-                silenced.then(|| p.muted.gamma_multiply(0.45)),
+                silenced.then(|| p.muted.gamma_multiply(0.5)),
             ) {
                 actions.push(Action::Edit(state(None, None, Some(!track.muted))));
             }
+            // A soloed track's headphones take the accent, on a pressed
+            // cell as the others that are on; an accent that would be faint
+            // on that cell is taken toward the ink until it reads.
             if toggle(
                 ui,
                 "solo",
-                Icon::Solo,
+                Icon::Headphones,
                 track.solo,
                 if track.solo {
                     "Unsolo track"
                 } else {
                     "Solo track"
                 },
-                track.solo.then_some(p.accent),
+                track.solo.then(|| p.switch_ink()),
             ) {
                 actions.push(Action::Edit(tracks::solo(track, !track.solo)));
             }
         }
 
         // The name, and under it the volume of a track that is not at the
-        // one it starts with, where the head is tall enough for both.
+        // one it starts with, where the head is tall enough for both: one
+        // block, at the head's middle.
         let room = head_name_room(rect, toggles);
-        let figure = tracks::figure(track).filter(|_| rect.height() >= HEAD_FIGURE);
-        let galley = widgets::truncated(
+        let figure = tracks::figure(track)
+            .filter(|_| rect.height() >= HEAD_FIGURE)
+            .map(|figure| {
+                widgets::truncated(ui, &figure, theme::regular(11.0), p.secondary, room.span())
+            });
+        let name = widgets::truncated(
             ui,
             &track.name,
             theme::medium(12.0),
             if track.locked { p.muted } else { p.fg },
             room.span(),
         );
-        let lift = if figure.is_some() { 6.0 } else { 0.0 };
-        ui.painter().galley(
-            pos2(room.min, rect.center().y - lift - galley.size().y * 0.5),
-            galley,
-            p.fg,
-        );
+        // Lines of text are set two points closer than their rows, as the
+        // leading of the two sizes leaves them apart.
+        let tall = name.size().y + figure.as_ref().map_or(0.0, |figure| figure.size().y - 2.0);
+        let top = rect.center().y - tall * 0.5;
+        let under = top + name.size().y - 2.0;
+        ui.painter().galley(pos2(room.min, top), name, p.fg);
         if let Some(figure) = figure {
-            let galley =
-                widgets::truncated(ui, &figure, theme::regular(10.5), p.muted, room.span());
-            ui.painter().galley(
-                pos2(room.min, rect.center().y + 9.0 - galley.size().y * 0.5),
-                galley,
-                p.muted,
-            );
+            ui.painter()
+                .galley(pos2(room.min, under), figure, p.secondary);
         }
 
         // A click in the menu is the volume field's to take: each row closes
         // the menu itself, so only a click outside it does.
-        let menu = egui::Popup::context_menu(&response)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        let menu =
+            context_menu(&response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
         menu.show(|ui| {
-            menu_style(ui, 200.0);
-            ui.add_enabled_ui(!track.locked, |ui| {
-                if menu_item(ui, p, Some(Icon::Trash), "Remove track", "").clicked() {
-                    actions.push(Action::Edit(Command::RemoveTrack { track_id: track.id }));
-                    ui.close();
-                }
-            });
+            menu_style(ui, 240.0);
+            if tracks::carries_sound(track) {
+                volume_menu(ui, p, track, actions);
+                widgets::menu_separator(ui, p);
+            }
             if menu_item(ui, p, Some(Icon::Layers), "Add track of this kind", "").clicked() {
                 actions.push(Action::AddTrack(track.kind));
                 ui.close();
             }
-            if tracks::carries_sound(track) {
-                ui.separator();
-                volume_menu(ui, p, track, actions);
-            }
+            widgets::menu_separator(ui, p);
+            ui.add_enabled_ui(!track.locked, |ui| {
+                let remove =
+                    widgets::menu_item_destructive(ui, p, Some(Icon::Trash), "Remove track", "");
+                if remove.clicked() {
+                    actions.push(Action::Edit(Command::RemoveTrack { track_id: track.id }));
+                    ui.close();
+                }
+            });
         });
     }
+}
+
+/// The tracks edits go to: those that hold a selected clip. They are found
+/// in one pass over the clips, and only when the selection or a revision of
+/// a track differs from the frame before, so a frame while the playhead runs
+/// walks no clips and allocates nothing.
+#[derive(Default)]
+struct Targets {
+    /// The selection and the tracks, as shared, they were found for.
+    clips: Vec<ClipId>,
+    tracks: Vec<Arc<Track>>,
+    found: Vec<TrackId>,
+}
+
+impl Targets {
+    fn of(&mut self, project: &Project, selection: &Selection) -> &[TrackId] {
+        let same = self.clips == selection.clips
+            && self.tracks.len() == project.tracks.len()
+            && (self.tracks.iter().zip(&project.tracks)).all(|(held, now)| Arc::ptr_eq(held, now));
+        if !same {
+            self.clips.clone_from(&selection.clips);
+            self.tracks.clone_from(&project.tracks);
+            self.found = targets(project, selection);
+        }
+        &self.found
+    }
+}
+
+fn targets(project: &Project, selection: &Selection) -> Vec<TrackId> {
+    if selection.clips.is_empty() {
+        return Vec::new();
+    }
+    let chosen: std::collections::HashSet<ClipId> = selection.clips.iter().copied().collect();
+    (project.tracks.iter())
+        .filter(|track| track.clips.iter().any(|clip| chosen.contains(&clip.id)))
+        .map(|track| track.id)
+        .collect()
 }
 
 fn draw_ruler(
@@ -1513,34 +2139,33 @@ fn draw_ruler(
     let rate = input.project.settings.frame_rate;
     let response = ui.interact(ruler, Id::new("timeline-ruler"), Sense::click_and_drag());
     let painter = ui.painter_at(ruler);
-    painter.hline(ruler.x_range(), ruler.bottom() - 0.5, p.hairline());
 
+    // Ticks rise from the ruler's foot; the times stand in its upper half,
+    // their figures ending above its middle, clear of the playhead's pin
+    // and the markers' flags in the lower.
     let (step, parts) = rules::ruler_step(geometry.zoom, rate.fps(), 92.0);
     let first = (f64::from(geometry.scroll) / f64::from(geometry.zoom) / step).floor() as i64;
     let last = (f64::from(geometry.scroll + ruler.width()) / f64::from(geometry.zoom) / step).ceil()
         as i64;
+    let foot = ruler.bottom() - 1.0;
     for index in first..=last {
         let seconds = index as f64 * step;
-        let x = geometry.x(Time::from_seconds(seconds));
-        painter.vline(
-            x,
-            ruler.bottom() - 8.0..=ruler.bottom(),
-            Stroke::new(1.0, p.border),
-        );
+        let x = sharp(&painter, geometry.x(Time::from_seconds(seconds)));
+        painter.vline(x, foot - 6.0..=foot, Stroke::new(1.0, p.border));
         painter.text(
-            pos2(x + 5.0, ruler.top() + 9.0),
-            Align2::LEFT_CENTER,
+            pos2(x + 3.0, ruler.top() + 1.0),
+            Align2::LEFT_TOP,
             timefmt::ruler(seconds, step, rate),
-            theme::regular(10.5),
-            p.muted,
+            theme::regular(11.0),
+            p.secondary,
         );
         for part in 1..parts {
             let x = geometry.x(Time::from_seconds(
                 seconds + step * f64::from(part) / f64::from(parts),
             ));
             painter.vline(
-                x,
-                ruler.bottom() - 4.0..=ruler.bottom(),
+                sharp(&painter, x),
+                foot - 3.0..=foot,
                 Stroke::new(1.0, p.separator),
             );
         }
@@ -1584,38 +2209,52 @@ fn draw_marker(
     if x < ruler.left() - 8.0 || x > ruler.right() + 8.0 {
         return;
     }
-    let rect = Rect::from_center_size(pos2(x, ruler.bottom() - 8.0), vec2(12.0, 14.0));
+    let foot = ruler.bottom() - 1.0;
+    // A target wider than the flag, from its top to the ruler's foot.
+    let rect = Rect::from_min_max(
+        pos2(x - MARK_HANDLE * 0.5 - 1.0, foot - MARKER.y - 2.0),
+        pos2(x + MARK_HANDLE * 0.5 + 1.0, ruler.bottom()),
+    );
     let response = ui.interact(rect, Id::new(("marker", marker.id)), Sense::click());
     let [r, g, b, _] = marker.color;
     let color = Color32::from_rgb(r, g, b);
     let painter = ui.painter_at(ruler);
-    // A small pennant whose point marks the time.
+    // A small flag in the marker's own colour, its point on the ruler's foot
+    // at the time it marks; outlined in the ground so it stands clear of the
+    // ticks, and in ink while the pointer is on it.
+    let x = sharp(&painter, x);
+    let half = MARKER.x * 0.5;
+    let shoulder = painter.round_to_pixel_center(foot - MARKER_POINT);
+    let top = painter.round_to_pixel_center(foot - MARKER.y);
     painter.add(egui::Shape::convex_polygon(
         vec![
-            pos2(x - 4.5, rect.top()),
-            pos2(x + 4.5, rect.top()),
-            pos2(x + 4.5, rect.bottom() - 5.0),
-            pos2(x, rect.bottom()),
-            pos2(x - 4.5, rect.bottom() - 5.0),
+            pos2(x - half, top),
+            pos2(x + half, top),
+            pos2(x + half, shoulder),
+            pos2(x, foot),
+            pos2(x - half, shoulder),
         ],
         color,
-        Stroke::new(1.0, if response.hovered() { p.fg } else { color }),
+        Stroke::new(1.0, if response.hovered() { p.fg } else { p.bg }),
     ));
+    // The keyboard's ring round the whole target, inside the ruler.
+    if response.has_focus() {
+        controls::focus_ring(&painter, rect.shrink(2.0), 2, *p);
+    }
     if response.clicked() {
         actions.push(Action::Seek(marker.time));
     }
-    let label = if marker.label.is_empty() {
-        format!(
-            "Marker at {}",
-            timefmt::timecode(marker.time, input.project.settings.frame_rate)
-        )
+    let time = timefmt::timecode(marker.time, input.project.settings.frame_rate);
+    let response = if marker.label.is_empty() {
+        response.on_hover_text(format!("Marker at {time}"))
     } else {
-        marker.label.clone()
+        kit::rich_tooltip(response, p, &marker.label, &[&time], None)
     };
-    let response = response.on_hover_text(label);
-    response.context_menu(|ui| {
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    context_menu(&response).show(|ui| {
         menu_style(ui, 180.0);
-        if menu_item(ui, p, Some(Icon::Trash), "Remove marker", "").clicked() {
+        let remove = widgets::menu_item_destructive(ui, p, Some(Icon::Trash), "Remove marker", "");
+        if remove.clicked() {
             actions.push(Action::Edit(Command::RemoveMarker {
                 marker_id: marker.id,
             }));
@@ -1623,6 +2262,10 @@ fn draw_marker(
         }
     });
 }
+
+/// A marker's flag: an 8 by 7 head over a 3-point point.
+const MARKER: Vec2 = vec2(8.0, 10.0);
+const MARKER_POINT: f32 = 3.0;
 
 /// The narrowest tile that carries the chevron of a keyframe lane; a
 /// narrower one leaves it to the tool strip and its shortcut.
@@ -1639,6 +2282,25 @@ fn lane_toggle(tile: Rect) -> Rect {
         tile.center().y
     };
     Rect::from_center_size(pos2(tile.left() + 15.0, y), Vec2::splat(15.0))
+}
+
+/// Where a press takes the chevron: a small button wide, from the end of
+/// the grip that trims the tile, so the grip keeps all of its reach. On a
+/// tile with a name's row it is as tall as the row, so a transition marked
+/// under the row keeps its own.
+fn lane_toggle_hit(tile: Rect) -> Rect {
+    let center = lane_toggle(tile).center();
+    let tall = if carries_poster(tile.height()) {
+        NAME_ROW
+    } else {
+        metrics::SMALL_BUTTON
+    };
+    let left = tile.left() + EDGE_GRIP;
+    Rect::from_min_max(
+        pos2(left, center.y - tall * 0.5),
+        pos2(left + metrics::SMALL_BUTTON, center.y + tall * 0.5),
+    )
+    .intersect(tile)
 }
 
 /// What is under a point in the lanes.
@@ -1676,11 +2338,11 @@ fn marking(tile: Rect, zoom: f32, edge: TransitionEdge, duration: Time) -> Rect 
     }
 }
 
-/// The handle at a marking's inner end, kept clear of the grips that trim
-/// the clip at either edge however short or long the transition is, and so
-/// of the clip beside it.
-fn mark_handle(tile: Rect, mark: Rect, edge: TransitionEdge) -> Rect {
-    let clear = EDGE_GRIP.min(tile.width() / 3.0) + MARK_HANDLE * 0.5;
+/// The handle at a marking's inner end, kept `grip` clear of either edge of
+/// the tile, and so of the grips that trim the clip, however short or long
+/// the transition is, and of the clip beside it.
+fn mark_handle(tile: Rect, mark: Rect, edge: TransitionEdge, grip: f32) -> Rect {
+    let clear = grip.min(tile.width() / 3.0) + MARK_HANDLE * 0.5;
     let (low, high) = (tile.left() + clear, tile.right() - clear);
     let inner = match edge {
         TransitionEdge::In => mark.right(),
@@ -1726,9 +2388,9 @@ fn fade_end_time(clip: &Clip, edge: FadeEdge, length: Time) -> Time {
 }
 
 /// The handles of the two fades of a clip's sound, the fade in first: at the
-/// top corners of the tile's sound, each where its fade ends, clear of the
-/// grips that trim the clip as the handle of a transition is and of one
-/// another. A tile too narrow for them has none.
+/// top corners of the tile's sound, each where its fade ends, [`FADE_GRIP`]
+/// clear of the tile's edges and so of the grips and bars that trim the
+/// clip, and clear of one another. A tile too narrow for them has none.
 fn fade_handles(tile: Rect, zoom: f32, fade_in: Time, fade_out: Time) -> Option<[Rect; 2]> {
     if tile.width() < FADE_TILE {
         return None;
@@ -1739,16 +2401,18 @@ fn fade_handles(tile: Rect, zoom: f32, fade_in: Time, fade_out: Time) -> Option<
         tile,
         band.with_max_x(fade_end(tile, zoom, FadeEdge::In, fade_in)),
         TransitionEdge::In,
+        FADE_GRIP,
     );
     let mut end = mark_handle(
         tile,
         band.with_min_x(fade_end(tile, zoom, FadeEdge::Out, fade_out)),
         TransitionEdge::Out,
+        FADE_GRIP,
     );
     // Fades that meet, or nearly, keep a handle each: side by side about
     // where they meet, and still clear of the grips.
     if end.left() < start.right() {
-        let clear = EDGE_GRIP + MARK_HANDLE;
+        let clear = FADE_GRIP + MARK_HANDLE;
         let middle = ((start.center().x + end.center().x) * 0.5)
             .clamp(tile.left() + clear, tile.right() - clear);
         start = start.translate(vec2(middle - start.right(), 0.0));
@@ -1800,21 +2464,22 @@ fn fade_curve(
 }
 
 /// Draws the fades of a clip over its sound: what each takes away is
-/// darkened above the curve it follows.
+/// darkened above the curve it follows, one mesh a fade, and the curve is a
+/// line along its edge.
 fn paint_fades(
     painter: &egui::Painter,
     tile: Rect,
     area: Rect,
     clip: &Clip,
     zoom: f32,
-    ink: Color32,
+    p: &Palette,
     opacity: f32,
 ) {
     let visible = area.intersect(painter.clip_rect());
     if !visible.is_positive() {
         return;
     }
-    let shade = Color32::from_black_alpha((96.0 * opacity) as u8);
+    let shade = p.fade_shade().gamma_multiply(opacity);
     for edge in fades::EDGES {
         let within = (visible.left(), visible.right());
         let curve = fade_curve(clip, tile, area, zoom, edge, within);
@@ -1834,7 +2499,7 @@ fn paint_fades(
         painter.add(egui::Shape::mesh(mesh));
         painter.add(egui::Shape::line(
             curve,
-            Stroke::new(1.5, ink.gamma_multiply(0.85 * opacity)),
+            Stroke::new(1.0, p.fade_curve().gamma_multiply(opacity)),
         ));
     }
 }
@@ -1995,18 +2660,18 @@ fn volume_readout(
     Some(Rect::from_min_size(pos2(left, top), size))
 }
 
-/// Draws the volume line of a clip over its sound, a dot at each volume
+/// Draws the volume line of a clip over its sound, a diamond at each volume
 /// keyframe in view, and beside a held line the volume it is held at, as
-/// [`volume_readout`] places it. Held, `held` is the accent and where
-/// across the line was taken hold of. Whether the held percent was said:
+/// [`volume_readout`] places it. Held, the line takes the accent and `held`
+/// is where across it was taken hold of. Whether the held percent was said:
 /// when the fades leave it no room, the name's row says it.
 fn paint_volume(
     painter: &egui::Painter,
-    tile: Rect,
-    area: Rect,
+    (tile, area): (Rect, Rect),
     clip: &Clip,
     zoom: f32,
-    (ink, held): (Color32, Option<(Color32, f32)>),
+    p: &Palette,
+    held: Option<f32>,
     opacity: f32,
 ) -> bool {
     let visible = area.intersect(painter.clip_rect());
@@ -2018,34 +2683,67 @@ fn paint_volume(
     if line.is_empty() {
         return false;
     }
-    let stroke = match held {
-        Some((accent, _)) => Stroke::new(1.5, accent),
-        None => Stroke::new(1.0, ink.gamma_multiply(0.8 * opacity)),
+    let ink = match held {
+        Some(_) => p.accent,
+        None => p.volume_line().gamma_multiply(opacity),
     };
-    painter.add(egui::Shape::line(line, stroke));
+    painter.add(egui::Shape::line(line, Stroke::new(1.5, ink)));
     let keys = (clip.animation.iter())
         .find(|track| track.target.is_none() && track.key == ParamKey::Gain)
         .map_or(&[][..], |track| &track.keys);
-    for key in keys {
-        let x = tile.left() + key.at.as_seconds() as f32 * zoom;
-        if x >= within.0 - 2.0 && x <= within.1 + 2.0 {
-            let gain = gain_at(clip, clip.start + key.at);
+    let key = match held {
+        Some(_) => p.accent,
+        None => p.key().gamma_multiply(opacity),
+    };
+    for at in keys {
+        let x = tile.left() + at.at.as_seconds() as f32 * zoom;
+        if x >= within.0 - 4.0 && x <= within.1 + 4.0 {
+            let gain = gain_at(clip, clip.start + at.at);
             let y = area.bottom() - volume_level(gain) * area.height();
-            painter.circle_filled(pos2(x, y), 2.0, stroke.color);
+            painter.add(diamond(pos2(x, y), VOLUME_KEY, key));
         }
     }
-    let Some((_, x)) = held else {
+    let Some(x) = held else {
         return false;
     };
-    let galley = painter.layout_no_wrap(volume_percent(clip), theme::mono(10.0), ink);
+    let galley = painter.layout_no_wrap(volume_percent(clip), theme::mono(11.0), Color32::WHITE);
     let y = volume_y(clip, tile, area, zoom, x);
     match volume_readout(tile, area, clip, zoom, (x, y), galley.size()) {
         Some(readout) => {
-            painter.galley(readout.min, galley, ink);
+            readout_pill(painter, readout);
+            kit::on_dark(painter, || {
+                painter.galley(readout.min, galley, Color32::WHITE);
+            });
             true
         }
         None => false,
     }
+}
+
+/// How wide a diamond at a key of the volume line is, corner to corner.
+const VOLUME_KEY: f32 = 7.0;
+
+/// A diamond `size` wide, corner to corner, about `centre`.
+fn diamond(centre: Pos2, size: f32, fill: Color32) -> egui::Shape {
+    let half = size * 0.5;
+    egui::Shape::convex_polygon(
+        vec![
+            centre - vec2(0.0, half),
+            centre + vec2(half, 0.0),
+            centre + vec2(0.0, half),
+            centre - vec2(half, 0.0),
+        ],
+        fill,
+        Stroke::NONE,
+    )
+}
+
+/// The dark pill a readout over a tile sits on: four points either side of
+/// its words and one above and under them.
+fn readout_pill(painter: &egui::Painter, words: Rect) {
+    let pill = words.expand2(vec2(4.0, 1.0));
+    let radius = (pill.height() * 0.5).round() as u8;
+    painter.rect_filled(pill, radius, Color32::from_black_alpha(140));
 }
 
 /// The volume line of a clip's tile where `pos` is on it, as how high it
@@ -2224,6 +2922,61 @@ fn hit<'a>(rows: &[Row<'a>], geometry: &Geometry, pos: Pos2) -> Hit<'a> {
     Hit::Lane
 }
 
+/// How far apart the lines that hatch a locked track are.
+const HATCH: f32 = 6.0;
+
+/// Hatches `rect` with lines at 45 degrees, `HATCH` apart, cut to it: a line
+/// segment each, no mesh.
+fn paint_hatch(painter: &egui::Painter, rect: Rect, ink: Color32) {
+    let visible = rect.intersect(painter.clip_rect());
+    if !visible.is_positive() {
+        return;
+    }
+    let stroke = Stroke::new(1.0, ink);
+    // Each line rises to the right, so x + y is the same along it; the
+    // lines are those where it is a whole number of steps.
+    let (top, bottom) = (rect.top(), rect.bottom());
+    let mut along = ((visible.left() + top) / HATCH).floor() * HATCH;
+    while along <= visible.right() + bottom {
+        // From where the line enters the rect to where it leaves.
+        let mut from = pos2(along - bottom, bottom);
+        let mut to = pos2(along - top, top);
+        if from.x < rect.left() {
+            from = pos2(rect.left(), along - rect.left());
+        }
+        if to.x > rect.right() {
+            to = pos2(rect.right(), along - rect.right());
+        }
+        if from.x <= to.x {
+            painter.line_segment([from, to], stroke);
+        }
+        along += HATCH;
+    }
+}
+
+/// The dashed outline of a rounded rectangle, as line segments.
+fn dashed_outline(rect: Rect, radius: f32, stroke: Stroke) -> Vec<egui::Shape> {
+    let radius = radius.min(rect.width() * 0.5).min(rect.height() * 0.5);
+    let inner = rect.shrink(radius);
+    // Each corner's centre, and the angle its quarter starts at, clockwise
+    // from the top left.
+    let corners = [
+        (inner.left_top(), std::f32::consts::PI),
+        (inner.right_top(), std::f32::consts::PI * 1.5),
+        (inner.right_bottom(), 0.0),
+        (inner.left_bottom(), std::f32::consts::FRAC_PI_2),
+    ];
+    let mut path = Vec::with_capacity(4 * 7 + 1);
+    for (centre, from) in corners {
+        for step in 0..=6 {
+            let angle = from + std::f32::consts::FRAC_PI_2 * step as f32 / 6.0;
+            path.push(centre + radius * vec2(angle.cos(), angle.sin()));
+        }
+    }
+    path.push(path[0]);
+    egui::Shape::dashed_line(&path, stroke, 4.0, 3.0)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "one call site; the lanes need all of it"
@@ -2235,11 +2988,13 @@ fn draw_lanes(
     geometry: &Geometry,
     state: &mut TimelineState,
     selection: &mut Selection,
+    // The tracks edits go to, which are lit.
+    targets: &[TrackId],
     textures: &mut Textures,
     peaks: &mut HeldPeaks,
     input: &TimelineInput,
     actions: &mut Vec<Action>,
-) {
+) -> egui::layers::ShapeIdx {
     let p = input.p;
     let project = input.project;
     let rate = project.settings.frame_rate;
@@ -2254,12 +3009,18 @@ fn draw_lanes(
         egui::WidgetInfo::labeled(egui::WidgetType::Other, true, label)
     });
     let painter = ui.painter_at(lanes);
+    // What a held drag says in a capsule stands above the tile or row it
+    // speaks of, over the ruler when that is the first, so it never covers
+    // what is being trimmed or dropped.
+    let above = ui.painter_at(lanes.with_min_y(lanes.top() - RULER));
     let pointer = ui.input(|i| i.pointer.latest_pos());
     let over = pointer.filter(|pos| lanes.contains(*pos) && response.contains_pointer());
     let modifiers = ui.input(|i| i.modifiers);
     let extend = modifiers.command || modifiers.shift;
 
-    // Lanes.
+    // Lanes: a band for each track, the ground showing between them and
+    // under the last. The tracks edits go to are lit, and a locked one is
+    // hatched under its tiles.
     for row in rows {
         let lane = Rect::from_min_max(
             pos2(lanes.left(), row.top),
@@ -2268,14 +3029,51 @@ fn draw_lanes(
         if !lane.intersects(lanes) {
             continue;
         }
-        painter.rect_filled(
-            lane,
+        let fill = if targets.contains(&row.track.id) {
+            p.lane_target()
+        } else {
+            p.lane()
+        };
+        painter.rect_filled(lane, CornerRadius::ZERO, fill);
+        if row.track.locked {
+            paint_hatch(&painter, lane, p.lane_hatch());
+        }
+    }
+    // The row a drag would drop on is lit when the drag knows it, under the
+    // tiles.
+    let drop_row = painter.add(egui::Shape::Noop);
+    let lit = |row: &Row| {
+        egui::Shape::rect_filled(
+            Rect::from_min_max(
+                pos2(lanes.left(), row.top),
+                pos2(lanes.right(), row.top + row.height),
+            ),
             CornerRadius::ZERO,
-            if row.track.locked {
-                p.sunken.gamma_multiply(0.55)
-            } else {
-                p.sunken.gamma_multiply(0.8)
-            },
+            p.lane_target(),
+        )
+    };
+    // An empty timeline shows where media goes.
+    if project.tracks.iter().all(|track| track.clips.is_empty())
+        && let Some(row) = (rows.iter())
+            .find(|row| row.track.kind == TrackKind::Video)
+            .or(rows.first())
+    {
+        let ghost = Rect::from_min_max(
+            pos2(lanes.left(), row.top),
+            pos2(lanes.right(), row.top + row.height),
+        )
+        .shrink2(vec2(8.0, 4.0));
+        painter.extend(dashed_outline(
+            ghost,
+            f32::from(metrics::CLIP_RADIUS),
+            Stroke::new(1.0, p.border),
+        ));
+        painter.text(
+            ghost.center(),
+            Align2::CENTER_CENTER,
+            "Drag media here",
+            theme::regular(12.0),
+            p.muted,
         );
     }
 
@@ -2283,15 +3081,27 @@ fn draw_lanes(
     // with animation, and the clip whose lane is open, which for a clip
     // with sound may be the empty row of its volume.
     let open = (state.keys.lane_rows(project)).and_then(|_| state.keys.lane_clip());
-    let mut toggles: Vec<(ClipId, Rect)> = Vec::new();
+    // Each with the ink of the name it stands before, as its tile is drawn
+    // in this frame. A selected tile without a band fills only its name's
+    // capsule with the accent, so its chevron stands on the body and takes
+    // the body's ink.
+    let mut toggles: Vec<(ClipId, [Rect; 2], Color32)> = Vec::new();
     for (row, clip) in clips_drawn(rows, geometry) {
-        let animated = !clip.animation.is_empty() && selection.contains(clip.id);
+        let selected = selection.contains(clip.id);
+        let animated = !clip.animation.is_empty() && selected;
         if !(animated || open == Some(clip.id)) {
             continue;
         }
         let tile = clip_rect(geometry, row, clip.start, clip.end());
         if tile.width() >= LANE_TOGGLE_TILE {
-            toggles.push((clip.id, lane_toggle(tile)));
+            let banded = banded(row.track, tile);
+            let ink = if selected && !banded {
+                p.fg
+            } else {
+                name_ink(p, selected, banded)
+            };
+            let chevron = [lane_toggle_hit(tile), lane_toggle(tile)];
+            toggles.push((clip.id, chevron, ink));
         }
     }
     let band = rows.iter().find(|row| row.lane > 0.0).map(|row| {
@@ -2322,7 +3132,7 @@ fn draw_lanes(
                 .filter(|held| (held.0, held.1) == (clip.id, edge))
                 .map_or(transition.duration, |held| held.2);
             let mark = marking(tile, geometry.zoom, edge, duration);
-            handles.push((clip.id, edge, mark_handle(tile, mark, edge)));
+            handles.push((clip.id, edge, mark_handle(tile, mark, edge, EDGE_GRIP)));
         }
     }
     // The edge under the pointer that could be given a transition. Asked of
@@ -2387,7 +3197,7 @@ fn draw_lanes(
     // `offer` below.
     let claimed = |pos: Pos2| {
         band.is_some_and(|band| band.contains(pos))
-            || toggles.iter().any(|(_, rect)| rect.contains(pos))
+            || toggles.iter().any(|(_, [hit, _], _)| hit.contains(pos))
             || handles.iter().any(|(.., rect)| rect.contains(pos))
             || faders.iter().any(|(.., rect)| rect.contains(pos))
     };
@@ -2845,10 +3655,30 @@ fn draw_lanes(
         _ => None,
     };
     let held_keys = state.keys.overriding(project);
+    // Whether a sound is heard is asked of the tiles of sound lanes alone. A
+    // clip there is never silenced by a link, so no link is read for it: the
+    // answer costs a look at the tracks and nothing is gathered.
+    let heard = |track: &Track, clip: &Clip| {
+        track.kind == TrackKind::Audio && sound::sounds(project, track, clip)
+    };
+    // The tile under the pointer while nothing is held, and the grip of it
+    // the pointer is on.
+    let pointed = over
+        .filter(|pos| state.drag.is_none() && !claimed(*pos))
+        .and_then(|pos| match hit(rows, geometry, pos) {
+            Hit::Clip { clip, edge, .. } => Some((clip.id, edge)),
+            _ => None,
+        });
+    // The tile being trimmed, where it is held, and by how much.
+    let mut trimmed_tile = None;
+    // The tile the keyboard is on.
+    let mut focused = None;
     for (row, clip) in clips_drawn(rows, geometry) {
         let mut start = clip.start;
         let mut end = clip.end();
-        let mut dimmed = row.track.locked || row.track.hidden;
+        let mut grip = (pointed.filter(|(id, _)| *id == clip.id))
+            .and_then(|(_, edge)| edge)
+            .map(|edge| (edge, false));
         if let Some(Drag::Trim {
             clip: trimmed,
             edge,
@@ -2860,13 +3690,22 @@ fn draw_lanes(
                 Edge::Start => start = start + *delta,
                 Edge::End => end = end + *delta,
             }
+            grip = Some((*edge, true));
         }
-        if moving.contains(&clip.id) {
-            // Where it came from stays faintly visible under the ghost.
-            dimmed = true;
-        }
+        // Where it came from stays faintly visible under the ghost.
+        let dimmed = moving.contains(&clip.id);
         let rect = clip_rect(geometry, row, start, end);
-        let chevron = toggles.iter().any(|(id, _)| *id == clip.id);
+        if let Some(Drag::Trim {
+            clip: trimmed,
+            edge,
+            delta,
+        }) = &state.drag
+            && *trimmed == clip.id
+            && *delta != Time::ZERO
+        {
+            trimmed_tile = Some((rect, *edge, *delta));
+        }
+        let chevron = toggles.iter().any(|(id, ..)| *id == clip.id);
         // A fade that is held is drawn as long as it is held, a volume line
         // where it is held, and one bent by keys that are held as those
         // keys would bend it.
@@ -2903,6 +3742,9 @@ fn draw_lanes(
                 .filter(|(id, _)| *id == clip.id)
                 .map(|(_, at)| geometry.x(*at))
                 .collect(),
+            hovered: pointed.is_some_and(|(id, _)| id == clip.id),
+            grip,
+            heard: heard(row.track, clip),
         };
         paint_clip(
             ui,
@@ -2920,79 +3762,31 @@ fn draw_lanes(
             input,
         );
         if state.keyboard == Some(clip.id) {
-            painter.rect_stroke(
-                rect.expand(2.0),
-                CornerRadius::same(metrics::CLIP_RADIUS + 2),
-                Stroke::new(2.0, p.accent),
-                StrokeKind::Outside,
-            );
+            focused = Some(rect);
         }
+    }
+    // The keyboard's ring goes round its tile after every tile is drawn, so
+    // no neighbour covers it: round the body the selection's ring is drawn
+    // in, so the two nest, and on a painter wide enough that a tile at the
+    // lanes' left edge keeps the ring's left side.
+    if let Some(rect) = focused {
+        let body = rect.shrink2(vec2(0.5, 0.0));
+        let round = metrics::CLIP_RADIUS.min((rect.width() * 0.5) as u8);
+        let ringed = ui.painter_at(lanes.expand2(vec2(3.0, 0.0)));
+        controls::focus_ring(&ringed, body, round, *p);
     }
     if response.has_focus() {
-        painter.rect_stroke(
-            lanes,
-            CornerRadius::ZERO,
-            Stroke::new(1.5, p.accent),
-            StrokeKind::Inside,
-        );
-    }
-
-    // The clips being moved, where they would land, with the beats they
-    // show there.
-    if let Some(Drag::Move {
-        delta,
-        target,
-        moved: true,
-        ..
-    }) = &state.drag
-    {
-        let sounding = peaks
-            .beats
-            .any_shown()
-            .then(|| sound::Sounding::of(project));
-        let (from, to) = (geometry.time(lanes.left()), geometry.time(lanes.right()));
-        for id in &moving {
-            let Some((track, clip)) = project.clip(*id) else {
-                continue;
-            };
-            let destination = match target {
-                Some(target) if selection.contains(*id) => *target,
-                _ => track.id,
-            };
-            let Some(row) = rows.iter().find(|row| row.track.id == destination) else {
-                continue;
-            };
-            let rect = clip_rect(geometry, row, clip.start + *delta, clip.end() + *delta);
-            let beats = sounding.as_ref().map_or_else(Vec::new, |sounding| {
-                let (from, to) = (from - *delta, to - *delta);
-                let zoom = geometry.zoom;
-                shown_ticks(project, sounding, &peaks.beats, track, clip, from, to, zoom)
-            });
-            let marks = Marks {
-                volume: None,
-                zoom: geometry.zoom,
-                selected: None,
-                held: None,
-                beats: (beats.into_iter())
-                    .map(|at| geometry.x(at + *delta))
-                    .collect(),
-            };
-            let wave = wave_of(project, track, clip, peaks, geometry, *delta);
-            paint_clip(
-                ui, &painter, rect, project, track, clip, true, 0.92, 0.0, &marks, textures, wave,
-                input,
-            );
-        }
+        controls::focus_ring(&painter, lanes.shrink(3.0), 4, *p);
     }
 
     // ---- Keyframes: the chevrons and the open lane -------------------------
     {
         let mut over_lanes = ui.new_child(egui::UiBuilder::new().max_rect(lanes));
         over_lanes.set_clip_rect(lanes);
-        for (id, rect) in &toggles {
+        for (id, [hit, rect], ink) in &toggles {
             let is_open = open == Some(*id);
             if let Some((_, clip)) = project.clip(*id)
-                && keyframes::disclosure(&mut over_lanes, p, *rect, clip, is_open)
+                && keyframes::disclosure(&mut over_lanes, p, [*hit, *rect], clip, is_open, *ink)
             {
                 state.keys.set_lane((!is_open).then_some(*id));
             }
@@ -3021,13 +3815,13 @@ fn draw_lanes(
                     marking_name(clip, *edge, transition),
                 )
             });
+            // Under the pointer, the part of the marking that takes hold of
+            // it is lit.
+            if handle.hovered() && !handle.dragged() {
+                (over_lanes.painter()).rect_filled(rect.shrink2(vec2(2.0, 3.0)), 3, p.hover);
+            }
             if handle.has_focus() {
-                over_lanes.painter().rect_stroke(
-                    rect.shrink2(vec2(2.0, 3.0)),
-                    CornerRadius::same(3),
-                    Stroke::new(1.5, p.accent),
-                    StrokeKind::Inside,
-                );
+                controls::focus_ring(over_lanes.painter(), rect.shrink2(vec2(2.0, 3.0)), 3, *p);
             }
             if handle.clicked() || handle.drag_started() {
                 state.mark(selection, *id, *edge);
@@ -3058,33 +3852,30 @@ fn draw_lanes(
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, true, fade_name(clip, *edge))
             });
             let held = held_fade.filter(|held| (held.0, held.1) == (*id, *edge));
-            let hot = held.is_some() || handle.hovered() || handle.has_focus();
-            let centre = rect.center();
             let painter = over_lanes.painter();
-            painter.circle_filled(centre, 4.0, if hot { p.accent } else { p.elevated });
-            painter.circle_stroke(centre, 4.0, Stroke::new(1.0, p.fg));
+            // Its keyline inside it, so the handle keeps its footprint and
+            // the trim bar beside it stays whole. Under the pointer it stands
+            // a point taller each way; held, it takes the accent.
+            let shape = if handle.hovered() && held.is_none() {
+                rect.expand2(vec2(0.0, 1.0))
+            } else {
+                *rect
+            };
+            let fill = if held.is_some() { p.accent } else { p.fg };
+            painter.rect_filled(shape, 3, fill);
+            painter.rect_stroke(shape, 3, Stroke::new(1.0, p.bg), StrokeKind::Inside);
             if handle.has_focus() {
-                painter.rect_stroke(
-                    rect.expand(1.0),
-                    CornerRadius::same(3),
-                    Stroke::new(1.5, p.accent),
-                    StrokeKind::Inside,
-                );
+                controls::focus_ring(painter, *rect, 3, *p);
             }
             // How long the held fade would be, beside its handle and inside
             // the tile.
             if let Some((.., duration)) = held {
-                let (align, x) = match edge {
-                    FadeEdge::In => (Align2::LEFT_CENTER, rect.right() + 3.0),
-                    FadeEdge::Out => (Align2::RIGHT_CENTER, rect.left() - 3.0),
+                let x = match edge {
+                    FadeEdge::In => rect.right() + 30.0,
+                    FadeEdge::Out => rect.left() - 30.0,
                 };
-                painter.text(
-                    pos2(x, centre.y),
-                    align,
-                    format!("{:.2} s", duration.as_seconds()),
-                    theme::mono(10.0),
-                    p.fg,
-                );
+                let text = format!("{:.2} s", duration.as_seconds());
+                time_capsule(painter, p, x, rect.bottom() + 12.0, &text);
             }
             if handle.clicked() || handle.drag_started() {
                 // Taking hold of a clip's fade selects the clip.
@@ -3142,7 +3933,7 @@ fn draw_lanes(
             painter.circle_stroke(centre, radius, Stroke::new(1.0, p.border));
             icons::paint(
                 painter,
-                Rect::from_center_size(centre, Vec2::splat(9.0)),
+                Rect::from_center_size(centre, Vec2::splat(10.0)),
                 Icon::Plus,
                 if hot { p.on_accent } else { p.fg },
             );
@@ -3153,12 +3944,85 @@ fn draw_lanes(
         }
     }
 
+    // The playhead and the snap guide are drawn here, over the tiles and
+    // under what is being dragged.
+    let over_tiles = painter.add(egui::Shape::Noop);
+
+    // The clips being moved, where they would land, with the beats they
+    // show there, lifted off the lane they would land on.
+    if let Some(Drag::Move {
+        grabbed,
+        delta,
+        target,
+        moved: true,
+        ..
+    }) = &state.drag
+    {
+        if let Some((track, _)) = project.clip(*grabbed)
+            && let Some(row) = (rows.iter()).find(|row| row.track.id == target.unwrap_or(track.id))
+        {
+            painter.set(drop_row, lit(row));
+        }
+        let sounding = peaks
+            .beats
+            .any_shown()
+            .then(|| sound::Sounding::of(project));
+        let (from, to) = (geometry.time(lanes.left()), geometry.time(lanes.right()));
+        for id in &moving {
+            let Some((track, clip)) = project.clip(*id) else {
+                continue;
+            };
+            let destination = match target {
+                Some(target) if selection.contains(*id) => *target,
+                _ => track.id,
+            };
+            let Some(row) = rows.iter().find(|row| row.track.id == destination) else {
+                continue;
+            };
+            let rect = clip_rect(geometry, row, clip.start + *delta, clip.end() + *delta);
+            let beats = sounding.as_ref().map_or_else(Vec::new, |sounding| {
+                let (from, to) = (from - *delta, to - *delta);
+                let zoom = geometry.zoom;
+                shown_ticks(project, sounding, &peaks.beats, track, clip, from, to, zoom)
+            });
+            let marks = Marks {
+                volume: None,
+                zoom: geometry.zoom,
+                selected: None,
+                held: None,
+                beats: (beats.into_iter())
+                    .map(|at| geometry.x(at + *delta))
+                    .collect(),
+                hovered: false,
+                grip: None,
+                heard: heard(track, clip),
+            };
+            let wave = wave_of(project, track, clip, peaks, geometry, *delta);
+            painter.add(p.popup_shadow().as_shape(rect, metrics::CLIP_RADIUS));
+            paint_clip(
+                ui, &painter, rect, project, track, clip, true, 0.92, 0.0, &marks, textures, wave,
+                input,
+            );
+        }
+    }
+
+    // How far the edge being trimmed has gone, over the tile.
+    if let Some((tile, edge, delta)) = trimmed_tile {
+        let sign = if delta < Time::ZERO { "-" } else { "+" };
+        let text = format!("{sign}{}", timefmt::timecode(Time(delta.0.abs()), rate));
+        let x = match edge {
+            Edge::Start => tile.left(),
+            Edge::End => tile.right(),
+        };
+        time_capsule(&above, p, x, tile.top() - 4.0, &text);
+    }
+
     if let Some(rect) = marquee_rect {
-        painter.rect_filled(rect, CornerRadius::same(3), theme::tint(p.accent, 0.14));
+        painter.rect_filled(rect, CornerRadius::same(2), theme::tint(p.accent, 0.10));
         painter.rect_stroke(
             rect,
-            CornerRadius::same(3),
-            Stroke::new(1.0, p.accent),
+            CornerRadius::same(2),
+            Stroke::new(1.0, theme::tint(p.accent, 0.6)),
             StrokeKind::Inside,
         );
     }
@@ -3189,6 +4053,7 @@ fn draw_lanes(
             let start = rules::free_start(row.track, time, asset.duration, &[]);
             let rect = clip_rect(geometry, row, start, start + asset.duration);
             let tone = p.tone(super::tone_of_media(asset.kind));
+            painter.set(drop_row, lit(row));
             painter.rect_filled(
                 rect,
                 CornerRadius::same(metrics::CLIP_RADIUS),
@@ -3199,6 +4064,13 @@ fn draw_lanes(
                 CornerRadius::same(metrics::CLIP_RADIUS),
                 Stroke::new(1.5, tone),
                 StrokeKind::Inside,
+            );
+            drop_caret(
+                (&painter, &above),
+                p,
+                row,
+                rect.left(),
+                &timefmt::timecode(start, rate),
             );
             if released {
                 actions.push(Action::InsertAsset {
@@ -3310,8 +4182,16 @@ fn draw_lanes(
                 let start = rules::free_start(row.track, time, duration, &[]);
                 let rect = clip_rect(geometry, row, start, start + duration);
                 let tone = p.tone(tone_of_track(TrackKind::Text));
+                painter.set(drop_row, lit(row));
                 painter.rect_filled(rect, radius, theme::tint(tone, 0.35));
                 painter.rect_stroke(rect, radius, Stroke::new(1.5, tone), StrokeKind::Inside);
+                drop_caret(
+                    (&painter, &above),
+                    p,
+                    row,
+                    rect.left(),
+                    &timefmt::timecode(start, rate),
+                );
             }
             if released {
                 actions.push(Action::AddLook {
@@ -3379,8 +4259,8 @@ fn draw_lanes(
     let mut marked = None;
     let mut keyed = None;
     let mut separated = None;
-    response.context_menu(|ui| {
-        menu_style(ui, 220.0);
+    context_menu(&response).show(|ui| {
+        menu_style(ui, CLIP_MENU);
         // The edge of the clip nearer where the menu was opened, and the
         // transition it has: a cut is its incoming clip's start.
         let edge = menu_clip
@@ -3391,292 +4271,177 @@ fn draw_lanes(
             (project.clip(id)).is_some_and(|(_, clip)| transitions::of(clip, edge).is_some())
         });
         if let Some((id, edge)) = place.filter(|_| has)
-            && menu_item(ui, p, Some(Icon::Transition), "Edit transition", "").clicked()
+            && menu_item(ui, p, Some(Icon::Pencil), "Edit transition", "").clicked()
         {
             marked = Some((id, edge));
             ui.close();
         }
-        let mut item = |ui: &mut Ui, icon: Icon, text: &str, keys: &str, action: Action| {
-            if menu_item(ui, p, Some(icon), text, &shortcut(keys)).clicked() {
+        let item = |ui: &mut Ui,
+                    actions: &mut Vec<Action>,
+                    icon: Option<Icon>,
+                    text: &str,
+                    keys: &str,
+                    action: Action| {
+            if menu_item(ui, p, icon, text, &shortcut(keys)).clicked() {
                 actions.push(action);
                 ui.close();
             }
         };
-        if menu_clip.is_some() {
-            item(
-                ui,
-                Icon::Scissors,
-                "Split at playhead",
-                "S",
-                Action::SplitAtPlayhead,
-            );
-            item(ui, Icon::Copy, "Duplicate", "Cmd+D", Action::Duplicate);
-            // The clip and the playhead of this frame, whatever is selected
-            // by the time the edit is made.
-            if let Some(clip) = menu_clip {
-                let freeze =
-                    speed::freeze_command(project, clip, input.playhead, input.freeze_hold);
-                ui.add_enabled_ui(freeze.is_ok(), |ui| {
-                    let action = match freeze {
-                        Ok(command) => Action::Edit(command),
-                        Err(reason) => Action::Notify(reason),
-                    };
-                    item(ui, Icon::Pause, "Freeze frame", "F", action);
-                });
-                // Offered of a picture clip with sound; one whose sound is
-                // on an audio clip already, or whose track is locked, shows
-                // it without being able to choose it.
-                let sounds = (project.clip(clip))
-                    .is_some_and(|(track, held)| rules::carries_sound(project, track, held));
-                if sounds {
-                    let free = rules::detach_refusal(project, clip).is_none();
-                    ui.add_enabled_ui(free, |ui| {
-                        item(
-                            ui,
-                            Icon::Volume,
-                            "Detach audio",
-                            "",
-                            Action::DetachAudio(clip),
-                        );
-                    });
-                }
-            }
-            // The fades of the selected clips' sound, by rows the keyboard
-            // reaches: offered of a clip whose media has sound, and shown
-            // without being able to be chosen where no selected clip would
-            // be changed.
-            let fades_sound = menu_clip
-                .and_then(|id| project.clip(id))
-                .is_some_and(|(_, held)| fades::has_sound(project, held));
-            if fades_sound {
-                for (label, asked) in fades::MENU {
-                    let made = fades::command(project, &selection.clips, asked);
-                    ui.add_enabled_ui(made.is_ok(), |ui| {
-                        let icon = match asked {
-                            fades::Asked::Set(..) => Icon::Volume,
-                            fades::Asked::Remove => Icon::Trash,
-                        };
-                        let action = match made {
-                            Ok(command) => Action::Edit(command),
-                            Err(reason) => Action::Notify(reason),
-                        };
-                        item(ui, icon, label, "", action);
-                    });
-                }
-            }
-            // A key of the clip's volume at the playhead, at the volume it
-            // has there: the lane it is in then opens. Shown without being
-            // able to be chosen where none would be written.
-            if let Some(clip) = menu_clip.filter(|_| fades_sound) {
-                let made = keyframes::volume_key(project, clip, input.playhead);
-                ui.add_enabled_ui(made.is_ok(), |ui| {
-                    if menu_item(ui, p, Some(Icon::Diamond), "Key volume", "").clicked() {
-                        keyed = made.ok().map(|command| (clip, command));
-                        ui.close();
-                    }
-                });
-                // The selected clips' loudness is measured and each one's
-                // volume set as its figures come. Shown without being able
-                // to be chosen where none of them would be measured.
-                let taken = normalize::takers(project, &selection.clips);
-                ui.add_enabled_ui(taken.is_ok(), |ui| {
-                    let action = match taken {
-                        Ok(clips) => Action::Normalize(clips),
-                        Err(reason) => Action::Notify(reason),
-                    };
-                    item(ui, Icon::Volume, "Normalize loudness", "", action);
-                });
-                // On a clip of an audio lane: the selected clips are lowered
-                // wherever the others are heard, at the default depth, once
-                // their sound is read. Shown without being able to be chosen
-                // where none of them would be ducked.
-                let on_audio =
-                    (project.clip(clip)).is_some_and(|(track, _)| track.kind == TrackKind::Audio);
-                if on_audio {
-                    // The whole selection goes: a clip passed over is
-                    // still no voice.
-                    let taken = duck::takers(project, &selection.clips);
-                    ui.add_enabled_ui(taken.is_ok(), |ui| {
-                        let action = match taken {
-                            Ok(_) => Action::Duck {
-                                clips: selection.clips.clone(),
-                                depth: duck::DEPTH,
-                            },
-                            Err(reason) => Action::Notify(reason),
-                        };
-                        item(ui, Icon::Volume, duck::LABEL, "", action);
-                    });
-                }
-                // The beats of the clip's media, on each of its tiles, for
-                // the session; and while they are shown, a marker on each
-                // beat of this clip, shown without being able to be chosen
-                // until they are found.
-                let asset = (project.clip(clip))
-                    .and_then(|(_, held)| held.asset_id())
-                    .filter(|_| on_audio);
-                if let Some(asset) = asset {
-                    let shown = peaks.beats.shown(asset);
-                    let label = if shown { "Hide beats" } else { "Show beats" };
-                    let action = Action::ShowBeats {
-                        assets: vec![asset],
-                        shown: !shown,
-                    };
-                    item(ui, Icon::Music, label, "", action);
-                    if shown {
-                        let made = peaks.beats.markers(project, clip);
-                        ui.add_enabled_ui(made.is_ok(), |ui| {
-                            let action = match made {
-                                Ok(command) => Action::Edit(command),
-                                Err(reason) => Action::Notify(reason),
-                            };
-                            item(ui, Icon::Flag, peaks::BEAT_MARKERS, "", action);
-                        });
-                    }
-                }
-            }
-            // The span of its media's sound the clip plays, to a file:
-            // offered of a clip whose media has sound, and shown without
-            // being able to be chosen when that span has none.
-            if let Some(clip) = menu_clip.filter(|_| fades_sound) {
-                let source = crate::extract::Source::Clip(clip);
-                let refused = crate::extract::refusal(project, source);
-                ui.add_enabled_ui(refused.is_none(), |ui| {
-                    let action = match refused {
-                        None => Action::SaveAudio(source),
-                        Some(reason) => Action::Notify(reason),
-                    };
-                    item(ui, Icon::Save, crate::extract::LABEL, "", action);
-                });
-                // The whole of its media's sound, split by the stem
-                // separator and placed under the clip when it comes. Shown
-                // without being able to be chosen, and saying why, without a
-                // separator or for a clip that is not heard.
-                let refused = (input.separator.refusal().map(str::to_owned))
-                    .or_else(|| crate::stems::refusal(project, clip));
-                ui.add_enabled_ui(refused.is_none(), |ui| {
-                    let row = menu_item(ui, p, Some(Icon::Music), crate::stems::LABEL, "");
-                    if row.clicked() {
-                        separated = Some(clip);
-                        ui.close();
-                    }
-                    if let Some(reason) = refused {
-                        row.on_disabled_hover_text(reason);
-                    }
-                });
-            }
-            match (edge, place) {
-                (_, Some((id, side))) if has => item(
-                    ui,
-                    Icon::Trash,
-                    "Remove transition",
-                    "",
-                    Action::Edit(transitions::set_command(id, side, None)),
-                ),
-                (Some((id, side)), Some(_)) => item(
-                    ui,
-                    Icon::Transition,
-                    match side {
-                        TransitionEdge::In => "Add transition at start",
-                        TransitionEdge::Out => "Add transition at end",
-                    },
-                    "Cmd+T",
-                    Action::AddTransitions {
-                        places: vec![(id, side)],
-                        kind: None,
-                    },
-                ),
-                _ => {}
-            }
-            ui.separator();
-            item(ui, Icon::Scissors, "Cut", "Cmd+X", Action::Cut);
-            item(ui, Icon::Copy, "Copy", "Cmd+C", Action::Copy);
-            ui.separator();
-            let ids = selection.clips.clone();
-            let several = ids.len() > 1;
-            let linked = ids.iter().any(|id| {
-                project
-                    .clip(*id)
-                    .is_some_and(|(_, c)| c.linked_id.is_some())
-            });
-            let grouped = ids
-                .iter()
-                .any(|id| project.clip(*id).is_some_and(|(_, c)| c.group_id.is_some()));
-            if several {
-                item(
-                    ui,
-                    Icon::Link,
-                    "Link clips",
-                    "",
-                    Action::Edit(Command::LinkClips {
-                        clip_ids: ids.clone(),
-                    }),
-                );
-                item(
-                    ui,
-                    Icon::Layers,
-                    "Group clips",
-                    "Cmd+G",
-                    Action::Edit(Command::GroupClips {
-                        clip_ids: ids.clone(),
-                    }),
-                );
-            }
-            if linked {
-                item(
-                    ui,
-                    Icon::Link,
-                    "Unlink",
-                    "",
-                    Action::Edit(Command::UnlinkClips {
-                        clip_ids: ids.clone(),
-                    }),
-                );
-            }
-            if grouped {
-                item(
-                    ui,
-                    Icon::Layers,
-                    "Ungroup",
-                    "Shift+Cmd+G",
-                    Action::Edit(Command::UngroupClips { clip_ids: ids }),
-                );
-            }
-            if several || linked || grouped {
-                ui.separator();
-            }
-            item(
-                ui,
-                Icon::Trash,
-                "Delete",
-                "Delete",
-                Action::Delete { ripple: false },
-            );
-            item(
-                ui,
-                Icon::Trash,
-                "Ripple delete",
-                "Shift+Delete",
-                Action::Delete { ripple: true },
-            );
-        } else {
+        let Some(clip) = menu_clip else {
             ui.add_enabled_ui(input.can_paste, |ui| {
-                item(ui, Icon::Clipboard, "Paste", "Cmd+V", Action::Paste);
+                let paste = Action::Paste;
+                item(ui, actions, Some(Icon::Clipboard), "Paste", "Cmd+V", paste);
             });
+            let marker = Action::Edit(marker_at(menu_time));
+            item(ui, actions, Some(Icon::Flag), "Add marker here", "", marker);
+            let seek = Action::Seek(menu_time);
             item(
                 ui,
-                Icon::Flag,
-                "Add marker here",
-                "",
-                Action::Edit(marker_at(menu_time)),
-            );
-            item(
-                ui,
-                Icon::Pointer,
+                actions,
+                Some(Icon::Pointer),
                 "Move playhead here",
                 "",
-                Action::Seek(menu_time),
+                seek,
+            );
+            return;
+        };
+        let split = Action::SplitAtPlayhead;
+        item(
+            ui,
+            actions,
+            Some(Icon::Scissors),
+            "Split at playhead",
+            "S",
+            split,
+        );
+        let duplicate = Action::Duplicate;
+        item(
+            ui,
+            actions,
+            Some(Icon::Copy),
+            "Duplicate",
+            "Cmd+D",
+            duplicate,
+        );
+        // The clip and the playhead of this frame, whatever is selected by
+        // the time the edit is made.
+        let freeze = speed::freeze_command(project, clip, input.playhead, input.freeze_hold);
+        ui.add_enabled_ui(freeze.is_ok(), |ui| {
+            let action = match freeze {
+                Ok(command) => Action::Edit(command),
+                Err(reason) => Action::Notify(reason),
+            };
+            item(
+                ui,
+                actions,
+                Some(Icon::Snowflake),
+                "Freeze frame",
+                "F",
+                action,
+            );
+        });
+        match (edge, place) {
+            (_, Some((id, side))) if has => item(
+                ui,
+                actions,
+                Some(Icon::Close),
+                "Remove transition",
+                "",
+                Action::Edit(transitions::set_command(id, side, None)),
+            ),
+            (Some((id, side)), Some(_)) => item(
+                ui,
+                actions,
+                Some(Icon::Transition),
+                match side {
+                    TransitionEdge::In => "Add transition at start",
+                    TransitionEdge::Out => "Add transition at end",
+                },
+                "Cmd+T",
+                Action::AddTransitions {
+                    places: vec![(id, side)],
+                    kind: None,
+                },
+            ),
+            _ => {}
+        }
+        widgets::menu_separator(ui, p);
+        item(ui, actions, None, "Cut", "Cmd+X", Action::Cut);
+        item(ui, actions, None, "Copy", "Cmd+C", Action::Copy);
+        widgets::menu_separator(ui, p);
+        let ids = selection.clips.clone();
+        let several = ids.len() > 1;
+        let linked =
+            (ids.iter()).any(|id| (project.clip(*id)).is_some_and(|(_, c)| c.linked_id.is_some()));
+        let grouped =
+            (ids.iter()).any(|id| (project.clip(*id)).is_some_and(|(_, c)| c.group_id.is_some()));
+        if several {
+            let link = Action::Edit(Command::LinkClips {
+                clip_ids: ids.clone(),
+            });
+            item(ui, actions, Some(Icon::Link), "Link clips", "", link);
+            let group = Action::Edit(Command::GroupClips {
+                clip_ids: ids.clone(),
+            });
+            item(
+                ui,
+                actions,
+                Some(Icon::Layers),
+                "Group clips",
+                "Cmd+G",
+                group,
             );
         }
+        if linked {
+            let unlink = Action::Edit(Command::UnlinkClips {
+                clip_ids: ids.clone(),
+            });
+            item(ui, actions, None, "Unlink", "", unlink);
+        }
+        if grouped {
+            let ungroup = Action::Edit(Command::UngroupClips { clip_ids: ids });
+            item(ui, actions, None, "Ungroup", "Shift+Cmd+G", ungroup);
+        }
+        if several || linked || grouped {
+            widgets::menu_separator(ui, p);
+        }
+        // What the clip's sound can be asked for, in a menu of its own:
+        // offered of a picture clip with sound, or of a clip whose media has
+        // sound.
+        let sounds = (project.clip(clip))
+            .is_some_and(|(track, held)| rules::carries_sound(project, track, held));
+        let fades_sound =
+            (project.clip(clip)).is_some_and(|(_, held)| fades::has_sound(project, held));
+        if sounds || fades_sound {
+            controls::menu_submenu(ui, *p, Icon::Volume, "Audio", |ui| {
+                menu_style(ui, CLIP_MENU);
+                let asked = (&mut keyed, &mut separated);
+                let offered = (sounds, fades_sound);
+                audio_rows(
+                    ui,
+                    input,
+                    selection,
+                    &peaks.beats,
+                    clip,
+                    offered,
+                    actions,
+                    asked,
+                );
+            });
+            widgets::menu_separator(ui, p);
+        }
+        // Each row its own glyph or none: the bin is the plain delete's.
+        let delete =
+            |ui: &mut Ui, actions: &mut Vec<Action>, text: &str, keys: &str, ripple: bool| {
+                let icon = (!ripple).then_some(Icon::Trash);
+                let row = widgets::menu_item_destructive(ui, p, icon, text, &shortcut(keys));
+                if row.clicked() {
+                    actions.push(Action::Delete { ripple });
+                    ui.close();
+                }
+            };
+        delete(ui, actions, "Delete", "Delete", false);
+        delete(ui, actions, "Ripple delete", "Shift+Delete", true);
     });
     if let Some((clip, edge)) = marked {
         state.mark(selection, clip, edge);
@@ -3688,6 +4453,175 @@ fn draw_lanes(
         actions.push(Action::Edit(command));
         state.keys.set_lane(Some(clip));
     }
+    over_tiles
+}
+
+/// How wide the menu of a clip and its Audio menu are.
+const CLIP_MENU: f32 = 260.0;
+
+/// The rows of a clip's Audio menu, in groups. `offered` is whether the clip
+/// carries sound a detach would take, and whether its media has sound at
+/// all. A key of the volume asked for, and a separation, are said through
+/// `asked`: each opens or starts more than an edit.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site; the rows need the clip, the selection and what they ask"
+)]
+fn audio_rows(
+    ui: &mut Ui,
+    input: &TimelineInput,
+    selection: &Selection,
+    peaks: &HeldBeats,
+    clip: ClipId,
+    (sounds, fades_sound): (bool, bool),
+    actions: &mut Vec<Action>,
+    asked: (&mut Option<(ClipId, Command)>, &mut Option<ClipId>),
+) {
+    let p = input.p;
+    let project = input.project;
+    let (keyed, separated) = asked;
+    let item =
+        |ui: &mut Ui, actions: &mut Vec<Action>, icon: Option<Icon>, text: &str, action: Action| {
+            if menu_item(ui, p, icon, text, "").clicked() {
+                actions.push(action);
+                ui.close();
+            }
+        };
+    let mut groups = 0;
+    let mut group = |ui: &mut Ui| {
+        if groups > 0 {
+            widgets::menu_separator(ui, p);
+        }
+        groups += 1;
+    };
+    // Offered of a picture clip with sound; one whose sound is on an audio
+    // clip already, or whose track is locked, shows it without being able
+    // to choose it.
+    if sounds {
+        group(ui);
+        let free = rules::detach_refusal(project, clip).is_none();
+        ui.add_enabled_ui(free, |ui| {
+            let detach = Action::DetachAudio(clip);
+            item(ui, actions, Some(Icon::ArrowDown), "Detach audio", detach);
+        });
+    }
+    if !fades_sound {
+        return;
+    }
+    // The fades of the selected clips' sound, by rows the keyboard reaches:
+    // shown without being able to be chosen where no selected clip would be
+    // changed.
+    group(ui);
+    for (label, asked) in fades::MENU {
+        let made = fades::command(project, &selection.clips, asked);
+        ui.add_enabled_ui(made.is_ok(), |ui| {
+            let action = match made {
+                Ok(command) => Action::Edit(command),
+                Err(reason) => Action::Notify(reason),
+            };
+            item(ui, actions, None, label, action);
+        });
+    }
+    // A key of the clip's volume at the playhead, at the volume it has
+    // there: the lane it is in then opens. Shown without being able to be
+    // chosen where none would be written.
+    group(ui);
+    let made = keyframes::volume_key(project, clip, input.playhead);
+    ui.add_enabled_ui(made.is_ok(), |ui| {
+        if menu_item(ui, p, Some(Icon::Diamond), "Key volume", "").clicked() {
+            *keyed = made.ok().map(|command| (clip, command));
+            ui.close();
+        }
+    });
+    // The selected clips' loudness is measured and each one's volume set as
+    // its figures come. Shown without being able to be chosen where none of
+    // them would be measured.
+    let taken = normalize::takers(project, &selection.clips);
+    ui.add_enabled_ui(taken.is_ok(), |ui| {
+        let action = match taken {
+            Ok(clips) => Action::Normalize(clips),
+            Err(reason) => Action::Notify(reason),
+        };
+        item(
+            ui,
+            actions,
+            Some(Icon::Adjustments),
+            "Normalize loudness",
+            action,
+        );
+    });
+    // On a clip of an audio lane: the selected clips are lowered wherever
+    // the others are heard, at the default depth, once their sound is read.
+    // Shown without being able to be chosen where none of them would be
+    // ducked.
+    let on_audio = (project.clip(clip)).is_some_and(|(track, _)| track.kind == TrackKind::Audio);
+    if on_audio {
+        // The whole selection goes: a clip passed over is still no voice.
+        let taken = duck::takers(project, &selection.clips);
+        ui.add_enabled_ui(taken.is_ok(), |ui| {
+            let action = match taken {
+                Ok(_) => Action::Duck {
+                    clips: selection.clips.clone(),
+                    depth: duck::DEPTH,
+                },
+                Err(reason) => Action::Notify(reason),
+            };
+            item(ui, actions, None, duck::LABEL, action);
+        });
+    }
+    // The beats of the clip's media, on each of its tiles, for the session;
+    // and while they are shown, a marker on each beat of this clip, shown
+    // without being able to be chosen until they are found.
+    let asset = (project.clip(clip))
+        .and_then(|(_, held)| held.asset_id())
+        .filter(|_| on_audio);
+    if let Some(asset) = asset {
+        group(ui);
+        let shown = peaks.shown(asset);
+        let label = if shown { "Hide beats" } else { "Show beats" };
+        let action = Action::ShowBeats {
+            assets: vec![asset],
+            shown: !shown,
+        };
+        item(ui, actions, Some(Icon::Music), label, action);
+        if shown {
+            let made = peaks.markers(project, clip);
+            ui.add_enabled_ui(made.is_ok(), |ui| {
+                let action = match made {
+                    Ok(command) => Action::Edit(command),
+                    Err(reason) => Action::Notify(reason),
+                };
+                item(ui, actions, Some(Icon::Flag), peaks::BEAT_MARKERS, action);
+            });
+        }
+    }
+    // The span of its media's sound the clip plays, to a file: shown without
+    // being able to be chosen when that span has none.
+    group(ui);
+    let source = crate::extract::Source::Clip(clip);
+    let refused = crate::extract::refusal(project, source);
+    ui.add_enabled_ui(refused.is_none(), |ui| {
+        let action = match refused {
+            None => Action::SaveAudio(source),
+            Some(reason) => Action::Notify(reason),
+        };
+        item(ui, actions, Some(Icon::Save), crate::extract::LABEL, action);
+    });
+    // The whole of its media's sound, split by the stem separator and placed
+    // under the clip when it comes. Shown without being able to be chosen,
+    // and saying why, without a separator or for a clip that is not heard.
+    let refused = (input.separator.refusal().map(str::to_owned))
+        .or_else(|| crate::stems::refusal(project, clip));
+    ui.add_enabled_ui(refused.is_none(), |ui| {
+        let row = menu_item(ui, p, None, crate::stems::LABEL, "");
+        if row.clicked() {
+            *separated = Some(clip);
+            ui.close();
+        }
+        if let Some(reason) = refused {
+            row.on_disabled_hover_text(reason);
+        }
+    });
 }
 
 /// A marker with the default colour at `time`.
@@ -3724,8 +4658,8 @@ pub fn trim_command(clip: &Clip, edge: Edge, delta: Time) -> Command {
     }
 }
 
-/// How a clip's transitions are marked on its tile, and whether its volume
-/// line is held.
+/// How a clip's transitions are marked on its tile, whether its volume line
+/// is held, and the state the pointer and the mixer leave it in.
 struct Marks {
     /// The volume line is being dragged, and where across it was taken hold
     /// of: the clip drawn has the volume it is held at.
@@ -3738,6 +4672,33 @@ struct Marks {
     held: Option<(TransitionEdge, Time)>,
     /// Where the beats the tile shows are, points across.
     beats: Vec<f32>,
+    /// The pointer is over the tile and nothing is held.
+    hovered: bool,
+    /// The edge whose grip the pointer is on, and whether it is being
+    /// pulled.
+    grip: Option<(Edge, bool)>,
+    /// The clip's sound is heard: no mute and no solo elsewhere silences it.
+    heard: bool,
+}
+
+/// Whether a tile this tall on `track` writes its name on a band: a
+/// picture's or a title's does, over what it shows; a sound's, and a tile
+/// too short for a poster, on the tile.
+fn banded(track: &Track, tile: Rect) -> bool {
+    carries_poster(tile.height()) && track.kind != TrackKind::Audio
+}
+
+/// The ink of a tile's name, and of what stands in its row: on the accent
+/// while it is selected, white on a band in the dark, and the foreground
+/// otherwise.
+fn name_ink(p: &Palette, selected: bool, banded: bool) -> Color32 {
+    if selected {
+        p.on_accent
+    } else if banded {
+        p.tile_band_ink()
+    } else {
+        p.fg
+    }
 }
 
 #[expect(
@@ -3762,15 +4723,23 @@ fn paint_clip(
     input: &TimelineInput,
 ) {
     let p = input.p;
-    let tone = p.tone(clip_tone(project, track, clip));
-    let radius = CornerRadius::same(metrics::CLIP_RADIUS.min((rect.width() * 0.5) as u8));
-    let body = theme::mix(p.sunken, tone, if selected { 0.52 } else { 0.36 });
-    painter.rect_filled(rect, radius, body.gamma_multiply(opacity));
+    let tone = clip_tone(project, track, clip);
+    let round = metrics::CLIP_RADIUS.min((rect.width() * 0.5) as u8);
+    let radius = CornerRadius::same(round);
+    // Half a point in from either end: tiles that abut keep a point of the
+    // lane between them.
+    let body = rect.shrink2(vec2(0.5, 0.0));
+    let fill = if selected {
+        p.tile_lift(tone)
+    } else {
+        p.tile_body(tone)
+    };
+    painter.rect_filled(body, radius, fill.gamma_multiply(opacity));
 
     let inner = rect.shrink(1.0);
     let clipped = painter.with_clip_rect(inner.intersect(painter.clip_rect()));
     let tall = carries_poster(rect.height());
-    let label_height = if tall { NAME_ROW } else { rect.height() };
+    let banded = banded(track, rect);
 
     // A held volume line whose fades leave its sound no room for its percent
     // says it in the name's row.
@@ -3779,12 +4748,17 @@ fn paint_clip(
     // frame at the head of the clip.
     if track.kind == TrackKind::Audio {
         let area = sound_area(rect);
+        // A sound no one hears is drawn faint.
+        let heard = if marks.heard { 1.0 } else { 0.4 } * opacity;
         match &wave {
             // The sound of the clip, under its name. It is the source's:
             // the clip's volume does not show in it.
             Some(wave) => {
-                let ink = tone.gamma_multiply(0.9 * opacity);
-                paint_wave(&clipped, area, clip, wave, ink);
+                let inks = (
+                    p.wave().gamma_multiply(heard),
+                    p.clip_peak().gamma_multiply(heard),
+                );
+                paint_wave(&clipped, area, clip, wave, inks);
             }
             // Until its peaks are held, a level line says this is sound,
             // where the silence of a waveform is drawn.
@@ -3792,54 +4766,62 @@ fn paint_clip(
                 clipped.hline(
                     inner.x_range(),
                     area.center().y,
-                    Stroke::new(1.0, tone.gamma_multiply(0.7 * opacity)),
+                    Stroke::new(1.0, p.wave().gamma_multiply(0.5 * heard)),
                 );
             }
         }
-        let ink = if p.dark {
-            Color32::WHITE
-        } else {
-            theme::mix(tone, Color32::BLACK, 0.72)
-        };
         // The beats of its music, at the foot of the sound.
-        paint_beats(
-            &clipped,
-            area,
-            &marks.beats,
-            ink.gamma_multiply(0.75 * opacity),
-        );
+        let ticks = p.fade_curve().gamma_multiply(opacity);
+        paint_beats(&clipped, area, &marks.beats, ticks);
         // The fades of the sound, over it: how much of it is let through
         // from each edge.
-        paint_fades(&clipped, rect, area, clip, marks.zoom, ink, opacity);
+        paint_fades(&clipped, rect, area, clip, marks.zoom, p, opacity);
         // The clip's volume, over both: a line where it stands, bent by its
         // keyframes.
         if fades::has_sound(project, clip) {
-            let inks = (ink, marks.volume.map(|x| (p.accent, x)));
-            let said = paint_volume(&clipped, rect, area, clip, marks.zoom, inks, opacity);
-            unsaid = marks.volume.is_some() && !said;
+            let held = marks.volume;
+            let said = paint_volume(&clipped, (rect, area), clip, marks.zoom, p, held, opacity);
+            unsaid = held.is_some() && !said;
         }
     } else if tall
         && let ClipContent::Media { asset_id } = &clip.content
         && let Some(texture) = textures.poster(*asset_id)
     {
+        // The poster frame at the head of the tile, its whole height, and no
+        // further than the tile.
         let size = texture.size_vec2();
-        let height = inner.height() - label_height;
-        let width = height * size.x / size.y.max(1.0);
-        let image = Rect::from_min_size(
-            pos2(inner.left(), inner.top() + label_height),
-            vec2(width, height),
-        );
-        clipped.image(
-            texture.id(),
-            image,
-            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-            Color32::WHITE.gamma_multiply(opacity),
-        );
+        let width = body.height() * size.x / size.y.max(1.0);
+        let shown = width.min(body.width());
+        let image = Rect::from_min_size(body.min, vec2(shown, body.height()));
+        let across = if width > 0.0 { shown / width } else { 1.0 };
+        let whole = shown >= body.width() - 0.5;
+        let corners = CornerRadius {
+            nw: round,
+            sw: round,
+            ne: if whole { round } else { 0 },
+            se: if whole { round } else { 0 },
+        };
+        let poster =
+            egui::epaint::RectShape::filled(image, corners, Color32::WHITE.gamma_multiply(opacity))
+                .with_texture(
+                    texture.id(),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(across, 1.0)),
+                );
+        painter
+            .with_clip_rect(body.intersect(painter.clip_rect()))
+            .add(poster);
     }
 
-    // A transition: a ramp over the part of the clip it lasts, rising from
-    // the edge it brings the clip in at and falling to the one it takes it
-    // out at, with a bar at its inner end.
+    // A transition: a shade over the part of the clip it lasts, with a line
+    // rising from the cut it is at and an edge where it ends. It lies over a
+    // picture as often as over the body, so it is drawn in the stage's
+    // inks, light on a dark shade, in either appearance. A chosen one is
+    // ringed with the accent and washed with it inside the ring, and the
+    // ring waits for the clip's own: a selected clip is ringed and barred
+    // at its edges too, so this ring stands clear of them, two points past
+    // the grip as a fade's handle does, and a little under the name's band.
+    // Its lines are then drawn inside the ring, which frames them.
+    let mut chosen = None;
     for edge in transitions::EDGES {
         let Some(transition) = transitions::of(clip, edge) else {
             continue;
@@ -3848,152 +4830,334 @@ fn paint_clip(
             .filter(|(held, _)| *held == edge)
             .map_or(transition.duration, |(_, duration)| duration);
         let mark = marking(rect, marks.zoom, edge, duration).intersect(inner);
+        let shade = Color32::from_black_alpha(90).gamma_multiply(opacity);
+        let (ink, halo) = (
+            Color32::from_white_alpha(170).gamma_multiply(opacity),
+            Color32::from_black_alpha(80).gamma_multiply(opacity),
+        );
+        clipped.rect_filled(mark, 4, shade);
+        // The wash fills the ring, or a marking too small for one.
         let selected = marks.selected == Some(edge);
-        let ink = if p.dark {
-            Color32::WHITE
-        } else {
-            theme::mix(tone, Color32::BLACK, 0.72)
-        };
-        let line = if selected { p.accent } else { ink };
-        clipped.rect_filled(
-            mark,
-            CornerRadius::ZERO,
-            ink.gamma_multiply(if selected { 0.3 } else { 0.18 } * opacity),
+        let ring = selected
+            .then(|| {
+                let clear = EDGE_GRIP + 2.5;
+                Rect::from_x_y_ranges(
+                    mark.left().max(rect.left() + clear)..=mark.right().min(rect.right() - clear),
+                    (mark.top() + 2.0)..=(mark.bottom() - 3.0),
+                )
+            })
+            .filter(|ring| ring.width() >= 6.0 && ring.height() >= 6.0);
+        if selected {
+            let (washed, round) = ring.map_or((mark, 4), |ring| (ring, 3));
+            clipped.rect_filled(washed, round, p.accent.gamma_multiply(0.45 * opacity));
+            chosen = ring;
+        }
+        // Within a ring the lines are framed by it, so the line runs across
+        // the frame and not the marking, which the ring may cut short.
+        let frame = ring.map_or(mark, |ring| ring.shrink(2.0));
+        // The line starts and ends three points in from the frame's
+        // corners, so neither it nor its halo reaches past the round of the
+        // tile's corner at the cut.
+        let (dx, dy) = (
+            3.0f32.min(frame.width() / 2.0),
+            3.0f32.min(frame.height() / 2.0),
         );
-        let (ramp, end) = match edge {
-            TransitionEdge::In => ([mark.left_bottom(), mark.right_top()], mark.right()),
-            TransitionEdge::Out => ([mark.left_top(), mark.right_bottom()], mark.left()),
-        };
-        clipped.line_segment(ramp, Stroke::new(1.5, line.gamma_multiply(0.85 * opacity)));
-        clipped.vline(
-            end,
-            mark.y_range(),
-            Stroke::new(
-                if selected { 2.0 } else { 1.0 },
-                line.gamma_multiply(opacity),
+        let (rising, end) = match edge {
+            TransitionEdge::In => (
+                [
+                    frame.left_bottom() + vec2(dx, -dy),
+                    frame.right_top() + vec2(-dx, dy),
+                ],
+                mark.right() - 0.5,
             ),
+            TransitionEdge::Out => (
+                [
+                    frame.right_bottom() + vec2(-dx, -dy),
+                    frame.left_top() + vec2(dx, dy),
+                ],
+                mark.left() + 0.5,
+            ),
+        };
+        let lines = ring.map_or_else(
+            || clipped.clone(),
+            |ring| clipped.with_clip_rect(ring.shrink(2.0)),
         );
+        // The line runs through where its glyph stands when there is room
+        // for one: the marking's centre, or within a ring the point of the
+        // line nearest the ring's, with a point to spare inside the ring.
+        // The line breaks there, two points clear of the glyph's square, so
+        // the glyph is never struck through. Where the break would leave
+        // less than five points of line on either side, the line is drawn
+        // whole and the glyph left out: the diagonal is what says dissolve.
+        let along = (rising[1] - rising[0]).normalized();
+        let gap = (6.0 + 2.0) / along.x.abs().max(along.y.abs());
+        let center = ring.map_or(mark.center(), |ring| {
+            rising[0] + along * (ring.center() - rising[0]).dot(along)
+        });
+        let glyph = mark.width() >= 24.0
+            && mark.height() >= 14.0
+            && (rising[1] - rising[0]).length() >= 2.0 * gap + 10.0
+            && ring.is_none_or(|ring| {
+                let room = ring.shrink(3.0);
+                room.contains_rect(Rect::from_center_size(center, Vec2::splat(12.0)))
+            });
+        let (parts, count) = if glyph {
+            let parts = [
+                [rising[0], center - along * gap],
+                [center + along * gap, rising[1]],
+            ];
+            (parts, 2)
+        } else {
+            ([rising, rising], 1)
+        };
+        for stroke in [Stroke::new(3.0, halo), Stroke::new(1.0, ink)] {
+            for part in &parts[..count] {
+                lines.line_segment(*part, stroke);
+            }
+        }
+        if mark.width() >= 6.0 {
+            // Two points short of the marking's top and foot, or as short
+            // as the round of the tile's corners where a transition as long
+            // as its clip ends in one.
+            let corner = (end - rect.left()).min(rect.right() - end);
+            let short = if corner < f32::from(round) {
+                f32::from(round)
+            } else {
+                2.0
+            };
+            lines.vline(
+                lines.round_to_pixel_center(end),
+                (mark.top() + short)..=(mark.bottom() - short),
+                Stroke::new(1.0, ink),
+            );
+        }
+        if glyph {
+            let at = Rect::from_center_size(center, Vec2::splat(12.0));
+            kit::on_dark(&clipped, || {
+                icons::paint(
+                    &clipped,
+                    at.translate(vec2(0.0, 1.0)),
+                    Icon::Transition,
+                    halo,
+                );
+                icons::paint(
+                    &clipped,
+                    at,
+                    Icon::Transition,
+                    Color32::WHITE.gamma_multiply(opacity),
+                );
+            });
+        }
     }
 
-    // How the clip is retimed, at the trailing end of its name's row. The
-    // name gives way to it.
-    let mut named = inner.width() - 12.0 - indent;
-    let mut right = inner.right() - if clip.linked_id.is_some() { 20.0 } else { 5.0 };
-    if inner.width() > 96.0
+    // The name's row: a band over a picture, filled with the accent while
+    // the clip is selected.
+    let row = if tall {
+        Rect::from_min_size(inner.min, vec2(inner.width(), NAME_ROW))
+    } else {
+        inner
+    };
+    if banded {
+        let band = Rect::from_min_max(body.min, pos2(body.right(), inner.top() + NAME_ROW));
+        let top = CornerRadius {
+            nw: round,
+            ne: round,
+            sw: 0,
+            se: 0,
+        };
+        let fill = if selected { p.accent } else { p.tile_band() };
+        painter.rect_filled(band, top, fill.gamma_multiply(opacity));
+    }
+    let ink = name_ink(p, selected, banded).gamma_multiply(opacity);
+
+    // At the trailing end of the row: what keeps the track from an edit,
+    // the link, how the clip is retimed and a held volume's percent. The
+    // name gives way to them.
+    let mut right = row.right() - 4.0;
+    let middle = row.center().y;
+    for (shown, glyph) in [(track.locked, Icon::Lock), (track.hidden, Icon::EyeOff)] {
+        if shown && row.width() > 60.0 {
+            let at = Rect::from_center_size(pos2(right - 6.0, middle), Vec2::splat(12.0));
+            icons::paint(&clipped, at, glyph, ink);
+            right -= 16.0;
+        }
+    }
+    if clip.linked_id.is_some() && row.width() > 60.0 {
+        let at = Rect::from_center_size(pos2(right - 6.0, middle), Vec2::splat(11.0));
+        icons::paint(&clipped, at, Icon::Link, ink.gamma_multiply(0.8));
+        right -= 16.0;
+    }
+    // The name starts clear of the bar at the tile's start, selected or
+    // not, so choosing a tile never moves its name and a selected name's
+    // capsule stands clear of the bar too. A chevron before it is wider.
+    let start = rect.left() + 8.0 + indent.max(NAME_STEP);
+    if row.width() > 96.0
         && let Some(badge) = speed::badge(clip)
     {
         let galley = widgets::truncated(
             ui,
             &badge,
-            theme::medium(10.0),
-            Color32::WHITE.gamma_multiply(0.86 * opacity),
+            theme::medium(11.0),
+            Color32::WHITE,
             (inner.width() * 0.5).clamp(48.0, 72.0),
         );
-        let pill = Rect::from_min_size(
-            pos2(right - galley.size().x - 8.0, inner.top() + 2.5),
-            vec2(galley.size().x + 8.0, 13.0),
-        );
-        named = pill.left() - inner.left() - 10.0 - indent;
-        clipped.rect_filled(
-            pill,
-            CornerRadius::same(4),
-            Color32::from_black_alpha((96.0 * opacity) as u8),
-        );
-        clipped.galley(
-            pos2(pill.left() + 4.0, pill.center().y - galley.size().y * 0.5),
-            galley,
-            Color32::WHITE,
-        );
+        let pill = row_badge(&clipped, galley, right, middle, opacity);
         right = pill.left() - 4.0;
     }
-    // The percent of a held volume line its fades leave no room for, at the
-    // trailing end of the name's row, before how the clip is retimed. The
-    // name gives way to it too, wholly where not even its ellipsis would fit.
+    // The percent of a held volume line its fades leave no room for, before
+    // how the clip is retimed. The name gives way to it too, wholly where
+    // not even its ellipsis would fit.
     let mut said_in_row = false;
     if unsaid && tall {
-        let white = Color32::WHITE;
-        let galley = clipped.layout_no_wrap(volume_percent(clip), theme::mono(10.0), white);
-        let pill = Rect::from_min_size(
-            pos2(right - galley.size().x - 8.0, inner.top() + 2.5),
-            vec2(galley.size().x + 8.0, 13.0),
-        );
-        if pill.left() >= inner.left() + 2.0 {
-            named = pill.left() - inner.left() - 10.0 - indent;
-            clipped.rect_filled(
-                pill,
-                CornerRadius::same(4),
-                Color32::from_black_alpha((96.0 * opacity) as u8),
-            );
-            clipped.galley(
-                pos2(pill.left() + 4.0, pill.center().y - galley.size().y * 0.5),
-                galley,
-                white,
-            );
+        let galley =
+            clipped.layout_no_wrap(volume_percent(clip), theme::mono(11.0), Color32::WHITE);
+        if right - galley.size().x - 8.0 >= inner.left() + 2.0 {
+            let pill = row_badge(&clipped, galley, right, middle, opacity);
+            right = pill.left() - 4.0;
             said_in_row = true;
         }
     }
-
+    let named = right - 4.0 - start;
     if inner.width() > 22.0 {
-        let ink = if p.dark {
-            Color32::WHITE
-        } else {
-            theme::mix(tone, Color32::BLACK, 0.72)
-        };
-        let galley = widgets::truncated(
-            ui,
-            &clip.name,
-            theme::medium(11.0),
-            ink.gamma_multiply(opacity),
-            named,
-        );
-        let y = if tall {
-            inner.top() + 2.0
-        } else {
-            inner.center().y - galley.size().y * 0.5
-        };
+        let galley = widgets::truncated(ui, &clip.name, theme::medium(11.5), ink, named);
+        let at = pos2(start, middle - galley.size().y * 0.5);
         if !(said_in_row && galley.size().x > named) {
-            clipped.galley(pos2(inner.left() + 6.0 + indent, y), galley, ink);
+            // Without a band, a selected tile's name sits on a capsule of
+            // the accent: a point short of its line at the top and the
+            // foot, so a point of the body shows between it and the
+            // selection's keyline.
+            if selected && !banded {
+                let capsule = Rect::from_min_size(at, galley.size()).expand2(vec2(4.0, -1.0));
+                let round = (capsule.height() * 0.5).round() as u8;
+                clipped.rect_filled(capsule, round, p.accent.gamma_multiply(opacity));
+            }
+            clipped.galley(at, galley, ink);
         }
-    }
-    if clip.linked_id.is_some() && inner.width() > 60.0 {
-        icons::paint(
-            &clipped,
-            Rect::from_center_size(
-                pos2(inner.right() - 10.0, inner.top() + 9.0),
-                Vec2::splat(11.0),
-            ),
-            Icon::Link,
-            Color32::WHITE.gamma_multiply(0.7 * opacity),
-        );
     }
 
-    if selected {
-        painter.rect_stroke(
-            rect,
-            radius,
-            Stroke::new(1.5, p.fg.gamma_multiply(opacity.max(0.6))),
-            StrokeKind::Inside,
+    // The tile's edge: a light line along its top in the dark, a line round
+    // it in the light.
+    if p.dark {
+        let r = f32::from(round);
+        painter.hline(
+            (body.left() + r)..=(body.right() - r),
+            body.top() + 0.5,
+            Stroke::new(1.0, p.tile_edge().gamma_multiply(opacity)),
         );
-        // Grips say the edges can be pulled.
-        if rect.width() > 26.0 {
-            for x in [rect.left() + 3.5, rect.right() - 3.5] {
-                painter.line_segment(
-                    [
-                        pos2(x, rect.center().y - 6.0),
-                        pos2(x, rect.center().y + 6.0),
-                    ],
-                    Stroke::new(1.5, p.fg.gamma_multiply(0.8 * opacity)),
-                );
-            }
-        }
     } else {
         painter.rect_stroke(
-            rect,
+            body,
             radius,
-            Stroke::new(1.0, Color32::from_black_alpha(60)),
+            Stroke::new(1.0, p.tile_edge().gamma_multiply(opacity)),
             StrokeKind::Inside,
         );
     }
+    // Over all of that: a hidden track's tiles are veiled, its name and
+    // badges with them, and the tile under the pointer is lit.
+    if track.hidden {
+        painter.rect_filled(body, radius, theme::tint(p.bg, 0.45));
+    }
+    if marks.hovered {
+        painter.rect_filled(body, radius, p.hover);
+    }
+    if selected {
+        painter.rect_stroke(body, radius, Stroke::new(2.0, p.accent), StrokeKind::Inside);
+        painter.rect_stroke(
+            body.shrink(2.0),
+            CornerRadius::same(round.saturating_sub(2)),
+            Stroke::new(1.0, p.keyline()),
+            StrokeKind::Inside,
+        );
+    }
+    // Bars at the edges that can be pulled: lit while the pointer is on
+    // their grip, the accent while one is pulled, both on a selected tile.
+    if rect.width() > 26.0 && !track.locked {
+        for edge in [Edge::Start, Edge::End] {
+            let shade = match marks.grip {
+                Some((held, true)) if held == edge => Some(p.accent),
+                Some((near, false)) if near == edge => Some(theme::tint(p.fg, 0.9)),
+                _ if selected => Some(theme::tint(p.fg, 0.8)),
+                _ => None,
+            };
+            let Some(shade) = shade else {
+                continue;
+            };
+            // Three points in from the body's edge: inside the selection's
+            // ring and the keyline along it.
+            let x = match edge {
+                Edge::Start => rect.left() + 5.0,
+                Edge::End => rect.right() - 5.0,
+            };
+            let bar = Rect::from_center_size(
+                pos2(x, rect.center().y),
+                vec2(3.0, (rect.height() - 10.0).max(4.0)),
+            );
+            // On a rim of the selection's keyline, so that a bar over a
+            // poster reads on a frame as dark or as light as itself; at the
+            // start it meets the keyline that runs beside it.
+            let opacity = opacity.max(0.6);
+            painter.rect_filled(bar.expand(1.0), 3, p.keyline().gamma_multiply(opacity));
+            painter.rect_filled(bar, 2, shade.gamma_multiply(opacity));
+        }
+    }
+    // The chosen transition's ring, over the clip's.
+    if let Some(ring) = chosen {
+        clipped.rect_stroke(ring, 3, Stroke::new(2.0, p.accent), StrokeKind::Inside);
+    }
+}
+
+/// A pill at the trailing end of a tile's name row, its right at `right`
+/// and centred on `middle`: white words on a dark pill, sixteen points
+/// tall. Where it was drawn.
+fn row_badge(
+    painter: &egui::Painter,
+    galley: std::sync::Arc<egui::Galley>,
+    right: f32,
+    middle: f32,
+    opacity: f32,
+) -> Rect {
+    let size = vec2(galley.size().x + 10.0, 16.0);
+    let pill = Rect::from_min_size(pos2(right - size.x, middle - size.y * 0.5), size);
+    let black = Color32::from_black_alpha((140.0 * opacity) as u8);
+    painter.rect_filled(pill, 8, black);
+    let at = pos2(pill.left() + 5.0, pill.center().y - galley.size().y * 0.5);
+    kit::on_dark(painter, || {
+        painter.galley(at, galley, Color32::WHITE.gamma_multiply(opacity));
+    });
+    pill
+}
+
+/// A capsule saying `text` in the mono face above `bottom`, centred on `x`
+/// and kept inside what `painter` draws in.
+fn time_capsule(painter: &egui::Painter, p: &Palette, x: f32, bottom: f32, text: &str) {
+    let galley = painter.layout_no_wrap(text.to_owned(), theme::mono(11.0), p.fg);
+    let size = galley.size() + vec2(14.0, 6.0);
+    let room = painter.clip_rect().shrink(2.0);
+    let left = (x - size.x * 0.5).clamp(room.left(), (room.right() - size.x).max(room.left()));
+    let top = (bottom - size.y).clamp(room.top(), (room.bottom() - size.y).max(room.top()));
+    let capsule = Rect::from_min_size(pos2(left, top), size);
+    controls::capsule(painter, capsule, *p);
+    let at = capsule.center() - galley.size() * 0.5;
+    painter.galley(at, galley, p.fg);
+}
+
+/// Where a drop would land on `row`: a caret of the accent at `x` in the
+/// lanes, and the time it would land at in a capsule above it, which may
+/// stand over the ruler.
+fn drop_caret(
+    (lanes, above): (&egui::Painter, &egui::Painter),
+    p: &Palette,
+    row: &Row,
+    x: f32,
+    time: &str,
+) {
+    let x = lanes.round_to_pixel_center(x);
+    lanes.vline(
+        x,
+        row.top..=(row.top + row.height),
+        Stroke::new(2.0, p.accent),
+    );
+    time_capsule(above, p, x, row.top - 3.0, time);
 }
 
 #[cfg(test)]
@@ -4073,6 +5237,28 @@ mod tests {
         sound.clips = vec![e];
         project.tracks = vec![Arc::new(under), Arc::new(sound), Arc::new(over)];
         (project, ids)
+    }
+
+    #[test]
+    fn the_tracks_edits_go_to_are_found_again_when_the_selection_or_a_track_changes() {
+        let (mut project, [a, b, _, _, e]) = stacked();
+        let ids: Vec<TrackId> = project.tracks.iter().map(|track| track.id).collect();
+        let [under, sound, over] = [ids[0], ids[1], ids[2]];
+        let mut targets = Targets::default();
+        let mut selection = Selection::default();
+        assert!(targets.of(&project, &selection).is_empty());
+        selection.only(a);
+        assert_eq!(targets.of(&project, &selection), [under]);
+        selection.clips.push(e);
+        assert_eq!(targets.of(&project, &selection), [under, sound]);
+        // Held while nothing changes, and found again for a new revision of
+        // a track: the clip moved to another.
+        assert_eq!(targets.of(&project, &selection), [under, sound]);
+        let moved = Arc::make_mut(&mut project.tracks[1]).clips.remove(0);
+        Arc::make_mut(&mut project.tracks[2]).clips.push(moved);
+        assert_eq!(targets.of(&project, &selection), [under, over]);
+        selection.only(b);
+        assert_eq!(targets.of(&project, &selection), [over]);
     }
 
     #[test]

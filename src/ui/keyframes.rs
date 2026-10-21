@@ -9,14 +9,14 @@
 //! A clip with sound and no keyframe yet has a lane too: one empty row for
 //! its volume, which the clip menu and the volume line on its tile key.
 use super::{
-    Action, EASINGS, Selection, fades, inspector,
+    Action, EASINGS, Selection, controls, fades, inspector, kit,
     timeline::{Geometry, TimelineInput},
     widgets::{self, menu_item, menu_style},
 };
 use crate::{
     icons::{self, Icon},
     rules,
-    theme::{self, Palette, Tone},
+    theme::{self, Palette, metrics},
     timefmt,
 };
 use editor_core::{
@@ -24,8 +24,8 @@ use editor_core::{
     ParamKey, Project, Time, Track, gain_at, look, sound,
 };
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Response, Sense, Shape,
-    Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
+    self, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Response, Sense, Shape, Stroke,
+    StrokeKind, Ui, Vec2, emath::GuiRounding as _, pos2, vec2,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -34,8 +34,27 @@ use uuid::Uuid;
 /// the clip has animated parameters, and scrolls with the tracks.
 pub const ROW: f32 = 18.0;
 const PAD: f32 = 3.0;
-const DIAMOND: f32 = 5.0;
+/// Half the width of a key's diamond in the lane: 9 points corner to corner,
+/// and 11 under the pointer.
+const DIAMOND: f32 = 4.5;
+const DIAMOND_HOVER: f32 = 5.5;
+/// Half the width of a key's diamond in the graph, where the curve is the
+/// subject: 7 points corner to corner, and 9 under the pointer.
+const POINT: f32 = 3.5;
+const POINT_HOVER: f32 = 4.5;
 const HANDLE: f32 = 3.5;
+/// The height of a row of the graph's legend: as tall as its 22-point
+/// toggles, which are pressed only while a curve is hidden.
+const LEGEND_ROW: f32 = 22.0;
+/// A legend row's toggles, as a track head's cells: 22 square, 23 apart.
+const LEGEND_CELL: f32 = 22.0;
+const LEGEND_STEP: f32 = 23.0;
+/// Room above the legend's first row and under its last, for the ring a
+/// focused row or toggle wears outside itself.
+const LEGEND_RINGED: f32 = 3.0;
+/// Where a head card's glyph stands, and its name starts, from its left.
+const HEAD_GLYPH: f32 = 16.0;
+const HEAD_NAME: f32 = 28.0;
 const SNAP_POINTS: f32 = 8.0;
 /// How far the pointer travels before a press is a drag.
 const TRAVEL: f32 = 3.0;
@@ -46,6 +65,13 @@ pub const GRAPH_LABELLED: f32 = 64.0;
 pub(super) const SAMPLE: f32 = 2.0;
 /// A step of an easing handle moved with the arrows.
 const HANDLE_STEP: f32 = 0.05;
+/// The graph's own two actions at its top-trailing corner, 28 square and 2
+/// apart, 4 under its top and 6 in from its end.
+const CORNER: Vec2 = vec2(28.0 * 2.0 + 2.0, 28.0);
+/// From this height up, the graph's values stop short of the corner's foot
+/// with room to spare, so a fitted curve and its keys never run under it.
+const CORNER_CLEAR: f32 = 36.0;
+const CORNER_KEPT: f32 = 96.0;
 
 /// One animated parameter of a clip: the effect or mask it belongs to, none
 /// for the clip itself, and the value.
@@ -177,6 +203,9 @@ pub struct KeyframesState {
     names: Option<(Arc<Track>, ClipId, Arc<[Named]>)>,
     focus: Focused,
     focus_now: Focused,
+    /// The key or handle a press gave the keyboard to. It wears no focus
+    /// ring until the keyboard is used: the accent fill says it is chosen.
+    pointer_focus: Option<Id>,
     /// Where the keys drawn this frame are, for a marquee.
     spots: Vec<(KeyRef, Pos2)>,
     marquee: Option<Rect>,
@@ -207,6 +236,7 @@ impl Default for KeyframesState {
             names: None,
             focus: Focused::Nothing,
             focus_now: Focused::Nothing,
+            pointer_focus: None,
             spots: Vec::new(),
             marquee: None,
             samplings: 0,
@@ -535,19 +565,6 @@ fn lane_name(clip: &Clip, track: &AnimTrack) -> String {
     }
 }
 
-/// The colour of the `index`th curve.
-fn hue(p: &Palette, index: usize) -> Color32 {
-    match index % 7 {
-        0 => p.accent,
-        1 => p.green,
-        2 => p.yellow,
-        3 => p.tone(Tone::Text),
-        4 => p.red,
-        5 => p.tone(Tone::Audio),
-        _ => p.tone(Tone::Image),
-    }
-}
-
 /// A step of the value axis that reads well and leaves `room` points between
 /// its lines.
 fn tick(span: f32, room: f32) -> f32 {
@@ -785,6 +802,27 @@ impl KeyframesState {
     ) {
         self.focus = std::mem::take(&mut self.focus_now);
         self.spots.clear();
+        // A key a press gave the keyboard wears its ring again once the
+        // keyboard is used, or has gone elsewhere.
+        let keyed = ui.input(|i| {
+            (i.events.iter()).any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Tab
+                            | egui::Key::ArrowLeft
+                            | egui::Key::ArrowRight
+                            | egui::Key::ArrowUp
+                            | egui::Key::ArrowDown,
+                        pressed: true,
+                        ..
+                    }
+                )
+            })
+        });
+        if keyed || ui.memory(|memory| memory.focused()) != self.pointer_focus {
+            self.pointer_focus = None;
+        }
         let project = input.project;
         let id = if self.graph {
             selection.single()
@@ -1101,11 +1139,7 @@ impl KeyframesState {
         // The easing is of the stretch that leaves a keyframe.
         let leaves = (self.selected.iter()).any(|key| leaves_segment(sheet.clip, key));
         if some && !leaves {
-            ui.label(
-                egui::RichText::new("No keyframe follows to ease to")
-                    .font(theme::medium(11.0))
-                    .color(p.muted),
-            );
+            kit::menu_note(ui, p, "No keyframe follows to ease to");
         }
         ui.add_enabled_ui(leaves && !sheet.locked, |ui| {
             for (name, ease) in EASINGS {
@@ -1117,7 +1151,7 @@ impl KeyframesState {
                 }
             }
         });
-        ui.separator();
+        widgets::menu_separator(ui, p);
         ui.add_enabled_ui(some, |ui| {
             let keys = super::shortcut("Cmd+C");
             if menu_item(ui, p, Some(Icon::Copy), "Copy keyframes", &keys).clicked() {
@@ -1138,7 +1172,7 @@ impl KeyframesState {
                 ui.close();
             }
         });
-        ui.separator();
+        widgets::menu_separator(ui, p);
         if menu_item(ui, p, None, "Select all keyframes", "").clicked() {
             self.select_lane(sheet.clip, None);
             ui.close();
@@ -1166,7 +1200,6 @@ impl KeyframesState {
         at: KeyRef,
         stored: &Keyframe,
         center: Pos2,
-        tint: Option<Color32>,
         selection: &mut Selection,
         actions: &mut Vec<Action>,
     ) {
@@ -1211,6 +1244,7 @@ impl KeyframesState {
                 true
             };
             response.request_focus();
+            self.pointer_focus = Some(response.id);
             self.drag = Some(if picked && !sheet.locked {
                 Drag::Keys {
                     grabbed: at,
@@ -1260,47 +1294,37 @@ impl KeyframesState {
             return;
         }
         let painter = ui.painter();
-        let base = tint.unwrap_or(p.secondary);
-        let fill = if sheet.locked {
-            p.muted
-        } else if picked {
-            p.accent
-        } else if response.hovered() {
-            p.fg
-        } else {
-            base
+        // In ink, and in the accent only while selected; a locked track's
+        // keys are quieter, as its tiles are, and a selected one keeps half
+        // of the accent, so what Copy would take is still seen. The graph's
+        // are smaller, so the curves they sit on stay the subject, and a
+        // selected one is drawn as large as one under the pointer, so it
+        // outranks the handles of its segments.
+        let fill = match (picked, sheet.locked) {
+            (true, false) => p.key_selected(),
+            (true, true) => theme::tint(p.key_selected(), 0.5),
+            (false, true) => p.muted,
+            (false, false) => p.key(),
         };
-        let edge = if picked {
-            p.fg
-        } else {
-            Color32::from_black_alpha(110)
+        let lit = !sheet.locked && response.hovered();
+        let radius = match (sheet.axis.is_some(), lit) {
+            (false, false) => DIAMOND,
+            (false, true) => DIAMOND_HOVER,
+            (true, false) if !picked => POINT,
+            (true, _) => POINT_HOVER,
         };
-        let radius = DIAMOND + if picked { 0.5 } else { 0.0 };
+        // A keyline of the ground keeps a key apart from the line or the
+        // curve it sits on.
+        let edge = Stroke::new(1.0, p.bg);
         if stored.ease == Ease::Hold {
             // A key that holds its value until the next is square.
-            let side = Vec2::splat(radius * 1.6);
-            let body = Rect::from_center_size(center, side);
-            painter.rect_filled(body, CornerRadius::same(1), fill);
-            painter.rect_stroke(
-                body,
-                CornerRadius::same(1),
-                Stroke::new(1.0, edge),
-                StrokeKind::Outside,
-            );
+            let body = Rect::from_center_size(center, Vec2::splat(radius * 1.6));
+            painter.rect(body, CornerRadius::same(1), fill, edge, StrokeKind::Middle);
         } else {
-            painter.add(Shape::convex_polygon(
-                vec![
-                    center - vec2(radius, 0.0),
-                    center - vec2(0.0, radius),
-                    center + vec2(radius, 0.0),
-                    center + vec2(0.0, radius),
-                ],
-                fill,
-                Stroke::new(1.0, edge),
-            ));
+            painter.add(Shape::convex_polygon(diamond(center, radius), fill, edge));
         }
-        if response.has_focus() {
-            painter.circle_stroke(center, radius + 3.5, Stroke::new(1.5, p.accent));
+        if response.has_focus() && self.pointer_focus != Some(response.id) {
+            painter.circle_stroke(center, radius + 3.0, ring(p));
         }
         if !sheet.locked && self.drag.is_none() && response.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::Grab);
@@ -1314,8 +1338,16 @@ impl KeyframesState {
 
     /// Follows the pointer with what is held, and ends it when the button
     /// comes up: keys and handles as one edit, a marquee as a selection, and
-    /// a press on nothing as a move of the playhead.
-    fn gesture(&mut self, ui: &Ui, sheet: &Sheet, ground: &Response, actions: &mut Vec<Action>) {
+    /// a press on nothing as a move of the playhead. A press `aside`, on
+    /// controls that stand on the ground, is theirs.
+    fn gesture(
+        &mut self,
+        ui: &Ui,
+        sheet: &Sheet,
+        ground: &Response,
+        aside: Option<Rect>,
+        actions: &mut Vec<Action>,
+    ) {
         let (pressed, released, down, extend, shift, pointer) = ui.input(|i| {
             (
                 i.pointer.primary_pressed(),
@@ -1326,8 +1358,11 @@ impl KeyframesState {
                 i.pointer.latest_pos(),
             )
         });
+        let aside =
+            |pos: Option<Pos2>| pos.is_some_and(|pos| aside.is_some_and(|r| r.contains(pos)));
         if pressed
             && ground.is_pointer_button_down_on()
+            && !aside(pointer)
             && let Some(from) = pointer
         {
             self.drag = Some(Drag::Marquee {
@@ -1339,7 +1374,7 @@ impl KeyframesState {
                 },
                 travelled: false,
             });
-        } else if ground.clicked() && self.drag.is_none() {
+        } else if ground.clicked() && self.drag.is_none() && !aside(ground.interact_pointer_pos()) {
             // A press and its release inside one frame.
             if !extend {
                 self.selected.clear();
@@ -1532,12 +1567,13 @@ impl KeyframesState {
 
     fn paint_marquee(&self, ui: &Ui, p: &Palette, within: Rect) {
         if let Some(rect) = self.marquee {
+            // As the tiles' marquee: a wash and a line of the accent.
             let painter = ui.painter_at(within);
-            painter.rect_filled(rect, CornerRadius::same(3), theme::tint(p.accent, 0.14));
-            painter.rect_stroke(
+            painter.rect(
                 rect,
-                CornerRadius::same(3),
-                Stroke::new(1.0, p.accent),
+                CornerRadius::same(2),
+                theme::tint(p.accent, 0.10),
+                Stroke::new(1.0, theme::tint(p.accent, 0.6)),
                 StrokeKind::Inside,
             );
         }
@@ -1577,13 +1613,19 @@ impl KeyframesState {
             Sense::click_and_drag(),
         );
         let painter = ui.painter().clone();
-        painter.rect_filled(band, CornerRadius::ZERO, p.sunken.gamma_multiply(0.55));
-        // The clip's own span is where its keys can be.
+        // The lane is the timeline's ground under its track's row, and the
+        // clip's own span, where its keys can be, is a band of a row carried
+        // down from the clip.
+        painter.rect_filled(band, CornerRadius::ZERO, p.bg);
         let span = Rect::from_min_max(
-            pos2(sheet.x(Time::ZERO), band.top() + 1.0),
-            pos2(sheet.x(clip.duration), band.bottom() - 1.0),
+            pos2(sheet.x(Time::ZERO), band.top()),
+            pos2(sheet.x(clip.duration), band.bottom()),
         );
-        painter.rect_filled(span, CornerRadius::same(4), theme::tint(p.fg, 0.05));
+        painter.rect_filled(span, CornerRadius::ZERO, p.lane());
+        // The keys may stand out into the gutter before the lanes, so one at
+        // the lanes' leading edge, as a clip's first key at the timeline's
+        // start is, is drawn and pressed whole. The ground stays the lanes'.
+        ui.set_clip_rect(keys_clip(view));
 
         let held = matches!(self.drag, Some(Drag::Keys { moved: true, .. }));
         let (from, to) = (
@@ -1595,14 +1637,14 @@ impl KeyframesState {
             if y + ROW * 0.5 < view.top() || y - ROW * 0.5 > view.bottom() {
                 continue;
             }
-            if row > 0 {
-                let line = y - ROW * 0.5;
-                painter.hline(
-                    span.x_range(),
-                    line,
-                    Stroke::new(1.0, theme::tint(p.fg, 0.04)),
-                );
-            }
+            // A hairline over each row: the first under the track's row,
+            // the others between the parameters.
+            let line = if row == 0 {
+                band.top() + 0.5
+            } else {
+                y - ROW * 0.5
+            };
+            painter.hline(band.x_range(), line, p.hairline());
             if let (Some(first), Some(last)) = (track.keys.first(), track.keys.last()) {
                 painter.hline(
                     sheet.x(first.at)..=sheet.x(last.at),
@@ -1631,13 +1673,12 @@ impl KeyframesState {
                     at,
                     key,
                     center,
-                    None,
                     selection,
                     actions,
                 );
             }
         }
-        self.gesture(ui, &sheet, &ground, actions);
+        self.gesture(ui, &sheet, &ground, None, actions);
         self.end(clip.id, selection);
         self.paint_marquee(ui, p, view);
         ground.context_menu(|ui| self.menu(ui, &sheet, actions));
@@ -1659,6 +1700,33 @@ impl KeyframesState {
         let rows = lane_tracks(input.project, clip);
         let names = self.names(input.project, track, clip, rows);
         let sheet = self.sheet(input, geometry, track, clip, None);
+        // The head's card runs on down beside the lane: a hairline parts the
+        // track's head from the names of its clip's parameters, which stand
+        // right-aligned against the lane they name.
+        if ui.is_rect_visible(rect) {
+            ui.painter().hline(
+                (rect.left() + 8.0)..=(rect.right() - 8.0),
+                rect.top() + 0.5,
+                p.hairline(),
+            );
+        }
+        // The leading end of the first row is the lane's menu, under the
+        // glyph of the track's kind, and first of the rows to the keyboard.
+        // It is pressed over a small button's square, but its light is a
+        // little smaller, so it stops short of the hairline above and of the
+        // card's foot under a lone row, as the names' does.
+        let center = pos2(rect.left() + HEAD_GLYPH, rect.top() + PAD + ROW * 0.5);
+        let more = [
+            Rect::from_center_size(center, Vec2::splat(metrics::SMALL_BUTTON)),
+            Rect::from_center_size(center, Vec2::splat(ROW + 2.0)),
+        ];
+        let options = options_button(
+            ui,
+            p,
+            more,
+            Id::new(("keyframe-options", clip.id)),
+            "Keyframe options",
+        );
         for (row, animated) in rows.iter().enumerate() {
             let line = Rect::from_min_size(
                 pos2(rect.left(), rect.top() + PAD + ROW * row as f32),
@@ -1667,12 +1735,14 @@ impl KeyframesState {
             if !ui.is_rect_visible(line) {
                 continue;
             }
-            // The first row gives its trailing end to the lane's menu.
-            let trailing = if row == 0 { ROW + 2.0 } else { 0.0 };
+            // A name is pressed anywhere in its row, so the rows leave no
+            // gap between them; its light stops a point short of either
+            // edge.
             let label = Rect::from_min_max(
-                pos2(line.left() + 22.0, line.top()),
-                pos2(line.right() - trailing, line.bottom()),
+                pos2(line.left() + HEAD_NAME, line.top()),
+                pos2(line.right() - 4.0, line.bottom()),
             );
+            let lit = label.shrink2(vec2(0.0, 1.0));
             let lane = (animated.target, animated.key);
             let id = Id::new(("keyframe-row", clip.id, lane));
             let response = ui.interact(label, id, Sense::click());
@@ -1684,42 +1754,34 @@ impl KeyframesState {
             if response.clicked() {
                 self.select_lane(clip, Some(lane));
             }
-            let ink = if response.hovered() || response.has_focus() {
+            let painter = ui.painter();
+            let hover = kit::hover_amount(ui, &response);
+            if hover > 0.0 {
+                painter.rect_filled(lit, CornerRadius::same(5), p.hover.gamma_multiply(hover));
+            }
+            if response.has_focus() {
+                controls::focus_ring(painter, lit, 5, *p);
+            }
+            let ink = if response.has_focus() {
                 p.fg
             } else {
-                p.secondary
+                theme::mix(p.secondary, p.fg, hover)
             };
-            let galley = widgets::truncated(ui, name, theme::regular(11.0), ink, label.width());
-            ui.painter().galley(
-                pos2(label.left(), label.center().y - galley.size().y * 0.5),
+            let galley =
+                widgets::truncated(ui, name, theme::regular(11.0), ink, label.width() - 8.0);
+            painter.galley(
+                pos2(
+                    line.right() - 8.0 - galley.size().x,
+                    label.center().y - galley.size().y * 0.5,
+                ),
                 galley,
                 ink,
             );
-            if response.has_focus() {
-                ui.painter().rect_stroke(
-                    label.expand2(vec2(3.0, 0.0)),
-                    CornerRadius::same(4),
-                    Stroke::new(1.5, p.accent),
-                    StrokeKind::Inside,
-                );
-            }
             response.on_hover_ui(|ui| {
                 ui.label(format!("Select the {name} keyframes"));
             });
         }
-        let more = Rect::from_min_size(
-            pos2(rect.right() - ROW - 1.0, rect.top() + PAD),
-            Vec2::splat(ROW),
-        );
-        let response = tiny_button(
-            ui,
-            p,
-            more,
-            Id::new(("keyframe-options", clip.id)),
-            Icon::ChevronDown,
-            "Keyframe options",
-        );
-        egui::Popup::menu(&response).show(|ui| self.menu(ui, &sheet, actions));
+        egui::Popup::menu(&options).show(|ui| self.menu(ui, &sheet, actions));
     }
 
     // ---- The graph --------------------------------------------------------
@@ -1742,24 +1804,21 @@ impl KeyframesState {
     ) {
         let p = input.p;
         let project = input.project;
-        ui.painter()
-            .rect_filled(area, CornerRadius::ZERO, p.sunken.gamma_multiply(0.8));
+        // The plot is the timeline's ground, as the lanes' is.
+        ui.painter().rect_filled(area, CornerRadius::ZERO, p.bg);
         let found = (selection.single())
             .and_then(|id| project.clip(id))
             .filter(|(_, clip)| !clip.animation.is_empty());
         let Some((track, clip)) = found else {
             let (title, hint) = if selection.single().is_some() {
-                (
-                    "No keyframes on this clip",
-                    "Add one from a diamond beside a value in the inspector.",
-                )
+                ("No animated values", "Add a keyframe in the inspector.")
             } else {
                 ("No clip selected", "Select one clip to see its curves.")
             };
-            let whole = Rect::from_min_max(legend.min, area.max);
-            // A graph under a narrow or short timeline says the first line.
-            let hint = if whole.height() >= 96.0 { hint } else { "" };
-            widgets::empty_state(ui, p, whole, Icon::Curve, title, hint);
+            // Said in the plot alone: the legend's column keeps its place.
+            // A graph under a short timeline says the first line.
+            let hint = if area.height() >= 96.0 { hint } else { "" };
+            kit::small_empty_state(ui, p, area, Icon::ChartLine, title, hint);
             return;
         };
         let names = self.names(project, track, clip, &clip.animation);
@@ -1779,7 +1838,19 @@ impl KeyframesState {
         };
         let view = self.view.unwrap_or(fit);
         self.showing = view;
-        let inner = area.shrink2(vec2(0.0, 12.0f32.min(area.height() * 0.2)));
+        // Where the values fit: in from the top and the foot, and, where the
+        // plot is tall enough, below the corner's actions, so the fitted
+        // curves and their keys are never under them.
+        let foot = 12.0f32.min(area.height() * 0.2);
+        let head = if area.height() >= CORNER_KEPT {
+            CORNER_CLEAR
+        } else {
+            foot
+        };
+        let inner = Rect::from_min_max(
+            pos2(area.left(), area.top() + head),
+            pos2(area.right(), area.bottom() - foot),
+        );
         let axis = Axis {
             bottom: inner.bottom(),
             low: view.0,
@@ -1811,7 +1882,7 @@ impl KeyframesState {
             });
         }
 
-        self.legend(ui, legend, &sheet, &names, actions);
+        self.legend(ui, legend, &sheet, &names);
 
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
         ui.set_clip_rect(area);
@@ -1822,39 +1893,103 @@ impl KeyframesState {
             Sense::click_and_drag(),
         );
         let painter = ui.painter().clone();
-        // Outside the clip there is nothing to key.
+        // Outside the clip there is nothing to key: its span is a band of a
+        // row, as in the lane.
         let (start, end) = (sheet.x(Time::ZERO), sheet.x(clip.duration));
         let span = Rect::from_min_max(pos2(start, area.top()), pos2(end, area.bottom()));
-        painter.rect_filled(span, CornerRadius::ZERO, theme::tint(p.fg, 0.035));
+        painter.rect_filled(span, CornerRadius::ZERO, p.lane());
+        // The grid is the plot's ground, under its actions, and its lines
+        // stop short of them rather than run through their glyphs.
+        let corner = corner_rect(area);
+        let kept = corner.expand(4.0);
+        // The time grid stands under the ruler's figures.
+        let (step, _) = rules::ruler_step(geometry.zoom, sheet.rate.fps(), 92.0);
+        let first = (f64::from(geometry.scroll) / f64::from(geometry.zoom) / step).floor() as i64;
+        let last = (f64::from(geometry.scroll + area.width()) / f64::from(geometry.zoom) / step)
+            .ceil() as i64;
+        for index in first..=last {
+            let x = geometry.x(Time::from_seconds(index as f64 * step));
+            let x = painter.round_to_pixel_center(x);
+            let top = if kept.x_range().contains(x) {
+                kept.bottom()
+            } else {
+                area.top()
+            };
+            painter.vline(x, top..=area.bottom(), p.hairline());
+        }
         if let Some(cache) = &self.cache {
-            for (y, text) in &cache.ticks {
-                painter.hline(area.x_range(), *y, Stroke::new(1.0, p.separator));
-                if area.height() >= GRAPH_LABELLED {
-                    painter.text(
-                        pos2(area.left() + 6.0, *y - 1.0),
-                        Align2::LEFT_BOTTOM,
-                        text,
-                        theme::mono(10.0),
-                        p.muted,
-                    );
-                }
-            }
-            for (index, points) in &cache.lines {
-                let track = &clip.animation[*index];
-                let chosen =
-                    (self.selected.iter()).any(|key| key.lane() == (track.target, track.key));
-                let width = if chosen { 2.0 } else { 1.5 };
-                let stroke = Stroke::new(width, hue(p, *index));
-                painter.add(Shape::line(points.clone(), stroke));
+            for (y, _) in &cache.ticks {
+                let y = painter.round_to_pixel_center(*y);
+                let right = if kept.y_range().contains(y) {
+                    kept.left()
+                } else {
+                    area.right()
+                };
+                painter.hline(area.left()..=right, y, p.hairline());
             }
         }
+        // The plot's own actions come before what it draws over its grid: a
+        // key, a curve or a handle panned under them is drawn over them and
+        // is pressed before them, and they are first in the plot to the
+        // keyboard.
+        self.corner(ui, corner, &sheet, actions);
+        if let Some(cache) = &self.cache {
+            // The curve of the parameter whose keys are selected is drawn
+            // strong and the others step back; with none selected, every
+            // curve is drawn alike.
+            let chosen = |index: usize| {
+                let track = &clip.animation[index];
+                (self.selected.iter()).any(|key| key.lane() == (track.target, track.key))
+            };
+            let any = (cache.lines.iter()).any(|(index, _)| chosen(*index));
+            for (index, points) in &cache.lines {
+                let colour = p.curve(*index);
+                let stroke = match (chosen(*index), any) {
+                    (true, _) => Stroke::new(2.0, colour),
+                    (false, true) => Stroke::new(1.5, colour.gamma_multiply(0.6)),
+                    (false, false) => Stroke::new(1.5, colour),
+                };
+                painter.add(Shape::line(points.clone(), stroke));
+            }
+            // The values are said over the curves, each on a patch of the
+            // ground it stands on, so a curve that starts at the leading
+            // edge never strikes one through. The patch is the plot's
+            // ground and, where it is in the clip's span, the span's tint
+            // over that: opaque, and the colour of what is round it. The
+            // keys come after them.
+            if area.height() >= GRAPH_LABELLED {
+                for (y, text) in &cache.ticks {
+                    let y = painter.round_to_pixel_center(*y);
+                    let galley =
+                        painter.layout_no_wrap(text.clone(), theme::mono(11.0), p.secondary);
+                    let Some(patch) = value_patch(area, y, galley.size()) else {
+                        // Too near the plot's top to be said whole: its line
+                        // alone is drawn.
+                        continue;
+                    };
+                    let at = patch.min;
+                    // Square and on whole pixels, so the two coats meet
+                    // edge to edge and no rim of either shows.
+                    let patch = patch.round_to_pixels(painter.pixels_per_point());
+                    painter.rect_filled(patch, CornerRadius::ZERO, p.bg);
+                    let tinted = patch.intersect(span);
+                    if tinted.is_positive() {
+                        painter.rect_filled(tinted, CornerRadius::ZERO, p.lane());
+                    }
+                    painter.galley(at, galley, p.secondary);
+                }
+            }
+        }
+        // The keys and their handles may stand out into the gutter before
+        // the plot, as the lane's do.
+        ui.set_clip_rect(keys_clip(area));
 
         for (index, track) in clip.animation.iter().enumerate() {
             let lane = (track.target, track.key);
             if !self.visible(lane) {
                 continue;
             }
-            let colour = hue(p, index);
+            let colour = p.curve(index);
             let held = matches!(self.drag, Some(Drag::Keys { moved: true, .. }));
             let reach = geometry.span(SNAP_POINTS + 4.0);
             let (from, to) = (
@@ -1907,16 +2042,35 @@ impl KeyframesState {
                     at,
                     key,
                     center,
-                    Some(colour),
                     selection,
                     actions,
                 );
             }
         }
-        self.gesture(ui, &sheet, &ground, actions);
+        self.gesture(ui, &sheet, &ground, Some(corner), actions);
         self.end(clip.id, selection);
         self.paint_marquee(ui, p, area);
         ground.context_menu(|ui| self.menu(ui, &sheet, actions));
+    }
+
+    /// The plot's own actions at its top-trailing corner: fitting the values
+    /// to the curves again, and the menu of the selected keys, in `rect`,
+    /// which is theirs and not the plot's ground: a press on them is no
+    /// marquee and no move of the playhead.
+    fn corner(&mut self, ui: &mut Ui, rect: Rect, sheet: &Sheet, actions: &mut Vec<Action>) {
+        let mut ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
+        ui.add_enabled_ui(self.view.is_some(), |ui| {
+            if icons::button(ui, Icon::FitValues, "Fit values").clicked() {
+                self.view = None;
+            }
+        });
+        let more = icons::button(&mut ui, Icon::Dots, "Keyframe options");
+        egui::Popup::menu(&more).show(|ui| self.menu(ui, sheet, actions));
     }
 
     /// The span of values the visible curves take, with room around it.
@@ -2093,6 +2247,7 @@ impl KeyframesState {
             ui.input(|i| (i.pointer.primary_pressed(), i.pointer.interact_pos()));
         if pressed && response.is_pointer_button_down_on() && !sheet.locked {
             response.request_focus();
+            self.pointer_focus = Some(response.id);
             self.drag = Some(Drag::Handle {
                 at,
                 second,
@@ -2152,121 +2307,242 @@ impl KeyframesState {
             matches!(&self.drag, Some(Drag::Handle { at: held, second: which, .. })
                 if *held == at && *which == second)
         };
-        painter.line_segment([anchor, spot], Stroke::new(1.0, colour.gamma_multiply(0.7)));
-        painter.circle_filled(spot, HANDLE, if lit { colour } else { p.sunken });
-        painter.circle_stroke(spot, HANDLE, Stroke::new(1.5, colour));
-        if response.has_focus() {
-            painter.circle_stroke(spot, HANDLE + 3.5, Stroke::new(1.5, p.accent));
+        // A quiet arm from the key, and a ring in the curve's colour that
+        // fills while it is under the pointer, held or has the keyboard.
+        painter.line_segment([anchor, spot], Stroke::new(1.0, theme::tint(p.fg, 0.5)));
+        painter.circle(
+            spot,
+            HANDLE,
+            if lit { colour } else { p.bg },
+            Stroke::new(1.5, colour),
+        );
+        if response.has_focus() && self.pointer_focus != Some(response.id) {
+            painter.circle_stroke(spot, HANDLE + 3.0, ring(p));
         }
         if !sheet.locked && self.drag.is_none() && response.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::Grab);
         }
     }
 
-    /// The graph's legend: which curves are shown, one alone, and the
-    /// actions on the selected keys.
-    fn legend(
-        &mut self,
-        ui: &mut Ui,
-        rect: Rect,
-        sheet: &Sheet,
-        names: &[Named],
-        actions: &mut Vec<Action>,
-    ) {
+    /// The graph's legend, in the heads' column and in a head's card: a row
+    /// for each parameter with its curve's colour and name, which selects
+    /// its keys, and the toggles that show its curve or show it alone.
+    fn legend(&mut self, ui: &mut Ui, rect: Rect, sheet: &Sheet, names: &[Named]) {
         let p = sheet.p;
         let clip = sheet.clip;
+        // Inset as a track head's card is from its row, and as tall as its
+        // rows with room above and below them for a focus ring; what does
+        // not fit scrolls inside it.
+        let tall = clip.animation.len() as f32 * LEGEND_ROW + 8.0 + LEGEND_RINGED * 2.0;
+        let card = Rect::from_min_max(
+            pos2(rect.left() + 6.0, rect.top() + 4.0),
+            pos2(
+                rect.right() - 4.0,
+                (rect.top() + 4.0 + tall).min(rect.bottom() - 4.0),
+            ),
+        );
+        if !card.is_positive() {
+            return;
+        }
+        ui.painter()
+            .rect_filled(card, CornerRadius::same(8), p.control);
+        let inner = card.shrink(4.0);
         let mut ui = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(rect.shrink2(vec2(6.0, 2.0)))
+                .max_rect(inner)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
-        ui.set_clip_rect(rect);
+        ui.set_clip_rect(inner.expand(3.0).intersect(rect));
         let ui = &mut ui;
-        ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(self.view.is_some(), |ui| {
-                if widgets::small_icon_button(ui, p, Icon::FitValues, "Fit values").clicked() {
-                    self.view = None;
-                }
-            });
-            let more = widgets::small_icon_button(ui, p, Icon::ChevronDown, "Keyframe options");
-            egui::Popup::menu(&more).show(|ui| self.menu(ui, sheet, actions));
-        });
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
         egui::ScrollArea::vertical()
             .id_salt(("keyframe-legend", clip.id))
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                // The scrolled rows are clipped to the card's inside: the
+                // first and the last keep their rings whole.
+                ui.add_space(LEGEND_RINGED);
                 for (index, track) in clip.animation.iter().enumerate() {
                     let lane = (track.target, track.key);
-                    let Named { name, show, solo } = &names[index];
-                    ui.horizontal(|ui| {
-                        let shown = !self.hidden.contains(&lane);
-                        let icon = if shown { Icon::Eye } else { Icon::EyeOff };
-                        if widgets::small_icon_toggle(ui, p, icon, shown, show).clicked() {
-                            if shown {
-                                self.hidden.push(lane);
-                            } else {
-                                self.hidden.retain(|hidden| *hidden != lane);
-                            }
-                            self.shown_serial += 1;
-                        }
-                        let width = (ui.available_width() - widgets::SMALL_BUTTON - 2.0).max(8.0);
-                        let (rect, response) = ui.allocate_exact_size(
-                            vec2(width, widgets::SMALL_BUTTON),
-                            Sense::click(),
-                        );
-                        response.widget_info(|| {
-                            let label = format!("Select {name} keyframes");
-                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
-                        });
-                        if response.clicked() {
-                            self.select_lane(clip, Some(lane));
-                        }
-                        if ui.is_rect_visible(rect) {
-                            let dim = !self.visible(lane);
-                            let colour = hue(p, index);
-                            let dot = pos2(rect.left() + 6.0, rect.center().y);
-                            let fill = if dim {
-                                colour.gamma_multiply(0.35)
-                            } else {
-                                colour
-                            };
-                            ui.painter().circle_filled(dot, 3.5, fill);
-                            let ink = match (dim, response.hovered() || response.has_focus()) {
-                                (true, _) => p.muted,
-                                (false, true) => p.fg,
-                                (false, false) => p.secondary,
-                            };
-                            let galley = widgets::truncated(
-                                ui,
-                                name,
-                                theme::regular(11.5),
-                                ink,
-                                rect.width() - 16.0,
-                            );
-                            ui.painter().galley(
-                                pos2(rect.left() + 14.0, rect.center().y - galley.size().y * 0.5),
-                                galley,
-                                ink,
-                            );
-                            if response.has_focus() {
-                                ui.painter().rect_stroke(
-                                    rect,
-                                    CornerRadius::same(4),
-                                    Stroke::new(1.5, p.accent),
-                                    StrokeKind::Inside,
-                                );
-                            }
-                        }
-                        let alone = self.solo == Some(lane);
-                        if solo_toggle(ui, p, alone, solo).clicked() {
-                            self.solo = (!alone).then_some(lane);
-                            self.shown_serial += 1;
-                        }
-                    });
+                    let (row, _) = ui.allocate_exact_size(
+                        vec2(ui.available_width(), LEGEND_ROW),
+                        Sense::hover(),
+                    );
+                    self.legend_row(ui, p, row, clip, index, lane, &names[index]);
                 }
+                ui.add_space(LEGEND_RINGED);
             });
     }
+
+    /// One parameter of the legend in `row`: its toggles at the trailing
+    /// end, as a head's cells are, and before them its colour and name.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a row needs its place, its parameter and what it is called"
+    )]
+    fn legend_row(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        row: Rect,
+        clip: &Clip,
+        index: usize,
+        lane: Lane,
+        named: &Named,
+    ) {
+        let Named { name, show, solo } = named;
+        let cell = |from_end: f32| {
+            let right = row.right() - from_end * LEGEND_STEP;
+            Rect::from_min_max(
+                pos2(right - LEGEND_CELL, row.center().y - LEGEND_CELL * 0.5),
+                pos2(right, row.center().y + LEGEND_CELL * 0.5),
+            )
+        };
+        let (eye, alone_cell) = (cell(1.0), cell(0.0));
+        // The name first, as it is read: the keyboard comes to it before
+        // the row's toggles.
+        let label = Rect::from_min_max(
+            pos2(row.left(), eye.top()),
+            pos2(eye.left() - 2.0, eye.bottom()),
+        );
+        let response = ui.interact(
+            label,
+            Id::new(("keyframe-legend-row", clip.id, lane)),
+            Sense::click(),
+        );
+        response.widget_info(|| {
+            let label = format!("Select {name} keyframes");
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
+        });
+        if response.clicked() {
+            self.select_lane(clip, Some(lane));
+        }
+
+        // The eye as a head's: pressed, and shut, while the curve is not
+        // drawn. Its name still says it shows the curve, checked while it
+        // does.
+        let shown = !self.hidden.contains(&lane);
+        let toggled = legend_toggle(
+            ui,
+            p,
+            eye,
+            Id::new(("keyframe-legend-show", clip.id, lane)),
+            (if shown { Icon::Eye } else { Icon::EyeOff }, None),
+            (!shown, shown),
+            show,
+        );
+        if toggled {
+            if shown {
+                self.hidden.push(lane);
+            } else {
+                self.hidden.retain(|hidden| *hidden != lane);
+            }
+            self.shown_serial += 1;
+        }
+        // A curve shown alone is a switch that is on: pressed, its glyph
+        // in the accent, as a soloed track's is. Its glyph is a focus, not
+        // the track's headphones: it isolates a curve, not a sound.
+        let alone = self.solo == Some(lane);
+        let toggled = legend_toggle(
+            ui,
+            p,
+            alone_cell,
+            Id::new(("keyframe-legend-solo", clip.id, lane)),
+            (Icon::Focus, alone.then(|| p.switch_ink())),
+            (alone, alone),
+            solo,
+        );
+        if toggled {
+            self.solo = (!alone).then_some(lane);
+            self.shown_serial += 1;
+        }
+
+        if !ui.is_rect_visible(label) {
+            return;
+        }
+        let painter = ui.painter();
+        let hover = kit::hover_amount(ui, &response);
+        if hover > 0.0 {
+            painter.rect_filled(label, CornerRadius::same(6), p.hover.gamma_multiply(hover));
+        }
+        if response.has_focus() {
+            controls::focus_ring(painter, label, 6, *p);
+        }
+        // A curve that is not drawn keeps its row, quieter.
+        let dim = !self.visible(lane);
+        let colour = p.curve(index);
+        let dot = pos2(row.left() + HEAD_GLYPH - 4.0, row.center().y);
+        painter.circle_filled(
+            dot,
+            4.0,
+            if dim {
+                colour.gamma_multiply(0.35)
+            } else {
+                colour
+            },
+        );
+        let ink = if dim { p.muted } else { p.fg };
+        let left = row.left() + HEAD_NAME - 4.0;
+        let galley = widgets::truncated(
+            ui,
+            name,
+            theme::regular(11.5),
+            ink,
+            label.right() - 4.0 - left,
+        );
+        painter.galley(
+            pos2(left, row.center().y - galley.size().y * 0.5),
+            galley,
+            ink,
+        );
+    }
+}
+
+/// A toggle of a legend row, as a track head's cell: `pressed` says how it
+/// is drawn and `checked` what it is named as, which for the eye are each
+/// other's opposite. `ink` is the glyph's while it is pressed.
+fn legend_toggle(
+    ui: &mut Ui,
+    p: &Palette,
+    rect: Rect,
+    id: Id,
+    (icon, ink): (Icon, Option<Color32>),
+    (pressed, checked): (bool, bool),
+    label: &str,
+) -> bool {
+    let response = ui.interact(rect, id, Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, checked, label)
+    });
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let hover = kit::hover_amount(ui, &response);
+        if pressed || response.is_pointer_button_down_on() {
+            painter.rect_filled(rect, CornerRadius::same(6), p.pressed);
+        } else if hover > 0.0 {
+            painter.rect_filled(rect, CornerRadius::same(6), p.hover.gamma_multiply(hover));
+        }
+        if response.has_focus() {
+            controls::focus_ring(painter, rect, 6, *p);
+        }
+        let ink = match ink {
+            Some(ink) if pressed => ink,
+            _ if pressed || response.has_focus() => p.fg,
+            _ => theme::mix(p.secondary, p.fg, hover),
+        };
+        icons::paint(
+            painter,
+            Rect::from_center_size(rect.center(), Vec2::splat(14.0)),
+            icon,
+            ink,
+        );
+    }
+    icons::hint(
+        response.on_hover_cursor(CursorIcon::PointingHand),
+        label,
+        "",
+    )
+    .clicked()
 }
 
 fn edit(sheet: &Sheet, label: &str, tracks: Vec<AnimTrack>) -> Option<Action> {
@@ -2288,10 +2564,48 @@ fn moved_tracks(clip: &Clip, picked: &[KeyRef], (delta, lift): (Time, f32)) -> V
     moved(clip, picked, delta, lift)
 }
 
-/// The chevron on a clip's tile that opens and closes its lane.
-pub(super) fn disclosure(ui: &mut Ui, p: &Palette, rect: Rect, clip: &Clip, open: bool) -> bool {
+/// Where the graph's own actions stand in its plot `area`.
+fn corner_rect(area: Rect) -> Rect {
+    Rect::from_min_size(
+        pos2(area.right() - 6.0 - CORNER.x, area.top() + 4.0),
+        CORNER,
+    )
+}
+
+/// Where keys and handles are drawn and pressed over `view`: out into the
+/// gutter before it too, so one at its leading edge is whole.
+fn keys_clip(view: Rect) -> Rect {
+    // As far as the ring a hovered key wears when it has the keyboard: 3
+    // out from the diamond, and a 2-point stroke.
+    view.with_min_x(view.min.x - (DIAMOND_HOVER + 3.0 + 1.0))
+}
+
+/// The patch a value of the graph is said on, for its line at `y`: the
+/// label stands on the line at the plot's leading edge, and the patch is
+/// the label's own box and no more. Its line's air above the digits keeps
+/// them clear of a curve, and a curve that passes beside them, or runs
+/// along the line under them, is drawn whole. None where it would not be
+/// whole inside `area`.
+fn value_patch(area: Rect, y: f32, label: Vec2) -> Option<Rect> {
+    let at = pos2(area.left() + 6.0, y - 2.0 - label.y);
+    let patch = Rect::from_min_size(at, label);
+    (patch.top() >= area.top()).then_some(patch)
+}
+
+/// The chevron on a clip's tile that opens and closes its lane, in `ink`,
+/// the ink of the name it stands before as the tile is drawn. It is pressed
+/// anywhere in `hit`, a small button's width, and lit only in `rect`, the
+/// cell of its glyph.
+pub(super) fn disclosure(
+    ui: &mut Ui,
+    p: &Palette,
+    [hit, rect]: [Rect; 2],
+    clip: &Clip,
+    open: bool,
+    ink: Color32,
+) -> bool {
     let response = ui.interact(
-        rect,
+        hit,
         Id::new(("keyframe-lane-toggle", clip.id)),
         Sense::click(),
     );
@@ -2302,8 +2616,9 @@ pub(super) fn disclosure(ui: &mut Ui, p: &Palette, rect: Rect, clip: &Clip, open
         info
     });
     let painter = ui.painter();
-    if response.hovered() {
-        painter.rect_filled(rect, CornerRadius::same(4), Color32::from_black_alpha(70));
+    let hover = kit::hover_amount(ui, &response);
+    if hover > 0.0 {
+        painter.rect_filled(rect, CornerRadius::same(4), theme::tint(ink, 0.2 * hover));
     }
     icons::paint(
         painter,
@@ -2313,81 +2628,59 @@ pub(super) fn disclosure(ui: &mut Ui, p: &Palette, rect: Rect, clip: &Clip, open
         } else {
             Icon::ChevronRight
         },
-        Color32::WHITE.gamma_multiply(if response.hovered() { 1.0 } else { 0.8 }),
+        ink.gamma_multiply(0.8 + 0.2 * hover),
     );
     if response.has_focus() {
-        painter.rect_stroke(
-            rect,
-            CornerRadius::same(4),
-            Stroke::new(1.5, p.accent),
-            StrokeKind::Inside,
-        );
+        controls::focus_ring(painter, rect, 4, *p);
     }
-    response
-        .on_hover_cursor(CursorIcon::Default)
-        .on_hover_text(if open {
-            "Hide keyframes (U)"
-        } else {
-            "Show keyframes (U)"
-        })
-        .clicked()
+    let response = response.on_hover_cursor(CursorIcon::Default);
+    let name = if open {
+        "Hide keyframes"
+    } else {
+        "Show keyframes"
+    };
+    icons::hint(response, name, "U").clicked()
 }
 
-/// A control the height of a lane row, in a rect the caller chose.
-fn tiny_button(ui: &mut Ui, p: &Palette, rect: Rect, id: Id, icon: Icon, label: &str) -> Response {
-    let response = ui.interact(rect, id, Sense::click());
+/// The lane's menu, at the head of its first row: a small icon button with
+/// the graph's own "more" glyph, lit under the pointer and pressed while its
+/// menu is open. It is pressed anywhere in `hit` and lit in `rect`.
+fn options_button(
+    ui: &mut Ui,
+    p: &Palette,
+    [hit, rect]: [Rect; 2],
+    id: Id,
+    label: &str,
+) -> Response {
+    let response = ui.interact(hit, id, Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(5), p.hover);
-    }
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            CornerRadius::same(5),
-            Stroke::new(1.5, p.accent),
-            StrokeKind::Inside,
-        );
-    }
-    icons::paint(
-        ui.painter(),
-        Rect::from_center_size(rect.center(), Vec2::splat(12.0)),
-        icon,
-        if response.hovered() { p.fg } else { p.muted },
-    );
-    response.on_hover_text(label)
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    let lit = Response {
+        rect,
+        ..response.clone()
+    };
+    kit::paint_small_icon_button(ui, p, &lit, Icon::Dots, open);
+    icons::hint(
+        response.on_hover_cursor(CursorIcon::PointingHand),
+        label,
+        "",
+    )
 }
 
-/// The toggle that shows one curve alone.
-fn solo_toggle(ui: &mut Ui, p: &Palette, on: bool, label: &str) -> Response {
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::splat(widgets::SMALL_BUTTON), Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, label)
-    });
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter();
-        if response.hovered() {
-            painter.rect_filled(rect, CornerRadius::same(6), p.hover);
-        }
-        if response.has_focus() {
-            painter.rect_stroke(
-                rect,
-                CornerRadius::same(6),
-                Stroke::new(1.5, p.accent),
-                StrokeKind::Inside,
-            );
-        }
-        icons::paint(
-            painter,
-            Rect::from_center_size(rect.center(), Vec2::splat(14.0)),
-            Icon::Solo,
-            if on { p.accent } else { p.muted },
-        );
-    }
-    response
-        .on_hover_cursor(CursorIcon::Default)
-        .on_hover_text(label)
+/// The four corners of a key's diamond, `radius` from its centre.
+fn diamond(center: Pos2, radius: f32) -> Vec<Pos2> {
+    vec![
+        center - vec2(radius, 0.0),
+        center - vec2(0.0, radius),
+        center + vec2(radius, 0.0),
+        center + vec2(0.0, radius),
+    ]
+}
+
+/// The ring round a key or a handle that has the keyboard: the focus ring
+/// the controls wear, drawn round a point.
+fn ring(p: &Palette) -> Stroke {
+    Stroke::new(2.0, theme::tint(p.accent, 0.55))
 }
 
 #[cfg(test)]

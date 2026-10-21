@@ -613,6 +613,13 @@ struct Bench {
     size: Vec2,
     time: f64,
     seen: Vec<Seen>,
+    /// The names accessibility gives, in the order a screen reader walks
+    /// them: depth first through the tree.
+    reading: Vec<String>,
+    /// The name of the control that has the keyboard, if one has.
+    focused: Option<String>,
+    /// Where the scroll bars are.
+    bars: Vec<Rect>,
     refused: Vec<String>,
     said: Vec<String>,
     imports: usize,
@@ -659,6 +666,9 @@ impl Bench {
             size: vec2(300.0, 900.0),
             time: 0.0,
             seen: Vec::new(),
+            reading: Vec::new(),
+            focused: None,
+            bars: Vec::new(),
             refused: Vec::new(),
             said: Vec::new(),
             imports: 0,
@@ -697,6 +707,7 @@ impl Bench {
                 &mut self.selection,
                 &mut self.textures,
                 &mut self.titles,
+                &mut crate::peaks::HeldPeaks::default(),
                 &LibraryInput {
                     p: &self.palette,
                     project: &project,
@@ -734,6 +745,36 @@ impl Bench {
                     })
                 })
                 .collect();
+            let nodes: std::collections::HashMap<_, _> =
+                update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+            let name = |node: &egui::accesskit::Node| {
+                node.label().or_else(|| node.value()).map(str::to_owned)
+            };
+            self.focused = nodes.get(&update.focus).and_then(|node| name(node));
+            self.bars = (nodes.values())
+                .filter(|node| node.role() == Role::ScrollBar)
+                .filter_map(|node| node.bounds())
+                .map(|b| {
+                    Rect::from_min_max(
+                        pos2(b.x0 as f32, b.y0 as f32),
+                        pos2(b.x1 as f32, b.y1 as f32),
+                    )
+                })
+                .collect();
+            // The root is the one node that is no other's child.
+            let children: std::collections::HashSet<_> = (nodes.values())
+                .flat_map(|node| node.children().iter().copied())
+                .collect();
+            let mut walk: Vec<_> = (nodes.keys())
+                .filter(|id| !children.contains(id))
+                .copied()
+                .collect();
+            self.reading.clear();
+            while let Some(id) = walk.pop() {
+                let Some(node) = nodes.get(&id) else { continue };
+                self.reading.extend(name(node));
+                walk.extend(node.children().iter().rev().copied());
+            }
         }
         for action in actions {
             match action {
@@ -849,6 +890,17 @@ fn with_no_caption_track_the_tab_says_what_captions_are_and_starts_one() {
     bench.click("Import SRT or VTT…");
     bench.click("Import SRT or VTT");
     assert_eq!(bench.imports, 2, "from the tab and from its header");
+    // §5.2: the header's actions are on the search row, under the tabs.
+    let header = bench.find("Import SRT or VTT").unwrap().rect;
+    let search = (bench.seen.iter())
+        .find(|seen| seen.role == Role::TextInput)
+        .expect("the search field")
+        .rect;
+    assert!(
+        header.top() >= 34.0 && header.left() > search.right(),
+        "{header:?}"
+    );
+    assert!((header.center().y - search.center().y).abs() < 2.0);
 
     bench.click("New caption track");
     assert!(bench.has("English") && bench.has("Language or tag"));
@@ -866,6 +918,80 @@ fn with_no_caption_track_the_tab_says_what_captions_are_and_starts_one() {
     assert!(bench.has("Add caption") && bench.has("Caption language"));
     assert!(bench.says("No captions yet"));
     assert!(bench.refused.is_empty() && bench.said.is_empty());
+}
+
+#[test]
+fn a_short_library_shows_every_way_to_start_captions_above_its_footer() {
+    let mut bench = Bench::new();
+    // The library of a window of 760 by 560.
+    bench.size = vec2(236.0, 330.0);
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    let foot = bench.size.y - metrics::PANE_FOOTER;
+    let mut widths = Vec::new();
+    for action in [
+        "Generate from speech",
+        "New caption track",
+        "Import SRT or VTT…",
+    ] {
+        let rect = bench.find(action).expect("offered").rect;
+        assert!(
+            rect.bottom() <= foot,
+            "{action} at {rect:?} is under the footer"
+        );
+        widths.push(rect.width());
+    }
+    // They stand as one column.
+    assert!(
+        widths.iter().all(|width| (width - widths[0]).abs() < 0.5),
+        "{widths:?}"
+    );
+    assert!(bench.says("one track for each language"));
+    // The bar is in the trailing inset, where every other tab's is, and
+    // not over the column's side.
+    let right = bench.size.x;
+    assert!(
+        (bench.bars.iter()).any(|bar| bar.right() == right && bar.left() >= right - 6.0),
+        "{:?}",
+        bench.bars
+    );
+}
+
+#[test]
+fn the_search_row_reads_and_tabs_as_it_is_laid_out() {
+    let mut bench = Bench::new();
+    captioned(&mut bench.editor, "en", &[cue(0.0, 1.0, "One")]);
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    let names = [
+        "Search captions",
+        "Captions from speech",
+        "Import SRT or VTT",
+        "Export captions",
+    ];
+    // §7.4: leading to trailing, as the eye goes.
+    let lefts: Vec<_> = (names.iter())
+        .map(|name| bench.find(name).expect("on the search row").rect.left())
+        .collect();
+    assert!(lefts.is_sorted(), "{lefts:?}");
+    let read: Vec<_> = (bench.reading.iter())
+        .map(String::as_str)
+        .filter(|name| names.contains(name))
+        .collect();
+    assert_eq!(read, names, "read");
+    let mut tabbed: Vec<String> = Vec::new();
+    for _ in 0..20 {
+        if tabbed.len() == names.len() {
+            break;
+        }
+        bench.key(Key::Tab, Modifiers::NONE);
+        if let Some(name) = (bench.focused.as_deref()).filter(|name| names.contains(name))
+            && tabbed.last().map(String::as_str) != Some(name)
+        {
+            tabbed.push(name.to_owned());
+        }
+    }
+    assert_eq!(tabbed, names, "tabbed");
 }
 
 #[test]
@@ -902,8 +1028,9 @@ fn a_caption_is_added_at_the_playhead_and_typed_into_the_list() {
     bench.retype("Two");
     bench.key(Key::Enter, Modifiers::SHIFT);
     bench.frame(vec![Event::Text("lines".into())]);
-    // Clicking elsewhere keeps the words too.
-    let away = pos2(150.0, 860.0);
+    // Clicking elsewhere keeps the words too. (§5.2: the foot of the panel
+    // is the library's footer now, so the click is on the empty list.)
+    let away = pos2(150.0, 700.0);
     bench.click_at(away, PointerButton::Primary);
     assert_eq!(texts(&bench.editor, track), ["Two\nlines"]);
     assert_eq!(bench.steps(), 4);

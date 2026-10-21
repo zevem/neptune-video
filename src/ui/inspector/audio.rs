@@ -9,19 +9,20 @@
 //! `SetEffects`; a preset is one step of its own, made in `crate::audio` as
 //! the library and the command panel make it.
 use super::{
-    card,
-    clip::{FIELD, Pane},
+    FIELD, button, button_row, card,
+    clip::Pane,
+    keyed_card,
     look::{Reorder, effect_name, set_param},
-    motion::{bar, note},
+    motion::bar,
+    note, number, row, section,
 };
 use crate::{
     audio::{self, Given, Preset},
     duck,
     icons::Icon,
-    theme,
     ui::{
         Action, fades,
-        widgets::{self, Kind, row, section},
+        widgets::{self, Kind},
     },
 };
 use editor_core::{AnimTarget, Effect, look};
@@ -48,7 +49,9 @@ impl Pane<'_> {
     fn ducking(&mut self, ui: &mut Ui) {
         let p = self.p;
         section(ui, p, "Ducking");
-        card(ui, p, |ui| {
+        // Under the keyed Playback card, its value column holds down the
+        // pane: its fields end where the keyed rows' do.
+        keyed_card(ui, p, |ui| {
             let under_way = (self.state.ducking.as_ref())
                 .filter(|run| run.clips.contains(&self.clip.id))
                 .cloned();
@@ -59,32 +62,35 @@ impl Pane<'_> {
                 };
                 let done = run.taken as f32 / run.total.max(1) as f32;
                 bar(ui, p, &title, "Ducking", done);
-                ui.add_space(4.0);
-                if widgets::button(ui, p, None, "Stop ducking", Kind::Plain).clicked() {
-                    self.actions.push(Action::CancelDuck);
-                }
+                button_row(ui, p, |ui| {
+                    if button(ui, p, None, "Stop ducking", Kind::Plain).clicked() {
+                        self.actions.push(Action::CancelDuck);
+                    }
+                });
                 return;
             }
             row(ui, p, "Depth", |ui| {
                 let range = -duck::DEEPEST_DB..=-duck::SHALLOWEST_DB;
                 let depth = &mut self.state.duck_db;
-                widgets::named_number(ui, depth, range, 0.5, " dB", 0, FIELD, "Depth")
+                number(ui, p, depth, range, 0.5, " dB", 0, FIELD, "Depth")
                     .on_hover_text("How far the clip is lowered where other clips are heard");
             });
             let refused = duck::refusal(self.project, self.clip.id);
-            ui.add_enabled_ui(refused.is_none(), |ui| {
-                let button = widgets::button(ui, p, Some(Icon::Volume), duck::LABEL, Kind::Plain)
-                    .on_hover_text(
-                        "Lower the clip wherever other clips are heard, as volume keyframes",
-                    )
-                    .on_disabled_hover_text(refused.as_deref().unwrap_or_default());
-                if button.clicked() {
-                    let depth = duck::depth_of_db(self.state.duck_db).unwrap_or(duck::DEPTH);
-                    self.actions.push(Action::Duck {
-                        clips: vec![self.clip.id],
-                        depth,
-                    });
-                }
+            button_row(ui, p, |ui| {
+                ui.add_enabled_ui(refused.is_none(), |ui| {
+                    let button = button(ui, p, Some(Icon::Volume), duck::LABEL, Kind::Plain)
+                        .on_hover_text(
+                            "Lower the clip wherever other clips are heard, as volume keyframes",
+                        )
+                        .on_disabled_hover_text(refused.as_deref().unwrap_or_default());
+                    if button.clicked() {
+                        let depth = duck::depth_of_db(self.state.duck_db).unwrap_or(duck::DEPTH);
+                        self.actions.push(Action::Duck {
+                            clips: vec![self.clip.id],
+                            depth,
+                        });
+                    }
+                });
             });
             note(
                 ui,
@@ -108,7 +114,9 @@ impl Pane<'_> {
         section(ui, p, "Audio effects");
         for (index, effect) in list.iter().enumerate() {
             ui.push_id(effect.id, |ui| {
-                card(ui, p, |ui| {
+                // Its rows keep the key column clear, with no diamond in it:
+                // the fields of every card end at one place.
+                keyed_card(ui, p, |ui| {
                     if let Some(effect) =
                         self.audio_effect_rows(ui, effect, index, list.len(), &mut reorder)
                     {
@@ -118,32 +126,30 @@ impl Pane<'_> {
             });
         }
         if list.is_empty() {
-            ui.label(
-                egui::RichText::new("No audio effects on this clip.")
-                    .font(theme::regular(12.0))
-                    .color(p.muted),
-            );
+            card(ui, p, |ui| note(ui, p, "No audio effects on this clip."));
         }
-        ui.add_enabled_ui(list.len() < look::MAX_EFFECTS, |ui| {
-            let add = widgets::button(ui, p, Some(Icon::Plus), "Add audio effect", Kind::Plain)
-                .on_disabled_hover_text("A clip holds sixteen effects at most");
-            egui::Popup::menu(&add).show(|ui| {
-                widgets::menu_style(ui, 190.0);
-                // What a voice or a mix most often wants first, then each
-                // kind by itself. Pitch is the Playback card's.
-                for listed in Preset::ALL {
-                    if widgets::menu_item(ui, p, None, listed.name(), "").clicked() {
-                        preset = Some(listed);
+        button_row(ui, p, |ui| {
+            ui.add_enabled_ui(list.len() < look::MAX_EFFECTS, |ui| {
+                let add = button(ui, p, Some(Icon::Plus), "Add audio effect", Kind::Plain)
+                    .on_disabled_hover_text("A clip holds sixteen effects at most");
+                egui::Popup::menu(&add).show(|ui| {
+                    widgets::menu_style(ui, 196.0);
+                    // What a voice or a mix most often wants first, then
+                    // each kind by itself. Pitch is the Playback card's.
+                    for listed in Preset::ALL {
+                        if widgets::menu_item(ui, p, None, listed.name(), "").clicked() {
+                            preset = Some(listed);
+                        }
                     }
-                }
-                widgets::hairline(ui, p);
-                // A kind this FFmpeg does not run is offered as every route
-                // offers it; its card says so once it is added.
-                for kind in audio::added() {
-                    if widgets::menu_item(ui, p, None, effect_name(kind), "").clicked() {
-                        reorder = Some(Reorder::Add(kind));
+                    widgets::menu_separator(ui, p);
+                    // A kind this FFmpeg does not run is offered as every
+                    // route offers it; its card says so once it is added.
+                    for kind in audio::added() {
+                        if widgets::menu_item(ui, p, None, effect_name(kind), "").clicked() {
+                            reorder = Some(Reorder::Add(kind));
+                        }
                     }
-                }
+                });
             });
         });
 
@@ -185,16 +191,11 @@ impl Pane<'_> {
         }
         let runs = !audio::unavailable(effect.kind, self.missing);
         if !runs {
-            ui.label(
-                egui::RichText::new(audio::UNAVAILABLE)
-                    .font(theme::regular(11.5))
-                    .color(self.p.muted),
-            );
+            note(ui, self.p, audio::UNAVAILABLE);
         }
         if !open {
             return edited;
         }
-        widgets::hairline(ui, self.p);
         let target = AnimTarget::Effect(effect.kind);
         ui.add_enabled_ui(runs, |ui| {
             for spec in look::spec(effect.kind) {

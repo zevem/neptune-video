@@ -366,6 +366,13 @@ impl Saving {
             .min_by(f64::total_cmp)
     }
 
+    /// The requests of the cards to show, in their order, without the
+    /// words on them.
+    pub fn card_requests(&self) -> impl Iterator<Item = u64> + '_ {
+        (self.writing.iter().map(|writing| writing.request))
+            .chain(self.offers.iter().map(|offer| offer.request))
+    }
+
     /// The cards to show, files being written first.
     pub fn cards(&self) -> Vec<Card> {
         let writing = self.writing.iter().map(|writing| Card {
@@ -732,6 +739,10 @@ mod tests {
             None
         );
         assert_eq!(saving.cards().len(), 2);
+        assert_eq!(
+            saving.card_requests().collect::<Vec<_>>(),
+            (saving.cards().iter().map(|card| card.request)).collect::<Vec<_>>()
+        );
 
         let failed = answer(
             2,

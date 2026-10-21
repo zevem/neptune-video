@@ -5,22 +5,22 @@
 //! change is the whole new stack, held in the draft and committed as one
 //! `SetEffects` for the clip the draft was made for.
 use super::{
-    card,
-    clip::{FIELD, Field, Pane},
+    FIELD, button, button_row, card, card_head, clip::Field, clip::Pane, fitted_row, head_button,
+    keyed_row, note, section, select_menu, tall_row, well,
 };
 use crate::{
     icons::Icon,
     theme,
     ui::{
-        Action, ClipDraft,
-        widgets::{self, Kind, section},
+        Action, ClipDraft, kit,
+        widgets::{self, KeyState, Kind},
     },
 };
 use editor_core::{
     AnimTarget, Command, Effect, EffectKind, LookPreset, MediaKind, ParamKey, ParamSpec,
     ParamValue, look,
 };
-use eframe::egui::{self, Ui, WidgetInfo, WidgetType};
+use eframe::egui::{self, Ui};
 use uuid::Uuid;
 
 pub(super) const PRESETS: [(LookPreset, &str); 7] = [
@@ -258,6 +258,7 @@ pub(super) fn presented(target: AnimTarget, spec: &ParamSpec) -> (&'static str, 
         scale,
         min: spec.min,
         max: spec.max,
+        prefix: None,
         suffix,
         decimals,
         // A field is dragged across its range in three hundred points, and
@@ -313,7 +314,7 @@ impl Pane<'_> {
         let state = self.key_state(Some(id), &keys);
         let mut changed = None;
         let mut reset = false;
-        let row = widgets::keyed_row_with(
+        let row = keyed_row(
             ui,
             p,
             label,
@@ -321,9 +322,9 @@ impl Pane<'_> {
             state,
             |ui| changed = self.field(ui, Some(id), spec.key, stored, &field, label),
             |ui| {
-                reset = state == widgets::KeyState::Off
+                reset = state == KeyState::Off
                     && !is_default(stored, spec)
-                    && widgets::small_icon_button(ui, p, Icon::Rotate, &format!("Reset {what}"))
+                    && kit::small_icon_button(ui, p, Icon::Rotate, &format!("Reset {what}"))
                         .clicked();
             },
         );
@@ -347,13 +348,12 @@ impl Pane<'_> {
         let what = label.to_lowercase();
         let mut changed = None;
         let mut reset = false;
-        widgets::fitted_row(ui, p, label, |ui| {
+        fitted_row(ui, p, label, |ui| {
             // The field keeps its place at the trailing edge whether or not
             // the reset is beside it.
             changed = self.field(ui, Some(id), spec.key, stored, &field, label);
             reset = !is_default(stored, spec)
-                && widgets::small_icon_button(ui, p, Icon::Rotate, &format!("Reset {what}"))
-                    .clicked();
+                && kit::small_icon_button(ui, p, Icon::Rotate, &format!("Reset {what}")).clicked();
         });
         if reset { Some(spec.default) } else { changed }
     }
@@ -382,46 +382,30 @@ impl Pane<'_> {
 
         section(ui, p, "Looks");
         card(ui, p, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                for (preset, name) in PRESETS {
-                    let chosen = given.is_some_and(|given| given.preset == preset);
-                    let kind = if chosen { Kind::Primary } else { Kind::Plain };
-                    let button =
-                        widgets::button(ui, p, None, name, kind).on_hover_text(if chosen {
-                            "The look the clip has"
-                        } else if given.is_some() {
-                            "Give the clip this look in place of the one it has"
-                        } else {
-                            "Give the clip this look: its effects are added below"
-                        });
-                    button.widget_info(|| {
-                        WidgetInfo::selected(WidgetType::Button, ui.is_enabled(), chosen, name)
-                    });
-                    if button.clicked() && !chosen {
-                        // One look at a time: this one's effects take the
-                        // place of the last one's in the stack, as strong as
-                        // that one was.
-                        let strength = given.map_or(self.state.strength, |given| given.strength);
-                        let effects = look::with_look(stack, Some((preset, strength)));
-                        self.actions.push(look_command("Apply look", effects));
-                    }
+            let given_preset = given.map(|given| given.preset);
+            let picked = look_cards(ui, p, given_preset, |chosen| {
+                if chosen {
+                    "The look the clip has"
+                } else if given.is_some() {
+                    "Give the clip this look in place of the one it has"
+                } else {
+                    "Give the clip this look: its effects are added below"
                 }
             });
-            ui.add_space(2.0);
-            widgets::fitted_row(ui, p, "Strength", |ui| {
+            if let Some(preset) = picked.filter(|preset| Some(*preset) != given_preset) {
+                // One look at a time: this one's effects take the place of
+                // the last one's in the stack, as strong as that one was.
+                let strength = given.map_or(self.state.strength, |given| given.strength);
+                let effects = look::with_look(stack, Some((preset, strength)));
+                self.actions.push(look_command("Apply look", effects));
+            }
+            fitted_row(ui, p, "Strength", |ui| {
                 // Of the look the clip has, how much of it that is; with no
                 // look, how much of one the next brings.
                 let mut strength = given.map_or(self.state.strength, |given| given.strength);
-                ui.add_sized(
-                    [38.0, 18.0],
-                    egui::Label::new(
-                        egui::RichText::new(format!("{:.0} %", strength * 100.0))
-                            .font(theme::regular(12.0))
-                            .color(p.secondary),
-                    ),
-                );
-                let slider = widgets::slider(ui, p, &mut strength, 1.0, 112.0, "Look strength")
+                percent(ui, p, strength);
+                let width = slider_width(ui, 112.0);
+                let slider = widgets::slider(ui, p, &mut strength, 1.0, width, "Look strength")
                     .on_hover_text(if given.is_some() {
                         "How much of its look the clip has"
                     } else {
@@ -446,8 +430,8 @@ impl Pane<'_> {
                 let name = (PRESETS.iter())
                     .find(|(preset, _)| *preset == given.preset)
                     .map_or("look", |(_, name)| name);
-                widgets::fitted_row(ui, p, name, |ui| {
-                    if widgets::button(ui, p, None, "Remove look", Kind::Plain).clicked() {
+                fitted_row(ui, p, name, |ui| {
+                    if button(ui, p, None, "Remove look", Kind::Plain).clicked() {
                         let effects = look::with_look(stack, None);
                         self.actions.push(look_command("Remove look", effects));
                     }
@@ -465,7 +449,7 @@ impl Pane<'_> {
         section(ui, p, "Effects");
         for (index, effect) in list.iter().enumerate() {
             ui.push_id(effect.id, |ui| {
-                card(ui, p, |ui| {
+                super::keyed_card(ui, p, |ui| {
                     if let Some(effect) =
                         self.effect_rows(ui, effect, index, list.len(), &mut reorder)
                     {
@@ -475,32 +459,29 @@ impl Pane<'_> {
             });
         }
         if list.is_empty() {
-            ui.label(
-                egui::RichText::new("No effects on this clip.")
-                    .font(theme::regular(12.0))
-                    .color(p.muted),
-            );
+            card(ui, p, |ui| note(ui, p, "No effects on this clip."));
         }
-        ui.add_enabled_ui(list.len() < look::MAX_EFFECTS, |ui| {
-            let add = widgets::button(ui, p, Some(Icon::Plus), "Add effect", Kind::Plain)
-                .on_disabled_hover_text("A clip holds sixteen effects at most");
-            egui::Popup::menu(&add).show(|ui| {
-                widgets::menu_style(ui, 190.0);
-                for family in Family::LOOK {
-                    ui.label(
-                        egui::RichText::new(family.label())
-                            .font(theme::medium(11.0))
-                            .color(p.muted),
-                    );
-                    for kind in EffectKind::ALL {
-                        if self::family(kind) == family
-                            && addable(kind)
-                            && widgets::menu_item(ui, p, None, effect_name(kind), "").clicked()
-                        {
-                            reorder = Some(Reorder::Add(kind));
+        button_row(ui, p, |ui| {
+            ui.add_enabled_ui(list.len() < look::MAX_EFFECTS, |ui| {
+                let add = button(ui, p, Some(Icon::Plus), "Add effect", Kind::Plain)
+                    .on_disabled_hover_text("A clip holds sixteen effects at most");
+                egui::Popup::menu(&add).show(|ui| {
+                    widgets::menu_style(ui, 196.0);
+                    for (at, family) in Family::LOOK.into_iter().enumerate() {
+                        if at > 0 {
+                            widgets::menu_separator(ui, p);
+                        }
+                        kit::menu_heading(ui, p, family.label());
+                        for kind in EffectKind::ALL {
+                            if self::family(kind) == family
+                                && addable(kind)
+                                && widgets::menu_item(ui, p, None, effect_name(kind), "").clicked()
+                            {
+                                reorder = Some(Reorder::Add(kind));
+                            }
                         }
                     }
-                }
+                });
             });
         });
 
@@ -563,45 +544,37 @@ impl Pane<'_> {
         let name = effect_name(effect.kind);
         let open = self.state.effect == Some(effect.id);
         let mut switched = false;
-        ui.horizontal(|ui| {
-            ui.set_min_height(widgets::SMALL_BUTTON);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                let small = |ui: &mut Ui, icon, enabled, label: &str| {
-                    ui.add_enabled_ui(enabled, |ui| widgets::small_icon_button(ui, p, icon, label))
-                        .inner
-                        .clicked()
-                };
-                if small(ui, Icon::Trash, true, &format!("Remove {name}")) {
-                    *reorder = Some(Reorder::Remove(index));
+        let header = card_head(
+            ui,
+            p,
+            name,
+            Some(open),
+            !effect.enabled,
+            (4, |ui: &mut Ui| {
+                let (icon, verb) = switch;
+                switched =
+                    kit::small_icon_toggle(ui, p, icon, effect.enabled, &format!("{verb} {name}"))
+                        .clicked();
+                if head_button(ui, p, Icon::ArrowUp, index > 0, &format!("Move {name} up")) {
+                    *reorder = Some(Reorder::Up(index));
                 }
-                if small(
+                if head_button(
                     ui,
+                    p,
                     Icon::ArrowDown,
                     index + 1 < count,
                     &format!("Move {name} down"),
                 ) {
                     *reorder = Some(Reorder::Down(index));
                 }
-                if small(ui, Icon::ArrowUp, index > 0, &format!("Move {name} up")) {
-                    *reorder = Some(Reorder::Up(index));
+                if head_button(ui, p, Icon::Trash, true, &format!("Remove {name}")) {
+                    *reorder = Some(Reorder::Remove(index));
                 }
-                let (icon, verb) = switch;
-                switched = widgets::small_icon_toggle(
-                    ui,
-                    p,
-                    icon,
-                    effect.enabled,
-                    &format!("{verb} {name}"),
-                )
-                .clicked();
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    if widgets::disclosure(ui, p, open, name, !effect.enabled).clicked() {
-                        self.state.effect = (!open).then_some(effect.id);
-                    }
-                });
-            });
-        });
+            }),
+        );
+        if header.is_some_and(|header| header.clicked()) {
+            self.state.effect = (!open).then_some(effect.id);
+        }
         (open, switched)
     }
 
@@ -631,18 +604,11 @@ impl Pane<'_> {
             return edited;
         }
 
-        widgets::hairline(ui, p);
-        widgets::fitted_row(ui, p, "Mix", |ui| {
+        fitted_row(ui, p, "Mix", |ui| {
             let mut mix = effect.mix;
-            ui.add_sized(
-                [38.0, 18.0],
-                egui::Label::new(
-                    egui::RichText::new(format!("{:.0} %", mix * 100.0))
-                        .font(theme::regular(12.0))
-                        .color(p.secondary),
-                ),
-            );
-            if widgets::slider(ui, p, &mut mix, 1.0, 112.0, &format!("{name} mix")).changed() {
+            percent(ui, p, mix);
+            let width = slider_width(ui, 112.0);
+            if widgets::slider(ui, p, &mut mix, 1.0, width, &format!("{name} mix")).changed() {
                 edit(&|effect| effect.mix = mix);
             }
         });
@@ -655,13 +621,15 @@ impl Pane<'_> {
             let mut rgb =
                 KEY_COLOUR.map(|key| self.shown(Some(effect.id), key, stored_of(self.next, key)));
             let mut picked = false;
-            let row = widgets::keyed_row(ui, p, "Key colour", "key colour", state, |ui| {
-                let swatch = ui.color_edit_button_rgb(&mut rgb);
-                swatch.widget_info(|| {
-                    WidgetInfo::labeled(WidgetType::ColorButton, true, "Key colour")
-                });
-                picked = swatch.changed();
-            });
+            let row = keyed_row(
+                ui,
+                p,
+                "Key colour",
+                "key colour",
+                state,
+                |ui| picked = well::linear_well(ui, p, "Key colour", &mut rgb).changed(),
+                |_| {},
+            );
             if picked {
                 for (key, value) in KEY_COLOUR.into_iter().zip(rgb) {
                     if let Some(value) = self.write(Some(effect.id), key, value.clamp(0.0, 1.0)) {
@@ -697,21 +665,26 @@ impl Pane<'_> {
             };
             let project = self.project;
             let mut chosen = effect.asset_id;
-            widgets::fitted_row(ui, p, label, |ui| {
+            tall_row(ui, p, label, |ui| {
                 let current = (chosen.and_then(|id| project.assets.get(&id)))
                     .map_or("Missing", |asset| asset.name.as_str());
-                egui::ComboBox::from_id_salt("effect-asset")
-                    .icon(widgets::combo_icon)
-                    .selected_text(current)
-                    .width(132.0)
-                    .truncate()
-                    .show_ui(ui, |ui| {
+                let width = ui.available_width().min(132.0);
+                let (_, picked) =
+                    select_menu(ui, p, ("effect-asset", label), current, width, |ui| {
+                        let mut picked = None;
                         for asset in project.assets.values().filter(|a| a.kind == wanted) {
-                            ui.selectable_value(&mut chosen, Some(asset.id), &asset.name);
+                            let on = chosen == Some(asset.id);
+                            if kit::menu_row(ui, p, None, &asset.name, "", false, Some(on))
+                                .clicked()
+                            {
+                                picked = Some(asset.id);
+                            }
                         }
-                    })
-                    .response
-                    .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, label));
+                        picked
+                    });
+                if let Some(id) = picked.flatten() {
+                    chosen = Some(id);
+                }
             });
             if chosen != effect.asset_id {
                 edit(&|effect| effect.asset_id = chosen);
@@ -719,4 +692,139 @@ impl Pane<'_> {
         }
         edited
     }
+}
+
+/// The narrowest a look card's swatch is, and the room between two. Three
+/// fit across the narrowest card, so the seven looks and the strength
+/// under them stay about a screen of the panel.
+const LOOK_CARD: f32 = 68.0;
+const LOOK_GAP: f32 = 8.0;
+/// How far a card's hover and pressed fills reach past its swatch and name.
+const LOOK_BLEED: f32 = 4.0;
+
+/// The looks as the library's cards show them (§4.4.7), as many to a row as
+/// fit, at most four: the sample frame toned by the look, its name 6 under
+/// it in Medium 12, or a little smaller where a name would not fit whole
+/// (`name_font`). The swatches start and end where the card's rows do; a
+/// card's fills bleed 4 past them into the margin. The look the clip has is
+/// pressed, with a check on its swatch. Each is a button named by its look,
+/// said to be chosen or not, and `hint` is its tooltip. Hands back the look
+/// clicked.
+fn look_cards(
+    ui: &mut egui::Ui,
+    p: &theme::Palette,
+    given: Option<LookPreset>,
+    hint: impl Fn(bool) -> &'static str,
+) -> Option<LookPreset> {
+    use egui::{Rect, Sense, Stroke, Vec2, WidgetInfo, WidgetType, pos2, vec2};
+    super::rule(ui, p);
+    let inner = ui.available_width() - 2.0 * super::LEAD;
+    let columns = (((inner + LOOK_GAP) / (LOOK_CARD + LOOK_GAP)).floor() as usize).clamp(2, 4);
+    let width = (inner - LOOK_GAP * (columns - 1) as f32) / columns as f32;
+    let swatch = vec2(width, (width * 9.0 / 16.0).round());
+    let name_height = 16.0;
+    let cell_height = swatch.y + 6.0 + name_height;
+    let rows = PRESETS.len().div_ceil(columns);
+    let pad = 8.0 + LOOK_BLEED;
+    let height = 2.0 * pad + rows as f32 * cell_height + (rows - 1) as f32 * LOOK_GAP;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let enabled = ui.is_enabled();
+    let font = name_font(ui, width);
+    let mut picked = None;
+    for (index, (preset, name)) in PRESETS.into_iter().enumerate() {
+        let (row, column) = (index / columns, index % columns);
+        let min = pos2(
+            rect.left() + super::LEAD + column as f32 * (width + LOOK_GAP),
+            rect.top() + pad + row as f32 * (cell_height + LOOK_GAP),
+        );
+        let cell = Rect::from_min_size(min, vec2(width, cell_height));
+        let back = cell.expand(LOOK_BLEED);
+        let chosen = given == Some(preset);
+        let response = ui.interact(back, ui.id().with(("look-card", name)), Sense::click());
+        response.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, chosen, name));
+        if ui.is_rect_visible(back) {
+            let painter = ui.painter();
+            let hover = kit::hover_amount(ui, &response);
+            if chosen || (enabled && response.is_pointer_button_down_on()) {
+                painter.rect_filled(back, 10, p.pressed);
+            } else if hover > 0.0 {
+                painter.rect_filled(back, 10, p.hover.gamma_multiply(hover));
+            }
+            if response.has_focus() {
+                super::controls::focus_ring(painter, back, 10, *p);
+            }
+            let tile = Rect::from_min_size(cell.min, swatch);
+            crate::ui::browser::look_sample(
+                &painter.with_clip_rect(tile.intersect(painter.clip_rect())),
+                tile,
+                8,
+                preset,
+            );
+            if chosen {
+                // Over a picture, as a badge is: white on a dark disc.
+                let centre = pos2(tile.right() - 10.0, tile.top() + 10.0);
+                painter.circle_filled(centre, 8.0, egui::Color32::from_black_alpha(150));
+                kit::on_dark(painter, || {
+                    crate::icons::paint(
+                        painter,
+                        Rect::from_center_size(centre, Vec2::splat(12.0)),
+                        Icon::Check,
+                        egui::Color32::WHITE,
+                    );
+                });
+            }
+            painter.rect_stroke(
+                tile,
+                8,
+                Stroke::new(1.0, p.canvas_edge()),
+                egui::StrokeKind::Inside,
+            );
+            let ink = if enabled { p.fg } else { p.muted };
+            let galley = super::controls::elided(painter, name, font.clone(), ink, width);
+            painter.galley(pos2(tile.left(), tile.bottom() + 6.0), galley, ink);
+        }
+        let response = response
+            .on_hover_text(hint(chosen))
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.clicked() {
+            picked = Some(preset);
+        }
+    }
+    picked
+}
+
+/// The one size every look's name is written in under swatches `width`
+/// wide, as the section switch fits its names: Medium 12 where all seven
+/// fit, then 11.5, then 11, past which the longest are elided.
+pub(super) fn name_font(ui: &Ui, width: f32) -> egui::FontId {
+    let fits = |size: f32| {
+        PRESETS.iter().all(|(_, name)| {
+            let galley = ui.painter().layout_no_wrap(
+                (*name).to_owned(),
+                theme::medium(size),
+                egui::Color32::PLACEHOLDER,
+            );
+            galley.size().x <= width
+        })
+    };
+    let size = [12.0, 11.5].into_iter().find(|size| fits(*size));
+    theme::medium(size.unwrap_or(11.0))
+}
+
+/// A part of a whole in hundredths, read beside the slider that sets it.
+pub(super) fn percent(ui: &mut Ui, p: &theme::Palette, value: f32) {
+    ui.add_sized(
+        [40.0, 18.0],
+        egui::Label::new(
+            egui::RichText::new(format!("{:.0} %", value * 100.0))
+                .font(theme::regular(12.5))
+                .color(p.secondary),
+        ),
+    );
+}
+
+/// The width of a slider of a row whose figure is laid out, at most
+/// `widest`: what the row leaves beside a short label.
+pub(super) fn slider_width(ui: &Ui, widest: f32) -> f32 {
+    (ui.available_width() - 72.0).clamp(48.0, widest)
 }

@@ -27,8 +27,9 @@ const RED: [u8; 4] = [220, 40, 40, 255];
 /// The window the viewer is painted in, and where its canvas of 16 by 9
 /// comes to lie in it: the quarters of its middle row.
 const WINDOW: [f32; 2] = [1000.0, 700.0];
-const LEFT: Pos2 = pos2(259.0, 326.0);
-const RIGHT: Pos2 = pos2(741.0, 326.0);
+// The middle row moved down 2 points with the 44-point transport (§3.4).
+const LEFT: Pos2 = pos2(259.0, 328.0);
+const RIGHT: Pos2 = pos2(741.0, 328.0);
 
 /// A directory of the test's own, removed with whatever is in it when the
 /// test ends, however it ends.
@@ -213,6 +214,9 @@ impl Stage {
                     looping: false,
                     media: Some(service),
                     record: Default::default(),
+                    library: true,
+                    quality: Default::default(),
+                    cards: &[],
                 },
                 &mut actions,
             );

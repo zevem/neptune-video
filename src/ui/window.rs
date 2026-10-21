@@ -3,36 +3,57 @@
 //! and the edges resize it. Nothing here touches the project; closing goes
 //! through the same request as the system's, so unsaved work is still asked
 //! about.
+use super::{
+    controls::{self, Level},
+    kit,
+};
 use crate::{
     icons::{self, Icon},
     theme::{self, Palette, metrics},
 };
 use eframe::egui::{
-    self, Color32, CursorIcon, Pos2, Rect, ResizeDirection, Sense, Stroke, Ui, Vec2, WidgetInfo,
-    WidgetType, vec2,
+    self, Align2, Color32, CursorIcon, Id, Pos2, Rect, ResizeDirection, Sense, Stroke, Ui, Vec2,
+    WidgetInfo, WidgetType, vec2,
 };
 
-/// How far the toolbar's own controls start from the window's leading edge:
-/// clear of the lights.
-pub const LEADING: f32 = 70.0;
-
-/// The window's corner for its state. Windows rounds and outlines the window
-/// itself; elsewhere a maximized or fullscreen window is square, except that
-/// macOS keeps a zoomed window's corners.
-fn radius_for(fullscreen: bool, maximized: bool) -> u8 {
-    let rounded =
-        !cfg!(target_os = "windows") && !fullscreen && (cfg!(target_os = "macos") || !maximized);
-    if rounded { metrics::WINDOW_RADIUS } else { 0 }
+/// Whether the window's corners are round in its state, whoever rounds them:
+/// a maximized or fullscreen window is square, except that macOS keeps a
+/// zoomed window's corners.
+fn round_for(fullscreen: bool, maximized: bool) -> bool {
+    !fullscreen && (cfg!(target_os = "macos") || !maximized)
 }
 
-pub fn corner_radius(ctx: &egui::Context) -> u8 {
+/// The corner the app draws for the window's state. Windows rounds and
+/// outlines the window itself, so the app's is square there.
+fn radius_for(fullscreen: bool, maximized: bool) -> u8 {
+    if !cfg!(target_os = "windows") && round_for(fullscreen, maximized) {
+        metrics::WINDOW_RADIUS
+    } else {
+        0
+    }
+}
+
+fn state(ctx: &egui::Context) -> (bool, bool) {
     ctx.input(|input| {
         let viewport = input.viewport();
-        radius_for(
+        (
             viewport.fullscreen.unwrap_or(false),
             viewport.maximized.unwrap_or(false),
         )
     })
+}
+
+pub fn corner_radius(ctx: &egui::Context) -> u8 {
+    let (fullscreen, maximized) = state(ctx);
+    radius_for(fullscreen, maximized)
+}
+
+/// Whether the window looks round at its corners, drawn by the app or by
+/// the system. What is inset from the window's edge follows this, so it
+/// stays concentric with the corner a person sees.
+pub fn is_round(ctx: &egui::Context) -> bool {
+    let (fullscreen, maximized) = state(ctx);
+    round_for(fullscreen, maximized)
 }
 
 fn toggle_maximized(ctx: &egui::Context) {
@@ -125,6 +146,187 @@ pub fn controls(ui: &mut Ui, left_center: Pos2, p: &Palette) {
     }
 }
 
+/// The interface's size as it was last changed, said under the toolbar.
+#[derive(Clone)]
+struct InterfaceSize {
+    level: Level,
+    /// The size asked for was more than the window has room for.
+    capped: bool,
+}
+
+fn interface_size_id() -> Id {
+    Id::new("interface-size")
+}
+
+/// Says the interface's new size for a moment under the toolbar: `scale`,
+/// and whether it was held below the size asked for.
+pub fn say_interface_size(ctx: &egui::Context, scale: f32, capped: bool) {
+    let said = InterfaceSize {
+        level: Level {
+            name: "Interface size",
+            value: format!("{:.0}%", scale * 100.0),
+            shown: ctx.input(|input| input.time),
+        },
+        capped,
+    };
+    ctx.data_mut(|data| data.insert_temp(interface_size_id(), said));
+}
+
+/// Terminal's level capsule for the interface's size, while it is said: the
+/// name, the value and, when the size was held down, why. It holds still and
+/// lets the window sleep, then fades; it takes no input.
+pub fn interface_size(ctx: &egui::Context, p: &Palette) {
+    let Some(said) = ctx.data(|data| data.get_temp::<InterfaceSize>(interface_size_id())) else {
+        return;
+    };
+    let level = &said.level;
+    let now = ctx.input(|input| input.time);
+    let hold = level.shown + HOLD - now;
+    // Under Reduce motion it holds and is gone, with no frames to fade in.
+    let still = kit::reduced_motion(ctx);
+    let opacity = if still {
+        (hold > 0.0).then_some(1.0)
+    } else {
+        level.opacity(now)
+    };
+    let Some(opacity) = opacity else {
+        ctx.data_mut(|data| data.remove::<InterfaceSize>(interface_size_id()));
+        return;
+    };
+    // Sleep through the hold; repaint only for the fade.
+    if hold > 0.0 {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(hold));
+    } else {
+        ctx.request_repaint();
+    }
+    const NOTE: &str = ", the largest this window has room for";
+    egui::Area::new(controls::viewport_id(ctx, Id::new("neptune-level")))
+        .order(egui::Order::Tooltip)
+        .interactable(false)
+        // It fades by its own clock, so that the hold asks for no frames.
+        .fade_in(false)
+        .anchor(Align2::CENTER_TOP, vec2(0.0, metrics::TOOLBAR_HEIGHT + 8.0))
+        .show(ctx, |ui| {
+            ui.set_opacity(opacity);
+            let painter = ui.painter().clone();
+            let name = painter.layout_no_wrap(level.name.into(), theme::medium(12.0), p.secondary);
+            let value = painter.layout_no_wrap(level.value.clone(), theme::medium(12.0), p.fg);
+            let note = said
+                .capped
+                .then(|| painter.layout_no_wrap(NOTE.into(), theme::regular(12.0), p.secondary));
+            let note_width = note.as_ref().map_or(0.0, |note| note.size().x);
+            let (rect, response) = ui.allocate_exact_size(
+                vec2(name.size().x + value.size().x + note_width + 36.0, 28.0),
+                Sense::hover(),
+            );
+            response.widget_info(|| {
+                let mut label = format!("{} {}", level.name, level.value);
+                if said.capped {
+                    label.push_str(NOTE);
+                }
+                WidgetInfo::labeled(WidgetType::Label, true, label)
+            });
+            controls::capsule(&painter, rect, *p);
+            let name = controls::galley_at(
+                &painter,
+                Pos2::new(rect.left() + 14.0, rect.center().y),
+                name,
+            );
+            let value = controls::galley_at(
+                &painter,
+                Pos2::new(name.right() + 8.0, rect.center().y),
+                value,
+            );
+            if let Some(note) = note {
+                controls::galley_at(&painter, Pos2::new(value.right(), rect.center().y), note);
+            }
+        });
+}
+
+/// How long the capsule holds before it fades: Terminal's level's.
+const HOLD: f64 = 1.2;
+
+/// A side panel's slide in or out, Terminal's `SidebarSlide`: it starts from
+/// however much of the panel was showing, so a toggle reversed midway turns
+/// around without a jump.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slide {
+    /// The state slid toward.
+    shown: bool,
+    /// How much showed as it set off, and when.
+    from: f32,
+    started: f64,
+}
+
+impl Slide {
+    /// A panel at rest, shown or not.
+    pub fn settled(shown: bool) -> Self {
+        Self {
+            shown,
+            from: f32::from(u8::from(shown)),
+            started: f64::NEG_INFINITY,
+        }
+    }
+
+    /// The slide toward `shown` from `now` on. A change sets off from where
+    /// the panel is; the same state goes on as it was.
+    pub fn toward(self, shown: bool, now: f64) -> Self {
+        if shown == self.shown {
+            return self;
+        }
+        Self {
+            shown,
+            from: self.reveal(now),
+            started: now,
+        }
+    }
+
+    /// How far through the slide it is at `now`, from 0; 1 and on once it
+    /// has settled.
+    fn progress(self, now: f64) -> f32 {
+        ((now - self.started) / f64::from(theme::motion::PANEL)) as f32
+    }
+
+    /// How much of the panel shows at `now`: 0 hidden, 1 shown.
+    pub fn reveal(self, now: f64) -> f32 {
+        let to = f32::from(u8::from(self.shown));
+        let progress = self.progress(now);
+        if progress >= 1.0 {
+            to
+        } else {
+            egui::lerp(
+                self.from..=to,
+                egui::emath::easing::cubic_out(progress.max(0.0)),
+            )
+        }
+    }
+
+    /// Whether it still moves at `now`: until the frame it settles in.
+    pub fn moving(self, now: f64) -> bool {
+        self.progress(now) < 1.0
+    }
+}
+
+/// How much of the side panel `id` shows in this frame, slid toward `shown`
+/// over 0.16 s with `cubic_out`. Frames are asked for only while it moves,
+/// and under Reduce motion it is where it is going at once.
+pub fn slide(ctx: &egui::Context, id: Id, shown: bool) -> f32 {
+    let id = controls::viewport_id(ctx, id);
+    let now = ctx.input(|input| input.time);
+    let slide = if kit::reduced_motion(ctx) {
+        Slide::settled(shown)
+    } else {
+        ctx.data(|data| data.get_temp::<Slide>(id))
+            .unwrap_or(Slide::settled(shown))
+            .toward(shown, now)
+    };
+    if slide.moving(now) {
+        ctx.request_repaint();
+    }
+    ctx.data_mut(|data| data.insert_temp(id, slide));
+    slide.reveal(now)
+}
+
 /// The window's outline and its resize edges, over everything else in the
 /// window's layer.
 pub fn frame(ui: &mut Ui, bounds: Rect, p: &Palette) {
@@ -214,7 +416,92 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_slide_reversed_midway_turns_around_without_a_jump() {
+        // Spec §2.5, as Terminal's sidebar: hidden from shown at 10 s.
+        let hide = Slide::settled(true).toward(false, 10.0);
+        assert_eq!(hide.reveal(10.0), 1.0);
+        let midway = hide.reveal(10.08);
+        assert!(0.0 < midway && midway < 1.0, "{midway}");
+        assert_eq!(hide.reveal(10.2), 0.0);
+        // Shown again halfway: it sets off from where it was.
+        let show = hide.toward(true, 10.08);
+        assert_eq!(show.reveal(10.08), midway);
+        assert!(show.reveal(10.12) > midway);
+        assert_eq!(show.reveal(10.3), 1.0);
+        assert!(show.moving(10.2) && !show.moving(10.3));
+        // Asked for the state it is in, it goes on as it was.
+        assert_eq!(show.toward(true, 10.1), show);
+        assert!(!Slide::settled(false).moving(0.0));
+    }
+
+    /// How much of the panel `slide` shows in the frame at `time`, asked
+    /// toward `shown`, and how long the window may sleep after.
+    fn slid_at(
+        ctx: &egui::Context,
+        time: f64,
+        shown: bool,
+        reduced: bool,
+    ) -> (f32, std::time::Duration) {
+        let mut reveal = f32::NAN;
+        let output = ctx.run_ui(
+            egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            },
+            |ui| {
+                kit::set_reduced_motion(ui.ctx(), reduced);
+                reveal = slide(ui.ctx(), Id::new("panel"), shown);
+            },
+        );
+        let delay = (output.viewport_output.values())
+            .map(|viewport| viewport.repaint_delay)
+            .min()
+            .unwrap_or(std::time::Duration::MAX);
+        output.drop_without_applying_deltas();
+        (reveal, delay)
+    }
+
+    #[test]
+    fn a_panel_settles_in_its_slide_and_at_once_under_reduce_motion() {
+        // §2.5 and §9.12: a panel shown at rest asks for nothing.
+        let ctx = egui::Context::default();
+        // A fresh context asks for its own first frames.
+        slid_at(&ctx, 0.9, true, false);
+        slid_at(&ctx, 0.95, true, false);
+        assert_eq!(
+            slid_at(&ctx, 1.0, true, false),
+            (1.0, std::time::Duration::MAX)
+        );
+        // Hidden at 2 s, it slides away in frames asked for as it goes, and
+        // has settled by 0.16 s later. egui draws one frame more after the
+        // last that was asked for; after that the window sleeps.
+        let (reveal, delay) = slid_at(&ctx, 2.0, false, false);
+        assert_eq!((reveal, delay), (1.0, std::time::Duration::ZERO));
+        let (reveal, delay) = slid_at(&ctx, 2.08, false, false);
+        assert!(0.0 < reveal && reveal < 1.0, "{reveal}");
+        assert_eq!(delay, std::time::Duration::ZERO);
+        let settled = 2.0 + f64::from(theme::motion::PANEL);
+        assert_eq!(slid_at(&ctx, settled, false, false).0, 0.0);
+        assert_eq!(
+            slid_at(&ctx, settled + 0.02, false, false),
+            (0.0, std::time::Duration::MAX)
+        );
+        // Under Reduce motion it is where it is going in the first frame,
+        // and asks for no other.
+        assert_eq!(
+            slid_at(&ctx, 4.0, true, true),
+            (1.0, std::time::Duration::MAX)
+        );
+        assert_eq!(
+            slid_at(&ctx, 4.05, false, true),
+            (0.0, std::time::Duration::MAX)
+        );
+    }
+
+    #[test]
     fn a_window_is_rounded_only_where_the_system_does_not_round_it() {
+        // Spec §3.4: Terminal's 16-point window corner.
+        assert_eq!(metrics::WINDOW_RADIUS, 16);
         let rounded = if cfg!(target_os = "windows") {
             0
         } else {
@@ -229,6 +516,11 @@ mod tests {
             0
         };
         assert_eq!(radius_for(false, true), zoomed);
+        // Round as a person sees it, whoever draws the corner: Windows'
+        // own corner counts.
+        assert!(round_for(false, false));
+        assert!(!round_for(true, false));
+        assert_eq!(round_for(false, true), cfg!(target_os = "macos"));
     }
 
     #[test]
@@ -250,5 +542,78 @@ mod tests {
         // The toolbar's controls start below the top band.
         let north = zones[0].1;
         assert!(north.bottom() <= 4.0);
+    }
+
+    /// The accessible names the frame at `time` gives, and how long it may
+    /// sleep after.
+    fn said_at(ctx: &egui::Context, p: &Palette, time: f64) -> (Vec<String>, std::time::Duration) {
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))),
+                time: Some(time),
+                ..Default::default()
+            },
+            |ui| interface_size(ui.ctx(), p),
+        );
+        let names = (output.platform_output.accesskit_update.iter())
+            .flat_map(|update| update.nodes.iter())
+            // A label says its words as its value.
+            .filter_map(|(_, node)| node.label().or_else(|| node.value()).map(str::to_owned))
+            .collect();
+        let delay = (output.viewport_output.values())
+            .map(|viewport| viewport.repaint_delay)
+            .min()
+            .unwrap_or(std::time::Duration::MAX);
+        output.drop_without_applying_deltas();
+        (names, delay)
+    }
+
+    #[test]
+    fn the_interface_size_is_said_in_a_capsule_that_lets_the_window_sleep() {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        ctx.enable_accesskit();
+        let p = Palette::new(theme::Appearance::Dark, theme::Accent::default());
+        let (names, _) = said_at(&ctx, &p, 1.0);
+        assert!(names.is_empty(), "nothing is said before a change");
+        ctx.run_ui(
+            egui::RawInput {
+                time: Some(1.0),
+                ..Default::default()
+            },
+            |ui| say_interface_size(ui.ctx(), 1.2, false),
+        )
+        .drop_without_applying_deltas();
+        // A new area is measured, unseen, in its first frames.
+        said_at(&ctx, &p, 1.05);
+        said_at(&ctx, &p, 1.1);
+        let (names, delay) = said_at(&ctx, &p, 1.15);
+        assert!(
+            names.iter().any(|name| name == "Interface size 120%"),
+            "{names:?}"
+        );
+        // It holds still: the window sleeps through the hold.
+        assert!(delay > std::time::Duration::from_millis(500), "{delay:?}");
+        // A size held down by the window says why, in today's words.
+        ctx.run_ui(
+            egui::RawInput {
+                time: Some(2.0),
+                ..Default::default()
+            },
+            |ui| say_interface_size(ui.ctx(), 1.5, true),
+        )
+        .drop_without_applying_deltas();
+        said_at(&ctx, &p, 2.05);
+        let (names, _) = said_at(&ctx, &p, 2.1);
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "Interface size 150%, the largest this window has room for"),
+            "{names:?}"
+        );
+        // And then it has gone, and asks for nothing.
+        let (names, delay) = said_at(&ctx, &p, 4.0);
+        assert!(!names.iter().any(|name| name.starts_with("Interface size")));
+        assert_eq!(delay, std::time::Duration::MAX);
     }
 }

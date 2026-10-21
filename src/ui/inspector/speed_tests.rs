@@ -731,3 +731,26 @@ fn a_picture_clip_is_told_to_detach_its_audio_to_keep_pitch() {
     bench.frame(Vec::new());
     assert!(!bench.has(DETACH));
 }
+
+#[test]
+fn the_ramp_presets_are_one_row_in_a_narrow_panel() {
+    // Spec §5.4: the ramp presets are one row, in the narrow window's panel
+    // as in the wide one's.
+    for width in [260.0, 300.0] {
+        let (mut bench, _) = timed();
+        bench.size = vec2(width, 2400.0);
+        bench.frame(Vec::new());
+        bench.frame(Vec::new());
+        let rects: Vec<Rect> = (speed::Ramp::ALL.iter())
+            .map(|ramp| bench.find(ramp.label()).expect("a preset").rect)
+            .collect();
+        assert!(
+            rects
+                .windows(2)
+                .all(|pair| (pair[0].top() - pair[1].top()).abs() < 0.5
+                    && pair[0].right() <= pair[1].left()),
+            "at {width}: {rects:?}"
+        );
+        assert!(rects[0].width() >= 26.0, "at {width}: {rects:?}");
+    }
+}

@@ -14,6 +14,20 @@ use std::path::{Path, PathBuf};
 
 const RECENT_LIMIT: usize = 8;
 
+/// The side panels' widths a fresh window has, and the widths they may be
+/// given. The library is wide enough for the names of all its tabs.
+pub const LIBRARY_WIDTH: f32 = 316.0;
+pub const LIBRARY_WIDTHS: std::ops::RangeInclusive<f32> = 220.0..=520.0;
+pub const INSPECTOR_WIDTH: f32 = 300.0;
+pub const INSPECTOR_WIDTHS: std::ops::RangeInclusive<f32> = 240.0..=560.0;
+/// The timeline's share of the window's height in a fresh window.
+pub const TIMELINE_SHARE: f32 = 0.42;
+
+/// The revision of the panel layout the settings were last written for. A
+/// file from before revision 1 holds the library at the 300 points that
+/// were then its default, which is moved to today's once.
+const LAYOUT_REVISION: u32 = 1;
+
 /// How far the whole interface can be scaled. Below half its size text is
 /// not read; above three times the editor's least window has no room left
 /// for its panels.
@@ -62,7 +76,11 @@ impl Scale {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Read leniently, as the accent is: a newer build's choice is the
+    /// default here, and the rest of the file is kept.
+    #[serde(deserialize_with = "lenient")]
     pub appearance: Appearance,
+    #[serde(deserialize_with = "lenient")]
     pub accent: Accent,
     pub snapping: bool,
     pub autosave: bool,
@@ -72,6 +90,8 @@ pub struct Settings {
     pub show_inspector: bool,
     /// The size of the whole interface: 1 is as designed.
     pub interface_scale: f32,
+    /// Eased changes land at once: panels, sheets, switches and fades.
+    pub reduce_motion: bool,
     /// The trailing panel shows the agent rather than the inspector.
     pub agent_panel: bool,
     /// The agent panel's field asks the model rather than running a command.
@@ -82,6 +102,10 @@ pub struct Settings {
     pub inspector_width: f32,
     /// Share of the content height the timeline takes.
     pub timeline_share: f32,
+    /// What the panel widths above were written for. A file without it is
+    /// from before the layout had revisions.
+    #[serde(default)]
+    pub layout_revision: u32,
     pub recent: Vec<PathBuf>,
     /// The transitions kept as the defaults of their kinds: what a new one
     /// of that kind starts as.
@@ -375,12 +399,14 @@ impl Default for Settings {
             show_library: true,
             show_inspector: true,
             interface_scale: 1.0,
+            reduce_motion: false,
             agent_panel: false,
             agent_ask: true,
             ai: AiSettings::default(),
-            library_width: 300.0,
-            inspector_width: 300.0,
-            timeline_share: 0.42,
+            library_width: LIBRARY_WIDTH,
+            inspector_width: INSPECTOR_WIDTH,
+            timeline_share: TIMELINE_SHARE,
+            layout_revision: LAYOUT_REVISION,
             recent: Vec::new(),
             transitions: Vec::new(),
             speech: SpeechSettings::default(),
@@ -411,9 +437,19 @@ impl Settings {
 
     fn sanitized(mut self) -> Self {
         let finite = |value: f32, fallback: f32| if value.is_finite() { value } else { fallback };
-        self.library_width = finite(self.library_width, 300.0).clamp(220.0, 520.0);
-        self.inspector_width = finite(self.inspector_width, 300.0).clamp(240.0, 520.0);
-        self.timeline_share = finite(self.timeline_share, 0.42).clamp(0.2, 0.7);
+        // A library left at the old default takes the new one, once: a
+        // width the person chose since stays theirs.
+        if self.layout_revision < LAYOUT_REVISION {
+            if self.library_width == 300.0 {
+                self.library_width = LIBRARY_WIDTH;
+            }
+            self.layout_revision = LAYOUT_REVISION;
+        }
+        self.library_width = finite(self.library_width, LIBRARY_WIDTH)
+            .clamp(*LIBRARY_WIDTHS.start(), *LIBRARY_WIDTHS.end());
+        self.inspector_width = finite(self.inspector_width, INSPECTOR_WIDTH)
+            .clamp(*INSPECTOR_WIDTHS.start(), *INSPECTOR_WIDTHS.end());
+        self.timeline_share = finite(self.timeline_share, TIMELINE_SHARE).clamp(0.2, 0.7);
         self.interface_scale = finite(self.interface_scale, 1.0)
             .clamp(*INTERFACE_SCALE.start(), *INTERFACE_SCALE.end());
         self.recent.truncate(RECENT_LIMIT);
@@ -472,9 +508,72 @@ mod tests {
             ..Settings::default()
         }
         .sanitized();
-        assert_eq!(settings.library_width, 300.0);
-        assert_eq!(settings.inspector_width, 520.0);
+        // Spec §2.5: the library's default is 316 and the inspector's range
+        // ends at 560.
+        assert_eq!(settings.library_width, 316.0);
+        assert_eq!(settings.inspector_width, 560.0);
         assert_eq!(settings.timeline_share, 0.2);
+    }
+
+    #[test]
+    fn a_library_of_300_moves_to_316_once() {
+        // The old default, in a file from before the layout had revisions.
+        let settings: Settings = serde_json::from_str(r#"{"library_width":300.0}"#).unwrap();
+        let settings = settings.sanitized();
+        assert_eq!(settings.library_width, 316.0);
+        assert_eq!(settings.layout_revision, LAYOUT_REVISION);
+        // A width chosen since, even the old default, is kept.
+        let chosen = Settings {
+            library_width: 300.0,
+            ..settings.clone()
+        }
+        .sanitized();
+        assert_eq!(chosen.library_width, 300.0);
+        // So is any other width an old file holds.
+        let settings: Settings = serde_json::from_str(r#"{"library_width":280.0}"#).unwrap();
+        assert_eq!(settings.sanitized().library_width, 280.0);
+    }
+
+    #[test]
+    fn reduce_motion_survives_a_round_trip() {
+        let settings = Settings {
+            reduce_motion: true,
+            ..Settings::default()
+        };
+        let text = serde_json::to_string(&settings).unwrap();
+        let read: Settings = serde_json::from_str(&text).unwrap();
+        assert!(read.reduce_motion);
+        // A file from before the choice was kept moves as it always did.
+        let settings: Settings = serde_json::from_str(r#"{"snapping":false}"#).unwrap();
+        assert!(!settings.reduce_motion);
+    }
+
+    #[test]
+    fn system_appearance_survives_a_round_trip() {
+        let dir =
+            std::env::temp_dir().join(format!("neptune-video-settings-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let settings = Settings {
+            appearance: Appearance::System,
+            accent: Accent::Yellow,
+            ..Settings::default()
+        };
+        settings.save(&path).unwrap();
+        let read = Settings::load(&path);
+        assert_eq!(read.appearance, Appearance::System);
+        assert_eq!(read.accent, Accent::Yellow);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""appearance": "system""#), "{text}");
+        assert!(text.contains(r#""accent": "yellow""#), "{text}");
+        // An accent or an appearance this build does not know is the
+        // default, and the rest of the file is still read.
+        let read: Settings =
+            serde_json::from_str(r#"{"accent":"teal","appearance":"dusk","snapping":false}"#)
+                .unwrap();
+        assert_eq!(read.accent, Accent::default());
+        assert_eq!(read.appearance, Appearance::default());
+        assert!(!read.snapping);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -550,6 +649,8 @@ mod tests {
         assert!(settings.show_library);
         assert!(settings.agent_ask);
         assert_eq!(settings.ai, AiSettings::default());
+        // Spec §2.5 (W6): a fresh library is 316 wide.
+        assert_eq!(settings.library_width, 316.0);
     }
 
     #[test]

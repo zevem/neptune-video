@@ -348,7 +348,7 @@ it, is a roots file only its owner can read. The window writes it from a
 thread of its own and rewrites it whenever the folders it wants change while
 the agent talks: the project file's folder, the folder of every asset, the
 person's Videos (Movies), Desktop, Documents, Downloads, Music and Pictures
-folders, and the folders the person added in Settings › Agent › Folders. The
+folders, and the folders the person added in Preferences › Agent › Folders. The
 server leaves out a folder that is gone, too wide or inside another one the
 file names, and refuses a file anywhere else with `outside_roots`. The file is removed when
 the window closes. Importing media from a new folder or adding a folder does

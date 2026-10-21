@@ -1,9 +1,9 @@
 # Native AI editing
 
 The Agent tab's Ask mode works with the person's installed Claude Code or
-Codex CLI in one of two ways. The **Edits** row in Settings › Agent
-[As it works | For review] and the panel's menu (Edits: Made as it works /
-Proposed for review) choose between them. The setting is
+Codex CLI in one of two ways. The **Edits** row in Preferences › Agent
+[As it works | For review] and the model menu in the composer (Edits: Made as
+it works / Proposed for review) choose between them. The setting is
 `AiSettings.review`, false by default.
 
 - **Made as it works**, the default. A conversation with the provider whose
@@ -197,12 +197,15 @@ outside clients.
 The panel's introduction, under "Ask the agent", says what the agent may
 use: "It sees the frames, transcripts and sound levels it asks for, and the
 files in this project's folders, in your Movies, Music, Pictures, Desktop,
-Documents and Downloads folders and in folders you add in Settings. It can
+Documents and Downloads folders and in folders you add in Preferences. It can
 also make, open and export other projects. Follow-up requests continue the
 conversation."
 
-The panel's menu has **Answered by**, **Effort**, **Edits** (Made as it works
-/ Proposed for review), **New conversation** and **Model…**.
+The model menu, **Model: …** at the composer's foot, has **Answered by**,
+**Effort**, **Edits** (Made as it works / Proposed for review) and **Model…**,
+which opens Preferences › Agent. **New conversation** is in the session row's
+More menu (⋯), next to **Copy the connect command**, while a conversation goes
+on.
 
 ### What reaches the provider
 
@@ -227,7 +230,7 @@ the folders are not in the arguments.
 
 The window wants the server to use these folders, in order: the project
 file's folder, the parent folder of every asset, the folders the person added
-in Settings › Agent › Folders, and the person's Videos or Movies, Desktop,
+in Preferences › Agent › Folders, and the person's Videos or Movies, Desktop,
 Documents, Downloads, Music and Pictures folders. It writes them to a roots
 file beside its agent session file, `{"roots": [DIR, …]}`, with mode 0600 on
 Unix, written whole (a part file renamed over it) by a thread of its own.
@@ -254,7 +257,7 @@ refused `outside_roots`, whose message ends "the person can add one with
 Importing media from a new folder adds that folder to the file, and the
 conversation continues.
 
-**Settings › Agent › Folders.** Below **Edits**, each added folder has a row
+**Preferences › Agent › Folders.** Below **Edits**, each added folder has a row
 with its name (the full path on hover) and **Remove**. The **Folders** row's
 **Add folder…** opens a native folder dialog titled "A folder the agent may
 use". A folder that is too wide is refused with a notice: "… is too wide for
@@ -353,7 +356,7 @@ keep each request. Linux and Windows windows are not verified.
   Changes in other projects are counted in the note but are not taken back
   by this window's undo.
 - The agent may use only the folders in [Folders](#folders); media elsewhere
-  is refused until the person imports it or adds its folder in Settings ›
+  is refused until the person imports it or adds its folder in Preferences ›
   Agent › Folders.
 - The second round, in which the agent may leave its window and the folders
   change during a conversation, was run natively on 2026-10-15 with release

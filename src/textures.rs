@@ -1579,6 +1579,31 @@ impl Textures {
         self.viewing.contains_key(&viewing)
     }
 
+    /// Whether a frame is on its way to the layer kept for `viewing`: the
+    /// service took what it asks and has not answered, or has had no room
+    /// for it yet. Not once that frame could not be decoded, nor for a layer
+    /// whose worker stopped or refused it outright, nor for one that waits
+    /// for room in the viewer budget and so asks for nothing.
+    pub(crate) fn awaits(&self, viewing: Viewing) -> bool {
+        self.layer_of(viewing).is_some_and(|layer| {
+            layer.granted.is_some()
+                && layer.failed.is_none()
+                && (layer.pending || layer.waiting.is_some())
+        })
+    }
+
+    /// Whether the frame the layer kept for `viewing` asks for could not be
+    /// decoded. It stays so until the layer asks for another frame, at
+    /// another time or box, or the worker starts over.
+    pub(crate) fn undecodable(&self, viewing: Viewing) -> bool {
+        self.layer_of(viewing)
+            .is_some_and(|layer| layer.failed.is_some())
+    }
+
+    fn layer_of(&self, viewing: Viewing) -> Option<&Layer> {
+        self.layers.get(self.viewing.get(&viewing)?)
+    }
+
     /// Gives the layer kept for `from`, with its picture and its consumer, to
     /// `to`, which carries on from it. Nothing is given to something that has
     /// a layer of its own, and nothing is taken from a layer drawn this frame.
@@ -2644,6 +2669,55 @@ mod tests {
         textures.forget_asset(asset.id);
         assert!(!textures.failed(Some(asked[1]), asset.id, Some(BOX)));
         assert!(!textures.failed(Some(PreviewConsumer::new()), asset.id, None));
+    }
+
+    #[test]
+    fn a_layer_awaits_its_frame_until_it_comes_or_cannot_be_decoded() {
+        let ctx = egui::Context::default();
+        let mut textures = Textures::default();
+        let asset = asset("/media/shot.mp4");
+        let clip = Viewing::Clip(ClipId::new_v4());
+        let time = Time::from_seconds(1.0);
+        textures.begin_frame();
+        // Nothing kept, and a layer asked of no service: nothing comes.
+        assert!(!textures.awaits(clip) && !textures.undecodable(clip));
+        textures.layer(None, clip, &asset, BOX, time);
+        let (consumer, size) = textures.asked(clip).expect("kept");
+        assert!(!textures.awaits(clip));
+        // As if the service had taken the request.
+        let took = |textures: &mut Textures| {
+            let layer = textures.layers.get_mut(&consumer).expect("kept");
+            layer.requested = Some(time);
+            layer.admitted = Some(time);
+            layer.pending = true;
+        };
+        took(&mut textures);
+        assert!(textures.awaits(clip) && !textures.undecodable(clip));
+        assert!(arrive_at(
+            &mut textures,
+            &ctx,
+            consumer,
+            &asset,
+            size,
+            time,
+            SMALL
+        ));
+        assert!(!textures.awaits(clip));
+
+        // It could not be decoded: it waits for nothing, and says so until
+        // the worker starts over.
+        took(&mut textures);
+        assert!(textures.failed(Some(consumer), asset.id, Some(size)));
+        assert!(!textures.awaits(clip) && textures.undecodable(clip));
+        textures.ask_again();
+        assert!(!textures.awaits(clip) && !textures.undecodable(clip));
+
+        // One the service had no room for waits its turn; one with no box,
+        // waiting for room in the budget, asks for nothing.
+        textures.layers.get_mut(&consumer).expect("kept").waiting = Some(1);
+        assert!(textures.awaits(clip));
+        textures.layers.get_mut(&consumer).expect("kept").granted = None;
+        assert!(!textures.awaits(clip));
     }
 
     #[test]

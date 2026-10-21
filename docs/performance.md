@@ -844,11 +844,15 @@ first. A newer request takes the place of an older only when both are of the
 same kind for the same media; a job is given up by a flag and by killing its
 process. The window is woken once for each whole percent and once for the
 answer, and an idle lane wakes nobody. The lane is started by the first tile
-on an audio lane that is drawn. Only the tiles drawn ask: the cache first,
-then the sound, each once for a media file, and a failure is remembered. The
-window holds 32 MiB of peaks at most (`src/peaks.rs`); those least lately
-wanted make room and never those of a tile on screen, so media with no room
-beside what is on screen is not asked about until it has. The one exception
+on an audio lane or a sound's library card that is drawn. Only the tiles and
+cards drawn ask: the cache first, then the sound, each once for a media file,
+and a failure is remembered. The window holds 32 MiB of peaks at most
+(`src/peaks.rs`); those least lately wanted make room and never those of a
+tile on screen, so media with no room beside what is on screen is not asked
+about until it has. Library cards give way to tiles: they want their peaks
+after every tile of the frame has wanted its own, a tile's peaks may take the
+room of a card on screen, and sound only cards asked for that could not be
+read is not reported until a tile asks for it again. The one exception
 is work: Duck under speech wants one media file's peaks at a time whether a
 tile draws them or not, they are asked for whatever the room, and when they
 come they may take the room of on-screen peaks, least lately wanted first.
@@ -1103,7 +1107,7 @@ underruns.
 | Sound read | The first sound stream, one channel, 8 kHz, 16-bit, 32 KiB a read under the 10 s read deadline |
 | Peaks | 100 buckets a second (`PEAKS_PER_SECOND`) of 4 bytes; 2,097,152 a file at most (`MAX_PEAK_BUCKETS`, 5.8 hours, 8 MiB) |
 | Peak cache on disk | 64 MiB and 512 files (`PEAK_CACHE_BYTES`, `PEAK_CACHE_ENTRIES`), least lately read removed first |
-| Peaks held by the window | 32 MiB (`MAX_HELD_PEAK_BYTES`): four files at the bucket bound; least lately wanted evicted, never a tile on screen except for a duck's one file of work |
+| Peaks held by the window | 32 MiB (`MAX_HELD_PEAK_BYTES`): four files at the bucket bound; least lately wanted evicted, then library cards on screen for a tile's, never a tile on screen except for a duck's one file of work |
 | Duck under speech | One voice file's peaks held at a time, let go when its spans are taken; at most 4,096 spans a file (closest merged); 256 volume keys a clip (closest dips merged). The gate walks each voice clip over the ducked clips' time in 10 ms steps on the UI thread, one file a frame; that cost is not measured |
 | Waveform drawn | One mesh a tile, four vertices a point of the tile's width in view |
 | Beats | Found in kept peaks on the cache-reading thread, in its queue (`PEAK_LOADS`), with no process; a cache read waits behind it. 16,384 beats a grid at most (`MAX_BEATS`). About 13 bytes a bucket while it runs, the peaks included: 26 MiB at the bucket bound, counted and not measured |

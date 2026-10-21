@@ -389,6 +389,17 @@ impl Bench {
         self.frame(Vec::new());
     }
 
+    /// Opens the clip menu at `pos` and, where it has one, its Audio menu:
+    /// the rows of a clip's sound are in it (§5.7.3).
+    fn audio_menu_at(&mut self, pos: Pos2) {
+        self.secondary_click_at(pos);
+        if let Some(audio) = self.find("Audio").map(|row| row.rect.center()) {
+            for _ in 0..4 {
+                self.frame(vec![Event::PointerMoved(audio)]);
+            }
+        }
+    }
+
     fn escape(&mut self) {
         self.frame(vec![Event::Key {
             key: Key::Escape,
@@ -398,6 +409,15 @@ impl Bench {
             modifiers: Modifiers::NONE,
         }]);
         self.frame(Vec::new());
+    }
+
+    /// Closes the menus open, one Escape each (§5.7.1): the Audio menu,
+    /// then the clip menu it opened from.
+    fn close_menus(&mut self) {
+        self.escape();
+        if self.has("Split at playhead") {
+            self.escape();
+        }
     }
 }
 
@@ -1052,12 +1072,13 @@ fn alt_click_keys_the_volume_at_the_frame_under_the_pointer_and_opens_the_lane()
 
 // ---- The clip menu ---------------------------------------------------------
 
+// §5.7.3: the rows of a clip's sound are in its Audio menu.
 #[test]
 fn the_clip_menu_keys_the_volume_at_the_playhead_and_opens_the_lane() {
     let (mut bench, [shot, voice]) = Bench::new();
     let steps = bench.steps();
     bench.playhead = seconds(2.5);
-    bench.secondary_click_at(bench.tile(voice).center());
+    bench.audio_menu_at(bench.tile(voice).center());
     bench.click("Key volume");
     assert_eq!(bench.steps(), steps + 1, "{:?}", bench.refused);
     assert_eq!(bench.last(), "Key volume");
@@ -1068,20 +1089,20 @@ fn the_clip_menu_keys_the_volume_at_the_playhead_and_opens_the_lane() {
     // Asked for again there, it is keyed already: shown, not to be chosen.
     bench.timeline.keys.set_lane(None);
     bench.frame(Vec::new());
-    bench.secondary_click_at(bench.tile(voice).center());
+    bench.audio_menu_at(bench.tile(voice).center());
     assert!(bench.find("Key volume").is_some_and(|row| row.disabled));
-    bench.escape();
+    bench.close_menus();
     // Nor with the playhead off the clip.
     bench.playhead = seconds(7.0);
-    bench.secondary_click_at(bench.tile(voice).center());
+    bench.audio_menu_at(bench.tile(voice).center());
     assert!(bench.find("Key volume").is_some_and(|row| row.disabled));
-    bench.escape();
+    bench.close_menus();
     assert!(bench.editor.undo());
     assert!(bench.keyed(voice).is_empty());
 
     // A picture clip with sound has its volume keyed too.
     bench.playhead = seconds(1.0);
-    bench.secondary_click_at(bench.tile(shot).center());
+    bench.audio_menu_at(bench.tile(shot).center());
     bench.click("Key volume");
     assert_eq!(bench.keyed(shot), [(0.0, 1.0)]);
     assert_eq!(bench.timeline.keys.lane_clip(), Some(shot));
@@ -1093,11 +1114,11 @@ fn the_clip_menu_keys_the_volume_at_the_playhead_and_opens_the_lane() {
     bench.edit(detach);
     let steps = bench.steps();
     bench.selection.clear();
-    bench.secondary_click_at(bench.tile(shot).center());
+    bench.audio_menu_at(bench.tile(shot).center());
     assert!(bench.find("Key volume").is_some_and(|row| row.disabled));
     bench.click("Key volume");
     assert_eq!(bench.steps(), steps);
-    bench.escape();
+    bench.close_menus();
 
     // A title has no sound: the row is not there.
     let mut text = Track::new("Text 1", TrackKind::Text);
@@ -1105,7 +1126,7 @@ fn the_clip_menu_keys_the_volume_at_the_playhead_and_opens_the_lane() {
     let title_id = title.id;
     text.clips.push(title);
     bench.edit(Command::AddTrack { track: text });
-    bench.secondary_click_at(bench.tile(title_id).center());
+    bench.audio_menu_at(bench.tile(title_id).center());
     assert!(bench.has("Split at playhead"), "the menu is open");
     assert!(!bench.has("Key volume"));
     assert!(bench.refused.is_empty(), "{:?}", bench.refused);

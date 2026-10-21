@@ -10,8 +10,8 @@
 mod tracking;
 
 use super::{
-    Action, ClipDraft, ColourPick, Selection, TrackRegion, Transport, icon_of_media, inspector,
-    shortcut, tone_of_media, widgets,
+    Action, ClipDraft, ColourPick, Placement, Selection, TrackRegion, Transport, controls,
+    icon_of_media, inspector, kit, shortcut, tone_of_media, widgets,
 };
 use crate::{
     compose::{
@@ -21,9 +21,10 @@ use crate::{
     },
     icons::{self, Icon},
     record::{self, RecordView},
+    settings::PreviewQuality,
     steady::Steadies,
     textures::{Textures, Viewing, Wanted},
-    theme::{self, Palette, metrics},
+    theme::{self, Accent, Palette, metrics},
     timefmt,
     titles::Titles,
 };
@@ -45,11 +46,26 @@ use eframe::{
 };
 use std::time::{Duration, Instant};
 
-const TRANSPORT: f32 = 48.0;
-const SOURCE_HEADER: f32 = 40.0;
+/// The transport under the stage: a pane footer.
+const TRANSPORT: f32 = metrics::PANE_FOOTER;
+/// The source monitor's header: a pane header.
+const SOURCE_HEADER: f32 = metrics::PANE_HEADER;
 const SCRUB: f32 = 22.0;
 const HANDLE: f32 = 9.0;
+/// A handle under the pointer, grown so it reads as the one taken hold of.
+const HANDLE_HOVERED: f32 = 11.0;
 const ROTATE_STEM: f32 = 26.0;
+/// The rotate knob's radius.
+const KNOB: f32 = 5.5;
+/// The height of a status capsule on the stage, and how far it stands in
+/// from the stage's edge: a prompt and "Effects not shown" from the top, a
+/// state of the preview from the transport.
+const CAPSULE: f32 = 24.0;
+const CAPSULE_INSET: f32 = 10.0;
+const STATUS_INSET: f32 = 12.0;
+/// How long layers go without a picture before the stage says it waits for
+/// them: a seek that decodes at once says nothing.
+const WAITING_AFTER: f64 = 0.5;
 /// Decode sizes a layer may ask for. A few fixed steps, so that resizing the
 /// window does not ask the decoder for a new size every frame.
 const DECODE_STEPS: [u32; 6] = [320, 480, 640, 960, 1280, 1920];
@@ -117,6 +133,9 @@ pub struct ViewerState {
     readings: Vec<ClipOverride>,
     /// The pictures titles and graphics are drawn from.
     pub titles: Titles,
+    /// When, on the window's clock, the layers on screen last started to
+    /// go without a picture, while they still do.
+    waiting_since: Option<f64>,
 }
 
 impl ViewerState {
@@ -274,6 +293,9 @@ impl ViewerState {
 }
 
 pub struct ViewerInput<'a> {
+    /// The window's palette. What is drawn on the stage takes the stage's
+    /// own, which is dark in either appearance; menus opened from it take
+    /// this one.
     pub p: &'a Palette,
     pub project: &'a Project,
     pub query: Option<&'a ProjectQuery>,
@@ -284,6 +306,15 @@ pub struct ViewerInput<'a> {
     pub media: Option<&'a MediaService>,
     /// The voiceover take, as the record control shows it.
     pub record: RecordView,
+    /// Whether the library is shown beside the viewer. An empty timeline
+    /// offers an import of its own only where the library does not.
+    pub library: bool,
+    /// The preview quality chosen: the stage says when Auto has stepped
+    /// down to half.
+    pub quality: PreviewQuality,
+    /// The work cards over the viewer, by their requests: what the stage
+    /// says at its top goes under them.
+    pub cards: &'a [u64],
 }
 
 impl ViewerInput<'_> {
@@ -339,17 +370,77 @@ impl Placed {
         let local = vec2(d.x * cos - d.y * sin, d.x * sin + d.y * cos);
         local.x.abs() <= self.half.x && local.y.abs() <= self.half.y
     }
-    fn rotate_handle(&self) -> Pos2 {
-        let top = self.corner(0.0, -1.0);
+    /// The rotate knob, and the middle of the edge its stem starts from: out
+    /// from the top edge, or where that would leave the stage, as it does
+    /// for a clip that fills the frame, in from it. A layer too short for a
+    /// knob inside to keep clear of its middle, where a press moves it, has
+    /// the stem out from its bottom edge instead, while that stays on the
+    /// stage.
+    fn rotate_handle(&self, stage: Rect) -> (Pos2, Pos2) {
+        let room = stage.shrink(KNOB + 1.0);
         let (sin, cos) = self.angle.sin_cos();
-        top + vec2(sin, -cos) * ROTATE_STEM
+        let up = vec2(sin, -cos);
+        let top = self.corner(0.0, -1.0);
+        let out = top + up * ROTATE_STEM;
+        if room.contains(out) {
+            return (top, out);
+        }
+        let bottom = self.corner(0.0, 1.0);
+        let under = bottom - up * ROTATE_STEM;
+        let tall = self.half.y * 2.0 >= 2.0 * ROTATE_STEM + HANDLE;
+        if !tall && room.contains(under) {
+            (bottom, under)
+        } else {
+            (top, top - up * ROTATE_STEM)
+        }
     }
+
+    /// The four corners, clockwise from the left top.
+    fn corners(&self) -> [Pos2; 4] {
+        [
+            self.corner(-1.0, -1.0),
+            self.corner(1.0, -1.0),
+            self.corner(1.0, 1.0),
+            self.corner(-1.0, 1.0),
+        ]
+    }
+}
+
+/// The halo that keeps a frame drawn over a picture readable on any of it:
+/// one hairline just outside the frame's 1.5-point stroke, as a rectangle
+/// turned with the frame rather than a closed path. `corners` go round a
+/// rectangle, turned or not, from its left top.
+fn halo(corners: [Pos2; 4], p: &Palette) -> Shape {
+    let across = corners[1] - corners[0];
+    let down = corners[3] - corners[0];
+    let centre = corners[0] + (across + down) * 0.5;
+    let size = vec2(across.length(), down.length()) + Vec2::splat(2.0 * 1.25);
+    Shape::Rect(
+        RectShape::stroke(
+            Rect::from_center_size(centre, size),
+            0,
+            Stroke::new(1.0, p.frame_halo()),
+            StrokeKind::Middle,
+        )
+        .with_angle(across.y.atan2(across.x)),
+    )
+}
+
+/// A frame over the picture: the halo, then the 1.5-point line in `color`
+/// as one closed outline.
+fn frame(painter: &egui::Painter, corners: [Pos2; 4], color: Color32, p: &Palette) {
+    painter.add(halo(corners, p));
+    painter.add(Shape::closed_line(
+        corners.to_vec(),
+        Stroke::new(1.5, color),
+    ));
 }
 
 /// The edge of a mask of the layer placed at `place`, before its feather: a
 /// mask's place and size are fractions of the layer's box, and it turns
-/// about its own centre within that box.
-fn mask_outline(place: &Placed, mask: &Mask, color: Color32) -> Shape {
+/// about its own centre within that box. It is drawn as the canvas's other
+/// frames are, over a halo.
+fn mask_outline(painter: &egui::Painter, place: &Placed, mask: &Mask, color: Color32, p: &Palette) {
     let centre = vec2(
         (mask.center[0] - 0.5) * 2.0 * place.half.x,
         (mask.center[1] - 0.5) * 2.0 * place.half.y,
@@ -378,7 +469,18 @@ fn mask_outline(place: &Placed, mask: &Mask, color: Color32) -> Shape {
             })
             .collect(),
     };
-    Shape::closed_line(points, Stroke::new(1.5, color))
+    match <[Pos2; 4]>::try_from(points) {
+        Ok(corners) => frame(painter, corners, color, p),
+        Err(points) => {
+            // A curve has no rectangle to halo: a wider line under it is
+            // one on either side.
+            painter.add(Shape::closed_line(
+                points.clone(),
+                Stroke::new(3.5, p.frame_halo()),
+            ));
+            painter.add(Shape::closed_line(points, Stroke::new(1.5, color)));
+        }
+    }
 }
 
 /// The straight pieces an ellipse mask's outline is drawn in.
@@ -598,6 +700,248 @@ fn snapped(stored: f32, shown: f32, reach: f32) -> Option<f32> {
 
 pub(crate) use editor_core::render::{backwards_until, source_frame};
 
+/// The palette everything on the stage is drawn in: the dark one in either
+/// appearance, with the accent the window has.
+fn stage_palette(app: &Palette) -> Palette {
+    let accent = (Accent::ALL.into_iter())
+        .map(|(accent, _)| accent)
+        .find(|accent| accent.color(app.dark) == app.accent)
+        .unwrap_or_default();
+    Palette::stage_palette(accent)
+}
+
+/// The stage of a viewer pane: all of it above the transport.
+fn stage_of(pane: Rect) -> Rect {
+    Rect::from_min_max(pane.min, pos2(pane.right(), pane.bottom() - TRANSPORT))
+}
+
+/// The canvas fitted in a stage with room around it for handles, and the
+/// screen points one canvas pixel takes there.
+fn fitted_canvas(stage: Rect, canvas: Vec2) -> (Rect, f32) {
+    let room = stage.shrink(metrics::STAGE_INSET);
+    let view = (room.width() / canvas.x)
+        .min(room.height() / canvas.y)
+        .max(0.01);
+    (Rect::from_center_size(room.center(), canvas * view), view)
+}
+
+/// Where the viewer pane drawn at `pane` comes to rest once the side panels
+/// stop sliding: what the window said of it in this frame, or `pane` itself
+/// where the window said nothing of a pane drawn there.
+fn settled(ui: &Ui, pane: Rect) -> Rect {
+    Placement::of_viewer(ui.ctx())
+        .filter(|placement| placement.drawn == pane)
+        .map_or(pane, |placement| placement.settled)
+}
+
+/// A capsule on the stage, as a Terminal pane says its state: the words in
+/// Medium 12 on the floating material, after a dot in `dot` when it tells
+/// of a state rather than asks for something. The words are cut to what
+/// `within` has room for, and `place` puts the capsule, given its size.
+/// Returns where it is.
+fn capsule(
+    painter: &egui::Painter,
+    p: &Palette,
+    words: &str,
+    dot: Option<Color32>,
+    within: Rect,
+    place: impl FnOnce(Vec2) -> Rect,
+) -> Rect {
+    let laid = Capsule::lay(painter, p, words, dot, within, place);
+    let rect = laid.rect;
+    laid.paint(painter, p);
+    rect
+}
+
+/// A capsule laid out and not yet painted: where it goes is known before
+/// what is drawn under it, which it is painted over.
+struct Capsule {
+    rect: Rect,
+    text: std::sync::Arc<egui::Galley>,
+    dot: Option<Color32>,
+}
+
+impl Capsule {
+    fn lay(
+        painter: &egui::Painter,
+        p: &Palette,
+        words: &str,
+        dot: Option<Color32>,
+        within: Rect,
+        place: impl FnOnce(Vec2) -> Rect,
+    ) -> Self {
+        let room = (within.width() - 2.0 * CAPSULE_INSET - Self::lead(dot) - 12.0).max(0.0);
+        let text = controls::elided(painter, words, theme::medium(12.0), p.fg, room);
+        let rect = place(vec2(Self::lead(dot) + text.size().x + 12.0, CAPSULE));
+        Self { rect, text, dot }
+    }
+
+    /// Where the words start: after the dot, when there is one.
+    fn lead(dot: Option<Color32>) -> f32 {
+        if dot.is_some() { 22.0 } else { 12.0 }
+    }
+
+    fn paint(self, painter: &egui::Painter, p: &Palette) {
+        let rect = self.rect;
+        controls::capsule(painter, rect, *p);
+        // The status dot is the disc glyph in its 8.4-point cell, as a
+        // Terminal pane's status capsule draws it.
+        if let Some(dot) = self.dot {
+            let cell =
+                Rect::from_center_size(pos2(rect.left() + 12.0, rect.center().y), Vec2::splat(8.4));
+            icons::paint(painter, cell, Icon::Disc, dot);
+        }
+        let at = pos2(rect.left() + Self::lead(self.dot), rect.center().y);
+        controls::galley_at(painter, at, self.text);
+    }
+}
+
+/// What a canvas mode asks of the pointer, in a capsule at the top of the
+/// picture from `head` down (see [`capsules_head`]), laid out to be painted
+/// over all the canvas shows.
+fn prompt(painter: &egui::Painter, stage: Rect, head: f32, p: &Palette, words: &str) -> Capsule {
+    Capsule::lay(painter, p, words, None, stage, |size| {
+        Rect::from_min_size(pos2(stage.center().x - size.x * 0.5, head), size)
+    })
+}
+
+/// What the stage asks while a key colour is picked off it.
+const PICK_PROMPT: &str = "Click the picture to pick its key colour";
+/// A canvas mode whose clip the playhead is not on.
+const OFF_SCREEN: &str = "The clip is not on screen at the playhead";
+
+/// Where the capsules at the picture's top start: inset in it, so they sit
+/// on it and not across its edge, or under the work cards over the viewer,
+/// which [`crate::ui::sheets::saves`] draws later in the frame as areas of
+/// their own, under [`crate::ui::sheets::card_id`]. Where they were last
+/// laid out is what is known of them; a card not yet laid out is not waited
+/// for.
+fn capsules_head(ctx: &egui::Context, canvas: Rect, cards: &[u64]) -> f32 {
+    let below = ctx.memory(|memory| {
+        (cards.iter())
+            .filter_map(|request| memory.area_rect(crate::ui::sheets::card_id(*request)))
+            .map(|card| card.bottom() + 8.0)
+            .fold(f32::NEG_INFINITY, f32::max)
+    });
+    (canvas.top() + CAPSULE_INSET).max(below)
+}
+
+/// What the stage's foot says: the first of these that holds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Status<'a> {
+    /// The frame a layer on screen asks for could not be decoded, named by
+    /// its asset. Said at once, and for as long as it fails.
+    CantDecode(&'a str),
+    /// Layers on screen have gone a moment without the frames on their way.
+    Waiting,
+    /// `Auto` stepped the preview down.
+    HalfQuality,
+}
+
+impl Status<'_> {
+    fn words(self) -> String {
+        match self {
+            Status::CantDecode(name) => format!("Can't decode {name}"),
+            Status::Waiting => "Waiting for frames…".to_owned(),
+            Status::HalfQuality => "Half quality".to_owned(),
+        }
+    }
+
+    fn dot(self, p: &Palette) -> Color32 {
+        match self {
+            Status::CantDecode(_) => p.red,
+            Status::Waiting | Status::HalfQuality => p.muted,
+        }
+    }
+}
+
+/// What the stage's foot says, and in how many seconds it is to be looked
+/// at again: that a layer's frame could not be decoded, that layers wait for
+/// frames, once they have gone without one for a moment, or that `Auto`
+/// stepped the preview down. `since` is when the waiting began, kept from
+/// frame to frame. The window is woken once, when the moment is up, and
+/// draws nothing that moves meanwhile.
+fn stage_status<'a>(
+    since: &mut Option<f64>,
+    now: f64,
+    waiting: bool,
+    undecodable: Option<&'a str>,
+    quality: PreviewQuality,
+    detail: u32,
+) -> (Option<Status<'a>>, Option<f64>) {
+    let waited = if waiting {
+        now - *since.get_or_insert(now)
+    } else {
+        *since = None;
+        0.0
+    };
+    if let Some(name) = undecodable {
+        // Waiting goes on being timed beneath it.
+        let again = (waiting && waited < WAITING_AFTER).then_some(WAITING_AFTER - waited);
+        return (Some(Status::CantDecode(name)), again);
+    }
+    if waiting && waited < WAITING_AFTER {
+        return (None, Some(WAITING_AFTER - waited));
+    }
+    let status = if waiting {
+        Some(Status::Waiting)
+    } else if quality == PreviewQuality::Auto && detail > 1 {
+        Some(Status::HalfQuality)
+    } else {
+        None
+    };
+    (status, None)
+}
+
+/// The points a press takes hold of the selected layer by: its corners and
+/// its rotate knob, unless it is locked and has none.
+fn grips(layer: Option<&Placed>, stage: Rect) -> Vec<Pos2> {
+    match layer {
+        Some(layer) if !layer.locked => {
+            let mut grips = layer.corners().to_vec();
+            grips.push(layer.rotate_handle(stage).1);
+            grips
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether the segment from `a` to `b` passes through `rect`: it is in it at
+/// an end, or it spans it and the rect's corners are on both sides of it.
+fn crosses(rect: Rect, [a, b]: [Pos2; 2]) -> bool {
+    if rect.contains(a) || rect.contains(b) {
+        return true;
+    }
+    if !Rect::from_two_pos(a, b).intersects(rect) {
+        return false;
+    }
+    let along = b - a;
+    let side = |corner: Pos2| along.x * (corner - a).y - along.y * (corner - a).x;
+    let sides = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+    ]
+    .map(side);
+    sides.iter().any(|side| *side >= 0.0) && sides.iter().any(|side| *side <= 0.0)
+}
+
+/// Whether a capsule at `rect` is in the way of the selected layer: its
+/// frame runs through it, or a grip a press reaches is on it.
+fn in_the_way(rect: Rect, layer: Option<&Placed>, stage: Rect) -> bool {
+    let Some(layer) = layer else {
+        return false;
+    };
+    let [a, b, c, d] = layer.corners();
+    let framed = [[a, b], [b, c], [c, d], [d, a]]
+        .into_iter()
+        .any(|edge| crosses(rect.expand(1.0), edge));
+    framed
+        || (grips(Some(layer), stage).iter())
+            .any(|grip| rect.distance_to_pos(*grip) <= HANDLE + 3.0)
+}
+
 #[expect(clippy::too_many_arguments, reason = "one call site in the frame")]
 pub fn show(
     ui: &mut Ui,
@@ -609,23 +953,30 @@ pub fn show(
     input: &ViewerInput,
     actions: &mut Vec<Action>,
 ) {
-    let p = input.p;
-    widgets::panel(ui, rect, p);
+    let app = input.p;
+    let p = &stage_palette(app);
+    kit::pane_well(ui.painter(), rect, p.stage(), app);
     let project = input.project;
     let settings = &project.settings;
-    let stage = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - TRANSPORT));
+    let empty = project.duration() == Time::ZERO;
+    let stage = stage_of(rect);
     let transport = Rect::from_min_max(pos2(rect.left(), stage.bottom()), rect.max);
 
     // The canvas, fitted in the stage with room around it for handles.
     let canvas_size = vec2(settings.width as f32, settings.height as f32);
-    let room = stage.shrink(18.0);
-    let view = (room.width() / canvas_size.x)
-        .min(room.height() / canvas_size.y)
-        .max(0.01);
-    let canvas = Rect::from_center_size(room.center(), canvas_size * view);
+    let (canvas, view) = fitted_canvas(stage, canvas_size);
+    // Pictures are decoded and composited for the canvas where the viewer
+    // comes to rest, so a side panel that slides asks for them once and not
+    // in every frame of the slide.
+    let (resting, _) = fitted_canvas(stage_of(settled(ui, rect)), canvas_size);
     let [r, g, b, _] = settings.background;
     let painter = ui.painter_at(stage);
-    painter.rect_filled(canvas, CornerRadius::same(4), Color32::from_rgb(r, g, b));
+    // An empty timeline has no picture: the stage says so instead. The
+    // picture is square at its corners, as the layers are clipped and as it
+    // is exported.
+    if !empty {
+        painter.rect_filled(canvas, CornerRadius::ZERO, Color32::from_rgb(r, g, b));
+    }
 
     // ---- Layers, bottom track first ---------------------------------------
     let layer_painter = painter.with_clip_rect(canvas.intersect(stage));
@@ -675,7 +1026,7 @@ pub fn show(
         // The layer is the clip's own for as long as it is kept, whatever
         // else of the asset is on screen.
         let viewing = Viewing::Clip(layer.clip);
-        let needed = needed_pixels(canvas, pixels, staged.clip, stored(draft, staged.clip));
+        let needed = needed_pixels(resting, pixels, staged.clip, stored(draft, staged.clip));
         // A plate is laid over the box of its layer, and is asked for as
         // large: a still, or the first frame of anything else.
         for (effect, plate) in plates(layer) {
@@ -856,7 +1207,7 @@ pub fn show(
     }
     let canvases = state.composer.frame(
         compose::detailed(
-            compose::target_size(plan.canvas, canvas.size(), pixels),
+            compose::target_size(plan.canvas, resting.size(), pixels),
             detail,
         ),
         &jobs,
@@ -936,6 +1287,12 @@ pub fn show(
     };
     // Whether a layer that is not plain was drawn as if it were.
     let mut effects_hidden = false;
+    // Whether a media layer on screen has no picture yet to be drawn with,
+    // and one is on its way.
+    let mut waiting = false;
+    // The asset of the topmost layer on screen whose frame could not be
+    // decoded.
+    let mut undecodable = None;
     for ((run, given), canvas_texture) in runs.iter().zip(given).zip(canvas_of) {
         match run {
             Run::Title(index) => {
@@ -972,11 +1329,10 @@ pub fn show(
             Run::Plain(range) | Run::Composite(range) => {
                 if let Some(texture) = canvas_texture {
                     layer_painter.add(
-                        RectShape::filled(canvas, CornerRadius::same(4), Color32::WHITE)
-                            .with_texture(
-                                texture,
-                                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                            ),
+                        RectShape::filled(canvas, CornerRadius::ZERO, Color32::WHITE).with_texture(
+                            texture,
+                            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                        ),
                     );
                 }
                 // Nothing composites, or the compositor refused the run:
@@ -988,8 +1344,18 @@ pub fn show(
                         continue;
                     };
                     let layer = &plan.layers[index];
+                    let picture = textures.picture(Viewing::Clip(layer.clip));
+                    waiting |= canvas_texture.is_none()
+                        && picture.is_none()
+                        && textures.awaits(Viewing::Clip(layer.clip));
+                    if textures.undecodable(Viewing::Clip(layer.clip))
+                        && let LayerSource::Media { asset_id, .. } = &layer.source
+                        && let Some(asset) = project.assets.get(asset_id)
+                    {
+                        undecodable = Some(asset.name.as_str());
+                    }
                     if canvas_texture.is_none()
-                        && let Some(texture) = textures.picture(Viewing::Clip(layer.clip))
+                        && let Some(texture) = picture
                     {
                         // A transition the compositor does not draw is a
                         // cross-fade of the two quads.
@@ -1003,27 +1369,14 @@ pub fn show(
             }
         }
     }
-    // The canvas edge, over the layers: a hairline in pure white or black.
-    painter.rect_stroke(
-        canvas,
-        CornerRadius::same(4),
-        Stroke::new(
-            1.0,
-            if p.dark {
-                Color32::from_white_alpha(26)
-            } else {
-                Color32::from_black_alpha(26)
-            },
-        ),
-        StrokeKind::Outside,
-    );
-    if project.duration() == Time::ZERO {
-        painter.text(
-            canvas.center(),
-            Align2::CENTER_CENTER,
-            "Add media to the timeline to see it here",
-            theme::regular(12.5),
-            Color32::from_white_alpha(120),
+    // The canvas edge, over the layers: a keyline that holds the picture's
+    // shape on the stage whatever its edges show.
+    if !empty {
+        painter.rect_stroke(
+            canvas,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, p.canvas_edge()),
+            StrokeKind::Outside,
         );
     }
 
@@ -1032,6 +1385,48 @@ pub fn show(
         placed: &placed,
         steadied: &steadied_on,
     };
+    // What is said at the picture's top: what a canvas mode asks of the
+    // pointer, and that effects are not shown. Both go under the work cards
+    // over the viewer. The prompt is painted over everything drawn on the
+    // canvas, and the statement under the selection's frame and handles,
+    // which it keeps clear of.
+    let head = capsules_head(ui.ctx(), canvas, input.cards);
+    let modal = state.pick.is_some() || state.region.is_some();
+    let selected = (selection.single())
+        .filter(|_| !modal)
+        .and_then(|clip| placed.iter().find(|place| place.clip == clip))
+        .copied();
+    let asks = if let Some(pick) = state.pick {
+        let shown = placed.iter().any(|place| place.clip == pick.clip);
+        Some(if shown { PICK_PROMPT } else { OFF_SCREEN })
+    } else if let Some(region) = state.region {
+        let shown = tracking::Picture::of(&drawn, region.clip).is_some();
+        Some(if shown {
+            tracking::REGION_PROMPT
+        } else {
+            OFF_SCREEN
+        })
+    } else {
+        None
+    };
+    let prompt = asks.map(|words| prompt(&painter, stage, head, p, words));
+    // What is left out and why, as the reason the statement gives on hover.
+    let left_out: Option<(Option<&str>, Option<String>)> = if effects_hidden {
+        Some((None, state.composer.failure().map(str::to_owned)))
+    } else {
+        lut_problem.map(|problem| (Some("A LUT is"), Some(problem)))
+    };
+    let said = left_out.as_ref().map(|_| {
+        effects_not_shown(
+            &painter,
+            stage,
+            canvas,
+            head,
+            p,
+            prompt.as_ref().map(|said| said.rect),
+            selected.as_ref(),
+        )
+    });
     if let Some(pick) = state.pick {
         // While a colour is being picked a press on the canvas picks, and
         // moves or selects nothing.
@@ -1058,7 +1453,7 @@ pub fn show(
         tracking::choose_region(ui, stage, picture, p, state);
     } else {
         interact(
-            ui, stage, canvas, view, &placed, state, selection, draft, input, actions,
+            ui, stage, canvas, view, &placed, state, selection, draft, input, p, actions,
         );
     }
     if state.paths {
@@ -1072,18 +1467,73 @@ pub fn show(
             .filter(|layer| layer.clip == clip)
             .find_map(|layer| layer.masks.iter().find(|mask| mask.id == id))
     {
-        painter.add(mask_outline(place, mask, p.yellow));
+        mask_outline(&painter, place, mask, p.yellow, p);
     }
-    if effects_hidden {
-        effects_not_shown(ui, stage, p, None, state.composer.failure());
-    } else if let Some(problem) = &lut_problem {
-        effects_not_shown(ui, stage, p, Some("A LUT is"), Some(problem));
+    if let Some(prompt) = prompt {
+        prompt.paint(&painter, p);
+    }
+    if let (Some(rect), Some((what, why))) = (said, &left_out) {
+        let grips = grips(selected.as_ref(), stage);
+        name_effects_not_shown(ui, rect, *what, why.as_deref(), &grips);
+    }
+
+    // What the preview is waiting for, or how it is drawn, at the foot of
+    // the picture, inside it and not across its edge.
+    let now = ui.input(|input| input.time);
+    let (status, look_again) = stage_status(
+        &mut state.waiting_since,
+        now,
+        waiting,
+        undecodable,
+        input.quality,
+        textures.detail(),
+    );
+    if let Some(after) = look_again {
+        ui.ctx()
+            .request_repaint_after(Duration::from_secs_f64(after));
+    }
+    if let Some(status) = status {
+        let painter = ui.painter_at(stage);
+        let bottom = (stage.bottom()).min(canvas.bottom()) - STATUS_INSET;
+        capsule(
+            &painter,
+            p,
+            &status.words(),
+            Some(status.dot(p)),
+            stage,
+            |size| {
+                Rect::from_min_size(pos2(stage.center().x - size.x * 0.5, bottom - size.y), size)
+            },
+        );
+    }
+    if empty {
+        // Where the library is beside the stage and holds media, clips are
+        // dragged in from it; otherwise the stage offers the import.
+        let media = (project.assets.values()).any(|asset| {
+            matches!(
+                asset.kind,
+                MediaKind::Video | MediaKind::Audio | MediaKind::Image | MediaKind::Gif
+            )
+        });
+        let action = (!input.library || !media).then_some("Import media…");
+        if kit::empty_state(
+            ui,
+            p,
+            stage,
+            Icon::Film,
+            "No media in the timeline",
+            "Import media or drag clips from the library.",
+            action,
+        ) {
+            actions.push(Action::ImportFiles);
+        }
     }
     draw_transport(
         ui,
         transport,
         &Deck {
             p,
+            app,
             playhead: input.playhead,
             duration: project.duration(),
             rate: settings.frame_rate,
@@ -1091,13 +1541,15 @@ pub fn show(
             speed: input.speed,
             looping: input.looping,
             detail: format!(
-                "{}×{} · {} fps",
+                "{} × {} · {} fps",
                 settings.width,
                 settings.height,
                 trim_number(settings.frame_rate.fps())
             ),
             emit: Transport::timeline,
             record: Some(input.record),
+            names: "Playhead",
+            idle: "Nothing to play: the timeline is empty",
         },
         actions,
     );
@@ -1140,9 +1592,10 @@ pub fn show_source(
     input: &SourceInput,
     actions: &mut Vec<Action>,
 ) {
-    let p = input.p;
+    let app = input.p;
+    let p = &stage_palette(app);
+    kit::pane_well(ui.painter(), rect, p.stage(), app);
     let asset = input.asset;
-    widgets::panel(ui, rect, p);
     let timed = asset.kind != MediaKind::Image;
     let header = Rect::from_min_size(rect.min, vec2(rect.width(), SOURCE_HEADER));
     let transport = Rect::from_min_max(pos2(rect.left(), rect.bottom() - TRANSPORT), rect.max);
@@ -1157,27 +1610,37 @@ pub fn show_source(
     let tone = p.tone(tone_of_media(asset.kind));
 
     // ---- Header: what this is, and the ways out of it ----------------------
+    // Inside the well's outline, which carries the edge.
     ui.painter()
-        .hline(rect.x_range(), header.bottom(), p.hairline());
-    let mut trailing = ui.new_child(
+        .hline(rect.x_range().shrink(1.0), header.bottom(), p.hairline());
+    // Close at the trailing edge and Add before it, each in a place of its
+    // own, Add made first so the keyboard reaches the two as they read.
+    let inner = header.shrink2(vec2(8.0, 0.0));
+    let closing = Rect::from_center_size(
+        pos2(
+            inner.right() - metrics::ICON_BUTTON * 0.5,
+            header.center().y,
+        ),
+        Vec2::splat(metrics::ICON_BUTTON),
+    );
+    let mut adding = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(header.shrink2(vec2(8.0, 0.0)))
+            .max_rect(Rect::from_min_max(
+                inner.min,
+                pos2(closing.left() - 4.0, inner.bottom()),
+            ))
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
-    trailing.spacing_mut().item_spacing.x = 4.0;
-    if widgets::icon_button(&mut trailing, p, Icon::Close, "Close preview (Esc)").clicked() {
-        actions.push(Action::CloseSource);
-    }
     let compact = header.width() < 420.0;
     let add = if compact {
-        widgets::icon_button(&mut trailing, p, Icon::Plus, "Add to timeline")
+        widgets::icon_button(&mut adding, p, Icon::Plus, "Add to timeline")
     } else {
         widgets::button(
-            &mut trailing,
+            &mut adding,
             p,
             Some(Icon::Plus),
             "Add to timeline",
-            widgets::Kind::Plain,
+            widgets::Kind::Quiet,
         )
     };
     if add.clicked() {
@@ -1186,40 +1649,48 @@ pub fn show_source(
             place: None,
         });
     }
-    let free = trailing.min_rect().left() - 8.0;
+    let mut close = ui.new_child(egui::UiBuilder::new().max_rect(closing));
+    if widgets::icon_button(&mut close, p, Icon::Close, "Close preview (Esc)").clicked() {
+        actions.push(Action::CloseSource);
+    }
+    // The asset's kind in its tone, its name, and what this view of it is.
+    let free = adding.min_rect().left() - 8.0;
     let painter = ui.painter_at(header);
-    let chip = painter.layout_no_wrap("Source".to_owned(), theme::medium(11.0), tone);
-    let pill = Rect::from_min_size(
-        pos2(
-            header.left() + 12.0,
-            header.center().y - chip.size().y * 0.5 - 3.0,
-        ),
-        chip.size() + vec2(30.0, 6.0),
+    let glyph = Rect::from_center_size(
+        pos2(header.left() + 12.0 + 7.0, header.center().y),
+        Vec2::splat(14.0),
     );
-    painter.rect_filled(pill, CornerRadius::same(7), theme::tint(tone, 0.16));
-    icons::paint(
-        &painter,
-        Rect::from_center_size(pos2(pill.left() + 12.0, pill.center().y), Vec2::splat(12.0)),
-        icon_of_media(asset.kind),
-        tone,
-    );
-    painter.galley(pos2(pill.left() + 22.0, pill.top() + 3.0), chip, tone);
+    icons::paint(&painter, glyph, icon_of_media(asset.kind), tone);
+    let what = painter.layout_no_wrap("Source".to_owned(), theme::regular(11.5), p.secondary);
+    let left = glyph.right() + 8.0;
     let name = widgets::truncated(
         ui,
         &asset.name,
-        theme::medium(13.0),
+        theme::medium(12.5),
         p.fg,
-        (free - pill.right() - 10.0).max(0.0),
+        (free - left - 8.0 - what.size().x).max(0.0),
     );
-    painter.galley(
-        pos2(pill.right() + 10.0, header.center().y - name.size().y * 0.5),
-        name,
-        p.fg,
-    );
+    let line = baseline(&name);
+    let name = controls::galley_at(&painter, pos2(left, header.center().y), name);
+    if name.right() + 8.0 + what.size().x <= free {
+        // On the name's baseline, though smaller.
+        let at = pos2(name.right() + 8.0, name.top() + line - baseline(&what));
+        painter.galley(at, what, p.secondary);
+    }
 
     // ---- Stage ------------------------------------------------------------
     let painter = ui.painter_at(stage);
-    let room = stage.shrink(18.0);
+    let room = stage.shrink(metrics::STAGE_INSET);
+    // Frames are decoded for the stage where the viewer comes to rest.
+    let resting = settled(ui, rect);
+    let resting = Rect::from_min_max(
+        pos2(resting.left(), resting.top() + SOURCE_HEADER),
+        pos2(
+            resting.right(),
+            resting.bottom() - (rect.bottom() - stage.bottom()),
+        ),
+    )
+    .shrink(metrics::STAGE_INSET);
     if asset.kind == MediaKind::Audio {
         // Sound has no picture, and none is made up for it. Nothing is drawn,
         // which the layers kept for the timeline are still held to.
@@ -1251,11 +1722,11 @@ pub fn show_source(
             pos2(room.center().x, disc.bottom() + 36.0),
             Align2::CENTER_TOP,
             detail,
-            theme::regular(12.0),
-            p.muted,
+            theme::regular(11.5),
+            p.secondary,
         );
     } else {
-        let needed = room.width().max(room.height()) * ui.pixels_per_point();
+        let needed = resting.width().max(resting.height()) * ui.pixels_per_point();
         // The monitor's layer is its own, and no timeline clip's.
         let wanted = Wanted {
             viewing: Viewing::Source,
@@ -1281,11 +1752,11 @@ pub fn show_source(
             .max(0.001);
         let picture = Rect::from_center_size(room.center(), source * scale);
         let [r, g, b, _] = input.background;
-        painter.rect_filled(picture, CornerRadius::same(4), Color32::from_rgb(r, g, b));
+        painter.rect_filled(picture, CornerRadius::ZERO, Color32::from_rgb(r, g, b));
         match texture {
             Some(texture) => {
                 painter.add(
-                    RectShape::filled(picture, CornerRadius::same(4), Color32::WHITE).with_texture(
+                    RectShape::filled(picture, CornerRadius::ZERO, Color32::WHITE).with_texture(
                         texture.id(),
                         Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
                     ),
@@ -1300,15 +1771,8 @@ pub fn show_source(
         }
         painter.rect_stroke(
             picture,
-            CornerRadius::same(4),
-            Stroke::new(
-                1.0,
-                if p.dark {
-                    Color32::from_white_alpha(26)
-                } else {
-                    Color32::from_black_alpha(26)
-                },
-            ),
+            CornerRadius::ZERO,
+            Stroke::new(1.0, p.canvas_edge()),
             StrokeKind::Outside,
         );
     }
@@ -1320,10 +1784,10 @@ pub fn show_source(
     if !timed {
         // A still has nothing to play: its facts take the transport's place.
         ui.painter()
-            .hline(rect.x_range(), transport.top(), p.hairline());
+            .hline(rect.x_range().shrink(1.0), transport.top(), p.hairline());
         let mut detail = "Still image".to_owned();
         if asset.width > 0 && asset.height > 0 {
-            detail.push_str(&format!(" · {}×{}", asset.width, asset.height));
+            detail.push_str(&format!(" · {} × {}", asset.width, asset.height));
         }
         if asset.file_size > 0 {
             detail.push_str(&format!(" · {}", timefmt::file_size(asset.file_size)));
@@ -1332,34 +1796,36 @@ pub fn show_source(
             transport.center(),
             Align2::CENTER_CENTER,
             detail,
-            theme::regular(12.0),
+            theme::regular(11.5),
             p.muted,
         );
         return;
     }
 
     // ---- Scrub bar: the source has no timeline of its own -------------------
+    // Terminal's slider: a 4-point track, the accent up to the knob, and a
+    // white knob that travels within the lane. ← and → step the monitor a
+    // frame wherever the keyboard is while it is up, so the bar does not
+    // step it again.
     let duration = asset.duration.max(Time(1));
     let lane = Rect::from_min_max(
-        pos2(scrub.left() + 16.0, scrub.top()),
-        pos2(scrub.right() - 16.0, scrub.bottom()),
+        pos2(scrub.left() + 12.0, scrub.top()),
+        pos2(scrub.right() - 12.0, scrub.bottom()),
     );
+    const KNOB_RADIUS: f32 = 8.0;
+    let left = lane.left() + KNOB_RADIUS;
+    let travel = (lane.width() - 2.0 * KNOB_RADIUS).max(1.0);
     let scrubbed = ui
-        .interact(
-            lane.expand2(vec2(8.0, 0.0)),
-            Id::new("source-scrub"),
-            Sense::click_and_drag(),
-        )
+        .interact(lane, Id::new("source-scrub"), Sense::click_and_drag())
         .on_hover_cursor(CursorIcon::PointingHand);
-    scrubbed.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Slider, true, "Source position")
-    });
+    let seconds = input.playhead.as_seconds();
+    scrubbed.widget_info(|| egui::WidgetInfo::slider(true, seconds, "Source position"));
     // A click may begin and end inside one frame, so it counts as well as
     // a press that is still held.
     if (scrubbed.clicked() || scrubbed.dragged() || scrubbed.is_pointer_button_down_on())
         && let Some(pos) = scrubbed.interact_pointer_pos()
     {
-        let share = ((pos.x - lane.left()) / lane.width().max(1.0)).clamp(0.0, 1.0);
+        let share = ((pos.x - left) / travel).clamp(0.0, 1.0);
         let time = source_frame_time(
             asset,
             input.rate,
@@ -1370,30 +1836,32 @@ pub fn show_source(
         }
     }
     let share = (input.playhead.0 as f32 / duration.0 as f32).clamp(0.0, 1.0);
+    let knob = pos2(left + travel * share, lane.center().y);
     let track = Rect::from_center_size(lane.center(), vec2(lane.width(), 4.0));
-    let at = track.left() + track.width() * share;
     let painter = ui.painter_at(scrub.expand(2.0));
-    painter.rect_filled(track, CornerRadius::same(2), p.control);
+    painter.rect_filled(track, CornerRadius::same(2), theme::tint(p.fg, 0.14));
     painter.rect_filled(
-        Rect::from_min_max(track.min, pos2(at, track.bottom())),
+        Rect::from_min_max(track.min, pos2(knob.x, track.bottom())),
         CornerRadius::same(2),
         p.accent,
     );
-    let grown = ui.ctx().animate_bool_with_time(
-        scrubbed.id.with("knob"),
-        scrubbed.hovered() || scrubbed.dragged(),
-        0.12,
+    if scrubbed.has_focus() {
+        painter.circle_stroke(
+            knob,
+            KNOB_RADIUS + 2.0,
+            Stroke::new(2.0, theme::tint(p.accent, 0.55)),
+        );
+    }
+    painter.circle_filled(
+        knob + vec2(0.0, 1.0),
+        KNOB_RADIUS,
+        Color32::from_black_alpha(50),
     );
-    painter.circle_filled(pos2(at, track.center().y), 5.0 + grown, Color32::WHITE);
-    painter.circle_stroke(
-        pos2(at, track.center().y),
-        5.0 + grown,
-        Stroke::new(1.5, p.accent),
-    );
+    painter.circle_filled(knob, KNOB_RADIUS, Color32::WHITE);
 
     let mut detail = media_kind_name(asset.kind).to_owned();
     if asset.width > 0 && asset.height > 0 {
-        detail.push_str(&format!(" · {}×{}", asset.width, asset.height));
+        detail.push_str(&format!(" · {} × {}", asset.width, asset.height));
     }
     if let Some(rate) = asset.frame_rate {
         detail.push_str(&format!(" · {} fps", trim_number(rate.fps())));
@@ -1403,6 +1871,7 @@ pub fn show_source(
         transport,
         &Deck {
             p,
+            app,
             playhead: input.playhead,
             duration: asset.duration,
             rate: input.rate,
@@ -1412,6 +1881,8 @@ pub fn show_source(
             detail,
             emit: |transport| Action::Source(transport),
             record: None,
+            names: "Source",
+            idle: "Nothing to play: the file's length is not known",
         },
         actions,
     );
@@ -1420,7 +1891,10 @@ pub fn show_source(
 /// One transport: the timeline's, or the source monitor's. Each sends its
 /// requests to its own clock.
 struct Deck<'a> {
+    /// The stage's palette, which the transport is drawn in.
     p: &'a Palette,
+    /// The window's, which the speed menu is drawn in.
+    app: &'a Palette,
     playhead: Time,
     duration: Time,
     rate: FrameRate,
@@ -1432,6 +1906,10 @@ struct Deck<'a> {
     emit: fn(Transport) -> Action,
     /// The record control: the timeline's alone has one.
     record: Option<RecordView>,
+    /// What the timecode is read out as the time of.
+    names: &'static str,
+    /// Why nothing plays, while the deck has nothing in it.
+    idle: &'static str,
 }
 
 /// A layer of the plan with the clip it is of.
@@ -1481,23 +1959,69 @@ impl<'a> Staged<'a> {
 }
 
 /// Says, quietly and for as long as it is so, that layers are drawn without
-/// their blend modes, masks, effects and transitions: in the margin over the
-/// canvas, where it covers nothing and a narrow window still has room for it.
-/// `what` narrows that to the one thing left out, when the rest is drawn.
-fn effects_not_shown(ui: &mut Ui, stage: Rect, p: &Palette, what: Option<&str>, why: Option<&str>) {
-    const NAME: &str = "Effects not shown";
-    let galley = ui
-        .painter()
-        .layout_no_wrap(NAME.to_owned(), theme::regular(11.0), p.muted);
-    let rect = Rect::from_min_size(stage.left_top() + vec2(12.0, 2.0), galley.size());
-    ui.painter_at(stage).galley(rect.min, galley, p.muted);
+/// their blend modes, masks, effects and transitions: in a capsule at the
+/// picture's top leading corner, inset in it from `head` down, clear of the
+/// frame and the handles of a layer that fills it. A canvas mode's prompt
+/// keeps the top where the two would meet, and this goes under it. Where
+/// the `selected` layer's frame or grips would still meet it, it goes to the
+/// picture's bottom leading corner, unless they meet it there too. It is
+/// painted before the selection's frame and handles, which stay over it.
+/// Returns where it is, which [`name_effects_not_shown`] names.
+fn effects_not_shown(
+    painter: &egui::Painter,
+    stage: Rect,
+    canvas: Rect,
+    head: f32,
+    p: &Palette,
+    prompt: Option<Rect>,
+    selected: Option<&Placed>,
+) -> Rect {
+    capsule(painter, p, EFFECTS_NOT_SHOWN, None, stage, |size| {
+        let left = canvas.left() + CAPSULE_INSET;
+        let rect = Rect::from_min_size(pos2(left, head), size);
+        let rect = match prompt {
+            Some(prompt) if prompt.expand(4.0).intersects(rect) => {
+                rect.translate(vec2(0.0, prompt.bottom() + 6.0 - rect.top()))
+            }
+            _ => rect,
+        };
+        let foot = Rect::from_min_size(pos2(left, canvas.bottom() - CAPSULE_INSET - size.y), size);
+        if in_the_way(rect, selected, stage) && !in_the_way(foot, selected, stage) {
+            foot
+        } else {
+            rect
+        }
+    })
+}
+
+const EFFECTS_NOT_SHOWN: &str = "Effects not shown";
+
+/// The label and the reason of "Effects not shown", painted at `rect`. Made
+/// after the stage's own controls, so it is over them and its reason shows
+/// on hover, but not while the pointer is on one of the `grips` a press on
+/// the selected layer takes hold of: what is reached for there is the
+/// handle. `what` narrows the reason to the one thing left out, when the
+/// rest is drawn.
+fn name_effects_not_shown(
+    ui: &mut Ui,
+    rect: Rect,
+    what: Option<&str>,
+    why: Option<&str>,
+    grips: &[Pos2],
+) {
     let response = ui.interact(rect, Id::new("viewer-effects-not-shown"), Sense::hover());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, NAME));
-    response.on_hover_text(format!(
-        "{} left out of this preview. {}",
-        what.unwrap_or("Blend modes, masks, effects and transitions are"),
-        why.unwrap_or("This frame asks more of the compositor than its limits allow.")
-    ));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, EFFECTS_NOT_SHOWN)
+    });
+    let on_grip = (response.hover_pos())
+        .is_some_and(|pos| grips.iter().any(|grip| grip.distance(pos) <= HANDLE + 3.0));
+    if !on_grip {
+        response.on_hover_text(format!(
+            "{} left out of this preview. {}",
+            what.unwrap_or("Blend modes, masks, effects and transitions are"),
+            why.unwrap_or("This frame asks more of the compositor than its limits allow.")
+        ));
+    }
 }
 
 /// The colour of the picture a layer shows under `pos`, gamma-encoded, from
@@ -1543,7 +2067,9 @@ fn sampled(
 
 /// The stage while a key colour is picked off it: the colour under the
 /// pointer is shown beside it, and a click hands it back. `sample` reads the
-/// colour of the clip being keyed at a place on screen.
+/// colour of the clip being keyed at a place on screen. Returns the colour
+/// a click picked. What the stage asks meanwhile is said over all of it, by
+/// the caller.
 fn pick_colour(
     ui: &mut Ui,
     stage: Rect,
@@ -1551,27 +2077,11 @@ fn pick_colour(
     p: &Palette,
     sample: &dyn Fn(Pos2) -> Option<[f32; 3]>,
 ) -> Option<[f32; 3]> {
-    const NAME: &str = "Click the picture to pick its key colour";
     let response = ui.interact(stage, Id::new("viewer-stage"), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, NAME));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, PICK_PROMPT));
     let painter = ui.painter_at(stage);
-    painter.text(
-        stage.center_top() + vec2(0.0, 3.0),
-        Align2::CENTER_TOP,
-        if place.is_some() {
-            NAME
-        } else {
-            "The clip is not on screen at the playhead"
-        },
-        theme::regular(11.0),
-        p.muted,
-    );
     if let Some(place) = place {
-        let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
-        painter.add(Shape::closed_line(
-            corners.map(|(x, y)| place.corner(x, y)).to_vec(),
-            Stroke::new(1.5, p.accent),
-        ));
+        frame(&painter, place.corners(), p.accent, p);
     }
     let pos = response.hover_pos()?;
     let Some(rgb) = sample(pos) else {
@@ -1580,14 +2090,12 @@ fn pick_colour(
     };
     ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     let [r, g, b] = rgb.map(|channel| (channel * 255.0).round() as u8);
+    // The colour under the pointer, ringed as a handle is.
     let swatch = pos + vec2(18.0, 18.0);
-    painter.circle_filled(swatch, 9.0, Color32::from_rgb(r, g, b));
-    painter.circle_stroke(swatch, 9.0, Stroke::new(1.5, Color32::WHITE));
-    painter.circle_stroke(
-        swatch,
-        10.5,
-        Stroke::new(1.0, Color32::from_black_alpha(120)),
-    );
+    let (fill, rim) = p.handle();
+    painter.circle_filled(swatch, 10.5, rim);
+    painter.circle_filled(swatch, 9.5, fill);
+    painter.circle_filled(swatch, 8.0, Color32::from_rgb(r, g, b));
     response.clicked().then_some(rgb)
 }
 
@@ -1681,6 +2189,22 @@ fn layer_mesh(layer: &Placed, texture: egui::TextureId, transform: &Transform) -
     Shape::mesh(mesh)
 }
 
+/// The cursor over a corner handle, `at` clockwise from the left top: the
+/// diagonal that corner is pulled along, turned with the layer to the
+/// nearest of the four resize cursors.
+fn corner_cursor(at: usize, angle: f32) -> CursorIcon {
+    // The left top and right bottom pull along the falling diagonal, 45
+    // degrees clockwise of across; the other two along the rising one.
+    let diagonal = if at.is_multiple_of(2) { 45.0 } else { 135.0 };
+    let turned = diagonal + (angle.to_degrees() / 45.0).round() * 45.0;
+    match (turned.rem_euclid(180.0) / 45.0).round() as i32 % 4 {
+        0 => CursorIcon::ResizeHorizontal,
+        1 => CursorIcon::ResizeNwSe,
+        2 => CursorIcon::ResizeVertical,
+        _ => CursorIcon::ResizeNeSw,
+    }
+}
+
 #[expect(clippy::too_many_arguments, reason = "one call site in the frame")]
 fn interact(
     ui: &mut Ui,
@@ -1692,9 +2216,9 @@ fn interact(
     selection: &mut Selection,
     draft: &mut Option<ClipDraft>,
     input: &ViewerInput,
+    p: &Palette,
     actions: &mut Vec<Action>,
 ) {
-    let p = input.p;
     let project = input.project;
     let response = ui.interact(stage, Id::new("viewer-stage"), Sense::click_and_drag());
     let pointer = ui.input(|i| i.pointer.latest_pos());
@@ -1705,14 +2229,7 @@ fn interact(
         .copied();
 
     let near = |a: Pos2, b: Pos2| a.distance(b) <= HANDLE + 3.0;
-    let corners = |layer: &Placed| {
-        [
-            layer.corner(-1.0, -1.0),
-            layer.corner(1.0, -1.0),
-            layer.corner(1.0, 1.0),
-            layer.corner(-1.0, 1.0),
-        ]
-    };
+    let corners = |layer: &Placed| layer.corners();
 
     // Press: a handle of the selected layer first, then the topmost layer.
     if ui.input(|i| i.pointer.primary_pressed())
@@ -1727,7 +2244,7 @@ fn interact(
             let clip = project.clip(layer.clip)?.1;
             let transform = stored(draft, clip);
             let from = |key, plain| drawn(draft, clip, key, local(clip), plain);
-            if near(layer.rotate_handle(), pos) {
+            if near(layer.rotate_handle(stage).1, pos) {
                 let d = pos - layer.center;
                 Some((
                     layer.clip,
@@ -1851,37 +2368,54 @@ fn interact(
         state.hold = None;
     }
 
-    // Guides and the selected layer's frame.
+    // Guides and the selected layer's frame, each over a halo that keeps it
+    // readable on any picture.
     for [a, b] in guides {
-        painter.line_segment([a, b], Stroke::new(1.0, p.yellow));
+        painter.line_segment([a, b], Stroke::new(3.0, p.frame_halo()));
+        painter.line_segment([a, b], Stroke::new(1.0, p.snap()));
     }
     if let Some(layer) = selected {
         let points = corners(&layer);
-        painter.add(Shape::closed_line(
-            points.to_vec(),
-            Stroke::new(1.5, p.accent),
-        ));
+        frame(&painter, points, p.accent, p);
         if !layer.locked {
-            let top = layer.corner(0.0, -1.0);
-            let handle = layer.rotate_handle();
-            painter.line_segment([top, handle], Stroke::new(1.5, p.accent));
-            painter.circle_filled(handle, 5.5, Color32::WHITE);
-            painter.circle_stroke(handle, 5.5, Stroke::new(1.5, p.accent));
+            let (edge, knob) = layer.rotate_handle(stage);
+            let hovered = pointer.filter(|_| response.contains_pointer());
+            let held = state.hold.filter(|(clip, _)| *clip == layer.clip);
+            // The stem starts at the frame and ends at the knob's edge.
+            let stem = knob - edge;
+            let reach = (stem.length() - KNOB).max(0.0);
+            let stem = [edge, edge + stem.normalized() * reach];
+            painter.line_segment(stem, Stroke::new(3.0, p.frame_halo()));
+            painter.line_segment(stem, Stroke::new(1.0, p.accent));
+            // The knob has the handles' rim, so it holds its edge on a
+            // bright picture as they do, over its shadow.
+            let (fill, rim) = p.handle();
+            painter.circle_filled(knob + vec2(0.0, 1.0), KNOB, Color32::from_black_alpha(60));
+            painter.circle_filled(knob, KNOB, rim);
+            painter.circle_filled(knob, KNOB - 1.0, fill);
             for corner in points {
-                let square = Rect::from_center_size(corner, Vec2::splat(HANDLE));
-                painter.rect_filled(square, CornerRadius::same(2), Color32::WHITE);
-                painter.rect_stroke(
-                    square,
-                    CornerRadius::same(2),
-                    Stroke::new(1.5, p.accent),
-                    StrokeKind::Inside,
+                // The handle under the pointer, which a drag holds.
+                let grown = hovered.is_some_and(|pos| near(corner, pos));
+                let side = if grown { HANDLE_HOVERED } else { HANDLE };
+                painter.add(
+                    RectShape::new(
+                        Rect::from_center_size(corner, Vec2::splat(side)),
+                        CornerRadius::same(2),
+                        fill,
+                        Stroke::new(1.0, rim),
+                        StrokeKind::Inside,
+                    )
+                    .with_angle(layer.angle),
                 );
             }
-            if let Some(pos) = pointer.filter(|_| response.contains_pointer()) {
-                if near(handle, pos) {
-                    ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
-                } else if points.iter().any(|corner| near(*corner, pos)) {
-                    ui.ctx().set_cursor_icon(CursorIcon::ResizeNwSe);
+            if let Some(pos) = hovered {
+                let rotating = matches!(held, Some((_, Hold::Rotate { .. })));
+                if rotating {
+                    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                } else if near(knob, pos) {
+                    ui.ctx().set_cursor_icon(CursorIcon::Grab);
+                } else if let Some(at) = points.iter().position(|corner| near(*corner, pos)) {
+                    ui.ctx().set_cursor_icon(corner_cursor(at, layer.angle));
                 } else if layer.contains(pos) {
                     ui.ctx().set_cursor_icon(CursorIcon::Move);
                 }
@@ -1924,11 +2458,14 @@ const PLAY: f32 = 34.0;
 const CONTROL_GAP: f32 = 4.0;
 /// Between the groups of a transport, at the least.
 const GROUP_GAP: f32 = 8.0;
-const TRANSPORT_LEADING: f32 = 16.0;
-const TRANSPORT_TRAILING: f32 = 10.0;
-/// The speed control: wide enough for `0.25×`, and as tall as egui makes any
-/// button, which would otherwise hang below a shorter place.
-const SPEED: Vec2 = vec2(48.0, metrics::CONTROL_HEIGHT);
+const TRANSPORT_LEADING: f32 = 12.0;
+const TRANSPORT_TRAILING: f32 = 12.0;
+/// The speed control: wide enough for `0.25×`, as tall as a compact control.
+const SPEED: Vec2 = vec2(48.0, metrics::COMPACT_HEIGHT);
+/// Between the timecode and the duration after it, and between the facts
+/// and the controls before them.
+const TEXT_GAP: f32 = 8.0;
+const DETAIL_GAP: f32 = 12.0;
 
 /// The widths of what a transport shows as text.
 #[derive(Clone, Copy, Debug)]
@@ -2056,30 +2593,68 @@ impl TransportLayout {
     }
 }
 
+/// A timecode as the transport sets it: the groups that are still nought
+/// before the first that is not, and the colon after each, quieter than the
+/// rest, so the time that moves is what reads. The frames always read, and
+/// on an empty timeline nothing does.
+fn timecode_job(text: &str, empty: bool, size: f32, p: &Palette) -> egui::text::LayoutJob {
+    let quiet = if empty {
+        text.len()
+    } else {
+        let mut quiet = 0;
+        let mut groups = text.split(':').peekable();
+        while let Some(group) = groups.next() {
+            if groups.peek().is_none() || group.bytes().any(|digit| digit != b'0') {
+                break;
+            }
+            quiet += group.len() + 1;
+        }
+        quiet
+    };
+    let mut job = egui::text::LayoutJob::default();
+    for (part, color) in [(&text[..quiet], p.muted), (&text[quiet..], p.fg)] {
+        if !part.is_empty() {
+            job.append(
+                part,
+                0.0,
+                egui::TextFormat::simple(theme::mono(size), color),
+            );
+        }
+    }
+    job
+}
+
+/// How far below the top of a one-line galley its text stands.
+fn baseline(galley: &egui::Galley) -> f32 {
+    (galley.rows.first())
+        .and_then(|row| Some(row.pos.y + row.glyphs.first()?.pos.y))
+        .unwrap_or(galley.size().y)
+}
+
 fn draw_transport(ui: &mut Ui, rect: Rect, input: &Deck, actions: &mut Vec<Action>) {
     let p = input.p;
     let rate = input.rate;
     let emit = input.emit;
-    ui.painter().hline(rect.x_range(), rect.top(), p.hairline());
+    // Nothing plays on a deck with nothing in it.
+    let playable = input.duration > Time::ZERO;
+    // The separator stops at the well's outline, which carries the edge.
+    ui.painter()
+        .hline(rect.x_range().shrink(1.0), rect.top(), p.hairline());
 
     let painter = ui.painter_at(rect);
-    let now = painter.layout_no_wrap(
-        timefmt::timecode(input.playhead, rate),
-        theme::mono(12.5),
-        p.fg,
-    );
-    let total = painter.layout_no_wrap(
-        format!("/ {}", timefmt::timecode(input.duration, rate)),
-        theme::mono(12.5),
-        p.muted,
-    );
+    let now_text = timefmt::timecode(input.playhead, rate);
+    let total_text = timefmt::timecode(input.duration, rate);
+    let now = painter.layout_job(timecode_job(&now_text, !playable, 15.0, p));
+    // An empty deck reads all quiet, its duration too.
+    let total_ink = if playable { p.secondary } else { p.muted };
+    let total = painter.layout_no_wrap(format!("/ {total_text}"), theme::mono(12.0), total_ink);
     let detail = painter.layout_no_wrap(input.detail.clone(), theme::regular(11.5), p.muted);
     let layout = TransportLayout::new(
         rect,
         TransportText {
             timecode: now.size().x,
-            duration: 6.0 + total.size().x,
-            detail: detail.size().x + 10.0,
+            duration: TEXT_GAP + total.size().x,
+            detail: detail.size().x + DETAIL_GAP,
             record: if input.record.is_some() {
                 metrics::ICON_BUTTON
             } else {
@@ -2088,23 +2663,32 @@ fn draw_transport(ui: &mut Ui, rect: Rect, input: &Deck, actions: &mut Vec<Actio
         },
     );
 
-    // Timecode at the leading edge.
+    // Timecode at the leading edge, read out as one statement.
     if layout.timecode {
         let left = rect.left() + TRANSPORT_LEADING;
-        let after = left + now.size().x + 6.0;
-        painter.galley(pos2(left, rect.center().y - now.size().y * 0.5), now, p.fg);
+        let line = baseline(&now);
+        let shown = controls::galley_at(&painter, pos2(left, rect.center().y), now);
+        let mut said = shown;
         if layout.duration {
-            painter.galley(
-                pos2(after, rect.center().y - total.size().y * 0.5),
-                total,
-                p.muted,
+            // On the timecode's baseline, though smaller.
+            let at = pos2(
+                shown.right() + TEXT_GAP,
+                shown.top() + line - baseline(&total),
             );
+            said = said.union(Rect::from_min_size(at, total.size()));
+            painter.galley(at, total, total_ink);
         }
+        // Named only when an assistive tool asks, so playback does not
+        // format the statement every frame.
+        ui.interact(said, ui.id().with("transport-timecode"), Sense::hover())
+            .widget_info(|| {
+                let name = format!("{} {now_text} of {total_text}", input.names);
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name)
+            });
     }
 
-    // Transport in the centre, around the one primary control. A narrow
-    // viewer keeps the frame steps, then only play; the rest stays on the
-    // keyboard.
+    // Transport in the centre, around play. A narrow viewer keeps the frame
+    // steps, then only play; the rest stays on the keyboard.
     let (full, steps) = (
         layout.controls == Controls::Full,
         layout.controls >= Controls::Steps,
@@ -2116,114 +2700,37 @@ fn draw_transport(ui: &mut Ui, rect: Rect, input: &Deck, actions: &mut Vec<Actio
     );
     let ui_c = &mut controls;
     ui_c.spacing_mut().item_spacing.x = CONTROL_GAP;
-    if full && widgets::icon_button(ui_c, p, Icon::SkipStart, "Go to start (Home)").clicked() {
+    // The frame steps' carets are slight beside the jumps' bars, and are
+    // drawn larger so the row reads as one weight.
+    let step = |ui: &mut Ui, icon, label: &str| {
+        let glyph = if matches!(icon, Icon::CaretLeft | Icon::CaretRight) {
+            CARET
+        } else {
+            metrics::ICON
+        };
+        ui.add_enabled_ui(playable, |ui| step_button(ui, p, icon, glyph, label))
+            .inner
+            .on_disabled_hover_text(input.idle)
+            .clicked()
+    };
+    if full && step(ui_c, Icon::SkipStart, "Go to start (Home)") {
         actions.push(emit(Transport::JumpStart));
     }
-    if steps && widgets::icon_button(ui_c, p, Icon::StepBack, "Previous frame (←)").clicked() {
+    if steps && step(ui_c, Icon::CaretLeft, "Previous frame (←)") {
         actions.push(emit(Transport::Step(-1)));
     }
-    let (play_rect, play) = ui_c.allocate_exact_size(Vec2::splat(PLAY), Sense::click());
-    let label = if input.playing {
-        "Pause (Space)"
-    } else {
-        "Play (Space)"
-    };
-    play.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    let press = ui_c.ctx().animate_bool_with_time(
-        play.id.with("press"),
-        play.is_pointer_button_down_on(),
-        0.1,
-    );
-    let disc = Rect::from_center_size(play_rect.center(), play_rect.size() * (1.0 - 0.04 * press));
-    ui_c.painter().circle_filled(
-        disc.center(),
-        disc.width() * 0.5,
-        if play.hovered() {
-            theme::mix(p.accent, Color32::WHITE, 0.1)
-        } else {
-            p.accent
-        },
-    );
-    if play.has_focus() {
-        // The disc is the accent itself, so the ring stands off it.
-        ui_c.painter().circle_stroke(
-            disc.center(),
-            disc.width() * 0.5 + 3.0,
-            egui::Stroke::new(1.5, p.accent),
-        );
-    }
-    // Play and pause trade places with a short cross-fade.
-    let t = ui_c
-        .ctx()
-        .animate_bool_with_time(play.id.with("state"), input.playing, 0.2);
-    for (icon, amount) in [(Icon::Play, 1.0 - t), (Icon::Pause, t)] {
-        if amount > 0.01 {
-            let side = 16.0 * (0.25 + 0.75 * amount);
-            icons::paint(
-                ui_c.painter(),
-                Rect::from_center_size(disc.center(), Vec2::splat(side)),
-                icon,
-                p.on_accent.gamma_multiply(amount),
-            );
-        }
-    }
-    if play.on_hover_text(label).clicked() {
+    if play_disc(ui_c, p, input.playing, playable, input.idle) {
         actions.push(emit(Transport::TogglePlay));
     }
-    if steps && widgets::icon_button(ui_c, p, Icon::StepForward, "Next frame (→)").clicked() {
+    if steps && step(ui_c, Icon::CaretRight, "Next frame (→)") {
         actions.push(emit(Transport::Step(1)));
     }
-    if full && widgets::icon_button(ui_c, p, Icon::SkipEnd, "Go to end (End)").clicked() {
+    if full && step(ui_c, Icon::SkipEnd, "Go to end (End)") {
         actions.push(emit(Transport::JumpEnd));
     }
 
-    // While a take runs, its stop control, elapsed time and level take the
-    // place of record and speed, which is fixed at 1× until it ends.
-    if let (Some(view), Some(place)) = (input.record, layout.record) {
-        if let RecordView::Recording { elapsed, level } = view {
-            draw_take(ui, p, place.union(layout.speed), elapsed, level, actions);
-        } else {
-            draw_record(ui, p, place, view, actions);
-        }
-    }
-    let recording = matches!(input.record, Some(RecordView::Recording { .. }));
-
-    // Loop and speed at the trailing edge, each in a place of its own.
-    if !recording {
-        let mut trailing = ui.new_child(egui::UiBuilder::new().max_rect(layout.speed));
-        // The control is as wide as the layout made it, whatever it reads.
-        trailing.spacing_mut().button_padding = vec2(4.0, 4.0);
-        let speed_text = format!("{}×", trim_number(input.speed));
-        let speed = trailing.put(
-            layout.speed,
-            egui::Button::new(
-                egui::RichText::new(&speed_text)
-                    .font(theme::medium(12.0))
-                    .color(p.secondary),
-            )
-            .min_size(SPEED),
-        );
-        speed.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                true,
-                format!("Playback speed, {speed_text}"),
-            )
-        });
-        egui::Popup::menu(&speed).show(|ui| {
-            widgets::menu_style(ui, 120.0);
-            for value in [0.25, 0.5, 1.0, 1.5, 2.0, 4.0] {
-                let icon = (value == input.speed).then_some(Icon::Check);
-                if widgets::menu_item(ui, p, icon, &format!("{}×", trim_number(value)), "")
-                    .clicked()
-                {
-                    actions.push(emit(Transport::SetSpeed(value)));
-                    ui.close();
-                }
-            }
-        });
-        speed.on_hover_text("Playback speed");
-    }
+    // Loop, record and speed at the trailing edge, each in a place of its
+    // own, made in that order so the keyboard reaches them as they read.
     if let Some(rect) = layout.looping {
         let mut looping = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         if widgets::icon_toggle(
@@ -2238,21 +2745,212 @@ fn draw_transport(ui: &mut Ui, rect: Rect, input: &Deck, actions: &mut Vec<Actio
             actions.push(emit(Transport::ToggleLoop));
         }
     }
+    // While a take runs, its stop control, elapsed time and level take the
+    // place of record and speed, which is fixed at 1× until it ends.
+    if let (Some(view), Some(place)) = (input.record, layout.record) {
+        if let RecordView::Recording { elapsed, level } = view {
+            draw_take(ui, p, place.union(layout.speed), elapsed, level, actions);
+        } else {
+            draw_record(ui, p, place, view, actions);
+        }
+    }
+    let recording = matches!(input.record, Some(RecordView::Recording { .. }));
+    if !recording {
+        speed_control(ui, input, layout.speed, actions);
+    }
     if layout.detail {
-        let right = layout.looping.unwrap_or(layout.speed).left() - 10.0;
-        painter.galley(
-            pos2(
-                right - detail.size().x,
-                rect.center().y - detail.size().y * 0.5,
-            ),
+        let right = layout.looping.unwrap_or(layout.speed).left() - DETAIL_GAP;
+        controls::galley_at(
+            &painter,
+            pos2(right - detail.size().x, rect.center().y),
             detail,
-            p.muted,
         );
     }
 }
 
+/// The cell a frame step's caret is drawn in, larger than an icon's.
+const CARET: f32 = 20.0;
+
+/// An icon button's surface round a glyph drawn by its caller, at another
+/// size than an icon button's: the fill that lights on hover and darkens
+/// while pressed, which a disabled one has not, and the ring the keyboard
+/// puts on it. As [`kit::paint_icon_button`] paints them.
+fn icon_surface(ui: &Ui, p: &Palette, response: &egui::Response) {
+    let surface = response.rect.shrink(1.0);
+    let painter = ui.painter();
+    if ui.is_enabled() {
+        let hover = kit::hover_amount(ui, response);
+        if response.is_pointer_button_down_on() {
+            painter.rect_filled(surface, 7, p.pressed);
+        } else if hover > 0.0 {
+            painter.rect_filled(surface, 7, p.hover.gamma_multiply(hover));
+        }
+    }
+    if response.has_focus() {
+        painter.rect_stroke(surface, 7, Stroke::new(1.5, p.accent), StrokeKind::Inside);
+    }
+}
+
+/// A transport button: an icon button whose glyph is drawn in a cell
+/// `glyph` points wide, with the surface, ring and inks of every other.
+fn step_button(ui: &mut Ui, p: &Palette, icon: Icon, glyph: f32, label: &str) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::splat(metrics::ICON_BUTTON), Sense::click());
+    let enabled = ui.is_enabled();
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    icon_surface(ui, p, &response);
+    let down = enabled && response.is_pointer_button_down_on();
+    let hover = kit::hover_amount(ui, &response);
+    let ink = if !enabled {
+        p.muted
+    } else if down || response.has_focus() {
+        p.fg
+    } else {
+        theme::mix(p.secondary, p.fg, hover)
+    };
+    // Pressing settles the glyph slightly, as it does an icon button's.
+    let side = if down { glyph - 1.0 } else { glyph };
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(rect.center(), Vec2::splat(side)),
+        icon,
+        ink,
+    );
+    let (name, keys) = kit::name_and_keys(label);
+    icons::hint(
+        response.on_hover_cursor(CursorIcon::PointingHand),
+        name,
+        keys,
+    )
+}
+
+/// Play: a neutral disc, the one round control, which reads as pause while
+/// playing. It cannot be pressed with nothing to play. Returns whether it
+/// was pressed.
+fn play_disc(ui: &mut Ui, p: &Palette, playing: bool, playable: bool, idle: &str) -> bool {
+    let sense = if playable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, play) = ui.allocate_exact_size(Vec2::splat(PLAY), sense);
+    let label = if playing {
+        "Pause (Space)"
+    } else {
+        "Play (Space)"
+    };
+    play.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, playable, label));
+    let painter = ui.painter();
+    let centre = rect.center();
+    let radius = PLAY * 0.5;
+    if playable {
+        painter.circle_filled(centre, radius, p.control);
+        if play.is_pointer_button_down_on() {
+            painter.circle_filled(centre, radius, p.pressed);
+        } else {
+            let hover = kit::hover_amount(ui, &play);
+            if hover > 0.0 {
+                painter.circle_filled(centre, radius, p.hover.gamma_multiply(hover));
+            }
+        }
+    } else {
+        painter.circle_filled(centre, radius, p.control.gamma_multiply(0.5));
+    }
+    if play.has_focus() {
+        painter.circle_stroke(
+            centre,
+            radius + 2.0,
+            Stroke::new(2.0, theme::tint(p.accent, 0.55)),
+        );
+    }
+    // Play and pause trade places with a short cross-fade. The play glyph
+    // sits a point right of the centre, where its weight is.
+    let ink = if playable {
+        p.fg
+    } else {
+        p.muted.gamma_multiply(0.6)
+    };
+    let t = controls::animate(
+        ui.ctx(),
+        play.id.with("state"),
+        playing,
+        theme::motion::PLAY_GLYPH,
+    );
+    for (icon, amount, nudge) in [(Icon::Play, 1.0 - t, 1.0), (Icon::Pause, t, 0.0)] {
+        if amount > 0.01 {
+            let side = metrics::ICON * (0.75 + 0.25 * amount);
+            icons::paint(
+                painter,
+                Rect::from_center_size(centre + vec2(nudge, 0.0), Vec2::splat(side)),
+                icon,
+                ink.gamma_multiply(amount),
+            );
+        }
+    }
+    let (name, keys) = kit::name_and_keys(label);
+    let play = if playable {
+        icons::hint(play.on_hover_cursor(CursorIcon::PointingHand), name, keys)
+    } else {
+        play.on_hover_text(idle)
+    };
+    play.clicked()
+}
+
+/// The playback speed: its value in a compact quiet control that opens a
+/// menu of the speeds there are, in the window's palette.
+fn speed_control(ui: &mut Ui, input: &Deck, place: Rect, actions: &mut Vec<Action>) {
+    let p = input.p;
+    let speed_text = format!("{}×", trim_number(input.speed));
+    let response = ui.interact(place, ui.id().with("transport-speed"), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!("Playback speed, {speed_text}"),
+        )
+    });
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    let hover = kit::hover_amount(ui, &response);
+    let painter = ui.painter_at(place.expand(3.0));
+    let radius = CornerRadius::same(7);
+    if open || response.is_pointer_button_down_on() {
+        painter.rect_filled(place, radius, p.pressed);
+    } else if hover > 0.0 {
+        painter.rect_filled(place, radius, p.hover.gamma_multiply(hover));
+    }
+    if response.has_focus() {
+        controls::focus_ring(&painter, place, 7, *p);
+    }
+    let ink = if open || response.has_focus() {
+        p.fg
+    } else {
+        theme::mix(p.secondary, p.fg, hover)
+    };
+    let text = painter.layout_no_wrap(speed_text, theme::medium(12.0), ink);
+    painter.galley(place.center() - text.size() * 0.5, text, ink);
+    let emit = input.emit;
+    let app = input.app;
+    egui::Popup::menu(&response).show(|ui| {
+        widgets::menu_style(ui, 160.0);
+        // The speeds are a choice: the one playing is checked, and is
+        // told as the one chosen.
+        for value in [0.25, 0.5, 1.0, 1.5, 2.0, 4.0] {
+            let text = format!("{}×", trim_number(value));
+            let chosen = Some(value == input.speed);
+            if kit::menu_row(ui, app, None, &text, "", false, chosen).clicked() {
+                actions.push(emit(Transport::SetSpeed(value)));
+                ui.close();
+            }
+        }
+    });
+    response
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text("Playback speed");
+}
+
 /// The record control at rest, starting or closing a take: a red disc that
-/// asks for a take, and gives up one that is starting.
+/// asks for a take, and gives up one that is starting. Dimmed while the
+/// microphone opens, and grey while the take is closed.
 fn draw_record(ui: &mut Ui, p: &Palette, place: Rect, view: RecordView, actions: &mut Vec<Action>) {
     let mut control = ui.new_child(egui::UiBuilder::new().max_rect(place));
     let (label, tint, enabled) = match view {
@@ -2265,9 +2963,27 @@ fn draw_record(ui: &mut Ui, p: &Palette, place: Rect, view: RecordView, actions:
         _ => (format!("Record voiceover ({})", shortcut("R")), p.red, true),
     };
     control.add_enabled_ui(enabled, |ui| {
-        let pressed =
-            widgets::icon_button_tinted(ui, p, Icon::Speech, &label, Some(tint)).clicked();
-        if pressed {
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::splat(metrics::ICON_BUTTON), Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
+        });
+        // An icon button's surface, round a smaller glyph: the disc is a
+        // solid shape, and at 16 points it would outweigh play.
+        icon_surface(ui, p, &response);
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(rect.center(), Vec2::splat(12.0)),
+            Icon::Disc,
+            tint,
+        );
+        let (name, keys) = kit::name_and_keys(&label);
+        let response = icons::hint(
+            response.on_hover_cursor(CursorIcon::PointingHand),
+            name,
+            keys,
+        );
+        if response.clicked() {
             actions.push(match view {
                 RecordView::Idle => Action::Record,
                 _ => Action::StopRecord,
@@ -2276,9 +2992,9 @@ fn draw_record(ui: &mut Ui, p: &Palette, place: Rect, view: RecordView, actions:
     });
 }
 
-/// A take that runs: a stop control where record was, and in speed's place
-/// how long the take is with a small bar of its level. One press anywhere on
-/// it ends the take.
+/// A take that runs: a pill in the place of record and speed, with a stop
+/// square where the disc was, and the whole seconds recorded over a small
+/// bar of the take's level. One press anywhere on it ends the take.
 fn draw_take(
     ui: &mut Ui,
     p: &Palette,
@@ -2291,50 +3007,57 @@ fn draw_take(
     let label = format!("Stop recording, {text} recorded ({})", shortcut("R"));
     let response = ui.interact(place, ui.id().with("take"), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
-    let painter = ui.painter_at(place.expand(2.0));
-    let radius = CornerRadius::same(metrics::CONTROL_RADIUS);
-    let fill = if response.hovered() { 0.22 } else { 0.14 };
-    painter.rect_filled(place, radius, theme::tint(p.red, fill));
+    let pill = Rect::from_center_size(place.center(), vec2(place.width(), metrics::COMPACT_HEIGHT));
+    let painter = ui.painter_at(pill.expand(4.0));
+    let radius = CornerRadius::same(14);
+    let fill = if response.is_pointer_button_down_on() {
+        0.30
+    } else if response.hovered() {
+        0.22
+    } else {
+        0.14
+    };
+    painter.rect_filled(pill, radius, theme::tint(p.red, fill));
     if response.has_focus() {
-        painter.rect_stroke(
-            place,
-            radius,
-            Stroke::new(1.5, p.accent),
-            StrokeKind::Inside,
-        );
+        controls::focus_ring(&painter, pill, 14, *p);
     }
-    let stop = Rect::from_center_size(
-        pos2(place.left() + metrics::ICON_BUTTON * 0.5, place.center().y),
-        Vec2::splat(metrics::ICON),
+    let stop = Rect::from_min_size(
+        pos2(pill.left() + 12.0, pill.center().y - 5.0),
+        Vec2::splat(10.0),
     );
-    icons::paint(&painter, stop, Icon::Stop, p.red);
-    // The time and the bar share what is left, centred in it.
-    let rest = Rect::from_min_max(
-        pos2(place.left() + metrics::ICON_BUTTON, place.top()),
-        place.max,
-    );
+    painter.rect_filled(stop, CornerRadius::same(2), p.red);
+    // The seconds, and under them the level, read as one, in the middle of
+    // what the stop square leaves of the pill. The level's track shows on
+    // the red, so a silent take still has a meter.
     let time = painter.layout_no_wrap(text, theme::mono(12.0), p.fg);
+    let middle = (pill.left() + 28.0 + pill.right() - 12.0) * 0.5;
     painter.galley(
         pos2(
-            rest.center().x - time.size().x * 0.5,
-            rest.center().y - 2.5 - time.size().y * 0.5,
+            middle - time.size().x * 0.5,
+            pill.center().y - 4.0 - time.size().y * 0.5,
         ),
         time,
         p.fg,
     );
-    let bar = Rect::from_center_size(
-        pos2(rest.center().x, rest.center().y + 8.0),
-        vec2(30.0, 3.0),
-    );
-    painter.rect_filled(bar, CornerRadius::same(1), theme::tint(p.fg, 0.14));
+    let bar = Rect::from_center_size(pos2(middle, pill.center().y + 8.0), vec2(24.0, 4.0));
+    painter.rect_filled(bar, CornerRadius::same(2), theme::tint(p.fg, 0.14));
     let fill = record::level_fill(level);
     if fill > 0.0 {
         let lit = Rect::from_min_size(bar.min, vec2(bar.width() * fill, bar.height()));
-        // Within 1 dB of full scale the take is clipping.
-        let ink = if fill >= 59.0 / 60.0 { p.red } else { p.green };
-        painter.rect_filled(lit, CornerRadius::same(1), ink);
+        // Above -12 dBFS the take is loud, and within 1 dB of full scale it
+        // is clipping.
+        let ink = if fill >= 59.0 / 60.0 {
+            p.red
+        } else if fill >= 48.0 / 60.0 {
+            p.yellow
+        } else {
+            p.green
+        };
+        painter.rect_filled(lit, CornerRadius::same(2), ink);
     }
-    if response.on_hover_text(label).clicked() {
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    let (name, keys) = kit::name_and_keys(&label);
+    if icons::hint(response, name, keys).clicked() {
         actions.push(Action::StopRecord);
     }
 }
@@ -2393,6 +3116,9 @@ mod tests {
             looping: false,
             media: None,
             record: Default::default(),
+            library: true,
+            quality: Default::default(),
+            cards: &[],
         };
         assert!(input.indexed().is_some());
         let overrides = [ClipOverride {
@@ -2428,6 +3154,9 @@ mod tests {
             looping: false,
             media: None,
             record: Default::default(),
+            library: true,
+            quality: Default::default(),
+            cards: &[],
         };
         assert_eq!(input.active_clips().count(), 1);
         assert_eq!(input.resolve(&[]), resolve(&replacement, Time::ZERO, &[]));
@@ -2436,10 +3165,11 @@ mod tests {
 
     use super::*;
 
-    /// Text as wide as the transports show it, near enough.
+    /// Text as wide as the transports show it, near enough: the timecode
+    /// and the duration in JetBrains Mono 15 and 12 (spec §4.4.1).
     const TEXT: TransportText = TransportText {
-        timecode: 84.0,
-        duration: 104.0,
+        timecode: 99.0,
+        duration: 102.0,
         detail: 130.0,
         record: 0.0,
     };
@@ -2561,8 +3291,9 @@ mod tests {
 
     #[test]
     fn a_transport_shows_what_its_width_has_room_for() {
-        // The pane of an 800×600 window with both panels: play and speed.
-        let (rect, layout) = bar(168.0);
+        // The narrowest pane that holds play and speed with play in the
+        // middle: two points wider with the insets at 12 and 12 (spec §3.4).
+        let (rect, layout) = bar(170.0);
         assert_eq!((layout.controls, layout.timecode), (Controls::Play, false));
         assert_eq!(layout.play().center().x, rect.center().x);
         assert_eq!(layout.speed.right(), rect.right() - TRANSPORT_TRAILING);
@@ -3023,5 +3754,357 @@ mod tests {
     fn numbers_lose_their_trailing_zeros() {
         assert_eq!(trim_number(1.0), "1");
         assert_eq!(trim_number(29.97), "29.97");
+    }
+
+    /// The parts of a timecode as it is set, each with its ink.
+    fn set(text: &str, empty: bool, p: &Palette) -> Vec<(String, Color32)> {
+        let job = timecode_job(text, empty, 15.0, p);
+        (job.sections.iter())
+            .map(|section| {
+                let range = &section.byte_range;
+                (
+                    job.text[range.start.0..range.end.0].to_owned(),
+                    section.format.color,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_timecode_quiets_its_leading_nought_groups_and_an_empty_one_all() {
+        // Spec §4.4.1: up to the colon before the first group that moves.
+        let p = &stage_palette(&Palette::new(
+            crate::theme::Appearance::Dark,
+            crate::theme::Accent::Blue,
+        ));
+        let (muted, fg) = (p.muted, p.fg);
+        assert_eq!(
+            set("00:00:02:14", false, p),
+            [("00:00:".to_owned(), muted), ("02:14".to_owned(), fg)]
+        );
+        assert_eq!(
+            set("01:00:00:00", false, p),
+            [("01:00:00:00".to_owned(), fg)]
+        );
+        // The frames always read, nought or not.
+        assert_eq!(
+            set("00:00:00:00", false, p),
+            [("00:00:00:".to_owned(), muted), ("00".to_owned(), fg)]
+        );
+        assert_eq!(
+            set("00:00:00:00", true, p),
+            [("00:00:00:00".to_owned(), muted)]
+        );
+    }
+
+    #[test]
+    fn a_corner_cursor_follows_the_layer_in_steps_of_45_degrees() {
+        use CursorIcon::{ResizeHorizontal, ResizeNeSw, ResizeNwSe, ResizeVertical};
+        // Clockwise from the left top.
+        let at = |angle: f32| (0..4).map(move |corner| corner_cursor(corner, angle.to_radians()));
+        let upright = [ResizeNwSe, ResizeNeSw, ResizeNwSe, ResizeNeSw];
+        assert!(at(0.0).eq(upright));
+        // Within half a step of upright it is still upright.
+        assert!(at(22.0).eq(upright));
+        assert!(at(-22.0).eq(upright));
+        assert!(at(45.0).eq([
+            ResizeVertical,
+            ResizeHorizontal,
+            ResizeVertical,
+            ResizeHorizontal
+        ]));
+        assert!(at(90.0).eq([ResizeNeSw, ResizeNwSe, ResizeNeSw, ResizeNwSe]));
+        assert!(at(-45.0).eq([
+            ResizeHorizontal,
+            ResizeVertical,
+            ResizeHorizontal,
+            ResizeVertical
+        ]));
+        assert!(at(180.0).eq(upright));
+    }
+
+    fn placed(center: Pos2, half: Vec2) -> Placed {
+        Placed {
+            clip: ClipId::new_v4(),
+            center,
+            half,
+            angle: 0.0,
+            locked: false,
+        }
+    }
+
+    #[test]
+    fn the_rotate_knob_stays_on_the_stage_and_off_a_short_layers_middle() {
+        let stage = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 450.0));
+        let room = stage.shrink(KNOB + 1.0);
+        // A layer with room above it: the stem goes out from the top.
+        let free = placed(pos2(400.0, 225.0), vec2(100.0, 60.0));
+        let (edge, knob) = free.rotate_handle(stage);
+        assert_eq!(edge, pos2(400.0, 165.0));
+        assert_eq!(knob, pos2(400.0, 165.0 - ROTATE_STEM));
+        // One that fills the frame: in from the top, on the stage.
+        let full = placed(pos2(400.0, 225.0), vec2(382.0, 207.0));
+        let (edge, knob) = full.rotate_handle(stage);
+        assert_eq!(edge, pos2(400.0, 18.0));
+        assert_eq!(knob, pos2(400.0, 18.0 + ROTATE_STEM));
+        assert!(room.contains(knob));
+        // A short one at the top: out from its bottom, clear of the middle
+        // a press moves it by.
+        let short = placed(pos2(400.0, 40.0), vec2(120.0, 22.0));
+        let (edge, knob) = short.rotate_handle(stage);
+        assert_eq!(edge, pos2(400.0, 62.0));
+        assert_eq!(knob, pos2(400.0, 62.0 + ROTATE_STEM));
+        assert!(!short.contains(knob) && room.contains(knob));
+        assert!(knob.distance(short.center) > HANDLE + 3.0 + short.half.y);
+    }
+
+    /// Lays out "Effects not shown" on a stage at `size`, with a prompt when
+    /// `asks`, and the layer `selected` as `place` puts it on the canvas.
+    /// Returns the canvas, the prompt and the statement.
+    fn said_on(
+        size: Vec2,
+        asks: bool,
+        place: impl Fn(Rect) -> Option<Placed>,
+    ) -> (Rect, Option<Rect>, Rect) {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let p = &stage_palette(&Palette::new(
+            crate::theme::Appearance::Dark,
+            crate::theme::Accent::Blue,
+        ));
+        let mut laid = None;
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let stage = Rect::from_min_size(pos2(0.0, 10.0), size);
+            let (canvas, _) = fitted_canvas(stage, vec2(1920.0, 1080.0));
+            let head = capsules_head(ui.ctx(), canvas, &[]);
+            let painter = ui.painter_at(stage);
+            let said = asks.then(|| prompt(&painter, stage, head, p, PICK_PROMPT).rect);
+            let selected = place(canvas);
+            let shown =
+                effects_not_shown(&painter, stage, canvas, head, p, said, selected.as_ref());
+            laid = Some((canvas, said, shown));
+        });
+        // No renderer takes the font atlas this pass made.
+        output.drop_without_applying_deltas();
+        laid.unwrap()
+    }
+
+    #[test]
+    fn effects_not_shown_goes_under_a_prompt_it_would_meet() {
+        // Wide, the two share the top of the picture; narrow, the prompt
+        // keeps it.
+        let (canvas, said, shown) = said_on(vec2(1400.0, 600.0), true, |_| None);
+        let said = said.unwrap();
+        assert!(!said.intersects(shown));
+        assert_eq!(shown.top(), said.top());
+        assert_eq!(shown.min, canvas.min + Vec2::splat(CAPSULE_INSET));
+        let (_, said, shown) = said_on(vec2(300.0, 300.0), true, |_| None);
+        assert_eq!(shown.top(), said.unwrap().bottom() + 6.0);
+        assert_eq!(shown.height(), CAPSULE);
+    }
+
+    #[test]
+    fn effects_not_shown_keeps_clear_of_the_selected_layers_frame_and_grips() {
+        // Spec §5.3: the canvas overlays are one system, and the handles
+        // are not covered. At both acceptance sizes' stages.
+        for size in [vec2(824.0, 443.0), vec2(498.0, 254.0)] {
+            // A layer that fills the picture: its frame and grips are clear of
+            // the statement in its place in the picture's top leading corner.
+            let full = |canvas: Rect| Some(placed(canvas.center(), canvas.size() * 0.5));
+            let (canvas, _, shown) = said_on(size, false, full);
+            let stage = Rect::from_min_size(pos2(0.0, 10.0), size);
+            let layer = full(canvas).unwrap();
+            assert_eq!(shown.min, canvas.min + Vec2::splat(CAPSULE_INSET));
+            assert!(!in_the_way(shown, Some(&layer), stage));
+            for grip in grips(Some(&layer), stage) {
+                assert!(
+                    shown.distance_to_pos(grip) > HANDLE + 3.0,
+                    "at {size:?} the grip at {grip:?} is under {shown:?}"
+                );
+            }
+            // A small layer in that corner: the statement goes to the foot of
+            // the picture.
+            let small =
+                |canvas: Rect| Some(placed(canvas.min + vec2(60.0, 30.0), vec2(40.0, 20.0)));
+            let (canvas, _, shown) = said_on(size, false, small);
+            assert_eq!(shown.left(), canvas.left() + CAPSULE_INSET);
+            assert_eq!(shown.bottom(), canvas.bottom() - CAPSULE_INSET);
+            assert!(!in_the_way(shown, small(canvas).as_ref(), stage));
+        }
+    }
+
+    #[test]
+    fn a_frame_crosses_a_capsule_only_where_it_runs_through_it() {
+        let capsule = Rect::from_min_size(pos2(10.0, 10.0), vec2(100.0, 24.0));
+        // Through it, end to end outside.
+        assert!(crosses(capsule, [pos2(0.0, 20.0), pos2(200.0, 20.0)]));
+        assert!(crosses(capsule, [pos2(0.0, 0.0), pos2(120.0, 44.0)]));
+        // Ending in it.
+        assert!(crosses(capsule, [pos2(50.0, 0.0), pos2(50.0, 15.0)]));
+        // Past it, though their spans meet.
+        assert!(!crosses(capsule, [pos2(0.0, 30.0), pos2(30.0, 60.0)]));
+        assert!(!crosses(capsule, [pos2(0.0, 40.0), pos2(200.0, 40.0)]));
+    }
+
+    #[test]
+    fn the_capsules_at_the_top_go_under_the_work_cards() {
+        // Spec §5.3 and §9.12: the prompt and "Effects not shown" start 8
+        // under the lowest work card the window lays over the viewer.
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let p = &Palette::new(crate::theme::Appearance::Dark, crate::theme::Accent::Blue);
+        let viewer = Rect::from_min_size(pos2(300.0, 40.0), vec2(824.0, 443.0));
+        let (canvas, _) = fitted_canvas(stage_of(viewer), vec2(1920.0, 1080.0));
+        let mut under = 0.0;
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let card = crate::extract::Card {
+                request: 7,
+                text: "Saving the audio".to_owned(),
+                shown: crate::extract::Shown::Writing(0.5),
+            };
+            // The window hands the toasts where the cards are; the
+            // capsules start 8 under the lowest.
+            let shown = crate::ui::sheets::saves(ui.ctx(), p, &[card], viewer, &mut Vec::new());
+            under = (shown.iter())
+                .map(|card| card.bottom() + 8.0)
+                .fold(f32::NEG_INFINITY, f32::max);
+        });
+        output.drop_without_applying_deltas();
+        assert!(
+            under > canvas.top() + CAPSULE_INSET,
+            "FIXTURE: the card is low"
+        );
+        assert_eq!(capsules_head(&ctx, canvas, &[7]), under);
+        // Without it, or with only a card of another request, the capsules
+        // start in the picture.
+        assert_eq!(
+            capsules_head(&ctx, canvas, &[]),
+            canvas.top() + CAPSULE_INSET
+        );
+        assert_eq!(
+            capsules_head(&ctx, canvas, &[8]),
+            canvas.top() + CAPSULE_INSET
+        );
+    }
+
+    #[test]
+    fn the_stage_says_it_waits_only_after_a_moment_and_wakes_once_for_it() {
+        // Spec §5.3: "Waiting for frames…" only after 0.5 s, with no
+        // ambient animation: one look again, then none.
+        use PreviewQuality::{Auto, Full, Half, Quarter};
+        let mut since = None;
+        let (said, again) = stage_status(&mut since, 10.0, true, None, Full, 1);
+        assert_eq!((said, again), (None, Some(WAITING_AFTER)));
+        let (said, again) = stage_status(&mut since, 10.3, true, None, Full, 1);
+        assert!(said.is_none() && again.is_some_and(|after| (after - 0.2).abs() < 1e-9));
+        for now in [10.5, 12.0] {
+            assert_eq!(
+                stage_status(&mut since, now, true, None, Full, 1),
+                (Some(Status::Waiting), None)
+            );
+        }
+        // Done waiting, it starts over.
+        assert_eq!(
+            stage_status(&mut since, 12.1, false, None, Full, 1),
+            (None, None)
+        );
+        assert_eq!(since, None);
+        // "Half quality" only where Auto stepped down.
+        for (quality, detail, half) in [
+            (Auto, 2, true),
+            (Auto, 1, false),
+            (Full, 1, false),
+            (Half, 2, false),
+            (Quarter, 4, false),
+        ] {
+            let (said, again) = stage_status(&mut None, 0.0, false, None, quality, detail);
+            assert_eq!(
+                said == Some(Status::HalfQuality),
+                half,
+                "{quality:?} at {detail}"
+            );
+            assert_eq!(again, None);
+        }
+    }
+
+    #[test]
+    fn the_stage_s_capsules_at_rest_ask_for_no_frame() {
+        // Spec §9.12 Idle: "Effects not shown" and "Half quality" say a
+        // state for as long as it holds, and nothing on them moves.
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let p = &stage_palette(&Palette::new(
+            crate::theme::Appearance::Dark,
+            crate::theme::Accent::Blue,
+        ));
+        let mut since = None;
+        let mut wait = Duration::ZERO;
+        let mut said = Vec::new();
+        for frame in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 500.0))),
+                time: Some(f64::from(frame) * 0.5),
+                ..Default::default()
+            };
+            let output = ctx.run_ui(input, |ui| {
+                let stage = Rect::from_min_size(pos2(0.0, 10.0), vec2(824.0, 443.0));
+                let (canvas, _) = fitted_canvas(stage, vec2(1920.0, 1080.0));
+                let head = capsules_head(ui.ctx(), canvas, &[]);
+                let painter = ui.painter_at(stage);
+                let shown = effects_not_shown(&painter, stage, canvas, head, p, None, None);
+                name_effects_not_shown(ui, shown, None, None, &[]);
+                let now = ui.input(|input| input.time);
+                let (status, again) =
+                    stage_status(&mut since, now, false, None, PreviewQuality::Auto, 2);
+                assert_eq!(again, None, "no look again");
+                let status = status.expect("FIXTURE: Auto stepped down");
+                said = vec![EFFECTS_NOT_SHOWN.to_owned(), status.words()];
+                capsule(
+                    &painter,
+                    p,
+                    &status.words(),
+                    Some(status.dot(p)),
+                    stage,
+                    |size| {
+                        Rect::from_min_size(pos2(stage.center().x, stage.bottom() - size.y), size)
+                    },
+                );
+            });
+            wait = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            // No renderer takes the font atlas this pass made.
+            output.drop_without_applying_deltas();
+        }
+        assert_eq!(said, ["Effects not shown", "Half quality"]);
+        assert_eq!(wait, Duration::MAX);
+    }
+
+    #[test]
+    fn a_frame_that_cannot_be_decoded_is_said_at_once_and_first() {
+        // Spec §5.3: "Can't decode clip-b.mp4" with a red dot, for as long
+        // as it fails, before waiting and before half quality.
+        use PreviewQuality::Auto;
+        let mut since = None;
+        let (said, again) = stage_status(&mut since, 10.0, true, Some("clip-b.mp4"), Auto, 2);
+        assert_eq!(said, Some(Status::CantDecode("clip-b.mp4")));
+        assert_eq!(
+            again,
+            Some(WAITING_AFTER),
+            "the waiting beneath it is timed"
+        );
+        let (said, again) = stage_status(&mut since, 11.0, true, Some("clip-b.mp4"), Auto, 2);
+        assert_eq!(
+            (said, again),
+            (Some(Status::CantDecode("clip-b.mp4")), None)
+        );
+        let said = said.expect("said");
+        assert_eq!(said.words(), "Can't decode clip-b.mp4");
+        let p = Palette::new(crate::theme::Appearance::Dark, crate::theme::Accent::Blue);
+        assert_eq!(said.dot(&p), p.red);
+        assert_eq!(Status::Waiting.dot(&p), p.muted);
+        // Once it decodes, what lies beneath is said.
+        assert_eq!(
+            stage_status(&mut since, 11.5, true, None, Auto, 2),
+            (Some(Status::Waiting), None)
+        );
     }
 }

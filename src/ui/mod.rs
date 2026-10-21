@@ -3,11 +3,14 @@
 pub mod agent;
 pub mod browser;
 pub mod captions_tab;
+pub mod controls;
 pub mod export_sheet;
 pub mod fades;
 pub mod inspector;
 pub mod keyframes;
+pub mod kit;
 pub mod library;
+pub mod panel;
 pub mod render_queue;
 pub mod sheets;
 pub mod text_tab;
@@ -79,7 +82,10 @@ pub enum Action {
         track: TrackId,
         format: editor_core::captions::SubtitleFormat,
     },
+    /// Show Preferences at the pane it was last left on.
     OpenSettings,
+    /// Show Preferences at this pane.
+    OpenPreferences(PreferencesPane),
     /// Open the export sheet, starting from the settings last used.
     OpenExport,
     /// Show the render queue.
@@ -202,6 +208,16 @@ pub enum Action {
     ToggleSnapping,
     ToggleLibrary,
     ToggleInspector,
+    /// Show the agent with its field taking the keyboard: asking the model
+    /// when `ask`, running a command otherwise. The panel comes forward as
+    /// the one asked for last.
+    OpenAgent {
+        ask: bool,
+    },
+    /// Put the panels back as a fresh window has them: both shown, at their
+    /// first widths, over a timeline of its first height. Not an edit, so
+    /// not undone.
+    ResetLayout,
     /// Show the library with this part of it in view.
     ShowLibrary(library::Tab),
     /// The keyframe lane of the selected clip, and the graph editor.
@@ -209,6 +225,8 @@ pub enum Action {
     ToggleGraph,
     SetAppearance(Appearance),
     SetAccent(Accent),
+    /// Eased changes land at once.
+    SetReduceMotion(bool),
     SetAutosave(bool),
     /// How much of the pictures the preview decodes and composites.
     SetPreviewQuality(crate::settings::PreviewQuality),
@@ -245,6 +263,8 @@ pub enum Action {
     SetAiEffort(Effort),
     SetAiModel(String),
     Notify(String),
+    /// Put away the notice with this id.
+    DismissNotice(u64),
     /// Follow a region of a clip's picture through its source, on the
     /// analysis worker. Nothing is edited until the path comes back.
     Track(TrackRequest),
@@ -309,6 +329,230 @@ impl Transport {
             Self::ToggleLoop => Action::ToggleLoop,
         }
     }
+}
+
+/// The parts of Preferences, in the order its source list gives them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PreferencesPane {
+    #[default]
+    Appearance,
+    Editing,
+    Preview,
+    Agent,
+    Keyboard,
+}
+
+impl PreferencesPane {
+    pub const ALL: [Self; 5] = [
+        Self::Appearance,
+        Self::Editing,
+        Self::Preview,
+        Self::Agent,
+        Self::Keyboard,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Editing => "Editing",
+            Self::Preview => "Preview",
+            Self::Agent => "Agent",
+            Self::Keyboard => "Keyboard",
+        }
+    }
+
+    /// Where the pane in view is kept: for the window's session only, so a
+    /// fresh window opens Preferences at Appearance.
+    fn id() -> eframe::egui::Id {
+        eframe::egui::Id::new("preferences-pane")
+    }
+
+    /// The pane Preferences shows.
+    pub fn shown(ctx: &eframe::egui::Context) -> Self {
+        ctx.data(|data| data.get_temp(Self::id()))
+            .unwrap_or_default()
+    }
+
+    /// Makes this the pane Preferences shows.
+    pub fn show(self, ctx: &eframe::egui::Context) {
+        ctx.data_mut(|data| data.insert_temp(Self::id(), self));
+    }
+}
+
+/// Where a region is drawn in this frame, and where it rests once the side
+/// panels stop sliding. Work sized by the region, such as the viewer's
+/// decoding, is sized by where it rests, so a panel that slides asks for it
+/// once rather than in every frame of the slide.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placement {
+    pub drawn: eframe::egui::Rect,
+    pub settled: eframe::egui::Rect,
+}
+
+impl Placement {
+    fn viewer_id() -> eframe::egui::Id {
+        eframe::egui::Id::new("viewer-placement")
+    }
+
+    /// Where the viewer is in this frame, as the window laid it out.
+    pub fn of_viewer(ctx: &eframe::egui::Context) -> Option<Self> {
+        ctx.data(|data| data.get_temp(Self::viewer_id()))
+    }
+
+    /// Records where the viewer is, before it is drawn.
+    pub fn keep_for_viewer(self, ctx: &eframe::egui::Context) {
+        ctx.data_mut(|data| data.insert_temp(Self::viewer_id(), self));
+    }
+}
+
+/// Left and Right are a choice's own while a cell of one has the keyboard:
+/// a tab of a strip, or an option of a segmented control. They move the
+/// keyboard among its cells (and, where the strip asks [`arrow_choice`],
+/// the choice with it), and do not also step the playhead. So are they the
+/// own of a control that moves with them while it has the keyboard, such as
+/// the timeline's zoom, which says so with [`ChoiceArrows::hold`]. Up and
+/// Down, Delete and the rest are still the application's.
+///
+/// A cell is known to be one as it gains the keyboard from Tab, when it says
+/// what it is. egui says nothing of the cell an arrow moves the keyboard to,
+/// so the keyboard is followed there: it is still in the choice.
+#[derive(Clone, Debug, Default)]
+pub struct ChoiceArrows {
+    /// The cell of a choice that has the keyboard.
+    focused: Option<eframe::egui::Id>,
+    /// The pass in which an arrow was pressed on it.
+    stepped: Option<u64>,
+    /// A control that moves with Left and Right, and the pass in which it
+    /// last had the keyboard.
+    held: Option<(eframe::egui::Id, u64)>,
+}
+
+impl ChoiceArrows {
+    fn id() -> eframe::egui::Id {
+        eframe::egui::Id::new("choice-arrows")
+    }
+
+    fn read(ctx: &eframe::egui::Context) -> Self {
+        ctx.data(|data| data.get_temp(Self::id()))
+            .unwrap_or_default()
+    }
+
+    /// Called before the frame's widgets are made, in every frame. Says
+    /// whether a choice has the keyboard, so that Left and Right are its own.
+    pub fn begin(ctx: &eframe::egui::Context) -> bool {
+        use eframe::egui::{Event, Key};
+        let mut state = Self::read(ctx);
+        let focused = ctx.memory(|memory| memory.focused());
+        let pass = ctx.cumulative_pass_nr();
+        // Where the arrow of the last pass took the keyboard.
+        if state.focused.is_some() && state.stepped.is_some_and(|stepped| stepped + 1 == pass) {
+            state.focused = focused;
+        }
+        let owned = focused.is_some() && focused == state.focused;
+        // A control that held them in the pass before still has the keyboard.
+        let held = (state.held).is_some_and(|(id, at)| Some(id) == focused && at + 1 >= pass);
+        let arrow = ctx.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    Event::Key {
+                        // Up and Down take the keyboard out of the choice.
+                        key: Key::ArrowLeft | Key::ArrowRight,
+                        pressed: true,
+                        ..
+                    }
+                )
+            })
+        });
+        state.stepped = (owned && arrow).then_some(pass);
+        ctx.data_mut(|data| data.insert_temp(Self::id(), state));
+        owned || held
+    }
+
+    /// Said in each pass by a control that has the keyboard and moves with
+    /// Left and Right itself, as a slider does: from the next pass on they
+    /// are its own, and do not also step the playhead.
+    pub fn hold(ctx: &eframe::egui::Context, control: eframe::egui::Id) {
+        let mut state = Self::read(ctx);
+        state.held = Some((control, ctx.cumulative_pass_nr()));
+        ctx.data_mut(|data| data.insert_temp(Self::id(), state));
+    }
+
+    /// Called once the frame's widgets are made: notes whether the widget
+    /// that gained the keyboard in it is the cell of a choice.
+    pub fn end(ctx: &eframe::egui::Context) {
+        use eframe::egui::{WidgetType, output::OutputEvent};
+        let mut state = Self::read(ctx);
+        let gained = ctx.output(|output| {
+            output.events.iter().find_map(|event| match event {
+                OutputEvent::FocusGained(info) => Some(info.typ),
+                _ => None,
+            })
+        });
+        let focused = ctx.memory(|memory| memory.focused());
+        match gained {
+            Some(WidgetType::RadioButton) => state.focused = focused,
+            Some(_) => state.focused = None,
+            // Taken by a click elsewhere, or by Escape.
+            None if focused != state.focused => state.focused = None,
+            None => {}
+        }
+        ctx.data_mut(|data| data.insert_temp(Self::id(), state));
+    }
+}
+
+/// Left and Right among `cells`, the cells of one choice in reading order
+/// with `selected` the chosen one: the cell the keyboard moves to, which is
+/// chosen with it, as in Terminal. Called before the cells are made, so the
+/// choice is drawn where it went in the same frame. `None` without such an
+/// arrow, or at the end the arrow points past.
+pub fn arrow_choice(
+    ctx: &eframe::egui::Context,
+    cells: &[eframe::egui::Id],
+    selected: usize,
+) -> Option<usize> {
+    arrow_among(ctx, cells.iter().copied(), selected)
+}
+
+/// [`arrow_choice`] among cells a choice names as it goes, so that one
+/// drawn in every frame keeps no list of them.
+pub fn arrow_among(
+    ctx: &eframe::egui::Context,
+    cells: impl ExactSizeIterator<Item = eframe::egui::Id> + Clone,
+    selected: usize,
+) -> Option<usize> {
+    use eframe::egui::{Event, Key};
+    let focused = ctx.memory(|memory| memory.focused())?;
+    let at = cells.clone().position(|cell| cell == focused)?;
+    let step = ctx.input(|input| {
+        input.events.iter().fold(0_i32, |step, event| match event {
+            Event::Key {
+                key: Key::ArrowLeft,
+                pressed: true,
+                modifiers,
+                ..
+            } if modifiers.is_none() => step - 1,
+            Event::Key {
+                key: Key::ArrowRight,
+                pressed: true,
+                modifiers,
+                ..
+            } if modifiers.is_none() => step + 1,
+            _ => step,
+        })
+    });
+    if step == 0 {
+        return None;
+    }
+    let to = (at as i32 + step).clamp(0, cells.len() as i32 - 1) as usize;
+    let cell = cells.clone().nth(to)?;
+    ctx.memory_mut(|memory| {
+        // The keyboard goes to the next cell of this choice, not to
+        // whatever egui finds nearest that way.
+        memory.move_focus(eframe::egui::FocusDirection::None);
+        memory.request_focus(cell);
+    });
+    (to != selected).then_some(to)
 }
 
 /// What is selected. Clips and a library item are selected independently: the
@@ -860,7 +1104,11 @@ pub fn shortcut(keys: &str) -> String {
             .replace("Shift+", "⇧")
             .replace("Alt+", "⌥")
     } else {
-        keys.replace("Cmd+", "Ctrl+")
+        // Ctrl comes first among held keys, as Terminal and the other
+        // platforms write them: Ctrl+Shift+E, not Shift+Ctrl+E.
+        keys.replace("Shift+Cmd+", "Ctrl+Shift+")
+            .replace("Alt+Cmd+", "Ctrl+Alt+")
+            .replace("Cmd+", "Ctrl+")
     }
 }
 
@@ -900,5 +1148,49 @@ impl DraftHold {
     /// The drafts were committed or dropped: the next are new.
     pub fn forget(&mut self) {
         *self = Self::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PreferencesPane;
+    use eframe::egui;
+
+    #[test]
+    fn preferences_open_at_the_pane_they_were_asked_for() {
+        // §5.9.2: an entry point names the pane, kept for the window's
+        // session under "preferences-pane"; a fresh window opens at
+        // Appearance.
+        let ctx = egui::Context::default();
+        assert_eq!(PreferencesPane::shown(&ctx), PreferencesPane::Appearance);
+        PreferencesPane::Agent.show(&ctx);
+        assert_eq!(PreferencesPane::shown(&ctx), PreferencesPane::Agent);
+        assert_eq!(
+            ctx.data(|data| data.get_temp(egui::Id::new("preferences-pane"))),
+            Some(PreferencesPane::Agent)
+        );
+    }
+
+    // Terminal writes Ctrl first among the keys held with it, and so do the
+    // toolbar's panel chords; macOS keeps Apple's ⇧⌘.
+    #[test]
+    fn a_shortcut_writes_ctrl_first_off_macos() {
+        let written = [
+            super::shortcut("Shift+Cmd+E"),
+            super::shortcut("Alt+Cmd+O"),
+            super::shortcut("Cmd+G, Shift+Cmd+G"),
+        ];
+        if cfg!(target_os = "macos") {
+            assert_eq!(written, ["⇧⌘E", "⌥⌘O", "⌘G, ⇧⌘G"]);
+        } else {
+            assert_eq!(
+                written,
+                ["Ctrl+Shift+E", "Ctrl+Alt+O", "Ctrl+G, Ctrl+Shift+G"]
+            );
+            assert_eq!(
+                super::shortcut("Shift+Cmd+B"),
+                super::toolbar::library_keys()
+            );
+        }
     }
 }

@@ -431,6 +431,12 @@ impl Separating {
         })
     }
 
+    /// The requests of the cards to show, in their order, without the
+    /// words on them.
+    pub fn card_requests(&self) -> impl Iterator<Item = u64> + '_ {
+        self.running.iter().map(|running| running.request)
+    }
+
     /// The cards to show, one a separation.
     pub fn cards(&self) -> Vec<Card> {
         (self.running.iter())

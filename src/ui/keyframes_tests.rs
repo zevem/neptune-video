@@ -68,6 +68,8 @@ struct Bench {
     clip_chords: usize,
     /// How long the last frame said it could wait before the next.
     wait: Duration,
+    /// What the last frame painted.
+    shapes: Vec<egui::epaint::ClippedShape>,
 }
 
 impl Bench {
@@ -136,6 +138,7 @@ impl Bench {
             clip_deletes: 0,
             clip_chords: 0,
             wait: Duration::ZERO,
+            shapes: Vec::new(),
         }
     }
 
@@ -259,6 +262,7 @@ impl Bench {
             );
         });
         output.textures_delta.clear();
+        self.shapes = std::mem::take(&mut output.shapes);
         self.wait = (output.viewport_output.values())
             .map(|viewport| viewport.repaint_delay)
             .min()
@@ -304,6 +308,35 @@ impl Bench {
 
     fn has(&self, name: &str) -> bool {
         self.find(name).is_some()
+    }
+
+    /// The name of the control that has the keyboard.
+    fn focused(&self) -> Option<&str> {
+        let node = self.ctx.memory(|memory| memory.focused())?.accesskit_id();
+        (self.seen.iter())
+            .find(|seen| seen.node == node)
+            .map(|seen| seen.name.as_str())
+    }
+
+    /// How many keys are drawn filled with `fill`.
+    fn keys_filled(&self, fill: Color32) -> usize {
+        (self.shapes.iter())
+            .filter(|clipped| {
+                matches!(&clipped.shape, Shape::Path(path)
+                    if path.closed && path.points.len() == 4 && path.fill == fill)
+            })
+            .count()
+    }
+
+    /// How many focus rings are drawn round a key or a handle.
+    fn rings(&self) -> usize {
+        let stroke = ring(&self.palette);
+        (self.shapes.iter())
+            .filter(|clipped| {
+                matches!(&clipped.shape, Shape::Circle(circle)
+                    if circle.stroke == stroke && circle.fill == Color32::TRANSPARENT)
+            })
+            .count()
     }
 
     fn at(&self, name: &str) -> Pos2 {
@@ -1233,8 +1266,10 @@ fn a_selected_keys_segment_has_handles_that_shape_its_ease_as_one_step() {
     );
     assert!((x2 - 2.0 / 3.0).abs() < 0.01 && (y2 - 2.0 / 3.0).abs() < 0.01);
 
-    // A handle never leaves what an ease can hold.
-    let end = bench.drag(into, vec2(400.0, -900.0));
+    // A handle never leaves what an ease can hold. The travel is past the
+    // limit of a graph made taller by the 34-point strip and 24-point ruler
+    // (§5.5.1, §5.5.2).
+    let end = bench.drag(into, vec2(400.0, -1200.0));
     bench.release(end);
     let Ease::Bezier { x2, y2, .. } = bench.clip(clip).animation[0].keys[0].ease else {
         panic!("a cubic");
@@ -1337,7 +1372,101 @@ fn the_lane_and_the_graph_fit_a_narrow_windows_timeline() {
             let rect = bench.find(name).expect("named").rect;
             assert!(window.contains_rect(rect) && rect.width() >= 28.0);
         }
+        // Spec §5.5.14: the legend stays in the heads' column and the plot's
+        // two actions stand at its top-trailing corner.
+        let plot = Rect::from_min_max(pos2(156.0, 34.0 + 24.0), size.to_pos2());
+        for name in ["Show Opacity", "Solo Opacity", "Select Opacity keyframes"] {
+            let rect = bench.find(name).expect("named").rect;
+            assert!(rect.right() <= plot.left(), "{name} {rect:?} in {size:?}");
+        }
+        for name in ["Fit values", "Keyframe options"] {
+            let rect = bench.find(name).expect("named").rect;
+            assert!(plot.contains_rect(rect), "{name} {rect:?} in {size:?}");
+            assert!(rect.left() > plot.center().x && rect.top() < plot.top() + 8.0);
+        }
     }
+}
+
+#[test]
+fn the_lane_names_its_rows_in_the_heads_column_and_its_keys_take_the_accent_only_chosen() {
+    let (mut bench, _, _) = lane();
+    bench.frame(Vec::new());
+    // Spec §5.5.13: each row is named in the card of its track's head, and
+    // the lane's menu leads its first row there.
+    for name in [
+        "Select Opacity keyframes",
+        "Select Glow Amount keyframes",
+        "Keyframe options",
+    ] {
+        let rect = bench.find(name).expect("named").rect;
+        assert!(rect.right() <= 156.0, "{name} {rect:?}");
+    }
+    let (options, first) = (
+        bench.find("Keyframe options").expect("named").rect,
+        bench.find("Select Opacity keyframes").expect("named").rect,
+    );
+    assert!(options.right() <= first.left());
+    assert!((options.center().y - first.center().y).abs() < 0.5);
+    // A row is as tall as the lane's rows, and the next follows it.
+    let second = bench
+        .find("Select Glow Amount keyframes")
+        .expect("named")
+        .rect;
+    assert!((second.center().y - first.center().y - ROW).abs() < 0.01);
+    // Selecting a key is what draws it in the accent; nothing else in the
+    // lane is drawn in it.
+    let accent = |bench: &Bench| {
+        (bench.shapes.iter())
+            .filter(|clipped| {
+                matches!(&clipped.shape, Shape::Path(path)
+                    if path.closed
+                        && path.points.len() == 4
+                        && path.fill == bench.palette.accent)
+            })
+            .count()
+    };
+    assert_eq!(accent(&bench), 0, "no key is selected");
+    bench.click(OPACITY_END);
+    bench.frame(Vec::new());
+    assert_eq!(accent(&bench), 1, "the one selected key");
+}
+
+#[test]
+fn the_graph_says_it_has_nothing_to_draw_inside_its_plot_alone() {
+    let (mut bench, clip, glow) = graph();
+    bench.keys(clip, None, ParamKey::Opacity, Vec::new());
+    bench.keys(clip, Some(glow), ParamKey::Amount, Vec::new());
+    bench.frame(Vec::new());
+    // Spec §5.10, TL13: the statement stands in the plot, and the heads'
+    // column, where the legend is, keeps its place.
+    let said = (bench.seen.iter())
+        .find(|seen| seen.name.starts_with("No animated values"))
+        .expect("said");
+    assert_eq!(
+        said.name,
+        "No animated values. Add a keyframe in the inspector."
+    );
+    assert!(said.rect.left() >= 156.0, "{:?}", said.rect);
+}
+
+#[test]
+fn the_value_axis_holds_still_while_a_key_is_held() {
+    let (mut bench, _, _) = graph();
+    let glow = bench.at(GLOW_START);
+    // The first opacity key, raised most of the way to the second: let go,
+    // the values would fit the curves again.
+    let rise = bench.at(OPACITY_START).y - bench.at(OPACITY_END).y;
+    let end = bench.drag(OPACITY_START, vec2(0.0, -rise * 0.9));
+    bench.frame(Vec::new());
+    assert_eq!(
+        bench.at(GLOW_START),
+        glow,
+        "the axis holds while it is held"
+    );
+    bench.release(end);
+    bench.frame(Vec::new());
+    assert_eq!(bench.last(), "Move keyframes");
+    assert_ne!(bench.at(GLOW_START).y, glow.y, "and fits once it is let go");
 }
 
 // ---- Review of wave 3 -------------------------------------------------------
@@ -1741,4 +1870,260 @@ fn a_volume_key_is_written_at_the_volume_the_clip_has_there_or_refused_in_words(
     bench.edit(detach);
     let owned = volume_key(bench.editor.project(), shot, seconds(2.0)).unwrap_err();
     assert_eq!(owned, "Sound is on the linked audio clip.");
+}
+
+// ---- Review of the keyframe lane and the graph ------------------------------
+
+#[test]
+fn a_press_on_the_graphs_corner_is_its_actions_and_not_the_plots() {
+    let (mut bench, _, _) = graph();
+    bench.click(OPACITY_START);
+    assert_eq!(bench.state.keys.selected().len(), 1);
+    let playhead = bench.playhead;
+    // The menu opens on the selected key, which it can ease.
+    bench.click("Keyframe options");
+    assert_eq!(bench.playhead, playhead, "the playhead stays");
+    assert_eq!(
+        bench.state.keys.selected().len(),
+        1,
+        "the key stays selected"
+    );
+    for name in ["Ease in", "Hold", "Copy keyframes", "Delete keyframes"] {
+        assert!(!bench.find(name).expect("listed").disabled, "{name}");
+    }
+    bench.key(Key::Escape);
+    assert_eq!(bench.state.keys.selected().len(), 1);
+
+    // Moved off its fit, the values come back with the corner's other
+    // action, and that press too is no seek.
+    let fitted = bench.at(OPACITY_END);
+    bench.move_to(fitted + vec2(20.0, 20.0));
+    bench.frame(vec![Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, 30.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    }]);
+    bench.frame(Vec::new());
+    assert!(bench.find("Fit values").is_some_and(|fit| !fit.disabled));
+    bench.click("Fit values");
+    bench.frame(Vec::new());
+    assert_eq!(bench.playhead, playhead);
+    assert_eq!(bench.state.keys.selected().len(), 1);
+    assert!(bench.find("Fit values").is_some_and(|fit| fit.disabled));
+}
+
+#[test]
+fn the_graphs_corner_stands_clear_of_its_values_and_never_takes_a_key() {
+    // Spec §5.5.14: where the plot is tall enough, the fitted values stop
+    // short of the corner's actions.
+    let (bench, _, _) = graph();
+    let corner = (bench.find("Fit values").expect("named").rect)
+        .union(bench.find("Keyframe options").expect("named").rect);
+    let top = bench.find(OPACITY_END).expect("named").rect;
+    assert!(top.top() > corner.bottom(), "{top:?} under {corner:?}");
+
+    // A short plot has no such room: a key that comes under them is drawn
+    // and pressed before them.
+    let (mut bench, _, _) = Bench::new();
+    bench.size = vec2(748.0, 132.0);
+    bench.state.fit = true;
+    bench.frame(Vec::new());
+    bench.click("Graph editor (G)");
+    bench.frame(Vec::new());
+    let more = bench.find("Keyframe options").expect("named").rect;
+    // The top key, three seconds in, brought under the menu's button.
+    bench.state.zoom = (more.center().x - 156.0) / 3.0;
+    bench.state.scroll.x = 0.0;
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    let key = bench.find(OPACITY_END).expect("named").rect;
+    assert!(key.contains(more.center()), "{key:?} on {more:?}");
+    bench.click(OPACITY_END);
+    assert_eq!(bench.state.keys.selected().len(), 1, "the key is pressed");
+    assert!(!egui::Popup::is_any_open(&bench.ctx), "and not the menu");
+}
+
+#[test]
+fn the_keyboard_reads_the_lane_and_the_legend_as_they_are_read() {
+    // Spec §7.4: the lane's menu leads its first row, and each legend row
+    // is its name, then its eye, then its solo.
+    let (mut bench, _, _) = lane();
+    bench.focus("Keyframe options");
+    bench.key(Key::Tab);
+    assert_eq!(bench.focused(), Some("Select Opacity keyframes"));
+
+    let (mut bench, _, _) = graph();
+    bench.focus("Select Opacity keyframes");
+    for next in [
+        "Show Opacity",
+        "Solo Opacity",
+        "Select Glow Amount keyframes",
+    ] {
+        bench.key(Key::Tab);
+        assert_eq!(bench.focused(), Some(next));
+    }
+}
+
+#[test]
+fn a_key_chosen_with_the_pointer_wears_no_focus_ring_until_the_keyboard_is_used() {
+    let (mut bench, _, _) = lane();
+    bench.click(OPACITY_END);
+    bench.frame(Vec::new());
+    assert_eq!(bench.focused(), Some(OPACITY_END), "the arrows are its");
+    assert_eq!(bench.rings(), 0, "the accent says it is chosen");
+    bench.key(Key::ArrowLeft);
+    assert_eq!(bench.rings(), 1, "the keyboard moved it");
+}
+
+#[test]
+fn a_selected_key_on_a_locked_track_is_still_seen_to_be_selected() {
+    let (mut bench, _, _) = lane();
+    let track_id = bench.track(TrackKind::Video);
+    bench.edit(Command::SetTrackState {
+        track_id,
+        locked: Some(true),
+        hidden: None,
+        muted: None,
+        name: None,
+        gain: None,
+        solo: None,
+    });
+    let half = theme::tint(bench.palette.key_selected(), 0.5);
+    bench.frame(Vec::new());
+    assert_eq!(bench.keys_filled(half), 0);
+    bench.click(OPACITY_END);
+    bench.frame(Vec::new());
+    assert_eq!(bench.state.keys.selected().len(), 1);
+    assert_eq!(bench.keys_filled(half), 1, "half the accent");
+    assert_eq!(bench.keys_filled(bench.palette.key_selected()), 0);
+}
+
+#[test]
+fn a_chevron_takes_the_ink_of_its_tiles_name_in_the_frame_it_is_drawn() {
+    // P6-6 and N21: the chevron is told the ink of the name it stands
+    // before as its tile is drawn, so it never lags the selection by a
+    // frame, and stands out on a light tile as the name does.
+    let (mut bench, _, _) = Bench::new();
+    bench.frame(Vec::new());
+    let ink = |bench: &Bench| {
+        let toggle = bench
+            .find("Keyframes of shot.mp4")
+            .expect("the chevron")
+            .rect;
+        (bench.shapes.iter())
+            .find_map(|clipped| match &clipped.shape {
+                Shape::Text(text) if toggle.contains(text.visual_bounding_rect().center()) => {
+                    Some(text.fallback_color)
+                }
+                _ => None,
+            })
+            .expect("the chevron's glyph")
+    };
+    // Selected, it stands on the accent band.
+    assert_eq!(ink(&bench), bench.palette.on_accent.gamma_multiply(0.8));
+    // Open, and the selection gone in the frame it is drawn: the band's ink.
+    bench.click("Keyframes of shot.mp4");
+    bench.selection = Selection::default();
+    // Not under the pointer, which lights it, once its light has faded.
+    bench.frame(vec![Event::PointerGone]);
+    for _ in 0..10 {
+        bench.frame(Vec::new());
+    }
+    assert_eq!(ink(&bench), Color32::WHITE.gamma_multiply(0.8));
+    // In the light, the foreground, as the name's.
+    bench.palette = Palette::new(Appearance::Light, Accent::default());
+    bench.frame(Vec::new());
+    assert_eq!(ink(&bench), bench.palette.fg.gamma_multiply(0.8));
+
+    // A selected tile without a band fills only its name's capsule with
+    // the accent, and the chevron before it stands on the body: the body's
+    // ink, in the light as in the dark.
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        let (mut bench, _) = unkeyed("voice.wav", MediaKind::Audio, true, TrackKind::Audio);
+        bench.palette = Palette::new(appearance, Accent::default());
+        bench.key(Key::U);
+        bench.frame(Vec::new());
+        let toggle = bench
+            .find("Keyframes of voice.wav")
+            .expect("the chevron")
+            .rect;
+        let glyph = (bench.shapes.iter())
+            .find_map(|clipped| match &clipped.shape {
+                Shape::Text(text) if toggle.contains(text.visual_bounding_rect().center()) => {
+                    Some(text.fallback_color)
+                }
+                _ => None,
+            })
+            .expect("the chevron's glyph");
+        assert_eq!(
+            glyph,
+            bench.palette.fg.gamma_multiply(0.8),
+            "{appearance:?}"
+        );
+    }
+}
+
+#[test]
+fn every_value_the_graph_says_is_whole_inside_its_plot_and_clear_of_its_line() {
+    // §9.1 and §5.5.14: however tall the plot, no value is cut by its top,
+    // and the patch a value stands on keeps off the line it names, so a
+    // curve along the line is drawn whole. Each value is in the secondary
+    // ink, as the ruler's times over the same plot.
+    let mut said = 0;
+    for height in (200..=420).step_by(3) {
+        let (mut bench, _, _) = graph();
+        bench.size = vec2(1000.0, height as f32);
+        bench.frame(Vec::new());
+        bench.frame(Vec::new());
+        for clipped in &bench.shapes {
+            let Shape::Text(text) = &clipped.shape else {
+                continue;
+            };
+            let Some(section) = text.galley.job.sections.first() else {
+                continue;
+            };
+            if section.format.font_id != theme::mono(11.0) {
+                continue;
+            }
+            said += 1;
+            let label = text.visual_bounding_rect();
+            assert!(
+                clipped.clip_rect.contains_rect(label),
+                "{:?} at {height} cut by {:?}",
+                text.galley.text(),
+                clipped.clip_rect
+            );
+            assert_eq!(text.fallback_color, bench.palette.secondary);
+        }
+    }
+    assert!(said > 0, "FIXTURE: the graph said its values");
+
+    // A curve of 2 points along a value's line keeps both of its rows.
+    let area = Rect::from_min_size(pos2(0.0, 100.0), vec2(600.0, 300.0));
+    let label = vec2(18.0, 13.0);
+    let patch = value_patch(area, 250.5, label).expect("room for it");
+    assert!(patch.bottom() <= 250.5 - 1.0 - 1.0, "{patch:?}");
+    assert!(patch.contains_rect(Rect::from_min_size(pos2(6.0, 250.5 - 2.0 - label.y), label)));
+    // One whose label would reach above the plot is not said.
+    assert!(value_patch(area, 100.0 + label.y + 1.0, label).is_none());
+    assert!(value_patch(area, 100.0 + label.y + 2.0, label).is_some());
+    // The patch is the label's own box, so a curve passing beside it is not
+    // cut.
+    assert_eq!(patch.size(), label);
+}
+
+#[test]
+fn the_lanes_menu_and_the_chevron_are_pressed_over_a_small_buttons_width() {
+    // §9.10: no control under 22 points. The lane's menu is pressed over a
+    // small button's square and lit a little smaller; the chevron is a small
+    // button wide and as tall as the name's row it stands in.
+    let (mut bench, _, _) = lane();
+    let more = bench.find("Keyframe options").expect("named").rect;
+    assert_eq!(more.size(), Vec2::splat(metrics::SMALL_BUTTON), "{more:?}");
+    let chevron = bench.find("Keyframes of shot.mp4").expect("named").rect;
+    assert_eq!(chevron.width(), metrics::SMALL_BUTTON, "{chevron:?}");
+    // Pressed at its far end, it still closes the lane.
+    bench.click_at(pos2(chevron.right() - 1.0, chevron.center().y));
+    assert_eq!(bench.state.keys.lane_clip(), None);
 }

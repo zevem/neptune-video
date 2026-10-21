@@ -61,6 +61,8 @@ struct Bench {
     wait: Duration,
     titles: crate::titles::Titles,
     presets: std::sync::Arc<crate::presets::Presets>,
+    /// What the last frame painted.
+    shapes: Vec<egui::epaint::ClippedShape>,
 }
 
 const SHOT_START: &str = "Dissolve at the start of shot.mp4";
@@ -99,6 +101,7 @@ impl Bench {
             wait: Duration::ZERO,
             titles: Default::default(),
             presets: Default::default(),
+            shapes: Vec::new(),
         };
         let track_id = bench.track(TrackKind::Video);
         let mut ids = Vec::new();
@@ -244,6 +247,7 @@ impl Bench {
                 &mut self.selection,
                 &mut self.textures,
                 &mut self.titles,
+                &mut crate::peaks::HeldPeaks::default(),
                 &LibraryInput {
                     p: &self.palette,
                     project: &project,
@@ -304,6 +308,7 @@ impl Bench {
             );
         });
         output.textures_delta.clear();
+        self.shapes = std::mem::take(&mut output.shapes);
         self.wait = (output.viewport_output.values())
             .map(|viewport| viewport.repaint_delay)
             .min()
@@ -1502,4 +1507,86 @@ fn a_wheel_turned_with_ctrl_zooms_the_timeline_about_the_pointer() {
     bench.frame(vec![wheel(-60.0, Modifiers::NONE)]);
     settle(&mut bench);
     assert_eq!(bench.timeline.zoom, zoom);
+}
+
+#[test]
+fn a_chosen_dissolve_keeps_its_diagonal_in_a_narrow_ring() {
+    // §9.6 and P10 round 4: at the scale of a narrow window a second's
+    // dissolve is a ring a few points wide, which frames its lines. The
+    // diagonal runs across the ring, and gives up its glyph rather than be
+    // broken into stubs round it.
+    let (mut bench, shot, _) = Bench::new();
+    let second = Transition {
+        duration: seconds(1.0),
+        ..default_of(&[], DEFAULT_KIND)
+    };
+    bench.edit(set_command(shot, TransitionEdge::In, Some(second)));
+    bench.timeline.zoom = 33.0;
+    bench
+        .timeline
+        .mark(&mut bench.selection, shot, TransitionEdge::In);
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    let ink = egui::Color32::from_white_alpha(170);
+    // The length of each slanted line of the stage's ink, as much of it as
+    // its clip shows: only a dissolve draws one here.
+    let shown: Vec<f32> = (bench.shapes.iter())
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.color == ink && (points[0].x - points[1].x).abs() > 0.5 =>
+            {
+                let inside = (0..=200)
+                    .filter(|step| {
+                        let at = points[0].lerp(points[1], *step as f32 / 200.0);
+                        clipped.clip_rect.contains(at)
+                    })
+                    .count();
+                Some((points[1] - points[0]).length() * inside as f32 / 201.0)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown.len(), 1, "one whole diagonal, unbroken: {shown:?}");
+    assert!(shown[0] >= 15.0, "{shown:?}");
+}
+
+#[test]
+fn a_selected_tiles_trim_bars_stand_on_a_keyline_rim_in_either_appearance() {
+    // §4.4.6 and P10 round 6: a bar over a poster lies on a frame that may
+    // be as dark (in the light) or as light (in the dark) as itself, so
+    // each stands on a rim of the selection's keyline, drawn under it.
+    let (mut bench, ..) = Bench::new();
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        bench.palette = Palette::new(appearance, Accent::default());
+        theme::apply(&bench.ctx, &bench.palette);
+        bench.frame(Vec::new());
+        bench.frame(Vec::new());
+        let p = bench.palette;
+        let rects: Vec<(Rect, egui::Color32)> = (bench.shapes.iter())
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect) => Some((rect.rect, rect.fill)),
+                _ => None,
+            })
+            .collect();
+        let bar = theme::tint(p.fg, 0.8);
+        let bars: Vec<usize> = (0..rects.len())
+            .filter(|&at| rects[at].1 == bar && rects[at].0.width() == 3.0)
+            .collect();
+        assert_eq!(
+            bars.len(),
+            2,
+            "{appearance:?}: the selected tile's two bars"
+        );
+        for at in bars {
+            let (rect, _) = rects[at];
+            assert!(
+                rects[..at]
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .any(|(rim, fill)| { *fill == p.keyline() && *rim == rect.expand(1.0) }),
+                "{appearance:?}: the bar at {rect:?} has its rim under it"
+            );
+        }
+    }
 }

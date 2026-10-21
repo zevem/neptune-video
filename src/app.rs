@@ -13,17 +13,18 @@ use crate::{
     duck::{self, Ducking, Stepped},
     extract::{self, Saving},
     file_drop::FileDrop,
+    icons::Icon,
     normalize::{self, Normalizing},
     pacing,
     peaks::HeldPeaks,
     presets::{self, Presets},
     record::Recording,
     rules,
-    settings::{INTERFACE_SCALE, Scale, Settings},
+    settings::{self, INTERFACE_SCALE, Scale, Settings},
     speech::{self, Inventory, ModelChoice, SpeechRequest, SpeechView},
     speed, stems,
     textures::{self, Textures, Viewing},
-    theme::{self, Palette, metrics},
+    theme::{self, Appearance, Palette, metrics},
     titles::Titles,
     ui::{
         self, Action, ClipDraft, DraftHold, PresetChange, Selection, TrackProgress, TrackRequest,
@@ -33,10 +34,11 @@ use crate::{
         },
         captions_tab,
         inspector::{InspectorInput, InspectorState, ProjectDraft},
+        kit,
         library::{LibraryInput, LibraryState},
         sheets::{
             self, Answer, Checkpoint, CheckpointAnswer, CheckpointsState, Conflict, ConflictAnswer,
-            DuckQuestion, Notice, Overlay, Pending,
+            DuckQuestion, Notice, NoticeKind, Overlay, Pending,
         },
         text_tab,
         timeline::{self, Reach, TimelineInput, TimelineState},
@@ -74,13 +76,23 @@ const RECOVERY_INTERVAL: Duration = Duration::from_secs(15);
 const EXIT_WAIT: Duration = Duration::from_secs(2);
 /// How long it waits for a recovery lease a worker was asked for.
 const LEASE_WAIT: Duration = Duration::from_secs(1);
-const NOTICE_SECONDS: f64 = 3.2;
-const PROBLEM_SECONDS: f64 = 7.0;
-/// What the notice of a new interface scale begins with.
-const SCALE_NOTICE: &str = "Interface size";
+/// How long information and what was done stay in their toasts, unless the
+/// pointer holds them.
+const NOTICE_SECONDS: f64 = 4.0;
+/// A warning or a problem stays until it is dismissed.
+const PROBLEM_SECONDS: f64 = f64::INFINITY;
 const PROJECT_EXTENSION: &str = "nvp";
-/// The narrowest content the library is shown beside.
-const LIBRARY_FITS: f32 = 760.0;
+/// The narrowest content the library is shown beside the right panel in:
+/// a window of 820, Terminal's narrowest window with its sidebar.
+const LIBRARY_FITS: f32 = metrics::SIDEBAR_MIN_WINDOW - 2.0 * metrics::GUTTER;
+/// The narrowest a side panel is drawn, however little room the window has:
+/// the least it may be preferred at.
+const LIBRARY_LEAST: f32 = *settings::LIBRARY_WIDTHS.start();
+const INSPECTOR_LEAST: f32 = *settings::INSPECTOR_WIDTHS.start();
+/// The viewer the side panels shrink to keep, and the least it is left with
+/// once they are as narrow as they go.
+const VIEWER_COMFORT: f32 = 480.0;
+const VIEWER_LEAST: f32 = 360.0;
 const RECOVERY_SUFFIX: &str = ".recovery";
 
 /// When the recovery copy is written. What was asked for and what is known
@@ -514,6 +526,9 @@ pub struct App {
     /// The separations the sound lane is running. A replaced project leaves
     /// them running; their stems are then only said.
     separating: stems::Separating,
+    /// The requests of the work cards over the viewer, gathered each frame
+    /// into a list that keeps its room.
+    card_requests: Vec<u64>,
     /// Whether this session's probe for a stem separator was started, and
     /// whether its answer was taken.
     separator_asked: bool,
@@ -569,6 +584,9 @@ pub struct App {
         bool,
         Option<String>,
     )>,
+    /// Why the render queue refused what was last asked of it from its own
+    /// sheet, said in the sheet's footer while it stays open.
+    queue_refusal: Option<String>,
     /// The person's saved export presets and the file they are kept in.
     export_presets: crate::export::presets::ExportPresets,
     export_presets_path: Option<PathBuf>,
@@ -940,7 +958,7 @@ impl App {
         let mut problem = |text: String| {
             notices.push(Notice {
                 text,
-                problem: true,
+                kind: NoticeKind::Problem,
                 until: PROBLEM_SECONDS,
             });
         };
@@ -1015,7 +1033,7 @@ impl App {
         if let Some(text) = proxies.problem() {
             notices.push(Notice {
                 text: text.to_owned(),
-                problem: false,
+                kind: NoticeKind::Info,
                 until: NOTICE_SECONDS,
             });
         }
@@ -1132,6 +1150,7 @@ impl App {
             ducking: Ducking::default(),
             saved_audio: Saving::default(),
             separating: stems::Separating::default(),
+            card_requests: Vec::new(),
             separator_asked: false,
             separator_taken: false,
             recording: Recording::default(),
@@ -1160,6 +1179,7 @@ impl App {
             export: None,
             poster,
             export_replace: None,
+            queue_refusal: None,
             export_presets,
             export_presets_path,
             export_presets_asked: 0,
@@ -1181,7 +1201,7 @@ impl App {
             None => {
                 app.find_orphan(ctx);
                 if let Some(text) = app.import(launch.import) {
-                    app.notify(ctx, text, true);
+                    app.notify(ctx, text, NoticeKind::Problem);
                 }
             }
         }
@@ -1190,28 +1210,22 @@ impl App {
 
     // ---- Notices ----------------------------------------------------------
 
-    fn notify(&mut self, ctx: &egui::Context, text: impl Into<String>, problem: bool) {
-        let text = text.into();
+    fn notify(&mut self, ctx: &egui::Context, text: impl Into<String>, kind: NoticeKind) {
         let now = ctx.input(|i| i.time);
         let until = now
-            + if problem {
+            + if kind.stays() {
                 PROBLEM_SECONDS
             } else {
                 NOTICE_SECONDS
             };
-        // The same words twice are one notice that stays longer.
-        if let Some(notice) = self.notices.iter_mut().find(|notice| notice.text == text) {
-            notice.until = until;
-            return;
-        }
-        self.notices.push(Notice {
-            text,
-            problem,
-            until,
-        });
-        if self.notices.len() > 4 {
-            self.notices.remove(0);
-        }
+        sheets::tell(
+            &mut self.notices,
+            Notice {
+                text: text.into(),
+                kind,
+                until,
+            },
+        );
     }
 
     // ---- Document ---------------------------------------------------------
@@ -1633,7 +1647,7 @@ impl App {
                 self.notify(
                     ctx,
                     format!("The recovery copy was not written: {error}"),
-                    true,
+                    NoticeKind::Problem,
                 );
             }
         }
@@ -2063,7 +2077,11 @@ impl App {
                 if std::mem::take(&mut self.agent_saving) {
                     self.finished_save(session.path(), Err(error.to_string()));
                 }
-                self.notify(ctx, format!("The project was not saved: {error}"), true);
+                self.notify(
+                    ctx,
+                    format!("The project was not saved: {error}"),
+                    NoticeKind::Problem,
+                );
             }
         }
     }
@@ -2073,7 +2091,7 @@ impl App {
     /// the document is restored work without a file: that takes a new file.
     fn prepare_save(&mut self, ctx: &egui::Context, path: PathBuf, create_only: bool) {
         if self.preparing {
-            self.notify(ctx, "A save is still being prepared", true);
+            self.notify(ctx, "A save is still being prepared", NoticeKind::Problem);
             return;
         }
         let epoch = self.epoch;
@@ -2166,7 +2184,11 @@ impl App {
                 Job::Picked(Pick::Duplicate, paths) => {
                     if let Some(path) = paths.into_iter().next() {
                         if self.duplicating {
-                            self.notify(ctx, "A duplicate is still being written", true);
+                            self.notify(
+                                ctx,
+                                "A duplicate is still being written",
+                                NoticeKind::Problem,
+                            );
                         } else {
                             self.duplicate_to(ctx, with_extension(path));
                         }
@@ -2185,7 +2207,7 @@ impl App {
                                     "{} is too wide for the agent; choose a folder inside it",
                                     path.display()
                                 ),
-                                true,
+                                NoticeKind::Problem,
                             );
                         } else if !self.settings.ai.folders.contains(&path) {
                             self.settings.ai.folders.push(path);
@@ -2199,15 +2221,15 @@ impl App {
                 }
                 Job::Picked(Pick::ImportFiles | Pick::ImportFolder | Pick::ImportFonts, paths) => {
                     if let Some(problem) = self.import(paths) {
-                        self.notify(ctx, problem, true);
+                        self.notify(ctx, problem, NoticeKind::Problem);
                     }
                 }
                 Job::AudioPicked { asked, to } => match to {
                     None => {}
-                    Some(Err(problem)) => self.notify(ctx, problem, true),
+                    Some(Err(problem)) => self.notify(ctx, problem, NoticeKind::Problem),
                     Some(Ok(to)) => {
                         if let Err(problem) = self.save_audio(ctx, &asked, to) {
-                            self.notify(ctx, problem, true);
+                            self.notify(ctx, problem, NoticeKind::Problem);
                         }
                     }
                 },
@@ -2245,7 +2267,7 @@ impl App {
                                 }))
                             });
                         }
-                        Err(why) => self.notify(ctx, why, true),
+                        Err(why) => self.notify(ctx, why, NoticeKind::Problem),
                     }
                 }
                 Job::Picked(Pick::SpeechModel, paths) => {
@@ -2272,10 +2294,14 @@ impl App {
                         self.notify(
                             ctx,
                             format!("Captions will be made with {name}.{english}"),
-                            false,
+                            NoticeKind::Done,
                         );
                     }
-                    Err(why) => self.notify(ctx, format!("That model was not chosen: {why}"), true),
+                    Err(why) => self.notify(
+                        ctx,
+                        format!("That model was not chosen: {why}"),
+                        NoticeKind::Problem,
+                    ),
                 },
                 Job::Models(inventory) => self.models = Some(inventory),
                 Job::CaptionsRead { epoch, files } => {
@@ -2284,8 +2310,8 @@ impl App {
                     }
                     for (path, read) in files {
                         match self.import_captions(&path, read) {
-                            Ok(text) => self.notify(ctx, text, false),
-                            Err(why) => self.notify(ctx, why, true),
+                            Ok(text) => self.notify(ctx, text, NoticeKind::Done),
+                            Err(why) => self.notify(ctx, why, NoticeKind::Problem),
                         }
                     }
                 }
@@ -2336,12 +2362,12 @@ impl App {
                             self.notify(
                                 ctx,
                                 format!("{} could not be opened: {error}", path.display()),
-                                true,
+                                NoticeKind::Problem,
                             );
                         }
                     }
                     if let Some(problem) = self.import(wanted) {
-                        self.notify(ctx, problem, true);
+                        self.notify(ctx, problem, NoticeKind::Problem);
                     }
                 }
                 Job::Prepared {
@@ -2373,7 +2399,7 @@ impl App {
                             self.notify(
                                 ctx,
                                 format!("{} cannot be saved to: {error}", path.display()),
-                                true,
+                                NoticeKind::Problem,
                             );
                         }
                     }
@@ -2392,7 +2418,7 @@ impl App {
                         self.notify(
                             ctx,
                             "The recovery copy was kept: this project changed meanwhile",
-                            true,
+                            NoticeKind::Warning,
                         );
                         continue;
                     }
@@ -2416,23 +2442,23 @@ impl App {
                                     ctx,
                                     "Unsaved changes were restored. The file changed on \
                                      disk since they were made and will not be replaced",
-                                    true,
+                                    NoticeKind::Warning,
                                 );
                             } else if detached {
                                 self.notify(
                                     ctx,
                                     "Unsaved changes were restored as a project without \
                                      a file. Saving asks where to keep it",
-                                    true,
+                                    NoticeKind::Warning,
                                 );
                             } else {
-                                self.notify(ctx, "Unsaved changes were restored", false);
+                                self.notify(ctx, "Unsaved changes were restored", NoticeKind::Done);
                             }
                         }
                         Err(error) => self.notify(
                             ctx,
                             format!("The recovery copy could not be read: {error}"),
-                            true,
+                            NoticeKind::Problem,
                         ),
                     }
                 }
@@ -2469,7 +2495,7 @@ impl App {
                             self.notify(
                                 ctx,
                                 format!("No recovery copy is being kept: {error}"),
-                                true,
+                                NoticeKind::Problem,
                             );
                         }
                     }
@@ -2492,9 +2518,13 @@ impl App {
                     self.checkpoints.busy = false;
                     match saved {
                         Some(Ok(label)) => {
-                            self.notify(ctx, format!("Checkpoint “{label}” saved"), false);
+                            self.notify(
+                                ctx,
+                                format!("Checkpoint “{label}” saved"),
+                                NoticeKind::Done,
+                            );
                         }
-                        Some(Err(problem)) => self.notify(ctx, problem, true),
+                        Some(Err(problem)) => self.notify(ctx, problem, NoticeKind::Problem),
                         None => {}
                     }
                     if epoch == self.epoch && self.path.as_ref() == Some(&path) {
@@ -2531,11 +2561,13 @@ impl App {
                                 self.sync_audio();
                             }
                             self.timeline.fit = true;
-                            self.notify(ctx, format!("Restored “{label}”"), false);
+                            self.notify(ctx, format!("Restored “{label}”"), NoticeKind::Done);
                         }
-                        Err(error) => {
-                            self.notify(ctx, format!("“{label}” was not restored: {error}"), true)
-                        }
+                        Err(error) => self.notify(
+                            ctx,
+                            format!("“{label}” was not restored: {error}"),
+                            NoticeKind::Problem,
+                        ),
                     }
                 }
                 Job::Duplicated {
@@ -2549,7 +2581,11 @@ impl App {
                     let session = match result {
                         Ok(session) => session,
                         Err(error) => {
-                            self.notify(ctx, format!("The duplicate was not saved: {error}"), true);
+                            self.notify(
+                                ctx,
+                                format!("The duplicate was not saved: {error}"),
+                                NoticeKind::Problem,
+                            );
                             continue;
                         }
                     };
@@ -2568,9 +2604,13 @@ impl App {
                             let at = self.playback.position;
                             self.replace_editor(ctx, editor, Some(path), Some(session), None);
                             self.playback.seek(at);
-                            self.notify(ctx, format!("Now editing “{name}”"), false);
+                            self.notify(ctx, format!("Now editing “{name}”"), NoticeKind::Info);
                         }
-                        _ => self.notify(ctx, format!("Duplicate saved as “{name}”"), false),
+                        _ => self.notify(
+                            ctx,
+                            format!("Duplicate saved as “{name}”"),
+                            NoticeKind::Done,
+                        ),
                     }
                 }
                 Job::TakePath { project, result } => {
@@ -2580,15 +2620,15 @@ impl App {
                         RecordService::start(path, move || wake.request_repaint())
                     });
                     if let Err(problem) = started {
-                        self.notify(ctx, problem, true);
+                        self.notify(ctx, problem, NoticeKind::Problem);
                     }
                 }
                 Job::Background(Ok(text)) => {
                     if !text.is_empty() {
-                        self.notify(ctx, text, false);
+                        self.notify(ctx, text, NoticeKind::Info);
                     }
                 }
-                Job::Background(Err(text)) => self.notify(ctx, text, true),
+                Job::Background(Err(text)) => self.notify(ctx, text, NoticeKind::Problem),
             }
         }
     }
@@ -2658,7 +2698,7 @@ impl App {
             self.sync_audio();
         }
         if let Some(problem) = framed.failed {
-            self.notify(ctx, problem, true);
+            self.notify(ctx, problem, NoticeKind::Problem);
         }
         if let Some(landed) = framed.landed {
             if let Some(command) = landed.command
@@ -2668,11 +2708,11 @@ impl App {
                 self.notify(
                     ctx,
                     format!("The take could not be placed: {error}. It is kept in {path}"),
-                    true,
+                    NoticeKind::Problem,
                 );
                 return;
             }
-            self.notify(ctx, landed.said, landed.problem);
+            self.notify(ctx, landed.said, NoticeKind::outcome(landed.problem));
         }
     }
 
@@ -2830,22 +2870,22 @@ impl App {
                     );
                     match taken {
                         Taken::Kept if measured => match unkept {
-                            None => self.notify(ctx, format!("{name} is analysed."), false),
+                            None => self.notify(ctx, format!("{name} is analysed."), NoticeKind::Done),
                             Some(why) => self.notify(
                                 ctx,
                                 format!(
                                     "{name} is analysed, but this could not be kept for another session: {why}"
                                 ),
-                                true,
+                                NoticeKind::Warning,
                             ),
                         },
                         Taken::Failed(why) if measured => {
-                            self.notify(ctx, format!("{name} was not analysed: {why}"), true);
+                            self.notify(ctx, format!("{name} was not analysed: {why}"), NoticeKind::Problem);
                         }
                         Taken::Changed => self.notify(
                             ctx,
                             format!("{name} changed while it was analysed. Analyse it again."),
-                            true,
+                            NoticeKind::Problem,
                         ),
                         _ => {}
                     }
@@ -2879,12 +2919,22 @@ impl App {
             return;
         }
         if let Err(error) = self.start_sound(ctx) {
-            // Said once, and not tried again for the media that asked.
-            for (id, _) in self.peaks.take_wants() {
+            // Said once, and not tried again for the media that asked. Only
+            // library cards asking is not said: a tile asks again.
+            let wants = self.peaks.take_wants();
+            let said = self.peaks.beats.wanting()
+                || (wants.iter()).any(|(id, _)| !self.peaks.only_cards(*id));
+            for (id, _) in wants {
                 self.peaks.refuse(id);
             }
             self.peaks.beats.give_up_wanted();
-            self.notify(ctx, format!("Waveforms are unavailable: {error}"), true);
+            if said {
+                self.notify(
+                    ctx,
+                    format!("Waveforms are unavailable: {error}"),
+                    NoticeKind::Problem,
+                );
+            }
             return;
         }
         let Some(sound) = &self.sound else {
@@ -2897,7 +2947,7 @@ impl App {
             &self.peak_cache,
         );
         for text in refused {
-            self.notify(ctx, text, true);
+            self.notify(ctx, text, NoticeKind::Problem);
         }
     }
 
@@ -2943,7 +2993,7 @@ impl App {
             if let SoundEvent::Extracted { .. } = event {
                 let now = ctx.input(|i| i.time);
                 if let Some(said) = self.saved_audio.answered(instance, now, event) {
-                    self.notify(ctx, said.text, said.problem);
+                    self.notify(ctx, said.text, NoticeKind::outcome(said.problem));
                 }
                 continue;
             }
@@ -2956,7 +3006,7 @@ impl App {
             }
             let failed = (self.peaks).answered(instance, self.editor.project(), event);
             if let Some(text) = failed {
-                self.notify(ctx, text, true);
+                self.notify(ctx, text, NoticeKind::Problem);
             }
         }
         // Clips held for room in the lane, or for an answer about the same
@@ -2966,7 +3016,7 @@ impl App {
         {
             let problems = self.normalizing.pump(|job| sound.loudness(job));
             for problem in problems {
-                self.notify(ctx, problem, true);
+                self.notify(ctx, problem, NoticeKind::Problem);
             }
         }
     }
@@ -2991,7 +3041,7 @@ impl App {
             .extract(asked.job(self.editor.project(), to.clone()))
             .map_err(|error| format!("The sound of {} was not saved: {error}", asked.name))?;
         if let Some(said) = self.saved_audio.sent(asked, to, &sent) {
-            self.notify(ctx, said, false);
+            self.notify(ctx, said, NoticeKind::Info);
         }
         ctx.request_repaint();
         Ok(())
@@ -3004,7 +3054,7 @@ impl App {
         let outcome = (self.sound.as_ref())
             .map_or(editor_media::Cancel::GivenUp, |sound| sound.cancel(request));
         if let Some(said) = self.saved_audio.cancelled(request, outcome) {
-            self.notify(ctx, said, false);
+            self.notify(ctx, said, NoticeKind::Info);
         }
     }
 
@@ -3053,11 +3103,15 @@ impl App {
                     "The stems could not be placed: {error}. They are kept in {}",
                     stems::listed(&answer.files)
                 ),
-                true,
+                NoticeKind::Problem,
             );
             return;
         }
-        self.notify(ctx, answer.said.text, answer.said.problem);
+        self.notify(
+            ctx,
+            answer.said.text,
+            NoticeKind::outcome(answer.said.problem),
+        );
     }
 
     /// Gives up the separation under way as `request`, and says what came
@@ -3067,7 +3121,7 @@ impl App {
         let outcome = (self.sound.as_ref())
             .map_or(editor_media::Cancel::GivenUp, |sound| sound.cancel(request));
         if let Some(said) = self.separating.cancelled(request, outcome) {
-            self.notify(ctx, said, false);
+            self.notify(ctx, said, NoticeKind::Info);
         }
     }
 
@@ -3085,7 +3139,7 @@ impl App {
         let said = (self.normalizing).ask(self.editor.project(), instance, clips, |job| {
             sound.loudness(job)
         })?;
-        self.notify(ctx, said.clone(), false);
+        self.notify(ctx, said.clone(), NoticeKind::Info);
         Ok(said)
     }
 
@@ -3101,10 +3155,14 @@ impl App {
         if let Some(command) = command
             && let Err(error) = self.edit(command)
         {
-            self.notify(ctx, format!("{name} was not normalized: {error}"), true);
+            self.notify(
+                ctx,
+                format!("{name} was not normalized: {error}"),
+                NoticeKind::Problem,
+            );
             return;
         }
-        self.notify(ctx, said, problem);
+        self.notify(ctx, said, NoticeKind::outcome(problem));
     }
 
     // ---- Ducking -----------------------------------------------------------
@@ -3154,7 +3212,7 @@ impl App {
         self.inspector
             .set_ducking(self.ducking.progress(self.editor.project()));
         let said = started?;
-        self.notify(ctx, said.clone(), false);
+        self.notify(ctx, said.clone(), NoticeKind::Info);
         ctx.request_repaint();
         Ok(said)
     }
@@ -3171,7 +3229,7 @@ impl App {
         self.notify(
             ctx,
             format!("{} was stopped; nothing was changed.", duck::LABEL),
-            false,
+            NoticeKind::Info,
         );
     }
 
@@ -3196,15 +3254,19 @@ impl App {
             // The next voice is wanted in a frame of its own.
             Some(Stepped::Took) => ctx.request_repaint(),
             Some(Stepped::Done(Ok((command, said)))) => match self.edit(*command) {
-                Ok(_) => self.notify(ctx, said, false),
-                Err(error) => self.notify(ctx, format!("Nothing was ducked: {error}"), true),
+                Ok(_) => self.notify(ctx, said, NoticeKind::Done),
+                Err(error) => self.notify(
+                    ctx,
+                    format!("Nothing was ducked: {error}"),
+                    NoticeKind::Problem,
+                ),
             },
-            Some(Stepped::Done(Err(said))) => self.notify(ctx, said, true),
+            Some(Stepped::Done(Err(said))) => self.notify(ctx, said, NoticeKind::Problem),
             Some(Stepped::GivenUp { said, cancel }) => {
                 if let (Some(request), Some(sound)) = (cancel, &self.sound) {
                     sound.cancel(request);
                 }
-                self.notify(ctx, said, true);
+                self.notify(ctx, said, NoticeKind::Problem);
             }
         }
         self.inspector
@@ -3336,7 +3398,7 @@ impl App {
                                     "{} is ready. Add it in the Motion section.",
                                     tracking.name
                                 ),
-                                false,
+                                NoticeKind::Done,
                             );
                             self.tracking = Some(Tracking {
                                 done: 1.0,
@@ -3344,7 +3406,7 @@ impl App {
                                 ..tracking
                             });
                         }
-                        Err(Some(why)) => self.notify(ctx, why, true),
+                        Err(Some(why)) => self.notify(ctx, why, NoticeKind::Problem),
                         Err(None) => {}
                     }
                 }
@@ -3379,9 +3441,13 @@ impl App {
     fn add_tracker(&mut self, ctx: &egui::Context, command: Command, said: String) {
         self.commit_drafts(ctx, true);
         match self.edit(command) {
-            Ok(_) => self.notify(ctx, said, false),
+            Ok(_) => self.notify(ctx, said, NoticeKind::Done),
             Err(error) => {
-                self.notify(ctx, format!("The tracker was not added: {error}"), true);
+                self.notify(
+                    ctx,
+                    format!("The tracker was not added: {error}"),
+                    NoticeKind::Problem,
+                );
             }
         }
     }
@@ -3515,19 +3581,27 @@ impl App {
                 SpeechEvent::Downloaded { .. } => {
                     self.look_at_models(ctx);
                     if speaking.stopping {
-                        self.notify(ctx, "Captions were not made.", false);
+                        self.notify(ctx, "Captions were not made.", NoticeKind::Info);
                     } else if let Err(why) = self.transcribe(speaking) {
-                        self.notify(ctx, format!("Captions were not made: {why}"), true);
+                        self.notify(
+                            ctx,
+                            format!("Captions were not made: {why}"),
+                            NoticeKind::Problem,
+                        );
                     }
                 }
                 SpeechEvent::Transcribed {
                     words, language, ..
                 } => self.take_words(ctx, &speaking, &words, language.as_deref()),
                 SpeechEvent::Failed { message, .. } => {
-                    self.notify(ctx, format!("Captions were not made: {message}"), true);
+                    self.notify(
+                        ctx,
+                        format!("Captions were not made: {message}"),
+                        NoticeKind::Problem,
+                    );
                 }
                 SpeechEvent::Cancelled { .. } => {
-                    self.notify(ctx, "Captions were not made.", false);
+                    self.notify(ctx, "Captions were not made.", NoticeKind::Info);
                 }
             }
         }
@@ -3557,7 +3631,7 @@ impl App {
             match speech::generated(self.editor.project(), words, &language, speaking.ask.length) {
                 Ok(made) => made,
                 Err(why) => {
-                    self.notify(ctx, why, true);
+                    self.notify(ctx, why, NoticeKind::Problem);
                     return;
                 }
             };
@@ -3578,7 +3652,7 @@ impl App {
                 self.notify(
                     ctx,
                     "Captions are ready. Add them in the Captions tab.",
-                    false,
+                    NoticeKind::Done,
                 );
             }
             None => self.add_heard(ctx, heard),
@@ -3596,10 +3670,18 @@ impl App {
                     count => format!("{count} captions"),
                 };
                 let language = crate::languages::label(&heard.language);
-                self.notify(ctx, format!("Added {captions} in {language}."), false);
+                self.notify(
+                    ctx,
+                    format!("Added {captions} in {language}."),
+                    NoticeKind::Done,
+                );
             }
             Err(error) => {
-                self.notify(ctx, format!("The captions were not added: {error}"), true);
+                self.notify(
+                    ctx,
+                    format!("The captions were not added: {error}"),
+                    NoticeKind::Problem,
+                );
             }
         }
     }
@@ -3647,23 +3729,35 @@ impl App {
                             label: "Import media".into(),
                             commands,
                         }) {
-                            self.notify(ctx, format!("The import failed: {error}"), true);
+                            self.notify(
+                                ctx,
+                                format!("The import failed: {error}"),
+                                NoticeKind::Problem,
+                            );
                         }
                     } else if skipped > 0 && errors.is_empty() {
-                        self.notify(ctx, "That media is already in the library", false);
+                        self.notify(
+                            ctx,
+                            "That media is already in the library",
+                            NoticeKind::Info,
+                        );
                     }
                     for error in errors.iter().take(3) {
                         let name = error.path.file_name().map_or_else(
                             || error.path.display().to_string(),
                             |name| name.to_string_lossy().into_owned(),
                         );
-                        self.notify(ctx, format!("{name}: {}", error.message), true);
+                        self.notify(
+                            ctx,
+                            format!("{name}: {}", error.message),
+                            NoticeKind::Problem,
+                        );
                     }
                     if errors.len() > 3 {
                         self.notify(
                             ctx,
                             format!("{} more files could not be imported", errors.len() - 3),
-                            true,
+                            NoticeKind::Problem,
                         );
                     }
                 }
@@ -3710,7 +3804,7 @@ impl App {
                     let taken =
                         (self.viewer).take_lut(asset, asset_id, from, &path, file_size, table);
                     if let crate::compose::lut::Taken::Failed(why) = taken {
-                        self.notify(ctx, why, true);
+                        self.notify(ctx, why, NoticeKind::Problem);
                     }
                 }
                 MediaEvent::Error {
@@ -3735,7 +3829,7 @@ impl App {
                             self.imports.pop_front();
                         }
                     }
-                    self.notify(ctx, message, true);
+                    self.notify(ctx, message, NoticeKind::Problem);
                 }
             }
         }
@@ -3750,7 +3844,7 @@ impl App {
             ctx.request_repaint();
         }
         for failure in taken.failures {
-            self.notify(ctx, failure, true);
+            self.notify(ctx, failure, NoticeKind::Problem);
         }
     }
 
@@ -3784,7 +3878,7 @@ impl App {
                         .answered(result.revision, result.result.is_ok(), Instant::now());
                     if let Err(error) = result.result {
                         let text = format!("The recovery copy was not written: {error}");
-                        self.notify(ctx, text, true);
+                        self.notify(ctx, text, NoticeKind::Problem);
                     } else if std::mem::take(&mut self.recovery_stale) && !self.editor.is_dirty() {
                         self.remove_recovery(ctx, key.1);
                     }
@@ -3824,11 +3918,19 @@ impl App {
                         if open && !busy {
                             self.conflicted = true;
                         }
-                        self.notify(ctx, format!("The agent's save was refused: {error}"), true);
+                        self.notify(
+                            ctx,
+                            format!("The agent's save was refused: {error}"),
+                            NoticeKind::Problem,
+                        );
                     }
                     // Reviewed in a sheet: the edits stay, unsaved.
                     Some(busy) => self.save_refused(result.path, busy),
-                    None => self.notify(ctx, format!("The project was not saved: {error}"), true),
+                    None => self.notify(
+                        ctx,
+                        format!("The project was not saved: {error}"),
+                        NoticeKind::Problem,
+                    ),
                 }
                 continue;
             }
@@ -3853,7 +3955,7 @@ impl App {
                 }
                 self.lease = None;
             }
-            self.notify(ctx, "Saved", false);
+            self.notify(ctx, "Saved", NoticeKind::Done);
             if self.editor.is_dirty() {
                 // Edits made while the file was being written are not in it.
                 // They are kept in a fresh recovery copy, and whatever waited
@@ -4291,7 +4393,7 @@ impl App {
             ExportAnswer::SavePreset { name, settings } => {
                 match self.export_presets.keep(&name, &settings) {
                     Ok(_) => self.save_export_presets(ctx),
-                    Err(why) => self.notify(ctx, why, true),
+                    Err(why) => self.refuse_in_export(ctx, why),
                 }
             }
             ExportAnswer::DeletePreset(id) => {
@@ -4340,14 +4442,27 @@ impl App {
                     self.notify(
                         ctx,
                         format!("{file} is held in the render queue; start it there"),
-                        false,
+                        NoticeKind::Info,
                     );
                 }
             }
             Err(error) => {
                 self.overlay = Overlay::Export;
-                self.notify(ctx, error.to_string(), true);
+                self.refuse_in_export(ctx, error.to_string());
             }
+        }
+    }
+
+    /// Says why the export sheet's request was refused inside the sheet,
+    /// where the person is looking: a toast waits under an open sheet that
+    /// leaves it no room, as in a short window. With no sheet open it is a
+    /// problem notice.
+    fn refuse_in_export(&mut self, ctx: &egui::Context, why: String) {
+        match self.export.as_mut() {
+            Some(state) if matches!(self.overlay, Overlay::Export | Overlay::ReplaceExport(_)) => {
+                state.refuse(why);
+            }
+            _ => self.notify(ctx, why, NoticeKind::Problem),
         }
     }
 
@@ -4358,6 +4473,9 @@ impl App {
         jobs: &[editor_core::export::RenderJobInfo],
     ) {
         use ui::render_queue::QueueAnswer;
+        // A refusal answers what was last asked; anything asked next
+        // replaces it.
+        self.queue_refusal = None;
         let renders = &self.renders;
         // A job whose state changed since the panel was drawn refuses the
         // operation; the panel shows the new state.
@@ -4377,7 +4495,13 @@ impl App {
                 if let Some(file) = file
                     && let Err(why) = crate::export::wiring::reveal(&file.destination)
                 {
-                    self.notify(ctx, why, true);
+                    // Said in the queue, which is open: a toast would wait
+                    // under it in a short window.
+                    if self.overlay == Overlay::RenderQueue {
+                        self.queue_refusal = Some(why);
+                    } else {
+                        self.notify(ctx, why, NoticeKind::Problem);
+                    }
                 }
             }
             QueueAnswer::NewExport => self.open_export(ctx),
@@ -4391,7 +4515,7 @@ impl App {
         let open = self.overlay == Overlay::RenderQueue;
         while let Some(event) = self.renders.poll() {
             if let Some((text, problem)) = crate::export::wiring::finished_notice(&event, open) {
-                self.notify(ctx, text, problem);
+                self.notify(ctx, text, NoticeKind::outcome(problem));
             }
         }
     }
@@ -4463,7 +4587,11 @@ impl App {
                 Some(command) => self.edit(command),
             };
             if let Err(error) = result {
-                self.notify(ctx, format!("That change was not applied: {error}"), true);
+                self.notify(
+                    ctx,
+                    format!("That change was not applied: {error}"),
+                    NoticeKind::Problem,
+                );
             }
         }
         let project_draft = std::mem::take(&mut self.project_draft);
@@ -4473,16 +4601,20 @@ impl App {
                 && name != self.editor.project().name
                 && let Err(error) = self.edit(Command::RenameProject { name })
             {
-                self.notify(ctx, error, true);
+                self.notify(ctx, error, NoticeKind::Problem);
             }
         }
         if let Some(settings) = project_draft.canvas
             && settings != self.editor.project().settings
         {
             if !settings.validate() {
-                self.notify(ctx, "That canvas size or frame rate cannot be used", true);
+                self.notify(
+                    ctx,
+                    "That canvas size or frame rate cannot be used",
+                    NoticeKind::Problem,
+                );
             } else if let Err(error) = self.edit(Command::SetSettings { settings }) {
-                self.notify(ctx, error, true);
+                self.notify(ctx, error, NoticeKind::Problem);
             }
         }
     }
@@ -4491,7 +4623,7 @@ impl App {
 
     fn run(&mut self, ctx: &egui::Context, action: Action) {
         if let Err(problem) = self.perform(ctx, action) {
-            self.notify(ctx, problem, true);
+            self.notify(ctx, problem, NoticeKind::Problem);
         }
     }
 
@@ -4543,6 +4675,26 @@ impl App {
                 self.pick(ctx, Pick::ExportCaptions(track, format));
             }
             Action::OpenSettings => self.overlay = Overlay::Settings,
+            Action::OpenPreferences(pane) => {
+                pane.show(ctx);
+                self.overlay = Overlay::Settings;
+            }
+            // The command line, or the request to the model, as Ctrl+K and
+            // Ctrl+Shift+K open them.
+            Action::OpenAgent { ask } => {
+                self.settings.show_inspector = true;
+                self.library_first = false;
+                self.settings.agent_ask = ask;
+                self.right_tab = RightTab::Agent;
+                self.agent.focus = true;
+            }
+            Action::ResetLayout => reset_layout(&mut self.settings),
+            Action::SetReduceMotion(on) => {
+                self.settings.reduce_motion = on;
+                kit::set_reduced_motion(ctx, on);
+                self.restyle(ctx);
+            }
+            Action::DismissNotice(id) => self.notices.retain(|notice| notice.id() != id),
             Action::OpenExport => self.open_export(ctx),
             // The export sheet's state is kept for it to be opened again.
             Action::OpenRenderQueue => {
@@ -4700,7 +4852,7 @@ impl App {
                 );
                 self.settings.transitions =
                     transitions::saved_with(&self.settings.transitions, transition);
-                self.notify(ctx, text, false);
+                self.notify(ctx, text, NoticeKind::Done);
             }
             Action::SelectAll => {
                 self.selection.asset = None;
@@ -4735,7 +4887,7 @@ impl App {
             }
             Action::Presets(change) => {
                 if let Some(said) = self.change_presets(change)? {
-                    self.notify(ctx, said, false);
+                    self.notify(ctx, said, NoticeKind::Done);
                 }
             }
             Action::InsertAsset { asset, place } => {
@@ -4752,7 +4904,7 @@ impl App {
                 let (command, said) = remove_asset_command(self.editor.project(), asset);
                 let done = self.edit(command)?;
                 if let Some(said) = said {
-                    self.notify(ctx, said, false);
+                    self.notify(ctx, said, NoticeKind::Done);
                 }
                 return Ok(Some(done));
             }
@@ -4875,14 +5027,8 @@ impl App {
                 let scale = asked.min(room);
                 self.settings.interface_scale = scale;
                 ctx.set_zoom_factor(scale);
-                // One notice says the size, however many steps were taken.
-                self.notices
-                    .retain(|notice| !notice.text.starts_with(SCALE_NOTICE));
-                let mut said = format!("{SCALE_NOTICE} {:.0}%", scale * 100.0);
-                if asked > room {
-                    said.push_str(", the largest this window has room for");
-                }
-                self.notify(ctx, said, false);
+                // One capsule says the size, however many steps were taken.
+                ui::window::say_interface_size(ctx, scale, asked > room);
             }
             Action::FitTimeline => self.timeline.fit = true,
             Action::ToggleSnapping => self.settings.snapping = !self.settings.snapping,
@@ -4985,7 +5131,7 @@ impl App {
             Action::SetAiProvider(provider) => self.settings.ai.provider = provider,
             Action::SetAiEffort(effort) => self.settings.ai.effort = effort,
             Action::SetAiModel(model) => self.settings.ai.set_model(&model),
-            Action::Notify(text) => self.notify(ctx, text, false),
+            Action::Notify(text) => self.notify(ctx, text, NoticeKind::Info),
             Action::Track(request) => self.start_tracking(ctx, request)?,
             Action::GenerateCaptions(request) => self.generate_captions(ctx, request)?,
             Action::CancelSpeech => self.cancel_speech(),
@@ -5024,8 +5170,11 @@ impl App {
         Ok(None)
     }
 
+    /// Styles the window for the appearance and accent chosen. System is
+    /// the appearance the platform reports, and dark where it reports none.
     fn restyle(&mut self, ctx: &egui::Context) {
-        self.palette = Palette::new(self.settings.appearance, self.settings.accent);
+        let appearance = self.settings.appearance.resolve(ctx.system_theme());
+        self.palette = Palette::new(appearance, self.settings.accent);
         theme::apply(ctx, &self.palette);
     }
 
@@ -5596,42 +5745,18 @@ impl App {
     // ---- Keyboard ---------------------------------------------------------
 
     fn shortcuts(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let command = |key| KeyboardShortcut::new(Modifiers::COMMAND, key);
-        let shifted = |key| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, key);
-        // More specific chords first: a shifted chord is not also its plain one.
-        let chords = [
-            (shifted(Key::Z), 0),
-            (command(Key::Z), 1),
-            (command(Key::Y), 0),
-            (shifted(Key::S), 2),
-            (command(Key::S), 3),
-            (command(Key::O), 4),
-            (command(Key::N), 5),
-            (shifted(Key::I), 6),
-            (command(Key::I), 7),
-            (command(Key::D), 8),
-            (command(Key::A), 9),
-            (shifted(Key::G), 10),
-            (command(Key::G), 11),
-            (command(Key::Comma), 12),
-            (shifted(Key::K), 17),
-            (command(Key::K), 13),
-            (command(Key::L), 14),
-            (command(Key::T), 18),
-        ];
+        // Whether a choice's cell has the keyboard, followed in every frame.
+        let choosing = ui::ChoiceArrows::begin(ctx);
         // Export and the render queue, which open over nothing else.
         if let Some(action) = ctx.input_mut(|i| export_chords(i, &self.overlay)) {
             actions.push(action);
         }
         let typing = ctx.text_edit_focused();
-        for (chord, index) in chords {
-            // While a field has the keyboard, undo and select-all are its own.
-            if typing && matches!(index, 0 | 1 | 9 | 18) {
-                continue;
-            }
-            if !ctx.input_mut(|i| i.consume_shortcut(&chord)) {
-                continue;
-            }
+        // Before Cmd+O, which would take Shift+Cmd+O for its own.
+        if let Some(action) = ctx.input_mut(|i| panel_chords(i, typing)) {
+            actions.push(action);
+        }
+        for index in ctx.input_mut(|i| chords_struck(i, typing)) {
             let ids = self.selection.clips.clone();
             actions.push(match index {
                 0 => Action::Redo,
@@ -5648,14 +5773,7 @@ impl App {
                 11 => Action::Edit(Command::GroupClips { clip_ids: ids }),
                 12 => Action::OpenSettings,
                 // The command line, or the request to the model.
-                13 | 17 => {
-                    self.settings.show_inspector = true;
-                    self.library_first = false;
-                    self.settings.agent_ask = index == 17;
-                    self.right_tab = RightTab::Agent;
-                    self.agent.focus = true;
-                    continue;
-                }
+                13 | 17 => Action::OpenAgent { ask: index == 17 },
                 14 if self.source.is_some() => Action::Source(Transport::ToggleLoop),
                 14 => Action::ToggleLoop,
                 // The selected clips and the playhead of this press: each
@@ -5726,8 +5844,9 @@ impl App {
         // frame, and by its end Shift is up again.
         // The arrows and Delete are a curve point's while one has the
         // keyboard: it moves and is removed with them, and nothing else is.
+        // So are Left and Right while a choice of cells has the keyboard.
         let owned = self.inspector.owns_keys(ctx) || keyed;
-        let free = move |key| key_is_free(owned, key);
+        let free = move |key| key_is_free(owned, key) && !choice_takes(choosing, key);
         let pressed = |key| free(key) && ctx.input(|i| struck(&i.events, key, Held::Alone));
         let with_shift = |key| free(key) && ctx.input(|i| struck(&i.events, key, Held::Shift));
         // A key that steps the playhead steps it once for every time it went
@@ -6024,12 +6143,111 @@ impl App {
         self.textures.retire(self.media.as_ref());
 
         let toolbar = Rect::from_min_size(full.min, vec2(full.width(), metrics::TOOLBAR_HEIGHT));
-        let (show_library, show_right) = self.side_panels(full.width() - 2.0 * metrics::GUTTER);
+        let gutter = metrics::GUTTER;
+        let (show_library, show_right) = self.side_panels(full.width() - 2.0 * gutter);
+
+        // The timeline spans the window below the viewer and the panels,
+        // inside the gutter; the side panels are flush with the window's
+        // edges above it.
+        let content_height = full.bottom() - gutter - toolbar.bottom();
+        let timeline_height = (content_height * self.settings.timeline_share)
+            .clamp(150.0, (content_height - 170.0).max(150.0));
+        let timeline_rect = Rect::from_min_max(
+            pos2(
+                full.left() + gutter,
+                full.bottom() - gutter - timeline_height,
+            ),
+            pos2(full.right() - gutter, full.bottom() - gutter),
+        );
+        let upper = Rect::from_min_max(
+            pos2(full.left(), toolbar.bottom()),
+            pos2(full.right(), timeline_rect.top() - gutter),
+        );
+
+        // Each side panel slides in from its edge and out past it, and the
+        // viewer between them follows. A toggle reversed midway turns
+        // around from where the panel is.
+        let library_reveal = ui::window::slide(&ctx, egui::Id::new("library-reveal"), show_library);
+        let inspector_reveal =
+            ui::window::slide(&ctx, egui::Id::new("inspector-reveal"), show_right);
+        let (library_width, inspector_width) = drawn_widths(
+            full.width(),
+            (self.settings.library_width, self.settings.inspector_width),
+            full.width() - 2.0 * gutter >= LIBRARY_FITS,
+            (library_reveal, inspector_reveal),
+        );
+        let viewer_at = |library: f32, inspector: f32| {
+            Rect::from_x_y_ranges(
+                upper.left() + egui::lerp(gutter..=library_width, library)
+                    ..=upper.right() - egui::lerp(gutter..=inspector_width, inspector),
+                upper.y_range(),
+            )
+        };
+        let viewer = viewer_at(library_reveal, inspector_reveal);
+        let settled = {
+            let (library, inspector) = panel_widths(
+                full.width(),
+                self.settings.library_width,
+                self.settings.inspector_width,
+                (show_library, show_right),
+            );
+            Rect::from_x_y_ranges(
+                upper.left() + if show_library { library } else { gutter }
+                    ..=upper.right() - if show_right { inspector } else { gutter },
+                upper.y_range(),
+            )
+        };
+        // The viewer's pictures are decoded for where it comes to rest.
+        ui::Placement {
+            drawn: viewer,
+            settled,
+        }
+        .keep_for_viewer(&ctx);
+        let library_rect = Rect::from_x_y_ranges(
+            viewer.left() - library_width..=viewer.left(),
+            upper.y_range(),
+        );
+        let right_rect = Rect::from_x_y_ranges(
+            viewer.right()..=viewer.right() + inspector_width,
+            upper.y_range(),
+        );
+        // A panel that goes away with the keyboard in it gives the keyboard
+        // to the timeline, rather than keeping it out of sight. That is
+        // decided once, as the panel sets off, by where it was drawn in the
+        // last frame: the viewer slides into its place after that.
+        let seen_id = egui::Id::new("side-panels-seen");
+        let seen: SidePanels = ctx.data(|data| data.get_temp(seen_id)).unwrap_or_default();
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .and_then(|id| ctx.read_response(id));
+        let held_in = |was: Option<Rect>, shown: bool| {
+            let (Some(was), Some(focused), false) = (was, &focused, shown) else {
+                return false;
+            };
+            // What floats over the window, a menu or a sheet, is not the
+            // panel's.
+            focused.layer_id == ui.layer_id() && was.contains(focused.rect.center())
+        };
+        let handed = (held_in(seen.library, show_library) || held_in(seen.inspector, show_right))
+            .then(|| focused.as_ref().map(|focused| focused.id))
+            .flatten();
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                seen_id,
+                SidePanels {
+                    library: (show_library && library_reveal > 0.0)
+                        .then(|| library_rect.intersect(upper)),
+                    inspector: (show_right && inspector_reveal > 0.0)
+                        .then(|| right_rect.intersect(upper)),
+                },
+            );
+        });
+
         ui::window::drag_region(ui, toolbar);
         ui::window::controls(ui, pos2(full.left() + 16.0, toolbar.center().y), &p);
         ui::toolbar::show(
             ui,
-            toolbar.with_min_x(full.left() + ui::window::LEADING),
+            toolbar,
             &ToolbarInput {
                 p: &p,
                 name: self.project_draft.name.as_deref().unwrap_or(&project.name),
@@ -6041,7 +6259,12 @@ impl App {
                 redo: self.editor.redo_label(),
                 recent: &self.settings.recent,
                 library: show_library,
+                library_width,
+                library_reveal,
                 inspector: show_right,
+                viewer: viewer.x_range(),
+                settled: settled.x_range(),
+                agent_waiting: self.ai.open().is_some(),
                 project: &project,
                 clips: &self.selection.clips,
                 playhead: self.playback.position,
@@ -6051,57 +6274,9 @@ impl App {
             actions,
         );
 
-        let gutter = metrics::GUTTER;
-        let content = Rect::from_min_max(
-            pos2(full.left() + gutter, toolbar.bottom()),
-            pos2(full.right() - gutter, full.bottom() - gutter),
-        );
-
-        let timeline_height = (content.height() * self.settings.timeline_share)
-            .clamp(150.0, (content.height() - 170.0).max(150.0));
-        let timeline_rect = Rect::from_min_max(
-            pos2(content.left(), content.bottom() - timeline_height),
-            content.max,
-        );
-        let upper = Rect::from_min_max(
-            content.min,
-            pos2(content.right(), timeline_rect.top() - gutter),
-        );
-        let (delta, reset) = widgets::splitter(
-            ui,
-            &p,
-            Rect::from_min_max(upper.left_bottom(), timeline_rect.right_top()),
-            egui::Id::new("split-timeline"),
-            false,
-        );
-        if reset {
-            self.settings.timeline_share = Settings::default().timeline_share;
-        } else if delta != 0.0 {
-            self.settings.timeline_share =
-                ((timeline_height - delta) / content.height().max(1.0)).clamp(0.2, 0.7);
-        }
-
-        let mut left = upper.left();
-        let mut right = upper.right();
-        if show_library {
-            let width = self
-                .settings
-                .library_width
-                .min((upper.width() - 420.0).max(220.0));
-            let rect = Rect::from_min_size(upper.min, vec2(width, upper.height()));
-            left = rect.right() + gutter;
-            let (delta, reset) = widgets::splitter(
-                ui,
-                &p,
-                Rect::from_min_max(rect.right_top(), pos2(left, upper.bottom())),
-                egui::Id::new("split-library"),
-                true,
-            );
-            if reset {
-                self.settings.library_width = Settings::default().library_width;
-            } else if delta != 0.0 {
-                self.settings.library_width = (width + delta).clamp(220.0, 520.0);
-            }
+        if let Some(mut pane) = side_pane(ui, "library-pane", library_rect, upper, library_reveal) {
+            // The library is made on its pane, which slides and fades.
+            let (ui, rect) = (&mut pane, library_rect);
             let speech_view = self.speech_view();
             let speech_settings = self.settings.speech.clone();
             (self.settings.library_grid, self.settings.library_sort) = ui::library::show(
@@ -6111,6 +6286,7 @@ impl App {
                 &mut self.selection,
                 &mut self.textures,
                 &mut self.viewer.titles,
+                &mut self.peaks,
                 &LibraryInput {
                     p: &p,
                     project: &project,
@@ -6144,29 +6320,24 @@ impl App {
                 self.textures.want_poster(media, asset);
             }
         }
-        if show_right {
-            let width = self
-                .settings
-                .inspector_width
-                .min((right - left - 260.0).max(240.0));
-            let rect = Rect::from_min_max(pos2(right - width, upper.top()), upper.max);
-            right = rect.left() - gutter;
-            let (delta, reset) = widgets::splitter(
-                ui,
-                &p,
-                Rect::from_min_max(pos2(right, upper.top()), rect.left_bottom()),
-                egui::Id::new("split-inspector"),
-                true,
-            );
-            if reset {
-                self.settings.inspector_width = Settings::default().inspector_width;
-            } else if delta != 0.0 {
-                self.settings.inspector_width = (width - delta).clamp(240.0, 520.0);
-            }
-            self.right_panel(ui, rect, &project, actions);
-        }
 
-        let viewer = Rect::from_min_max(pos2(left, upper.top()), pos2(right, upper.bottom()));
+        // The viewer is made before the inspector, as Tab reaches them, and
+        // reads what the inspector left it in the last frame. Only the
+        // inspector changes that, and only while it is drawn, so only then
+        // is it held to compare.
+        let for_viewer = |app: &Self| {
+            (
+                app.draft.clone(),
+                app.project_draft.clone(),
+                app.inspector.outlined_mask(),
+                app.inspector.colour_pick(&app.selection),
+                app.inspector.track_region(&app.selection),
+                app.inspector.shows_paths(),
+            )
+        };
+        let watched = inspector_reveal > 0.0 && self.right_tab == RightTab::Inspector;
+        let before = watched.then(|| for_viewer(self));
+        let tab = self.right_tab;
         // Keyframes held in the timeline are drawn as they would be left.
         self.viewer
             .preview_keys(self.timeline.keys.overriding(&project));
@@ -6182,6 +6353,11 @@ impl App {
         self.viewer.choose_region(region.filter(|_| masks_shown));
         self.viewer
             .show_paths(masks_shown && self.inspector.shows_paths());
+        self.card_requests.clear();
+        (self.card_requests).extend(self.saved_audio.card_requests());
+        (self.card_requests).extend(self.separating.card_requests());
+        // The stage's text keeps its dark weight in the light appearance.
+        let stage_shapes = ui::kit::first_shape(ui.painter());
         match &self.source {
             Some(source) => ui::viewer::show_source(
                 ui,
@@ -6217,10 +6393,14 @@ impl App {
                     looping: self.looping,
                     media: self.media.as_ref(),
                     record: self.recording.view(),
+                    library: show_library,
+                    quality: self.settings.preview.quality,
+                    cards: &self.card_requests,
                 },
                 actions,
             ),
         }
+        ui::kit::keep_text_weight(ui.painter(), stage_shapes);
         // The camera paths the inspector and the canvas wanted and did not
         // have are asked for now, in the frame that wanted them.
         self.ask_steadies(&ctx);
@@ -6249,7 +6429,7 @@ impl App {
                     composed.unplaced
                 )
             };
-            self.notify(&ctx, text, true);
+            self.notify(&ctx, text, NoticeKind::Problem);
         }
         // A layer the media service had no room for asks again before the
         // frame its clock next crosses, which is all that clock is woken for.
@@ -6263,6 +6443,15 @@ impl App {
                 let predicted_dt = ctx.input(|input| input.predicted_dt);
                 ctx.request_repaint_after(pacing::refused_wake(rate, predicted_dt));
             }
+        }
+
+        if let Some(mut pane) = side_pane(ui, "right-pane", right_rect, upper, inspector_reveal) {
+            self.right_panel(&mut pane, right_rect, &project, actions);
+        }
+        // What the inspector changed of what the viewer draws, or the tab
+        // chosen in its strip, is drawn in a frame of its own.
+        if self.right_tab != tab || before.is_some_and(|before| for_viewer(self) != before) {
+            ctx.request_repaint();
         }
 
         ui::timeline::show(
@@ -6284,8 +6473,17 @@ impl App {
             },
             actions,
         );
+        // The keyboard a hidden panel gave up goes to the lanes, if this
+        // frame made them.
+        hand_off_keyboard(&ctx, handed, self.timeline.keys.graph);
+        // The panes' corners are rounded over what was drawn into them, and
+        // not over their neighbours.
+        kit::corner_caps(&ui.painter_at(viewer), viewer, p.chrome);
+        kit::corner_caps(&ui.painter_at(timeline_rect), timeline_rect, p.chrome);
+        self.splitters(ui, viewer, timeline_rect, (library_width, inspector_width));
         // The sound the tiles drawn wanted and did not have is asked for
-        // now, in the frame that wanted it.
+        // now, in the frame that wanted it, and then the library cards'.
+        self.peaks.want_cards(&project);
         self.ask_peaks(&ctx);
         // Peaks or beat grids turned away while a tile of the last frame
         // still held their room are asked for again in a frame of their own.
@@ -6322,6 +6520,11 @@ impl App {
         if !matches!(self.overlay, Overlay::Export | Overlay::ReplaceExport(_)) {
             self.poster.stop();
         }
+        // The queue's refusal is said only while the queue that was asked
+        // stays open.
+        if self.overlay != Overlay::RenderQueue {
+            self.queue_refusal = None;
+        }
         // Sheets and what floats over the window.
         match self.overlay.clone() {
             Overlay::None | Overlay::Conflict(_) => {}
@@ -6332,7 +6535,7 @@ impl App {
                         && let Err(problem) =
                             self.start_ducking(&ctx, &question.clips, question.depth)
                     {
-                        self.notify(&ctx, problem, true);
+                        self.notify(&ctx, problem, NoticeKind::Problem);
                     }
                 }
             }
@@ -6383,7 +6586,10 @@ impl App {
             Overlay::RenderQueue => {
                 let jobs = self.renders.jobs();
                 let waiting = self.renders.waiting();
-                if let Some(answer) = ui::render_queue::show(&ctx, &p, &jobs, &waiting) {
+                let refusal = self.queue_refusal.clone();
+                if let Some(answer) =
+                    ui::render_queue::show(&ctx, &p, &jobs, &waiting, refusal.as_deref())
+                {
                     self.answer_queue(&ctx, answer, &jobs);
                 }
             }
@@ -6434,65 +6640,28 @@ impl App {
             self.recovery_sheet(&ctx, &p, offer);
         }
         let over_sheet = self.overlay != Overlay::None || self.recover_offer.is_some();
-        // Files being written, and written ones offered, above the notices.
+        // Files being written, and written ones offered, over the viewer;
+        // the toasts keep clear of them.
         let mut cards = self.saved_audio.cards();
         cards.extend(self.separating.cards());
-        let top = sheets::saves(&ctx, &p, &cards, viewer, actions);
-        sheets::notices(&ctx, &p, &self.notices, viewer, top, over_sheet);
+        let shown = sheets::saves(&ctx, &p, &cards, viewer, actions);
+        sheets::notices(&ctx, &p, &mut self.notices, &shown, over_sheet, actions);
+        ui::window::interface_size(&ctx, &p);
         if self.files_held {
             sheets::drop_target(&ctx, &p);
         }
     }
 
     fn recovery_sheet(&mut self, ctx: &egui::Context, p: &Palette, offer: Offer) {
-        use widgets::Kind;
-        let mut restore = None;
-        let response = egui::Modal::new(egui::Id::new("recovery-sheet"))
-            .backdrop_color(p.scrim)
-            .frame(
-                egui::Frame::NONE
-                    .fill(p.elevated)
-                    .stroke(egui::Stroke::new(1.0, p.border))
-                    .corner_radius(egui::CornerRadius::same(metrics::SHEET_RADIUS))
-                    .shadow(p.sheet_shadow())
-                    .inner_margin(egui::Margin::same(18)),
-            )
-            .show(ctx, |ui| {
-                ui.set_width(360.0f32.min(ui.ctx().content_rect().width() - 64.0));
-                ui.label(
-                    egui::RichText::new("Restore unsaved changes?")
-                        .font(theme::semibold(15.0))
-                        .color(p.fg),
-                );
-                ui.label(
-                    egui::RichText::new(if offer.project.is_some() {
-                        "This project was closed with changes that were not saved. \
-                         A recovery copy of them was kept."
-                    } else {
-                        "A project that was never saved was open when Neptune Video last \
-                         closed. A recovery copy of it was kept."
-                    })
-                    .font(theme::regular(12.5))
-                    .color(p.secondary),
-                );
-                ui.add_space(12.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::button(ui, p, None, "Restore", Kind::Primary).clicked() {
-                        restore = Some(true);
-                    }
-                    if widgets::button(ui, p, None, "Discard", Kind::Plain).clicked() {
-                        restore = Some(false);
-                    }
-                });
-            });
+        let Some(answer) = sheets::recovery(ctx, p, offer.project.is_some()) else {
+            return;
+        };
+        self.recover_offer = None;
         // Leaving the sheet decides nothing: the copy stays for next time.
-        if restore.is_none() && response.should_close() {
-            self.recover_offer = None;
+        if answer == sheets::Recovery::Later {
             return;
         }
-        let Some(restore) = restore else { return };
-        self.recover_offer = None;
-        if restore {
+        if answer == sheets::Recovery::Restore {
             let epoch = self.epoch;
             let revision = self.editor.revision();
             self.spawn(ctx, "neptune-video-recover", move || Job::Recovered {
@@ -6524,6 +6693,73 @@ impl App {
         }
     }
 
+    /// The gutters that resize the side panels and the timeline. Made after
+    /// the panes, so that the pointer finds them over what the panes made
+    /// beside them, at the viewer's edges as drawn; the keyboard does not
+    /// stop at them.
+    fn splitters(&mut self, ui: &mut egui::Ui, viewer: Rect, timeline: Rect, widths: (f32, f32)) {
+        let p = self.palette;
+        let gutter = metrics::GUTTER;
+        // The timeline is the window's width less its gutters.
+        let window = timeline.width() + 2.0 * gutter;
+        let (library_shown, right_shown) = self.side_panels(window - 2.0 * gutter);
+        let (library, inspector) = widths;
+        let preferred = (self.settings.library_width, self.settings.inspector_width);
+        let shown = (library_shown, right_shown);
+        // A panel dragged wider keeps the viewer at least this wide.
+        let other = |width: f32, shown: bool| if shown { width } else { gutter };
+        if library_shown {
+            let edge = viewer.left();
+            let (delta, reset) = widgets::splitter(
+                ui,
+                &p,
+                Rect::from_x_y_ranges(edge - 3.0..=edge + 3.0, viewer.y_range()),
+                egui::Id::new("split-library"),
+                true,
+            );
+            let most = (window - other(inspector, right_shown) - VIEWER_LEAST).max(LIBRARY_LEAST);
+            if reset {
+                self.settings.library_width = settings::LIBRARY_WIDTH;
+            } else if delta != 0.0 {
+                self.settings.library_width =
+                    dragged_width(window, preferred, shown, true, library + delta, most);
+            }
+        }
+        if right_shown {
+            let edge = viewer.right();
+            let (delta, reset) = widgets::splitter(
+                ui,
+                &p,
+                Rect::from_x_y_ranges(edge - 3.0..=edge + 3.0, viewer.y_range()),
+                egui::Id::new("split-inspector"),
+                true,
+            );
+            let most = (window - other(library, library_shown) - VIEWER_LEAST).max(INSPECTOR_LEAST);
+            if reset {
+                self.settings.inspector_width = settings::INSPECTOR_WIDTH;
+            } else if delta != 0.0 {
+                self.settings.inspector_width =
+                    dragged_width(window, preferred, shown, false, inspector - delta, most);
+            }
+        }
+        // The timeline's gutter, ten points tall to the pointer.
+        let middle = timeline.top() - gutter * 0.5;
+        let (delta, reset) = widgets::splitter(
+            ui,
+            &p,
+            Rect::from_x_y_ranges(timeline.x_range(), middle - 4.0..=middle + 4.0),
+            egui::Id::new("split-timeline"),
+            false,
+        );
+        let content = timeline.bottom() - viewer.top();
+        if reset {
+            self.settings.timeline_share = settings::TIMELINE_SHARE;
+        } else if delta != 0.0 {
+            self.settings.timeline_share =
+                ((timeline.height() - delta) / content.max(1.0)).clamp(0.2, 0.7);
+        }
+    }
+
     /// Whether the library and the right panel are drawn in a window whose
     /// content is `width` wide. A window too narrow for both beside the
     /// viewer shows the one asked for last, so each stays reachable.
@@ -6544,25 +6780,38 @@ impl App {
         actions: &mut Vec<Action>,
     ) {
         let p = self.palette;
-        widgets::panel(ui, rect, &p);
-        let header = Rect::from_min_size(rect.min, vec2(rect.width(), metrics::PANEL_HEADER + 6.0));
-        let mut tabs = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(header.shrink2(vec2(10.0, 0.0)))
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        // Flush with the window's edge: the strip of tabs and the body are
+        // inset from the viewer by 6 and from the edge by 8.
+        let inner = Rect::from_min_max(
+            pos2(rect.left() + 6.0, rect.top()),
+            pos2(rect.right() - 8.0, rect.bottom()),
         );
-        let width = tabs.available_width();
-        widgets::segmented(
-            &mut tabs,
-            &p,
-            &mut self.right_tab,
-            &[
-                (RightTab::Inspector, "Inspector"),
-                (RightTab::Agent, "Agent"),
-            ],
-            width,
-        );
-        let body = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
+        let strip = Rect::from_min_size(inner.min, vec2(inner.width(), ui::panel::TABS));
+        let tabs = [
+            ui::panel::Tab {
+                label: "Inspector",
+                icon: Icon::Adjustments,
+                waiting: 0,
+            },
+            ui::panel::Tab {
+                label: "Agent",
+                icon: Icon::Sparkles,
+                // A plan waiting to be applied or discarded.
+                waiting: usize::from(self.ai.open().is_some()),
+            },
+        ];
+        let selected = match self.right_tab {
+            RightTab::Inspector => 0,
+            RightTab::Agent => 1,
+        };
+        if let Some(chosen) = tab_strip(ui, strip, p, &tabs, selected) {
+            self.right_tab = if chosen == 0 {
+                RightTab::Inspector
+            } else {
+                RightTab::Agent
+            };
+        }
+        let body = Rect::from_min_max(pos2(inner.left(), strip.bottom()), inner.max);
         self.settings.agent_panel = self.right_tab == RightTab::Agent;
         match self.right_tab {
             RightTab::Inspector => ui::inspector::show(
@@ -6617,6 +6866,7 @@ impl App {
                     },
                     current: self.ai.open_is_current(&self.editor),
                     talking: self.live.talking(),
+                    proposal_waits: self.ai.open().is_some(),
                 },
                 actions,
             ),
@@ -6675,7 +6925,11 @@ impl eframe::App for App {
             if let Err(why) = found
                 && !editor_media::separator_absent(&why)
             {
-                self.notify(ctx, format!("Separate stems is unavailable: {why}"), true);
+                self.notify(
+                    ctx,
+                    format!("Separate stems is unavailable: {why}"),
+                    NoticeKind::Problem,
+                );
             }
         }
         self.take_jobs(ctx);
@@ -6691,10 +6945,10 @@ impl eframe::App for App {
         self.take_renders(ctx);
         self.take_proxies(ctx);
         while let Some(problem) = self.audio.as_ref().and_then(AudioService::poll) {
-            self.notify(ctx, format!("Sound: {problem}"), true);
+            self.notify(ctx, format!("Sound: {problem}"), NoticeKind::Problem);
         }
         for problem in std::mem::take(&mut self.problems) {
-            self.notify(ctx, problem, true);
+            self.notify(ctx, problem, NoticeKind::Problem);
         }
 
         // What egui expects a pass to take, which it takes off every wait it is
@@ -6780,18 +7034,20 @@ impl eframe::App for App {
         if let Some(next) = self.saved_audio.expire(now) {
             ctx.request_repaint_after(Duration::from_secs_f64((next - now).max(0.0)));
         }
-        self.notices.retain(|notice| notice.until > now);
-        if let Some(next) = self
-            .notices
-            .iter()
-            .map(|notice| notice.until)
-            .min_by(f64::total_cmp)
-        {
-            let fading = next - now < 0.25;
-            ctx.request_repaint_after(Duration::from_secs_f64(if fading {
+        if let Some(next) = sheets::expire(ctx, &mut self.notices) {
+            // The last moments fade the toast out, unless motion is reduced.
+            let fade = if kit::reduced_motion(ctx) {
+                0.0
+            } else {
+                f64::from(theme::motion::TOAST)
+            };
+            let wait = next - now - fade;
+            ctx.request_repaint_after(Duration::from_secs_f64(if wait > 0.0 {
+                wait
+            } else if fade > 0.0 {
                 1.0 / 60.0
             } else {
-                next - now - 0.2
+                (next - now).max(0.0)
             }));
         }
 
@@ -6858,18 +7114,27 @@ impl eframe::App for App {
         let dropped = self.file_drop.poll(&ctx);
         self.files_held = dropped.hovering;
         if let Some(problem) = dropped.problem {
-            self.notify(&ctx, problem, true);
+            self.notify(&ctx, problem, NoticeKind::Problem);
         }
         if let Some(problem) = self.import(dropped.paths) {
-            self.notify(&ctx, problem, true);
+            self.notify(&ctx, problem, NoticeKind::Problem);
         }
 
         // A scale the window has no room for is held down to the one it
         // has, and given back as the window grows.
         ctx.set_zoom_factor(self.settings.interface_scale.min(ui::largest_scale(&ctx)));
+        // Reduce motion is read by every animation of the frame, and the
+        // system's appearance can change under a window that follows it.
+        let motion = kit::reduced_motion(&ctx) != self.settings.reduce_motion;
+        kit::set_reduced_motion(&ctx, self.settings.reduce_motion);
+        let dark = self.settings.appearance.resolve(ctx.system_theme()) != Appearance::Light;
+        if motion || dark != self.palette.dark {
+            self.restyle(&ctx);
+        }
         self.shortcuts(&ctx, &mut actions);
         let bounds = ui.max_rect();
         self.window_ui(ui, &mut actions);
+        ui::ChoiceArrows::end(&ctx);
         ui::window::frame(ui, bounds, &self.palette);
         end_frame(self, &ctx, actions);
     }
@@ -7073,6 +7338,190 @@ fn side_panels(width: f32, library: bool, right: bool, library_first: bool) -> (
     } else {
         (library_first, !library_first)
     }
+}
+
+/// The widths of the side panels drawn in a window `window` wide, of
+/// `library` and `inspector` preferred, by which of them are `shown`. Both
+/// shrink by as much as each other, each to its least, to keep the viewer
+/// 480 wide; then the viewer gives way, to 360 at 820. One alone takes what
+/// leaves the viewer 480 beside the gutter, within its least and preferred;
+/// so is a panel that is not shown measured.
+fn panel_widths(window: f32, library: f32, inspector: f32, shown: (bool, bool)) -> (f32, f32) {
+    let library = library.max(LIBRARY_LEAST);
+    let inspector = inspector.max(INSPECTOR_LEAST);
+    let alone = |preferred: f32, least: f32| {
+        (window - metrics::GUTTER - VIEWER_COMFORT)
+            .min(preferred)
+            .max(least)
+    };
+    if shown != (true, true) {
+        return (
+            alone(library, LIBRARY_LEAST),
+            alone(inspector, INSPECTOR_LEAST),
+        );
+    }
+    let short = (library + inspector + VIEWER_COMFORT - window).max(0.0);
+    let (library_room, inspector_room) = (library - LIBRARY_LEAST, inspector - INSPECTOR_LEAST);
+    // Half each, and what one cannot give, the other.
+    let library_gives = (short * 0.5).min(library_room);
+    let inspector_gives = (short - library_gives).min(inspector_room);
+    let library_gives = (short - inspector_gives).min(library_room);
+    (library - library_gives, inspector - inspector_gives)
+}
+
+/// The widths of the side panels as drawn while `reveal`, the library's and
+/// the inspector's, slide them in and out. Where both fit beside the viewer
+/// (`fits`), each moves between its width alone and its width beside the
+/// other as the other slides, so that it gives way and takes its room back
+/// with the other's motion rather than at once. Where they do not, each is
+/// as wide as it is alone.
+fn drawn_widths(window: f32, preferred: (f32, f32), fits: bool, reveal: (f32, f32)) -> (f32, f32) {
+    let alone = panel_widths(window, preferred.0, preferred.1, (true, false));
+    if !fits {
+        return alone;
+    }
+    let both = panel_widths(window, preferred.0, preferred.1, (true, true));
+    (
+        egui::lerp(alone.0..=both.0, reveal.1),
+        egui::lerp(alone.1..=both.1, reveal.0),
+    )
+}
+
+/// The preferred width that draws the dragged side panel, the library if
+/// `library` and else the inspector, `target` wide, of `preferred` and with
+/// `shown` as they are, at most `most`. The widths are drawn from the ones
+/// preferred, so that is the preference that has the panel's edge follow
+/// the pointer: half as much again while the panels shrink alike. Where
+/// the window lets the panel go no further, a preference that already goes
+/// that far is kept.
+fn dragged_width(
+    window: f32,
+    preferred: (f32, f32),
+    shown: (bool, bool),
+    library: bool,
+    target: f32,
+    most: f32,
+) -> f32 {
+    let (range, now) = if library {
+        (settings::LIBRARY_WIDTHS, preferred.0)
+    } else {
+        (settings::INSPECTOR_WIDTHS, preferred.1)
+    };
+    let drawn = |width: f32| {
+        let widths = if library {
+            panel_widths(window, width, preferred.1, shown)
+        } else {
+            panel_widths(window, preferred.0, width, shown)
+        };
+        if library { widths.0 } else { widths.1 }
+    };
+    let (mut low, mut high) = (*range.start(), most.min(*range.end()).max(*range.start()));
+    let target = target.clamp(drawn(low), drawn(high));
+    if (drawn(now) - target).abs() < 0.01 {
+        return now;
+    }
+    // The least preference drawn as wide: wider ones draw no wider once
+    // the window holds the panel back.
+    for _ in 0..40 {
+        let middle = (low + high) * 0.5;
+        if drawn(middle) >= target {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    (high * 100.0).round() / 100.0
+}
+
+/// The right panel's strip of tabs, made in every frame with an arrow's
+/// choice in it: the keyboard the arrow moved is on one of its cells, which
+/// must be there to have it. The tab chosen by an arrow or a click.
+fn tab_strip(
+    ui: &mut egui::Ui,
+    strip: Rect,
+    p: Palette,
+    tabs: &[ui::panel::Tab],
+    selected: usize,
+) -> Option<usize> {
+    let cells: Vec<egui::Id> = (tabs.iter())
+        .map(|tab| ui.id().with(("panel-tab", tab.label)))
+        .collect();
+    let arrowed = ui::arrow_choice(ui.ctx(), &cells, selected);
+    let clicked = ui::panel::tabs(
+        ui,
+        strip,
+        p,
+        tabs,
+        arrowed.unwrap_or(selected),
+        egui::WidgetType::RadioButton,
+    );
+    arrowed.or(clicked)
+}
+
+/// Where the side panels were drawn in the last frame, while shown.
+#[derive(Clone, Copy, Debug, Default)]
+struct SidePanels {
+    library: Option<Rect>,
+    inspector: Option<Rect>,
+}
+
+/// The surface a side panel is made on, while any of it shows: its
+/// rectangle, clipped to the band above the timeline as it slides past the
+/// window's edge, and fading with it. The pane is named `name` whatever was
+/// made before it, and takes the same one name from the window whether it
+/// is made or not, so that what is made in it and after it keeps its names,
+/// and the keyboard, as panels come and go.
+fn side_pane(
+    ui: &mut egui::Ui,
+    name: &str,
+    rect: Rect,
+    band: Rect,
+    reveal: f32,
+) -> Option<egui::Ui> {
+    if reveal <= 0.0 {
+        ui.skip_ahead_auto_ids(1);
+        return None;
+    }
+    let mut pane = ui.new_child(
+        egui::UiBuilder::new()
+            .id(egui::Id::new(name))
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    pane.set_clip_rect(rect.intersect(band).intersect(ui.clip_rect()));
+    pane.multiply_opacity(reveal);
+    Some(pane)
+}
+
+/// Gives the keyboard a hidden panel had, `handed`, to the timeline's lanes,
+/// or gives it up while the graph editor (`graph`) has their place and
+/// nothing there takes it. Only if it is still where it was: a panel shown
+/// in the same frame may have asked for it, and keeps it.
+fn hand_off_keyboard(ctx: &egui::Context, handed: Option<egui::Id>, graph: bool) {
+    let Some(handed) = handed else {
+        return;
+    };
+    ctx.memory_mut(|memory| {
+        if memory.focused() == Some(handed) {
+            if graph {
+                memory.surrender_focus(handed);
+            } else {
+                memory.request_focus(egui::Id::new("timeline-lanes"));
+            }
+        }
+    });
+}
+
+/// The window laid out as it is for a fresh one (§2.5): both side panels
+/// shown at their widths, and the timeline at its share. Nothing in the
+/// project changes, so nothing is added to its history.
+fn reset_layout(settings: &mut Settings) {
+    let defaults = Settings::default();
+    settings.library_width = defaults.library_width;
+    settings.inspector_width = defaults.inspector_width;
+    settings.timeline_share = defaults.timeline_share;
+    settings.show_library = true;
+    settings.show_inspector = true;
 }
 
 /// The modifiers a key went down with.
@@ -7318,6 +7767,89 @@ fn export_chords(input: &mut egui::InputState, overlay: &Overlay) -> Option<Acti
 #[path = "app_export_tests.rs"]
 mod export_tests;
 
+/// The application's chords struck in this frame, by the index the
+/// shortcuts act on, and consumed. While a field has the keyboard, undo and
+/// select-all are its own, and so is Cmd+O with Shift or Option, which is
+/// the inspector's chord left for the field: egui would otherwise take it
+/// for Open, whose chord ignores them.
+fn chords_struck(input: &mut egui::InputState, typing: bool) -> Vec<usize> {
+    let command = |key| KeyboardShortcut::new(Modifiers::COMMAND, key);
+    let shifted = |key| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, key);
+    // More specific chords first: a shifted chord is not also its plain one.
+    let chords = [
+        (shifted(Key::Z), 0),
+        (command(Key::Z), 1),
+        (command(Key::Y), 0),
+        (shifted(Key::S), 2),
+        (command(Key::S), 3),
+        (command(Key::O), 4),
+        (command(Key::N), 5),
+        (shifted(Key::I), 6),
+        (command(Key::I), 7),
+        (command(Key::D), 8),
+        (command(Key::A), 9),
+        (shifted(Key::G), 10),
+        (command(Key::G), 11),
+        (command(Key::Comma), 12),
+        (shifted(Key::K), 17),
+        (command(Key::K), 13),
+        (command(Key::L), 14),
+        (command(Key::T), 18),
+    ];
+    let inspector_chord = (input.events.iter()).any(|event| {
+        matches!(
+            event,
+            egui::Event::Key { key: Key::O, pressed: true, modifiers, .. }
+                if modifiers.shift || modifiers.alt
+        )
+    });
+    let mut struck = Vec::new();
+    for (chord, index) in chords {
+        if typing && (matches!(index, 0 | 1 | 9 | 18) || index == 4 && inspector_chord) {
+            continue;
+        }
+        if input.consume_shortcut(&chord) {
+            struck.push(index);
+        }
+    }
+    struck
+}
+
+/// Whether `key` is a choice's while one of its cells has the keyboard
+/// (`choosing`): Left and Right step among the cells, and Delete, Up and
+/// Down are still the application's.
+fn choice_takes(choosing: bool, key: Key) -> bool {
+    choosing && matches!(key, Key::ArrowLeft | Key::ArrowRight)
+}
+
+/// The chords that show and hide the side panels: Terminal's sidebar chord
+/// for the library, Ctrl+Shift+B or Cmd+B, and Ctrl+Shift+O or Option+Cmd+O
+/// for the inspector. A field that has the keyboard keeps them.
+fn panel_chords(input: &mut egui::InputState, typing: bool) -> Option<Action> {
+    if typing {
+        return None;
+    }
+    let (library, inspector) = if cfg!(target_os = "macos") {
+        (
+            KeyboardShortcut::new(Modifiers::COMMAND, Key::B),
+            KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::O),
+        )
+    } else {
+        let shifted = Modifiers::COMMAND | Modifiers::SHIFT;
+        (
+            KeyboardShortcut::new(shifted, Key::B),
+            KeyboardShortcut::new(shifted, Key::O),
+        )
+    };
+    if input.consume_shortcut(&library) {
+        Some(Action::ToggleLibrary)
+    } else if input.consume_shortcut(&inspector) {
+        Some(Action::ToggleInspector)
+    } else {
+        None
+    }
+}
+
 /// The file naming the folders this window's agent may use, beside the
 /// window's agent session.
 fn roots_file(session: &Path) -> PathBuf {
@@ -7551,9 +8083,12 @@ mod tests {
 
     #[test]
     fn a_narrow_window_shows_the_side_panel_asked_for_last() {
-        // Both beside the viewer in a window with the room.
+        // Both beside the viewer in a window with the room: §2.4, from a
+        // window of 820, Terminal's narrowest with its sidebar.
+        assert_eq!(LIBRARY_FITS, 820.0 - 2.0 * metrics::GUTTER);
         assert_eq!(side_panels(1428.0, true, true, false), (true, true));
         assert_eq!(side_panels(LIBRARY_FITS, true, true, true), (true, true));
+        assert_eq!(side_panels(807.0, true, true, true), (true, false));
         // 760 points across leave 748: one panel, and the library is one of
         // the two it can be.
         assert_eq!(side_panels(748.0, true, true, false), (false, true));
@@ -7562,6 +8097,359 @@ mod tests {
         assert_eq!(side_panels(748.0, true, false, false), (true, false));
         assert_eq!(side_panels(748.0, false, true, true), (false, true));
         assert_eq!(side_panels(748.0, false, false, true), (false, false));
+    }
+
+    #[test]
+    fn the_side_panels_shrink_alike_to_keep_the_viewer() {
+        // §2.4: the library at 316 and the inspector at 300, as preferred.
+        for (window, library, inspector, viewer) in [
+            (1440.0, 316.0, 300.0, 824.0),
+            (1100.0, 316.0, 300.0, 484.0),
+            (1000.0, 268.0, 252.0, 480.0),
+            (900.0, 220.0, 240.0, 440.0),
+            (820.0, 220.0, 240.0, 360.0),
+        ] {
+            let widths = panel_widths(window, 316.0, 300.0, (true, true));
+            assert_eq!(widths, (library, inspector), "{window}");
+            assert_eq!(window - widths.0 - widths.1, viewer, "{window}");
+        }
+        // One alone leaves the viewer 480 beside the gutter, within its
+        // least and the width preferred.
+        for (window, alone, viewer) in [(819.0, 316.0, 497.0), (760.0, 274.0, 480.0)] {
+            let (library, _) = panel_widths(window, 316.0, 300.0, (true, false));
+            assert_eq!(
+                (library, window - library - metrics::GUTTER),
+                (alone, viewer)
+            );
+        }
+        assert_eq!(panel_widths(760.0, 316.0, 300.0, (false, true)).1, 274.0);
+        assert_eq!(panel_widths(600.0, 316.0, 300.0, (false, true)).1, 240.0);
+        // One that gives all it can leaves the rest to the other.
+        assert_eq!(
+            panel_widths(1000.0, 230.0, 400.0, (true, true)),
+            (220.0, 300.0)
+        );
+    }
+
+    #[test]
+    fn the_panel_chords_show_and_hide_the_panels_but_not_while_typing() {
+        let chord = |key, typing| {
+            let ctx = egui::Context::default();
+            let modifiers = if cfg!(target_os = "macos") {
+                match key {
+                    Key::B => Modifiers::COMMAND,
+                    _ => Modifiers::COMMAND | Modifiers::ALT,
+                }
+            } else {
+                Modifiers::COMMAND | Modifiers::SHIFT
+            };
+            let raw = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let mut answer = (None, false);
+            let output = ctx.run_ui(raw, |ui| {
+                let action = ui.ctx().input_mut(|i| panel_chords(i, typing));
+                let left = ui.ctx().input(|i| {
+                    (i.events.iter()).any(|event| matches!(event, egui::Event::Key { .. }))
+                });
+                answer = (action, left);
+            });
+            output.drop_without_applying_deltas();
+            answer
+        };
+        assert!(matches!(
+            chord(Key::B, false),
+            (Some(Action::ToggleLibrary), false)
+        ));
+        assert!(matches!(
+            chord(Key::O, false),
+            (Some(Action::ToggleInspector), false)
+        ));
+        // A field keeps them, and they are left in the input for it.
+        assert!(matches!(chord(Key::B, true), (None, true)));
+        assert!(matches!(chord(Key::O, true), (None, true)));
+        // Nor does Open take the inspector's chord from the field, though
+        // its own chord ignores Shift and Option. Cmd+O alone still opens.
+        let struck = |modifiers, typing| {
+            let ctx = egui::Context::default();
+            let raw = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: Key::O,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let mut struck = Vec::new();
+            let output = ctx.run_ui(raw, |ui| {
+                struck = ui.ctx().input_mut(|i| {
+                    let panels = panel_chords(i, typing);
+                    assert!(panels.is_none() || !typing);
+                    chords_struck(i, typing)
+                });
+            });
+            output.drop_without_applying_deltas();
+            struck
+        };
+        let inspector = if cfg!(target_os = "macos") {
+            Modifiers::COMMAND | Modifiers::ALT
+        } else {
+            Modifiers::COMMAND | Modifiers::SHIFT
+        };
+        assert_eq!(struck(inspector, true), Vec::<usize>::new());
+        assert_eq!(struck(inspector, false), Vec::<usize>::new());
+        assert_eq!(struck(Modifiers::COMMAND, true), vec![4]);
+        assert_eq!(struck(Modifiers::COMMAND, false), vec![4]);
+    }
+
+    #[test]
+    fn a_dragged_side_panel_follows_the_pointer() {
+        // §2.4 and §2.5: the library at 316 and the inspector at 300
+        // preferred. Drawn widths are derived from the preferred ones, so a
+        // drag stores the preference that draws the edge where the pointer
+        // took it.
+        let drag = |window: f32, shown, library, steps: &[f32]| {
+            let mut preferred = (316.0, 300.0);
+            let mut drawn = Vec::new();
+            for delta in steps {
+                let widths = panel_widths(window, preferred.0, preferred.1, shown);
+                let most = window - 360.0 - if shown.0 && shown.1 { 240.0 } else { 6.0 };
+                if library {
+                    preferred.0 =
+                        dragged_width(window, preferred, shown, true, widths.0 + delta, most);
+                } else {
+                    preferred.1 =
+                        dragged_width(window, preferred, shown, false, widths.1 - delta, most);
+                }
+                drawn.push(panel_widths(window, preferred.0, preferred.1, shown));
+            }
+            (preferred, drawn)
+        };
+        let near = |a: f32, b: f32| (a - b).abs() < 0.05;
+        // A window of 1000, where both have shrunk to 268 and 252: the
+        // library's edge moves right with the pointer, two at a time, while
+        // the inspector gives the viewer its 480 (§2.4 rule 1), until the
+        // inspector is at its least. Then it holds, and never goes back.
+        let (_, drawn) = drag(1000.0, (true, true), true, &[2.0; 8]);
+        for (step, (library, inspector)) in drawn.iter().enumerate() {
+            let expected = (270.0 + 2.0 * step as f32).min(1000.0 - 480.0 - 240.0);
+            assert!(near(*library, expected), "{drawn:?}");
+            assert!(near(1000.0 - library - inspector, 480.0), "{drawn:?}");
+        }
+        // And left with it, as the inspector takes back its room.
+        let (_, drawn) = drag(1000.0, (true, true), true, &[-10.0; 3]);
+        assert!(near(drawn[2].0, 238.0), "{drawn:?}");
+        // The inspector's edge moves left with the pointer in the same way.
+        let (_, drawn) = drag(1000.0, (true, true), false, &[-10.0; 2]);
+        assert!(near(drawn[1].1, 272.0), "{drawn:?}");
+        // With the room, the edge is the preference.
+        let (preferred, drawn) = drag(1440.0, (true, true), true, &[24.0, -4.0]);
+        assert!(near(drawn[1].0, 336.0) && near(preferred.0, 336.0));
+        assert_eq!(drawn[1].1, 300.0);
+        // A library alone in a window of 760 is held at 274: dragged wider it
+        // goes no further and keeps its 316; dragged narrower it follows.
+        let (preferred, drawn) = drag(760.0, (true, false), true, &[10.0, 10.0]);
+        assert_eq!((preferred.0, drawn[1].0), (316.0, 274.0));
+        let (preferred, drawn) = drag(760.0, (true, false), true, &[-10.0]);
+        assert!(near(drawn[0].0, 264.0) && near(preferred.0, 264.0));
+        // Nor does a drag past the least a panel can be drawn at lose what
+        // was preferred.
+        let (preferred, _) = drag(820.0, (true, true), true, &[-10.0]);
+        assert_eq!(preferred.0, 316.0);
+    }
+
+    #[test]
+    fn an_arrow_on_a_tab_keeps_the_strip_with_the_keyboard_on_it() {
+        // §5.4 and §7.3: Right on the focused "Inspector" chooses "Agent" in
+        // the same frame, and the strip is made in it, so that what has the
+        // keyboard is among the nodes said to assistive technology.
+        let ctx = egui::Context::default();
+        let p = Palette::new(Appearance::Dark, theme::Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &p);
+        ctx.enable_accesskit();
+        let tabs = [
+            ui::panel::Tab {
+                label: "Inspector",
+                icon: Icon::Adjustments,
+                waiting: 0,
+            },
+            ui::panel::Tab {
+                label: "Agent",
+                icon: Icon::Sparkles,
+                waiting: 0,
+            },
+        ];
+        let mut selected = 0;
+        let mut frame = |events: Vec<egui::Event>, focus: bool| {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(400.0, 300.0))),
+                events,
+                ..Default::default()
+            };
+            let output = ctx.run_ui(raw, |ui| {
+                if focus {
+                    let first = ui.id().with(("panel-tab", "Inspector"));
+                    ui.ctx().memory_mut(|memory| memory.request_focus(first));
+                }
+                let strip = Rect::from_min_size(pos2(6.0, 0.0), vec2(300.0, ui::panel::TABS));
+                if let Some(chosen) = tab_strip(ui, strip, p, &tabs, selected) {
+                    selected = chosen;
+                }
+            });
+            let update = output.platform_output.accesskit_update.clone();
+            output.drop_without_applying_deltas();
+            update
+        };
+        frame(Vec::new(), true);
+        frame(Vec::new(), false);
+        let right = egui::Event::Key {
+            key: Key::ArrowRight,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let update = frame(vec![right], false).expect("accesskit is on");
+        assert_eq!(selected, 1);
+        assert!(
+            (update.nodes.iter()).any(|(id, _)| *id == update.focus),
+            "the keyboard is on a node that is not there"
+        );
+    }
+
+    #[test]
+    fn a_panel_beside_one_that_slides_widens_with_it() {
+        // §2.5: at 1000 both are 268 and 252, and alone 316 and 300. As the
+        // inspector slides away, the library widens with it, not at once.
+        let preferred = (316.0, 300.0);
+        assert_eq!(
+            drawn_widths(1000.0, preferred, true, (1.0, 1.0)),
+            (268.0, 252.0)
+        );
+        assert_eq!(
+            drawn_widths(1000.0, preferred, true, (1.0, 0.5)),
+            (292.0, 252.0)
+        );
+        assert_eq!(drawn_widths(1000.0, preferred, true, (1.0, 0.0)).0, 316.0);
+        // Where only one fits, each is as wide as it is alone.
+        assert_eq!(
+            drawn_widths(760.0, preferred, false, (0.3, 0.7)),
+            (274.0, 274.0)
+        );
+    }
+
+    #[test]
+    fn what_is_made_in_and_after_the_side_panels_keeps_its_names_as_they_come_and_go() {
+        // §2.4 and §7.4: in a narrow window Ctrl+K slides the library out as
+        // the right panel slides in, and the command line asks for the
+        // keyboard in the first frame of the slide. It keeps it when the
+        // library is no longer drawn, as does what is made after the panels.
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, vec2(760.0, 560.0));
+        let band = Rect::from_min_max(pos2(0.0, 44.0), pos2(760.0, 300.0));
+        let library = Rect::from_min_max(pos2(0.0, 44.0), pos2(274.0, 300.0));
+        let right = Rect::from_min_max(pos2(486.0, 44.0), pos2(760.0, 300.0));
+        let mut text = String::new();
+        let mut frame = |reveal: f32, ask: bool| {
+            let mut seen = (None, None);
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ui| {
+                    if let Some(mut pane) = side_pane(ui, "library-pane", library, band, reveal) {
+                        let _ = pane.button("Media");
+                    }
+                    if let Some(mut pane) = side_pane(ui, "right-pane", right, band, 1.0) {
+                        let field = pane.text_edit_singleline(&mut text);
+                        if ask {
+                            field.request_focus();
+                        }
+                        seen.0 = Some(field.id);
+                    }
+                    seen.1 = Some(ui.next_auto_id());
+                },
+            );
+            output.drop_without_applying_deltas();
+            let focused = ctx.memory(|memory| memory.focused());
+            (seen, focused)
+        };
+        let ((field, after), focused) = frame(1.0, true);
+        assert_eq!(focused, field);
+        for reveal in [0.5, 0.0, 0.0] {
+            let (seen, focused) = frame(reveal, false);
+            assert_eq!(seen, (field, after), "at {reveal}");
+            assert_eq!(focused, field, "at {reveal}: the field keeps the keyboard");
+        }
+    }
+
+    #[test]
+    fn a_hidden_panel_hands_its_keyboard_to_the_lanes_unless_a_panel_took_it() {
+        // §2.4 rule 6: the keyboard a hidden panel had goes to the lanes, or
+        // is given up while the graph editor has their place.
+        let ctx = egui::Context::default();
+        let (library, field) = (
+            egui::Id::new("a library tab"),
+            egui::Id::new("the command line"),
+        );
+        let lanes = egui::Id::new("timeline-lanes");
+        let handed = |asked: &[egui::Id], handed: Option<egui::Id>, graph: bool| {
+            let mut focused = None;
+            ctx.run_ui(egui::RawInput::default(), |ui| {
+                for id in asked {
+                    ui.memory_mut(|memory| memory.request_focus(*id));
+                }
+                hand_off_keyboard(ui.ctx(), handed, graph);
+                focused = ui.memory(|memory| memory.focused());
+            })
+            .drop_without_applying_deltas();
+            focused
+        };
+        assert_eq!(handed(&[library], Some(library), false), Some(lanes));
+        assert_eq!(handed(&[library], Some(library), true), None);
+        // The panel shown in its place asked for it in the same frame, as
+        // Ctrl+K's command line does under Reduce motion, and keeps it.
+        assert_eq!(handed(&[library, field], Some(library), false), Some(field));
+        assert_eq!(handed(&[library, field], Some(library), true), Some(field));
+        // Nothing hidden held it.
+        assert_eq!(handed(&[field], None, false), Some(field));
+    }
+
+    #[test]
+    fn reset_layout_brings_back_the_fresh_window() {
+        // §2.5: library 316, inspector 300, the timeline at 0.42, and both
+        // panels shown. It reads and writes the settings alone, so the
+        // project and its history are as they were.
+        let mut settings = Settings {
+            library_width: 480.0,
+            inspector_width: 250.0,
+            timeline_share: 0.6,
+            show_library: false,
+            show_inspector: false,
+            ..Settings::default()
+        };
+        reset_layout(&mut settings);
+        assert_eq!(
+            (
+                settings.library_width,
+                settings.inspector_width,
+                settings.timeline_share,
+                settings.show_library,
+                settings.show_inspector,
+            ),
+            (316.0, 300.0, 0.42, true, true)
+        );
     }
 
     #[test]
@@ -8642,6 +9530,13 @@ mod tests {
         }
         assert!(!key_is_free(true, Key::Delete) && !key_is_free(true, Key::Backspace));
         assert!(key_is_free(true, Key::C) && key_is_free(true, Key::Space));
+        // A tab or a segment with the keyboard takes Left and Right only:
+        // the selected clips are still deleted from it.
+        assert!(choice_takes(true, Key::ArrowLeft) && choice_takes(true, Key::ArrowRight));
+        for key in [Key::ArrowUp, Key::ArrowDown, Key::Delete, Key::Backspace] {
+            assert!(!choice_takes(true, key), "{key:?}");
+        }
+        assert!(!choice_takes(false, Key::ArrowLeft));
     }
 
     /// An editor with one ten second video, what tracking a region of it

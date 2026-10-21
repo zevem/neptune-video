@@ -16,6 +16,12 @@
 //! read for a tile that is no longer drawn is given up, and read when the
 //! tile is drawn again.
 //!
+//! A sound's card in the library wants its peaks too, by
+//! [`HeldPeaks::want_card`], and gives way to the tiles: what cards want is
+//! taken after every tile of the frame has wanted its own, a tile's peaks may
+//! take the room of a card's, and sound only cards asked for that could not be
+//! read is not said. A tile that wants it later asks again, and says so.
+//!
 //! Work that reads peaks rather than draws them, as the ducking gate does,
 //! wants them by [`HeldPeaks::want_work`]: through the same requests, so a
 //! tile and the work never ask the lane twice, but not as a tile on screen.
@@ -95,6 +101,9 @@ struct Entry {
     used: Option<u64>,
     /// Work wants it, and lets it go when done.
     work: bool,
+    /// Only cards in the library have wanted it: it gives way to tiles and
+    /// work, and what could not be read of it is not said.
+    card: bool,
 }
 
 impl Entry {
@@ -133,6 +142,8 @@ pub enum Taken {
 pub struct HeldPeaks {
     entries: HashMap<AssetId, Entry>,
     wants: Vec<AssetId>,
+    /// The sounds the cards drawn in this frame want, taken after the tiles'.
+    cards: Vec<AssetId>,
     frame: u64,
     /// The least bytes of peaks turned away in this frame for want of room.
     refused: Option<usize>,
@@ -147,6 +158,7 @@ impl Default for HeldPeaks {
         Self {
             entries: HashMap::new(),
             wants: Vec::new(),
+            cards: Vec::new(),
             frame: 0,
             refused: None,
             bound: MAX_HELD_PEAK_BYTES,
@@ -185,6 +197,7 @@ impl HeldPeaks {
     pub fn begin_frame(&mut self) {
         self.frame += 1;
         self.refused = None;
+        self.cards.clear();
         self.beats.begin_frame();
     }
 
@@ -220,10 +233,13 @@ impl HeldPeaks {
     }
 
     // Whether peaks of `bytes` fit beside those on screen, those work
-    // wants, and those on their way to either.
-    fn has_room(&self, bytes: usize, but: AssetId) -> bool {
+    // wants, and those on their way to either. A tile's do not count what
+    // only cards claim: those give way to it.
+    fn has_room(&self, bytes: usize, but: AssetId, card: bool) -> bool {
         let claimed: usize = (self.entries.iter())
-            .filter(|(id, entry)| **id != but && (self.on_screen(entry) || entry.work))
+            .filter(|(id, entry)| {
+                **id != but && (entry.work || (self.on_screen(entry) && (card || !entry.card)))
+            })
             .map(|(_, entry)| entry.claimed())
             .sum();
         claimed + bytes <= self.bound
@@ -233,32 +249,68 @@ impl HeldPeaks {
     /// that are not held, or are held of what the media no longer is, are
     /// put on the list to ask the lane about, once.
     pub fn want(&mut self, asset: &Asset) {
+        self.want_as(asset, false);
+    }
+
+    /// Says a card in the library shows the sound of `asset` this frame. It
+    /// is wanted by [`Self::want_cards`], once every tile has wanted its own.
+    pub fn want_card(&mut self, asset: &Asset) {
+        if asset.has_audio && !self.cards.contains(&asset.id) {
+            self.cards.push(asset.id);
+        }
+    }
+
+    /// Wants the sound of the cards drawn in this frame, of `project` as
+    /// they drew it: after the tiles, so that the tiles have the room first.
+    pub fn want_cards(&mut self, project: &Project) {
+        // The list is emptied in place and kept, room and all, for the next
+        // frame's cards.
+        let mut cards = std::mem::take(&mut self.cards);
+        for id in cards.drain(..) {
+            if let Some(asset) = project.assets.get(&id) {
+                self.want_as(asset, true);
+            }
+        }
+        self.cards = cards;
+    }
+
+    fn want_as(&mut self, asset: &Asset, card: bool) {
         if !asset.has_audio {
             return;
+        }
+        // Sound only cards asked for could not be read, and nobody was
+        // told: a tile asks again, and says what becomes of it.
+        if !card
+            && (self.entries.get(&asset.id))
+                .is_some_and(|entry| entry.card && entry.known == Known::Failed)
+        {
+            self.entries.remove(&asset.id);
         }
         let frame = self.frame;
         let known = (self.entries.get_mut(&asset.id))
             .filter(|entry| is_of(&entry.source, asset))
             .map(|entry| {
                 entry.used = Some(frame);
-                (entry.known.clone(), entry.bytes)
+                entry.card &= card;
+                (entry.known.clone(), entry.bytes, entry.card)
             });
-        let bytes = match known {
+        let (bytes, card) = match known {
             // Still to be asked: a question the lane had no room for is put
             // again by the tile that wants the answer.
-            Some((Known::Wanted(_), _)) => {
+            Some((Known::Wanted(_), ..)) => {
                 if !self.wants.contains(&asset.id) {
                     self.wants.push(asset.id);
                 }
                 return;
             }
-            Some((Known::NoRoom, bytes)) => bytes,
+            Some((Known::NoRoom, bytes, card)) => (bytes, card),
             Some(_) => return,
-            None => expected_bytes(asset),
+            None => (expected_bytes(asset), card),
         };
         // Room only shrinks while a frame is drawn, so one refusal answers
         // for the rest of it for peaks no smaller. Smaller ones may fit yet.
-        let room = self.refused.is_none_or(|least| bytes < least) && self.has_room(bytes, asset.id);
+        let room =
+            self.refused.is_none_or(|least| bytes < least) && self.has_room(bytes, asset.id, card);
         if !room {
             self.refused = Some(self.refused.map_or(bytes, |least| least.min(bytes)));
         }
@@ -274,6 +326,7 @@ impl HeldPeaks {
                 bytes,
                 used: Some(frame),
                 work: false,
+                card,
             },
         );
         self.wants.retain(|id| *id != asset.id);
@@ -298,6 +351,7 @@ impl HeldPeaks {
                     bytes: expected_bytes(asset),
                     used: None,
                     work: true,
+                    card: false,
                 },
             );
             self.wants.retain(|id| *id != asset.id);
@@ -305,10 +359,12 @@ impl HeldPeaks {
             return;
         };
         entry.work = true;
-        // Work does not wait for room on screen.
-        if entry.known == Known::NoRoom {
+        // Work does not wait for room on screen, and asks again about what
+        // only cards could not read, to say what becomes of it.
+        if entry.known == Known::NoRoom || (entry.card && entry.known == Known::Failed) {
             entry.known = Known::Wanted(Ask::Kept);
         }
+        entry.card = false;
         if matches!(entry.known, Known::Wanted(_)) && !self.wants.contains(&asset.id) {
             self.wants.push(asset.id);
         }
@@ -355,6 +411,12 @@ impl HeldPeaks {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Whether only cards in the library want the peaks of `asset`: what
+    /// becomes of them is not said.
+    pub fn only_cards(&self, asset: AssetId) -> bool {
+        (self.entries.get(&asset)).is_some_and(|entry| entry.card)
     }
 
     /// Whether anything waits to be asked of the lane: peaks, or beats.
@@ -441,10 +503,13 @@ impl HeldPeaks {
                 // The lane is full: asked again by the tile that next wants
                 // it, in the frame an answer of the lane brings about.
                 Err(MediaError::Busy) => {}
-                // Media the lane will not read, as too long.
+                // Media the lane will not read, as too long. Said unless only
+                // cards asked.
                 Err(error) => {
+                    if !self.only_cards(id) {
+                        refused.push(format!("{} has no waveform: {error}", asset.name));
+                    }
                     self.refuse(id);
-                    refused.push(format!("{} has no waveform: {error}", asset.name));
                 }
             }
         }
@@ -512,6 +577,8 @@ impl HeldPeaks {
         let now = project.assets.get(&asset_id);
         let taken = self.take(instance, now, request, asked_by, asset_id, &source, answer);
         match taken {
+            // Sound only cards asked for: a card keeps its level line.
+            Taken::Failed(_) if self.only_cards(asset_id) => None,
             Taken::Failed(why) => {
                 let name = now.map_or("The media", |asset| asset.name.as_str());
                 // The first line of what FFmpeg said: the rest repeats it.
@@ -618,16 +685,17 @@ impl HeldPeaks {
 
     // Makes room for `bytes` of peaks of `keep`: those least lately wanted
     // go first, and none whose tile is on screen, unless work wants `keep`.
-    // Peaks work wants are never taken. Says whether there is room.
+    // Those only cards on screen want give way to a tile's, after those off
+    // screen. Peaks work wants are never taken. Says whether there is room.
     fn make_room(&mut self, bytes: usize, keep: AssetId) -> bool {
         // What is read may be more than the length said: remembered, so the
         // media is asked about again only when that much is free.
-        let work = match self.entries.get_mut(&keep) {
+        let (work, card) = match self.entries.get_mut(&keep) {
             Some(entry) => {
                 entry.bytes = bytes;
-                entry.work
+                (entry.work, entry.card)
             }
-            None => false,
+            None => (false, false),
         };
         while self.bytes() + bytes > self.bound {
             let oldest = (self.entries.iter())
@@ -635,9 +703,12 @@ impl HeldPeaks {
                     **id != keep
                         && entry.held() > 0
                         && !entry.work
-                        && (work || !self.on_screen(entry))
+                        && (work || !self.on_screen(entry) || (!card && entry.card))
                 })
-                .min_by_key(|(_, entry)| (self.on_screen(entry), entry.used))
+                .min_by_key(|(_, entry)| {
+                    let shown = self.on_screen(entry);
+                    (shown && !entry.card, shown, entry.used)
+                })
                 .map(|(id, _)| *id);
             let Some(oldest) = oldest else { return false };
             self.entries.remove(&oldest);
@@ -1298,6 +1369,135 @@ mod tests {
         assert_eq!(answer(&mut held, &gone, 7, kept()), Taken::Dropped);
         assert!(held.held(&relinked).is_none());
         assert_eq!(held.bytes(), 0);
+    }
+
+    /// The lane's answer that `asset`'s sound could not be read.
+    fn unreadable(asset: &Asset, request: u64) -> SoundEvent {
+        SoundEvent::Peaked {
+            request,
+            project: HERE,
+            asset_id: asset.id,
+            source: SourceIdentity::of(asset),
+            result: Err("ffmpeg: no sound could be read".to_owned()),
+            unkept: None,
+        }
+    }
+
+    #[test]
+    fn a_cards_sound_is_wanted_after_the_tiles_and_not_said_when_unread() {
+        let song = sound_named("song.wav", 4.0);
+        let voice = sound_named("voice.wav", 4.0);
+        let project = library(&[&song, &voice]);
+        let mut held = HeldPeaks::default();
+        // The library is drawn before the timeline: its cards are wanted
+        // once the tiles have wanted theirs.
+        held.begin_frame();
+        held.want_card(&song);
+        held.want(&voice);
+        assert_eq!(held.take_wants(), vec![(voice.id, Ask::Kept)]);
+        held.want_cards(&project);
+        assert_eq!(held.take_wants(), vec![(song.id, Ask::Kept)]);
+        assert!(held.only_cards(song.id) && !held.only_cards(voice.id));
+        held.asked(voice.id, 1);
+        held.asked(song.id, 2);
+        let missing = || Answer::Kept(KeptPeaks::Missing);
+        assert_eq!(answer(&mut held, &voice, 1, missing()), Taken::Unkept);
+        assert_eq!(answer(&mut held, &song, 2, missing()), Taken::Unkept);
+        held.begin_frame();
+        held.want_card(&song);
+        held.want(&voice);
+        held.want_cards(&project);
+        held.asked(voice.id, 3);
+        held.asked(song.id, 4);
+
+        // Sound only a card asked for that could not be read is not said:
+        // the card keeps its level line. A tile's is.
+        assert_eq!(held.answered(HERE, &project, unreadable(&song, 4)), None);
+        let said = held.answered(HERE, &project, unreadable(&voice, 3));
+        assert_eq!(
+            said.as_deref(),
+            Some("voice.wav has no waveform: ffmpeg: no sound could be read")
+        );
+        // Neither is asked about again by what asked first.
+        held.begin_frame();
+        held.want_card(&song);
+        held.want(&voice);
+        held.want_cards(&project);
+        assert!(held.take_wants().is_empty());
+
+        // Once a tile wants the card's sound it is asked again, and its
+        // failure is said.
+        held.begin_frame();
+        held.want(&song);
+        held.want_card(&song);
+        held.want_cards(&project);
+        assert_eq!(held.take_wants(), vec![(song.id, Ask::Kept)]);
+        assert!(!held.only_cards(song.id));
+        held.asked(song.id, 5);
+        assert_eq!(answer(&mut held, &song, 5, missing()), Taken::Unkept);
+        held.begin_frame();
+        held.want(&song);
+        held.asked(song.id, 6);
+        let said = held.answered(HERE, &project, unreadable(&song, 6));
+        assert_eq!(
+            said.as_deref(),
+            Some("song.wav has no waveform: ffmpeg: no sound could be read")
+        );
+    }
+
+    #[test]
+    fn a_cards_peaks_give_their_room_to_a_tile() {
+        // Each of these is a quarter of the bound and a little more.
+        let buckets = MAX_HELD_PEAK_BYTES / 16 + 1;
+        let seconds = buckets as f64 / f64::from(PEAKS_PER_SECOND);
+        let songs: Vec<Asset> = (0..3)
+            .map(|index| sound_named(&format!("song-{index}.wav"), seconds))
+            .collect();
+        let voice = sound_named("voice.wav", seconds);
+        let project = library(&[&songs[0], &songs[1], &songs[2], &voice]);
+        let mut held = HeldPeaks::default();
+        // Three cards fill the room.
+        held.begin_frame();
+        for song in &songs {
+            held.want_card(song);
+        }
+        held.want_cards(&project);
+        for (request, (id, _)) in held.take_wants().into_iter().enumerate() {
+            held.asked(id, request as u64);
+        }
+        for (request, song) in songs.iter().enumerate() {
+            let kept = Answer::Kept(KeptPeaks::Held(peaks(buckets)));
+            assert_eq!(answer(&mut held, song, request as u64, kept), Taken::Kept);
+        }
+        // A tile beside them is asked about all the same, and its peaks
+        // take the room of the card least lately wanted.
+        held.begin_frame();
+        held.want(&voice);
+        for song in &songs {
+            held.want_card(song);
+        }
+        held.want_cards(&project);
+        assert_eq!(held.take_wants(), vec![(voice.id, Ask::Kept)]);
+        held.asked(voice.id, 9);
+        let kept = Answer::Kept(KeptPeaks::Held(peaks(buckets)));
+        assert_eq!(answer(&mut held, &voice, 9, kept), Taken::Kept);
+        assert!(held.held(&voice).is_some());
+        assert_eq!(held.bytes(), 3 * buckets * 4);
+        // The card that gave way waits for room beside the tile, and asks
+        // for no frame while it is all on screen.
+        let gave_way = songs.iter().find(|song| held.held(song).is_none());
+        let gave_way = gave_way.expect("a card gave way");
+        for _ in 0..3 {
+            held.begin_frame();
+            held.want(&voice);
+            for song in &songs {
+                held.want_card(song);
+            }
+            held.want_cards(&project);
+            assert!(held.take_wants().is_empty());
+            assert!(!held.room_is_due());
+            assert!(held.held(gave_way).is_none());
+        }
     }
 
     #[test]
