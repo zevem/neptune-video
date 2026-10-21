@@ -273,7 +273,11 @@ pub fn segmented<T: PartialEq + Copy>(
 ) -> bool {
     let (_, rect) = ui.allocate_space(vec2(width, 28.0));
     let id = ui.id().with(("segmented", name));
-    let segment = (rect.width() - 4.0) / options.len().max(1) as f32;
+    // Neptune Video: the labels fit their cells (spec §5.4). They are
+    // Medium 12 while each has room on both sides of an equal cell, then
+    // 11.5; past that, the cells share the width by their labels, each
+    // with the same room on both sides, as an apportioned control does.
+    let (cells, size) = segment_cells(ui, rect, options);
     // Neptune Video: a value none of the options holds selects none. No
     // option is shown or announced as chosen, and every one can be taken.
     let selected = options.iter().position(|(option, _)| option == value);
@@ -286,12 +290,16 @@ pub fn segmented<T: PartialEq + Copy>(
         0.14
     };
     if let Some(selected) = selected {
-        let thumb_x = ui
+        let chosen = cells[selected];
+        let left = ui
             .ctx()
-            .animate_value_with_time(id.with("thumb"), selected as f32, slide);
+            .animate_value_with_time(id.with("thumb"), chosen.left(), slide);
+        let wide = ui
+            .ctx()
+            .animate_value_with_time(id.with("thumb-width"), chosen.width(), slide);
         let thumb = Rect::from_min_size(
-            Pos2::new(rect.left() + 2.0 + thumb_x * segment, rect.top() + 2.0),
-            vec2(segment, rect.height() - 4.0),
+            Pos2::new(left, rect.top() + 2.0),
+            vec2(wide, rect.height() - 4.0),
         );
         painter.rect_filled(
             thumb.translate(vec2(0.0, 1.0)),
@@ -309,11 +317,8 @@ pub fn segmented<T: PartialEq + Copy>(
         );
     }
     let mut changed = false;
-    for (index, (option, label)) in options.iter().enumerate() {
-        let cell = Rect::from_min_size(
-            Pos2::new(rect.left() + 2.0 + index as f32 * segment, rect.top()),
-            vec2(segment, rect.height()),
-        );
+    for (index, ((option, label), cell)) in options.iter().zip(&cells).enumerate() {
+        let cell = Rect::from_x_y_ranges(cell.x_range(), rect.y_range());
         let response = ui.interact(cell, id.with(*label), Sense::click());
         let active = Some(index) == selected;
         response.widget_info(|| {
@@ -330,7 +335,7 @@ pub fn segmented<T: PartialEq + Copy>(
             cell.center(),
             Align2::CENTER_CENTER,
             *label,
-            theme::medium(12.0),
+            theme::medium(size),
             if active || response.hovered() {
                 p.fg
             } else {
@@ -340,6 +345,58 @@ pub fn segmented<T: PartialEq + Copy>(
         response.on_hover_cursor(CursorIcon::PointingHand);
     }
     changed
+}
+
+/// Neptune Video: the room a segmented label keeps on each side of it.
+const SEGMENT_ROOM: f32 = 8.0;
+
+/// Neptune Video: the cells of a segmented control in `rect`, inside its
+/// 2-point track, and the size their labels are written at: equal cells at
+/// Medium 12, or at 11.5, while every label has [`SEGMENT_ROOM`] on both
+/// sides; otherwise at 11.5 in cells as wide as their labels, the width
+/// left over shared out evenly.
+fn segment_cells<T>(ui: &Ui, rect: Rect, options: &[(T, &str)]) -> (Vec<Rect>, f32) {
+    let inner = Rect::from_min_max(rect.min + vec2(2.0, 2.0), rect.max - vec2(2.0, 2.0));
+    let count = options.len().max(1) as f32;
+    let equal = inner.width() / count;
+    let widths = |size: f32| -> Vec<f32> {
+        (options.iter())
+            .map(|(_, label)| {
+                (ui.painter())
+                    .layout_no_wrap(
+                        (*label).to_owned(),
+                        theme::medium(size),
+                        Color32::PLACEHOLDER,
+                    )
+                    .size()
+                    .x
+            })
+            .collect()
+    };
+    let at = |lefts: &mut f32, wide: f32| {
+        let cell = Rect::from_min_size(Pos2::new(*lefts, inner.top()), vec2(wide, inner.height()));
+        *lefts += wide;
+        cell
+    };
+    for size in [12.0, 11.5] {
+        if widths(size)
+            .iter()
+            .all(|label| label + SEGMENT_ROOM * 2.0 <= equal)
+        {
+            let mut left = inner.left();
+            return (
+                (0..options.len()).map(|_| at(&mut left, equal)).collect(),
+                size,
+            );
+        }
+    }
+    let labels = widths(11.5);
+    let spare = (inner.width() - labels.iter().sum::<f32>()).max(0.0) / count;
+    let mut left = inner.left();
+    let cells = (labels.iter())
+        .map(|label| at(&mut left, label + spare))
+        .collect();
+    (cells, 11.5)
 }
 
 /// A continuous value with a filled track. Arrow keys nudge by one step.
@@ -1233,6 +1290,44 @@ mod tests {
             segmented(ui, p, "cursor", &mut value, &options, 240.0);
         });
         assert_eq!(value, 2);
+    }
+
+    #[test]
+    fn segmented_labels_keep_room_on_both_sides() {
+        // Neptune Video, spec §5.4 and P9-V4: equal cells at Medium 12 where
+        // the labels fit; "Ask | Command" at 136 gives Command the room
+        // its longer label needs instead of crowding it.
+        let ctx = context();
+        let label = |ui: &Ui, text: &str, size| {
+            (ui.painter())
+                .layout_no_wrap(text.to_owned(), theme::medium(size), Color32::PLACEHOLDER)
+                .size()
+                .x
+        };
+        frame(&ctx, vec![], |ui| {
+            let rect = Rect::from_min_size(Pos2::ZERO, vec2(228.0, 28.0));
+            let options = [(0u8, "Light"), (1, "Dark"), (2, "System")];
+            let (cells, size) = segment_cells(ui, rect, &options);
+            assert_eq!(size, 12.0);
+            assert!(
+                cells
+                    .iter()
+                    .all(|cell| (cell.width() - 224.0 / 3.0).abs() < 0.01)
+            );
+
+            let rect = Rect::from_min_size(Pos2::ZERO, vec2(136.0, 28.0));
+            let options = [(0u8, "Ask"), (1, "Command")];
+            let (cells, size) = segment_cells(ui, rect, &options);
+            assert_eq!(size, 11.5);
+            assert!(
+                (cells[0].left() - 2.0).abs() < 0.01 && (cells[1].right() - 134.0).abs() < 0.01
+            );
+            assert!((cells[0].right() - cells[1].left()).abs() < 0.01);
+            let room = (cells[1].width() - label(ui, "Command", 11.5)) / 2.0;
+            assert!(room >= SEGMENT_ROOM, "Command has {room} on each side");
+            let other = (cells[0].width() - label(ui, "Ask", 11.5)) / 2.0;
+            assert!((room - other).abs() < 0.01, "the same room on both");
+        });
     }
 
     #[test]
