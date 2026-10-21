@@ -578,6 +578,17 @@
       "unicode": "ebea"
     },
     {
+      "icon": "Clock",
+      "style": "outline",
+      "name": "clock",
+      "file": "outline/clock.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/clock.svg",
+      "sha256": "971b0b2d3b5b17ae240cd3aac1a09710ab680d8c41900f1a37a0e430994d7fda",
+      "upstream_icon_version": "1.0",
+      "unicode": "ea70",
+      "meaning": "Open recent: projects opened lately."
+    },
+    {
       "icon": "Sort",
       "style": "outline",
       "name": "arrows-up-down",
@@ -722,17 +733,6 @@
       "upstream_icon_version": "2.30",
       "unicode": "fc33",
       "meaning": "Keyframe at the current playhead: official filled keyframe diamond."
-    },
-    {
-      "icon": "Solo",
-      "style": "outline",
-      "name": "letter-s",
-      "file": "outline/letter-s.svg",
-      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/letter-s.svg",
-      "sha256": "d45194c8e72b2919a815316254e1bfa140dedddc77400d2fd2af1d8111973c15",
-      "upstream_icon_version": "1.12",
-      "unicode": "ec62",
-      "meaning": "Solo track: an official letter-S glyph retains the established S control."
     },
     {
       "icon": "LayoutFill",

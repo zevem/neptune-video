@@ -877,7 +877,7 @@ fn menu(ui: &mut Ui, input: &ToolbarInput, actions: &mut Vec<Action>) {
     };
     item(ui, Icon::Plus, "New project", "Cmd+N", Action::NewProject);
     item(ui, Icon::Folder, "Open…", "Cmd+O", Action::OpenProject);
-    controls::menu_submenu(ui, *p, Icon::History, "Open recent", |ui| {
+    controls::menu_submenu(ui, *p, Icon::Clock, "Open recent", |ui| {
         menu_style(ui, 240.0);
         if input.recent.is_empty() {
             ui.add_enabled_ui(false, |ui| {

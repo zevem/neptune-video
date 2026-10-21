@@ -20,8 +20,8 @@ the boundary. Previous/next frame use a single chevron. The graph editor
 uses `ease-in-out-control-points`, its value-axis fit uses `viewport-tall`,
 and transitions use `transition-right`. A keyframe at the playhead uses the
 official filled `keyframe` variant. `Music` retains an audio-wave metaphor
-with `wave-sine`, and track solo uses `letter-s`; `headphones` is in the
-subset for the solo cell the timeline moves to. Canvas layout controls use
+with `wave-sine`, and track solo uses `headphones`. "Open recent" uses
+`clock`, apart from the checkpoints' `history`. Canvas layout controls use
 `aspect-ratio` and the corresponding `align-box` corner or side glyphs. The
 record disc and status dots use the filled `circle`, frame steps the filled
 `caret-left` and `caret-right`, looks `color-swatch`, effects `wand`, freeze

@@ -14,9 +14,14 @@ use eframe::egui::{
     pos2, vec2,
 };
 
-// The glyphs are in the subset before the areas that use them take them up.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the subset's whole vocabulary, which its tests draw; a few glyphs wait for a use"
+    )
+)]
 pub enum Icon {
     Play,
     Pause,
@@ -74,6 +79,8 @@ pub enum Icon {
     Pointer,
     File,
     History,
+    /// "Open recent": projects opened lately, apart from checkpoints.
+    Clock,
     Sort,
     Stop,
     Cube,
@@ -89,7 +96,6 @@ pub enum Icon {
     Minus,
     ArrowRight,
     DiamondFilled,
-    Solo,
     LayoutFill,
     LayoutTopLeft,
     LayoutTopRight,
