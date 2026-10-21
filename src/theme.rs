@@ -43,13 +43,13 @@ pub fn mono(size: f32) -> FontId {
 /// concentric: the window corner equals the pane corner plus the gutter
 /// between them.
 pub mod metrics {
-    /// The window's corner. Terminal's is 16; the window package moves it.
-    pub const WINDOW_RADIUS: u8 = 18;
+    /// The window's corner: the pane corner and the gutter around it.
+    pub const WINDOW_RADIUS: u8 = 16;
     pub const GUTTER: f32 = 6.0;
     /// Pane wells and cards.
     pub const PANE_RADIUS: u8 = 10;
-    /// Terminal's is 44; the window package moves it with the toolbar.
-    pub const TOOLBAR_HEIGHT: f32 = 46.0;
+    /// The toolbar, which is also the window's title bar.
+    pub const TOOLBAR_HEIGHT: f32 = 44.0;
     /// Library and inspector tabs, the timeline's strip, the source header.
     pub const PANE_HEADER: f32 = 34.0;
     /// The transport and the library's footer.

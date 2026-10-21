@@ -1,11 +1,11 @@
-//! The toolbar's Export button, render queue button and project menu rows,
-//! driven as a person drives them, and the room the project's name is left
-//! at the narrowest and a wide window.
+//! The toolbar's launcher, Export button, render queue button, panel toggles
+//! and project menu rows, driven as a person drives them, and the room the
+//! project's name is left at the narrowest and a wide window.
 //!
 //! The bench draws the toolbar in real egui passes over a window of a given
-//! size, laid out as the window lays it out (after the window controls),
-//! finds each control by the name accessibility is given for it and presses
-//! it with the pointer.
+//! size, with the side panels the window shows at that size, finds each
+//! control by the name accessibility is given for it and presses it with the
+//! pointer.
 use super::*;
 use crate::theme::{Accent, Appearance};
 use eframe::egui::{Event, Modifiers, PointerButton, Pos2, Shape, accesskit::Role};
@@ -13,9 +13,41 @@ use eframe::egui::{Event, Modifiers, PointerButton, Pos2, Shape, accesskit::Role
 /// The window's narrowest and a common wide size.
 const NARROWEST: Vec2 = vec2(720.0, 520.0);
 const WIDE: Vec2 = vec2(1440.0, 900.0);
-/// Where the window's own controls end and the toolbar begins.
-const LEADING: f32 = 70.0;
 const NAME: &str = "The documentary about the long walk home, second edit";
+
+/// What the window shows beside the viewer at `width`, as `side_panels` and
+/// `panel_widths` lay it out for a fresh window: both from 820, the
+/// inspector alone below that, and the library alone where the inspector has
+/// no room. The library's width, whether it is shown, and the viewer.
+fn arrangement(width: f32) -> (f32, bool, Rangef) {
+    let alone = |least: f32, most: f32| (width - 486.0).clamp(least, most);
+    if width >= 820.0 {
+        // Both panels shrink alike to leave the viewer 480.
+        let short = ((316.0 + 300.0 + 480.0 - width) * 0.5).max(0.0);
+        let (library, inspector) = ((316.0 - short).max(220.0), (300.0 - short).max(240.0));
+        (library, true, Rangef::new(library, width - inspector))
+    } else if width - 12.0 >= 560.0 {
+        let inspector = alone(240.0, 300.0);
+        (
+            alone(220.0, 316.0),
+            false,
+            Rangef::new(6.0, width - inspector),
+        )
+    } else {
+        let library = alone(220.0, 316.0);
+        (library, true, Rangef::new(library, width - 6.0))
+    }
+}
+
+/// A queue with work under way.
+const BUSY: QueueSummary = QueueSummary {
+    active: 1,
+    queued: 1,
+    held: 0,
+    progress: Some(0.4),
+    rendering: None,
+    paused: false,
+};
 
 struct Seen {
     name: String,
@@ -29,11 +61,14 @@ struct Bench {
     size: Vec2,
     time: f64,
     renders: QueueSummary,
+    name: &'static str,
     /// The save state: (dirty, saving, conflict).
     state: (bool, bool, bool),
     seen: Vec<Seen>,
     /// Text painted this frame, with where it was painted.
     painted: Vec<(String, Rect)>,
+    /// The colours shapes other than text were painted in this frame.
+    inks: Vec<egui::Color32>,
     actions: Vec<Action>,
 }
 
@@ -50,9 +85,11 @@ impl Bench {
             size,
             time: 0.0,
             renders: QueueSummary::default(),
+            name: NAME,
             state: (true, false, false),
             seen: Vec::new(),
             painted: Vec::new(),
+            inks: Vec::new(),
             actions: Vec::new(),
         };
         for _ in 0..3 {
@@ -77,9 +114,10 @@ impl Bench {
         };
         let project = editor_core::Project::new("Bench");
         let recent = Vec::new();
+        let (library_width, library, viewer) = arrangement(self.size.x);
         let input = ToolbarInput {
             p: &self.palette,
-            name: NAME,
+            name: self.name,
             dirty: self.state.0,
             saved_once: true,
             saving: self.state.1,
@@ -87,8 +125,12 @@ impl Bench {
             undo: Some("Move clip"),
             redo: Some("Trim clip"),
             recent: &recent,
-            library: true,
-            inspector: true,
+            library,
+            library_width,
+            library_reveal: if library { 1.0 } else { 0.0 },
+            inspector: self.size.x >= 572.0,
+            viewer,
+            agent_waiting: false,
             project: &project,
             clips: &[],
             playhead: Time::ZERO,
@@ -99,12 +141,7 @@ impl Bench {
         let output = ctx.run_ui(raw, |ui| {
             let full = ui.max_rect();
             let bar = Rect::from_min_size(full.min, vec2(full.width(), metrics::TOOLBAR_HEIGHT));
-            show(
-                ui,
-                bar.with_min_x(full.left() + LEADING),
-                &input,
-                &mut actions,
-            );
+            show(ui, bar, &input, &mut actions);
         });
         if let Some(update) = &output.platform_output.accesskit_update {
             self.seen = (update.nodes.iter())
@@ -122,8 +159,10 @@ impl Bench {
                 .collect();
         }
         self.painted.clear();
+        self.inks.clear();
         for clipped in &output.shapes {
             collect(&clipped.shape, &mut self.painted);
+            inks(&clipped.shape, &mut self.inks);
         }
         output.drop_without_applying_deltas();
         self.actions.extend(actions);
@@ -136,7 +175,7 @@ impl Bench {
             .find(|seen| {
                 seen.name == name
                     && !matches!(seen.role, Role::Label | Role::TextRun)
-                    && (seen.rect.top() >= metrics::TOOLBAR_HEIGHT) == in_menu
+                    && (seen.rect.bottom() > metrics::TOOLBAR_HEIGHT) == in_menu
             })
             .unwrap_or_else(|| {
                 let names: Vec<&str> = self.seen.iter().map(|seen| seen.name.as_str()).collect();
@@ -158,9 +197,22 @@ impl Bench {
         self.frame(Vec::new());
     }
 
+    /// The controls on the bar after the title, which the name and its
+    /// state must stop short of.
+    fn leftmost_after_title(&self) -> f32 {
+        (self.seen.iter())
+            .filter(|seen| {
+                seen.rect.top() < metrics::TOOLBAR_HEIGHT
+                    && !matches!(seen.role, Role::Label | Role::TextRun)
+                    && !matches!(seen.name.as_str(), "Project menu" | "Media library")
+            })
+            .map(|seen| seen.rect.left())
+            .fold(f32::INFINITY, f32::min)
+    }
+
     /// Where the project's name was painted, however it was cut.
     fn name_rect(&self) -> Rect {
-        let start: String = NAME.chars().take(6).collect();
+        let start: String = self.name.chars().take(5).collect();
         (self.painted.iter())
             .find(|(text, _)| text.starts_with(&start))
             .map(|(_, rect)| *rect)
@@ -169,6 +221,27 @@ impl Bench {
 
     fn take(&mut self) -> Vec<Action> {
         std::mem::take(&mut self.actions)
+    }
+}
+
+fn inks(shape: &Shape, into: &mut Vec<egui::Color32>) {
+    match shape {
+        Shape::Vec(shapes) => {
+            for shape in shapes {
+                inks(shape, into);
+            }
+        }
+        Shape::Rect(rect) => into.extend([rect.fill, rect.stroke.color]),
+        Shape::Circle(circle) => into.extend([circle.fill, circle.stroke.color]),
+        Shape::Path(path) => {
+            into.push(path.fill);
+            if let egui::epaint::ColorMode::Solid(color) = path.stroke.color {
+                into.push(color);
+            }
+        }
+        Shape::LineSegment { stroke, .. } => into.push(stroke.color),
+        Shape::Mesh(mesh) => into.extend(mesh.vertices.iter().map(|vertex| vertex.color)),
+        _ => {}
     }
 }
 
@@ -186,31 +259,59 @@ fn collect(shape: &Shape, into: &mut Vec<(String, Rect)>) {
     }
 }
 
+// §5.1 and §7.5: the inspector's toggle is rightmost, Export before it and
+// the queue beside Export; the Settings gear is gone.
 #[test]
-fn export_is_the_rightmost_control_with_the_queue_beside_it() {
+fn the_inspector_toggle_is_rightmost_with_export_and_the_queue_before_it() {
     for size in [NARROWEST, WIDE] {
-        let bench = Bench::new(size);
+        let mut bench = Bench::new(size);
+        bench.renders = BUSY;
+        bench.frame(Vec::new());
+        let toggle = bench.get("Inspector and agent", false);
+        assert_eq!(
+            toggle.role,
+            Role::CheckBox,
+            "{size:?}: the toggle says it is on"
+        );
+        let toggle = toggle.rect;
         let export = bench.get("Export", false).rect;
         let queue = bench.get("Render queue", false).rect;
-        let settings = bench
-            .get(&format!("Settings ({})", shortcut("Cmd+,")), false)
-            .rect;
         assert!(
-            export.right() <= size.x,
-            "{size:?}: Export is inside the window"
+            toggle.right() <= size.x - 8.0 + 0.5,
+            "{size:?}: the toggle is inside the window"
         );
         assert!(
             (bench.seen.iter())
                 .filter(|seen| seen.rect.top() < metrics::TOOLBAR_HEIGHT)
-                .all(|seen| seen.rect.right() <= export.right() + 0.5),
-            "{size:?}: nothing on the bar is right of Export"
+                .all(|seen| seen.rect.right() <= toggle.right() + 0.5),
+            "{size:?}: nothing on the bar is right of the inspector's toggle"
         );
         assert!(
-            queue.right() <= export.left(),
+            export.right() + 8.0 <= toggle.left() + 0.5,
+            "{size:?}: Export is before it"
+        );
+        assert!(
+            queue.right() + 4.0 <= export.left() + 0.5,
             "{size:?}: the queue is beside Export"
         );
-        assert!(settings.right() <= queue.left(), "{size:?}: then Settings");
+        assert!(
+            !(bench.seen.iter()).any(|seen| seen.name.starts_with("Settings")),
+            "{size:?}: Preferences are in the project menu, not on the bar"
+        );
     }
+}
+
+// §5.1: the queue's ring is on the bar only while the queue has jobs.
+#[test]
+fn the_queue_is_on_the_bar_only_while_it_has_jobs() {
+    let mut bench = Bench::new(WIDE);
+    assert!(!(bench.seen.iter()).any(|seen| seen.name == "Render queue"));
+    bench.renders = QueueSummary {
+        held: 1,
+        ..QueueSummary::default()
+    };
+    bench.frame(Vec::new());
+    bench.get("Render queue", false);
 }
 
 #[test]
@@ -231,14 +332,7 @@ fn the_name_never_reaches_the_trailing_controls() {
             bench.renders = renders;
             bench.frame(Vec::new());
             let name = bench.name_rect();
-            let leftmost = (bench.seen.iter())
-                .filter(|seen| {
-                    seen.rect.top() < metrics::TOOLBAR_HEIGHT
-                        && seen.rect.left() > LEADING + 60.0
-                        && !matches!(seen.role, Role::Label | Role::TextRun)
-                })
-                .map(|seen| seen.rect.left())
-                .fold(f32::INFINITY, f32::min);
+            let leftmost = bench.leftmost_after_title();
             let state = (bench.painted.iter())
                 .find(|(text, _)| text == "Edited")
                 .map(|(_, rect)| *rect);
@@ -264,6 +358,9 @@ fn the_buttons_open_the_export_sheet_and_the_queue() {
     let mut bench = Bench::new(NARROWEST);
     bench.click("Export", false);
     assert!(matches!(bench.take().as_slice(), [Action::OpenExport]));
+    // §5.1: the queue's ring is there while the queue has jobs.
+    bench.renders = BUSY;
+    bench.frame(Vec::new());
     bench.click("Render queue", false);
     assert!(matches!(bench.take().as_slice(), [Action::OpenRenderQueue]));
 }
@@ -276,6 +373,28 @@ fn the_project_menu_offers_export_and_the_queue_after_checkpoints() {
     let export = bench.get("Export…", true).rect;
     let queue = bench.get("Render queue", true).rect;
     assert!(checkpoints.top() < export.top() && export.top() < queue.top());
+    // §5.7.2: the file's rows, then export, import, Preferences and the
+    // clip's rows, each group after the last.
+    let order = [
+        "New project",
+        "Open…",
+        "Open recent",
+        "Save",
+        "Save as…",
+        "Duplicate…",
+        "Checkpoints…",
+        "Export…",
+        "Render queue",
+        "Import media…",
+        "Import folder…",
+        "Preferences…",
+        "Clip",
+    ]
+    .map(|name| bench.get(name, true).rect.top());
+    assert!(
+        order.windows(2).all(|pair| pair[0] < pair[1]),
+        "the rows are in order: {order:?}"
+    );
     bench.click("Export…", true);
     assert!(matches!(bench.take().as_slice(), [Action::OpenExport]));
     bench.click("Project menu", false);
@@ -336,14 +455,7 @@ fn the_save_state_stays_beside_the_name_down_to_the_narrowest_window() {
                 .find(|(text, _)| text == word)
                 .map(|(_, rect)| *rect)
                 .unwrap_or_else(|| panic!("{width}: \"{word}\" is shown"));
-            let leftmost = (bench.seen.iter())
-                .filter(|seen| {
-                    seen.rect.top() < metrics::TOOLBAR_HEIGHT
-                        && seen.rect.left() > LEADING + 60.0
-                        && !matches!(seen.role, Role::Label | Role::TextRun)
-                })
-                .map(|seen| seen.rect.left())
-                .fold(f32::INFINITY, f32::min);
+            let leftmost = bench.leftmost_after_title();
             assert!(
                 painted.right() + 4.0 <= leftmost,
                 "{width}: \"{word}\" ends at {} before the controls at {leftmost}",
@@ -382,4 +494,84 @@ fn where_the_words_do_not_fit_the_state_is_a_dot_with_its_name() {
         dot.rect
     );
     assert!(dot.rect.width() <= 8.0);
+}
+
+// §5.7.2: Preferences open from the project menu, as the gear did.
+#[test]
+fn the_project_menu_opens_preferences() {
+    let mut bench = Bench::new(WIDE);
+    bench.click("Project menu", false);
+    bench.click("Preferences…", true);
+    assert!(matches!(bench.take().as_slice(), [Action::OpenSettings]));
+}
+
+// §5.7.2: the clip's rows are a submenu of the project menu.
+#[test]
+fn the_clip_rows_open_from_their_submenu() {
+    let mut bench = Bench::new(WIDE);
+    bench.click("Project menu", false);
+    let clip = bench.get("Clip", true).rect.center();
+    for _ in 0..4 {
+        bench.frame(vec![Event::PointerMoved(clip)]);
+    }
+    bench.click("Graph editor", true);
+    assert!(matches!(bench.take().as_slice(), [Action::ToggleGraph]));
+}
+
+// §5.1: the launcher opens the agent's command line, as Ctrl+K does, whether
+// it is a field over the viewer or folded to its glyph.
+#[test]
+fn the_launcher_opens_the_command_line() {
+    let launcher = format!("Ask or type a command ({})", shortcut("Cmd+K"));
+    for (size, field) in [(WIDE, true), (NARROWEST, false)] {
+        let mut bench = Bench::new(size);
+        bench.name = "Bench";
+        bench.frame(Vec::new());
+        let rect = bench.get(&launcher, false).rect;
+        assert_eq!(rect.width() > 200.0, field, "{size:?}: {rect:?}");
+        bench.click(&launcher, false);
+        assert!(
+            matches!(bench.take().as_slice(), [Action::OpenAgent { ask: false }]),
+            "{size:?}"
+        );
+    }
+}
+
+// §5.1: the title button is the project menu; the name it shows is said too.
+#[test]
+fn the_title_says_the_name_of_the_project() {
+    let bench = Bench::new(WIDE);
+    let menu = bench.get("Project menu", false).rect;
+    let name = (bench.seen.iter())
+        .find(|seen| seen.name == NAME && seen.role == Role::Label)
+        .expect("the name is said");
+    assert!(menu.contains_rect(name.rect), "{:?} in {menu:?}", name.rect);
+    // The library's toggle is before it, and says whether the library shows.
+    let library = bench.get("Media library", false);
+    assert_eq!(library.role, Role::CheckBox);
+    assert!(library.rect.right() < menu.left());
+}
+
+// §5.1: the library's toggle and the inspector's answer the pointer.
+#[test]
+fn the_toggles_show_and_hide_the_panels() {
+    let mut bench = Bench::new(WIDE);
+    bench.click("Media library", false);
+    assert!(matches!(bench.take().as_slice(), [Action::ToggleLibrary]));
+    bench.click("Inspector and agent", false);
+    assert!(matches!(bench.take().as_slice(), [Action::ToggleInspector]));
+}
+
+// §3.10: at rest the bar spends none of the accent: Export is quiet, and
+// nothing is selected or focused.
+#[test]
+fn nothing_on_the_bar_is_accent_at_rest() {
+    for size in [NARROWEST, WIDE] {
+        let bench = Bench::new(size);
+        let accent = bench.palette.accent;
+        assert!(
+            !bench.inks.contains(&accent),
+            "{size:?}: the accent is painted at rest"
+        );
+    }
 }

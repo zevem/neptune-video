@@ -13,17 +13,18 @@ use crate::{
     duck::{self, Ducking, Stepped},
     extract::{self, Saving},
     file_drop::FileDrop,
+    icons::Icon,
     normalize::{self, Normalizing},
     pacing,
     peaks::HeldPeaks,
     presets::{self, Presets},
     record::Recording,
     rules,
-    settings::{INTERFACE_SCALE, Scale, Settings},
+    settings::{self, INTERFACE_SCALE, Scale, Settings},
     speech::{self, Inventory, ModelChoice, SpeechRequest, SpeechView},
     speed, stems,
     textures::{self, Textures, Viewing},
-    theme::{self, Palette, metrics},
+    theme::{self, Appearance, Palette, metrics},
     titles::Titles,
     ui::{
         self, Action, ClipDraft, DraftHold, PresetChange, Selection, TrackProgress, TrackRequest,
@@ -31,8 +32,9 @@ use crate::{
         agent::{
             AgentInput, AgentState, Entry, PlanCard, PlanState, Step, StepState, WaitingInput,
         },
-        captions_tab,
+        captions_tab, controls,
         inspector::{InspectorInput, InspectorState, ProjectDraft},
+        kit,
         library::{LibraryInput, LibraryState},
         sheets::{
             self, Answer, Checkpoint, CheckpointAnswer, CheckpointsState, Conflict, ConflictAnswer,
@@ -76,11 +78,17 @@ const EXIT_WAIT: Duration = Duration::from_secs(2);
 const LEASE_WAIT: Duration = Duration::from_secs(1);
 const NOTICE_SECONDS: f64 = 3.2;
 const PROBLEM_SECONDS: f64 = 7.0;
-/// What the notice of a new interface scale begins with.
-const SCALE_NOTICE: &str = "Interface size";
 const PROJECT_EXTENSION: &str = "nvp";
-/// The narrowest content the library is shown beside.
-const LIBRARY_FITS: f32 = 760.0;
+/// The narrowest content the library is shown beside the right panel in:
+/// a window of 820, Terminal's narrowest window with its sidebar.
+const LIBRARY_FITS: f32 = 808.0;
+/// The narrowest a side panel is drawn, however little room the window has.
+const LIBRARY_LEAST: f32 = 220.0;
+const INSPECTOR_LEAST: f32 = 240.0;
+/// The viewer the side panels shrink to keep, and the least it is left with
+/// once they are as narrow as they go.
+const VIEWER_COMFORT: f32 = 480.0;
+const VIEWER_LEAST: f32 = 360.0;
 const RECOVERY_SUFFIX: &str = ".recovery";
 
 /// When the recovery copy is written. What was asked for and what is known
@@ -4543,6 +4551,35 @@ impl App {
                 self.pick(ctx, Pick::ExportCaptions(track, format));
             }
             Action::OpenSettings => self.overlay = Overlay::Settings,
+            Action::OpenPreferences(pane) => {
+                pane.show(ctx);
+                self.overlay = Overlay::Settings;
+            }
+            // The command line, or the request to the model, as Ctrl+K and
+            // Shift+Ctrl+K open them.
+            Action::OpenAgent { ask } => {
+                self.settings.show_inspector = true;
+                self.library_first = false;
+                self.settings.agent_ask = ask;
+                self.right_tab = RightTab::Agent;
+                self.agent.focus = true;
+            }
+            Action::ResetLayout => {
+                let defaults = Settings::default();
+                self.settings.library_width = defaults.library_width;
+                self.settings.inspector_width = defaults.inspector_width;
+                self.settings.timeline_share = defaults.timeline_share;
+                self.settings.show_library = true;
+                self.settings.show_inspector = true;
+            }
+            Action::SetReduceMotion(on) => {
+                self.settings.reduce_motion = on;
+                kit::set_reduced_motion(ctx, on);
+                self.restyle(ctx);
+            }
+            // Notices are dismissed by their own package; until then they
+            // leave on their clock.
+            Action::DismissNotice(_) => {}
             Action::OpenExport => self.open_export(ctx),
             // The export sheet's state is kept for it to be opened again.
             Action::OpenRenderQueue => {
@@ -4875,14 +4912,8 @@ impl App {
                 let scale = asked.min(room);
                 self.settings.interface_scale = scale;
                 ctx.set_zoom_factor(scale);
-                // One notice says the size, however many steps were taken.
-                self.notices
-                    .retain(|notice| !notice.text.starts_with(SCALE_NOTICE));
-                let mut said = format!("{SCALE_NOTICE} {:.0}%", scale * 100.0);
-                if asked > room {
-                    said.push_str(", the largest this window has room for");
-                }
-                self.notify(ctx, said, false);
+                // One capsule says the size, however many steps were taken.
+                ui::window::say_interface_size(ctx, scale, asked > room);
             }
             Action::FitTimeline => self.timeline.fit = true,
             Action::ToggleSnapping => self.settings.snapping = !self.settings.snapping,
@@ -5024,8 +5055,11 @@ impl App {
         Ok(None)
     }
 
+    /// Styles the window for the appearance and accent chosen. System is
+    /// the appearance the platform reports, and dark where it reports none.
     fn restyle(&mut self, ctx: &egui::Context) {
-        self.palette = Palette::new(self.settings.appearance, self.settings.accent);
+        let appearance = self.settings.appearance.resolve(ctx.system_theme());
+        self.palette = Palette::new(appearance, self.settings.accent);
         theme::apply(ctx, &self.palette);
     }
 
@@ -5624,6 +5658,10 @@ impl App {
             actions.push(action);
         }
         let typing = ctx.text_edit_focused();
+        // Before Cmd+O, which would take Shift+Cmd+O for its own.
+        if let Some(action) = ctx.input_mut(|i| panel_chords(i, typing)) {
+            actions.push(action);
+        }
         for (chord, index) in chords {
             // While a field has the keyboard, undo and select-all are its own.
             if typing && matches!(index, 0 | 1 | 9 | 18) {
@@ -5648,14 +5686,7 @@ impl App {
                 11 => Action::Edit(Command::GroupClips { clip_ids: ids }),
                 12 => Action::OpenSettings,
                 // The command line, or the request to the model.
-                13 | 17 => {
-                    self.settings.show_inspector = true;
-                    self.library_first = false;
-                    self.settings.agent_ask = index == 17;
-                    self.right_tab = RightTab::Agent;
-                    self.agent.focus = true;
-                    continue;
-                }
+                13 | 17 => Action::OpenAgent { ask: index == 17 },
                 14 if self.source.is_some() => Action::Source(Transport::ToggleLoop),
                 14 => Action::ToggleLoop,
                 // The selected clips and the playhead of this press: each
@@ -5726,7 +5757,8 @@ impl App {
         // frame, and by its end Shift is up again.
         // The arrows and Delete are a curve point's while one has the
         // keyboard: it moves and is removed with them, and nothing else is.
-        let owned = self.inspector.owns_keys(ctx) || keyed;
+        // So are Left and Right while a choice of cells has the keyboard.
+        let owned = self.inspector.owns_keys(ctx) || keyed || ui::ChoiceArrows::begin(ctx);
         let free = move |key| key_is_free(owned, key);
         let pressed = |key| free(key) && ctx.input(|i| struck(&i.events, key, Held::Alone));
         let with_shift = |key| free(key) && ctx.input(|i| struck(&i.events, key, Held::Shift));
@@ -6024,12 +6056,110 @@ impl App {
         self.textures.retire(self.media.as_ref());
 
         let toolbar = Rect::from_min_size(full.min, vec2(full.width(), metrics::TOOLBAR_HEIGHT));
-        let (show_library, show_right) = self.side_panels(full.width() - 2.0 * metrics::GUTTER);
+        let gutter = metrics::GUTTER;
+        let (show_library, show_right) = self.side_panels(full.width() - 2.0 * gutter);
+
+        // The timeline spans the window below the viewer and the panels,
+        // inside the gutter; the side panels are flush with the window's
+        // edges above it.
+        let content_height = full.bottom() - gutter - toolbar.bottom();
+        let timeline_height = (content_height * self.settings.timeline_share)
+            .clamp(150.0, (content_height - 170.0).max(150.0));
+        let timeline_rect = Rect::from_min_max(
+            pos2(
+                full.left() + gutter,
+                full.bottom() - gutter - timeline_height,
+            ),
+            pos2(full.right() - gutter, full.bottom() - gutter),
+        );
+        let upper = Rect::from_min_max(
+            pos2(full.left(), toolbar.bottom()),
+            pos2(full.right(), timeline_rect.top() - gutter),
+        );
+
+        // Each side panel slides in from its edge and out past it, at the
+        // width it was drawn at, and the viewer between them follows.
+        let seen_id = egui::Id::new("side-panels-seen");
+        let seen: SidePanels = ctx.data(|data| data.get_temp(seen_id)).unwrap_or_default();
+        let (mut library_width, mut inspector_width) = panel_widths(
+            full.width(),
+            self.settings.library_width,
+            self.settings.inspector_width,
+            (show_library, show_right),
+        );
+        if let (false, Some(width)) = (show_library, seen.library) {
+            library_width = width;
+        }
+        if let (false, Some(width)) = (show_right, seen.inspector) {
+            inspector_width = width;
+        }
+        let slide = |id: &str, shown| {
+            controls::animate(&ctx, egui::Id::new(id), shown, theme::motion::PANEL)
+        };
+        let library_reveal = slide("library-reveal", show_library);
+        let inspector_reveal = slide("inspector-reveal", show_right);
+        let viewer_at = |library: f32, inspector: f32| {
+            Rect::from_x_y_ranges(
+                upper.left() + egui::lerp(gutter..=library_width, library)
+                    ..=upper.right() - egui::lerp(gutter..=inspector_width, inspector),
+                upper.y_range(),
+            )
+        };
+        let viewer = viewer_at(library_reveal, inspector_reveal);
+        let settled = viewer_at(
+            f32::from(u8::from(show_library)),
+            f32::from(u8::from(show_right)),
+        );
+        // The viewer's pictures are decoded for where it comes to rest.
+        ui::Placement {
+            drawn: viewer,
+            settled,
+        }
+        .keep_for_viewer(&ctx);
+        let library_rect = Rect::from_x_y_ranges(
+            viewer.left() - library_width..=viewer.left(),
+            upper.y_range(),
+        );
+        let right_rect = Rect::from_x_y_ranges(
+            viewer.right()..=viewer.right() + inspector_width,
+            upper.y_range(),
+        );
+        // A panel that goes away with the keyboard in it gives the keyboard
+        // to the timeline, rather than keeping it out of sight.
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .and_then(|id| ctx.read_response(id))
+            .map(|response| response.rect);
+        let held_in = |shown: bool, width: Option<f32>, edge: f32| {
+            let (Some(width), Some(focused), false) = (width, focused, shown) else {
+                return false;
+            };
+            let rect = Rect::from_x_y_ranges(edge - width..=edge, upper.y_range());
+            rect.intersects(focused)
+        };
+        if held_in(
+            show_library,
+            seen.library,
+            upper.left() + seen.library.unwrap_or(0.0),
+        ) || held_in(show_right, seen.inspector, upper.right())
+        {
+            ctx.memory_mut(|memory| memory.request_focus(egui::Id::new("timeline-lanes")));
+        }
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                seen_id,
+                SidePanels {
+                    library: (show_library || library_reveal > 0.0).then_some(library_width),
+                    inspector: (show_right || inspector_reveal > 0.0).then_some(inspector_width),
+                },
+            );
+        });
+
         ui::window::drag_region(ui, toolbar);
         ui::window::controls(ui, pos2(full.left() + 16.0, toolbar.center().y), &p);
         ui::toolbar::show(
             ui,
-            toolbar.with_min_x(full.left() + ui::window::LEADING),
+            toolbar,
             &ToolbarInput {
                 p: &p,
                 name: self.project_draft.name.as_deref().unwrap_or(&project.name),
@@ -6041,7 +6171,11 @@ impl App {
                 redo: self.editor.redo_label(),
                 recent: &self.settings.recent,
                 library: show_library,
+                library_width,
+                library_reveal,
                 inspector: show_right,
+                viewer: viewer.x_range(),
+                agent_waiting: self.ai.open().is_some(),
                 project: &project,
                 clips: &self.selection.clips,
                 playhead: self.playback.position,
@@ -6051,62 +6185,13 @@ impl App {
             actions,
         );
 
-        let gutter = metrics::GUTTER;
-        let content = Rect::from_min_max(
-            pos2(full.left() + gutter, toolbar.bottom()),
-            pos2(full.right() - gutter, full.bottom() - gutter),
-        );
-
-        let timeline_height = (content.height() * self.settings.timeline_share)
-            .clamp(150.0, (content.height() - 170.0).max(150.0));
-        let timeline_rect = Rect::from_min_max(
-            pos2(content.left(), content.bottom() - timeline_height),
-            content.max,
-        );
-        let upper = Rect::from_min_max(
-            content.min,
-            pos2(content.right(), timeline_rect.top() - gutter),
-        );
-        let (delta, reset) = widgets::splitter(
-            ui,
-            &p,
-            Rect::from_min_max(upper.left_bottom(), timeline_rect.right_top()),
-            egui::Id::new("split-timeline"),
-            false,
-        );
-        if reset {
-            self.settings.timeline_share = Settings::default().timeline_share;
-        } else if delta != 0.0 {
-            self.settings.timeline_share =
-                ((timeline_height - delta) / content.height().max(1.0)).clamp(0.2, 0.7);
-        }
-
-        let mut left = upper.left();
-        let mut right = upper.right();
-        if show_library {
-            let width = self
-                .settings
-                .library_width
-                .min((upper.width() - 420.0).max(220.0));
-            let rect = Rect::from_min_size(upper.min, vec2(width, upper.height()));
-            left = rect.right() + gutter;
-            let (delta, reset) = widgets::splitter(
-                ui,
-                &p,
-                Rect::from_min_max(rect.right_top(), pos2(left, upper.bottom())),
-                egui::Id::new("split-library"),
-                true,
-            );
-            if reset {
-                self.settings.library_width = Settings::default().library_width;
-            } else if delta != 0.0 {
-                self.settings.library_width = (width + delta).clamp(220.0, 520.0);
-            }
+        if library_reveal > 0.0 {
+            let mut pane = side_pane(ui, "library-pane", library_rect, upper, library_reveal);
             let speech_view = self.speech_view();
             let speech_settings = self.settings.speech.clone();
             (self.settings.library_grid, self.settings.library_sort) = ui::library::show(
-                ui,
-                rect,
+                &mut pane,
+                library_rect,
                 &mut self.library,
                 &mut self.selection,
                 &mut self.textures,
@@ -6144,29 +6229,20 @@ impl App {
                 self.textures.want_poster(media, asset);
             }
         }
-        if show_right {
-            let width = self
-                .settings
-                .inspector_width
-                .min((right - left - 260.0).max(240.0));
-            let rect = Rect::from_min_max(pos2(right - width, upper.top()), upper.max);
-            right = rect.left() - gutter;
-            let (delta, reset) = widgets::splitter(
-                ui,
-                &p,
-                Rect::from_min_max(pos2(right, upper.top()), rect.left_bottom()),
-                egui::Id::new("split-inspector"),
-                true,
-            );
-            if reset {
-                self.settings.inspector_width = Settings::default().inspector_width;
-            } else if delta != 0.0 {
-                self.settings.inspector_width = (width - delta).clamp(240.0, 520.0);
-            }
-            self.right_panel(ui, rect, &project, actions);
-        }
 
-        let viewer = Rect::from_min_max(pos2(left, upper.top()), pos2(right, upper.bottom()));
+        // The viewer is made before the inspector, as Tab reaches them, and
+        // reads what the inspector left it in the last frame.
+        let for_viewer = |app: &Self| {
+            (
+                app.draft.clone(),
+                app.project_draft.clone(),
+                app.inspector.outlined_mask(),
+                app.inspector.colour_pick(&app.selection),
+                app.inspector.track_region(&app.selection),
+                app.inspector.shows_paths(),
+            )
+        };
+        let before = for_viewer(self);
         // Keyframes held in the timeline are drawn as they would be left.
         self.viewer
             .preview_keys(self.timeline.keys.overriding(&project));
@@ -6265,6 +6341,16 @@ impl App {
             }
         }
 
+        if inspector_reveal > 0.0 {
+            let mut pane = side_pane(ui, "right-pane", right_rect, upper, inspector_reveal);
+            self.right_panel(&mut pane, right_rect, &project, actions);
+        }
+        // What the inspector changed of what the viewer draws is drawn in a
+        // frame of its own.
+        if for_viewer(self) != before {
+            ctx.request_repaint();
+        }
+
         ui::timeline::show(
             ui,
             timeline_rect,
@@ -6284,6 +6370,10 @@ impl App {
             },
             actions,
         );
+        // The panes' corners are rounded over what was drawn into them.
+        kit::corner_caps(ui.painter(), viewer, p.chrome);
+        kit::corner_caps(ui.painter(), timeline_rect, p.chrome);
+        self.splitters(ui, viewer, timeline_rect, (library_width, inspector_width));
         // The sound the tiles drawn wanted and did not have is asked for
         // now, in the frame that wanted it.
         self.ask_peaks(&ctx);
@@ -6439,6 +6529,7 @@ impl App {
         cards.extend(self.separating.cards());
         let top = sheets::saves(&ctx, &p, &cards, viewer, actions);
         sheets::notices(&ctx, &p, &self.notices, viewer, top, over_sheet);
+        ui::window::interface_size(&ctx, &p);
         if self.files_held {
             sheets::drop_target(&ctx, &p);
         }
@@ -6524,6 +6615,75 @@ impl App {
         }
     }
 
+    /// The gutters that resize the side panels and the timeline. Made after
+    /// the panes, so that the pointer finds them over what the panes made
+    /// beside them, at the viewer's edges as drawn; the keyboard does not
+    /// stop at them.
+    fn splitters(&mut self, ui: &mut egui::Ui, viewer: Rect, timeline: Rect, widths: (f32, f32)) {
+        let p = self.palette;
+        let gutter = metrics::GUTTER;
+        // The timeline is the window's width less its gutters.
+        let window = timeline.width() + 2.0 * gutter;
+        let (library_shown, right_shown) = self.side_panels(window - 2.0 * gutter);
+        let (library, inspector) = widths;
+        // A panel dragged wider keeps the viewer at least this wide.
+        let other = |width: f32, shown: bool| if shown { width } else { gutter };
+        if library_shown {
+            let edge = viewer.left();
+            let (delta, reset) = widgets::splitter(
+                ui,
+                &p,
+                Rect::from_x_y_ranges(edge - 3.0..=edge + 3.0, viewer.y_range()),
+                egui::Id::new("split-library"),
+                true,
+            );
+            let most = (window - other(inspector, right_shown) - VIEWER_LEAST).max(LIBRARY_LEAST);
+            if reset {
+                self.settings.library_width = settings::LIBRARY_WIDTH;
+            } else if delta != 0.0 {
+                self.settings.library_width = (library + delta).min(most).clamp(
+                    *settings::LIBRARY_WIDTHS.start(),
+                    *settings::LIBRARY_WIDTHS.end(),
+                );
+            }
+        }
+        if right_shown {
+            let edge = viewer.right();
+            let (delta, reset) = widgets::splitter(
+                ui,
+                &p,
+                Rect::from_x_y_ranges(edge - 3.0..=edge + 3.0, viewer.y_range()),
+                egui::Id::new("split-inspector"),
+                true,
+            );
+            let most = (window - other(library, library_shown) - VIEWER_LEAST).max(INSPECTOR_LEAST);
+            if reset {
+                self.settings.inspector_width = settings::INSPECTOR_WIDTH;
+            } else if delta != 0.0 {
+                self.settings.inspector_width = (inspector - delta).min(most).clamp(
+                    *settings::INSPECTOR_WIDTHS.start(),
+                    *settings::INSPECTOR_WIDTHS.end(),
+                );
+            }
+        }
+        // The timeline's gutter, ten points tall to the pointer.
+        let middle = timeline.top() - gutter * 0.5;
+        let (delta, reset) = widgets::splitter(
+            ui,
+            &p,
+            Rect::from_x_y_ranges(timeline.x_range(), middle - 4.0..=middle + 4.0),
+            egui::Id::new("split-timeline"),
+            false,
+        );
+        let content = timeline.bottom() - viewer.top();
+        if reset {
+            self.settings.timeline_share = settings::TIMELINE_SHARE;
+        } else if delta != 0.0 {
+            self.settings.timeline_share =
+                ((timeline.height() - delta) / content.max(1.0)).clamp(0.2, 0.7);
+        }
+    }
+
     /// Whether the library and the right panel are drawn in a window whose
     /// content is `width` wide. A window too narrow for both beside the
     /// viewer shows the one asked for last, so each stays reachable.
@@ -6544,28 +6704,46 @@ impl App {
         actions: &mut Vec<Action>,
     ) {
         let p = self.palette;
-        widgets::panel(ui, rect, &p);
-        let header = Rect::from_min_size(
-            rect.min,
-            vec2(rect.width(), metrics::legacy::PANEL_HEADER + 6.0),
+        // Flush with the window's edge: the strip of tabs and the body are
+        // inset from the viewer by 6 and from the edge by 8.
+        let inner = Rect::from_min_max(
+            pos2(rect.left() + 6.0, rect.top()),
+            pos2(rect.right() - 8.0, rect.bottom()),
         );
-        let mut tabs = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(header.shrink2(vec2(10.0, 0.0)))
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        );
-        let width = tabs.available_width();
-        widgets::segmented(
-            &mut tabs,
-            &p,
-            &mut self.right_tab,
-            &[
-                (RightTab::Inspector, "Inspector"),
-                (RightTab::Agent, "Agent"),
-            ],
-            width,
-        );
-        let body = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
+        let strip = Rect::from_min_size(inner.min, vec2(inner.width(), ui::panel::TABS));
+        let tabs = [
+            ui::panel::Tab {
+                label: "Inspector",
+                icon: Icon::Adjustments,
+                waiting: 0,
+            },
+            ui::panel::Tab {
+                label: "Agent",
+                icon: Icon::Sparkles,
+                // A plan waiting to be applied or discarded.
+                waiting: usize::from(self.ai.open().is_some()),
+            },
+        ];
+        let selected = match self.right_tab {
+            RightTab::Inspector => 0,
+            RightTab::Agent => 1,
+        };
+        let cells = tabs.map(|tab| ui.id().with(("panel-tab", tab.label)));
+        let chosen = ui::arrow_choice(ui.ctx(), &cells, selected).or_else(|| {
+            ui::panel::tabs(ui, strip, p, &tabs, selected, egui::WidgetType::RadioButton)
+        });
+        if let Some(chosen) = chosen {
+            self.right_tab = if chosen == 0 {
+                RightTab::Inspector
+            } else {
+                RightTab::Agent
+            };
+            // An arrow's choice is drawn in this frame, not the next.
+            if chosen != selected {
+                ui.ctx().request_repaint();
+            }
+        }
+        let body = Rect::from_min_max(pos2(inner.left(), strip.bottom()), inner.max);
         self.settings.agent_panel = self.right_tab == RightTab::Agent;
         match self.right_tab {
             RightTab::Inspector => ui::inspector::show(
@@ -6870,9 +7048,18 @@ impl eframe::App for App {
         // A scale the window has no room for is held down to the one it
         // has, and given back as the window grows.
         ctx.set_zoom_factor(self.settings.interface_scale.min(ui::largest_scale(&ctx)));
+        // Reduce motion is read by every animation of the frame, and the
+        // system's appearance can change under a window that follows it.
+        let motion = kit::reduced_motion(&ctx) != self.settings.reduce_motion;
+        kit::set_reduced_motion(&ctx, self.settings.reduce_motion);
+        let dark = self.settings.appearance.resolve(ctx.system_theme()) != Appearance::Light;
+        if motion || dark != self.palette.dark {
+            self.restyle(&ctx);
+        }
         self.shortcuts(&ctx, &mut actions);
         let bounds = ui.max_rect();
         self.window_ui(ui, &mut actions);
+        ui::ChoiceArrows::end(&ctx);
         ui::window::frame(ui, bounds, &self.palette);
         end_frame(self, &ctx, actions);
     }
@@ -7076,6 +7263,58 @@ fn side_panels(width: f32, library: bool, right: bool, library_first: bool) -> (
     } else {
         (library_first, !library_first)
     }
+}
+
+/// The widths of the side panels drawn in a window `window` wide, of
+/// `library` and `inspector` preferred, by which of them are `shown`. Both
+/// shrink by as much as each other, each to its least, to keep the viewer
+/// 480 wide; then the viewer gives way, to 360 at 820. One alone takes what
+/// leaves the viewer 480 beside the gutter, within its least and preferred;
+/// so is a panel that is not shown measured.
+fn panel_widths(window: f32, library: f32, inspector: f32, shown: (bool, bool)) -> (f32, f32) {
+    let library = library.max(LIBRARY_LEAST);
+    let inspector = inspector.max(INSPECTOR_LEAST);
+    let alone = |preferred: f32, least: f32| {
+        (window - metrics::GUTTER - VIEWER_COMFORT)
+            .min(preferred)
+            .max(least)
+    };
+    if shown != (true, true) {
+        return (
+            alone(library, LIBRARY_LEAST),
+            alone(inspector, INSPECTOR_LEAST),
+        );
+    }
+    let short = (library + inspector + VIEWER_COMFORT - window).max(0.0);
+    let (library_room, inspector_room) = (library - LIBRARY_LEAST, inspector - INSPECTOR_LEAST);
+    // Half each, and what one cannot give, the other.
+    let library_gives = (short * 0.5).min(library_room);
+    let inspector_gives = (short - library_gives).min(inspector_room);
+    let library_gives = (short - inspector_gives).min(library_room);
+    (library - library_gives, inspector - inspector_gives)
+}
+
+/// The widths of the side panels while they were last drawn, which one
+/// keeps as it slides away.
+#[derive(Clone, Copy, Debug, Default)]
+struct SidePanels {
+    library: Option<f32>,
+    inspector: Option<f32>,
+}
+
+/// The surface a side panel is made on: its rectangle, clipped to the band
+/// above the timeline as it slides past the window's edge, and fading with
+/// it.
+fn side_pane(ui: &mut egui::Ui, salt: &str, rect: Rect, band: Rect, reveal: f32) -> egui::Ui {
+    let mut pane = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt(salt)
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    pane.set_clip_rect(rect.intersect(band).intersect(ui.clip_rect()));
+    pane.multiply_opacity(reveal);
+    pane
 }
 
 /// The modifiers a key went down with.
@@ -7321,6 +7560,34 @@ fn export_chords(input: &mut egui::InputState, overlay: &Overlay) -> Option<Acti
 #[path = "app_export_tests.rs"]
 mod export_tests;
 
+/// The chords that show and hide the side panels: Terminal's sidebar chord
+/// for the library, Shift+Ctrl+B or Cmd+B, and Shift+Ctrl+O or Option+Cmd+O
+/// for the inspector. A field that has the keyboard keeps them.
+fn panel_chords(input: &mut egui::InputState, typing: bool) -> Option<Action> {
+    if typing {
+        return None;
+    }
+    let (library, inspector) = if cfg!(target_os = "macos") {
+        (
+            KeyboardShortcut::new(Modifiers::COMMAND, Key::B),
+            KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::O),
+        )
+    } else {
+        let shifted = Modifiers::COMMAND | Modifiers::SHIFT;
+        (
+            KeyboardShortcut::new(shifted, Key::B),
+            KeyboardShortcut::new(shifted, Key::O),
+        )
+    };
+    if input.consume_shortcut(&library) {
+        Some(Action::ToggleLibrary)
+    } else if input.consume_shortcut(&inspector) {
+        Some(Action::ToggleInspector)
+    } else {
+        None
+    }
+}
+
 /// The file naming the folders this window's agent may use, beside the
 /// window's agent session.
 fn roots_file(session: &Path) -> PathBuf {
@@ -7554,9 +7821,12 @@ mod tests {
 
     #[test]
     fn a_narrow_window_shows_the_side_panel_asked_for_last() {
-        // Both beside the viewer in a window with the room.
+        // Both beside the viewer in a window with the room: §2.4, from a
+        // window of 820, Terminal's narrowest with its sidebar.
+        assert_eq!(LIBRARY_FITS, 820.0 - 2.0 * metrics::GUTTER);
         assert_eq!(side_panels(1428.0, true, true, false), (true, true));
         assert_eq!(side_panels(LIBRARY_FITS, true, true, true), (true, true));
+        assert_eq!(side_panels(807.0, true, true, true), (true, false));
         // 760 points across leave 748: one panel, and the library is one of
         // the two it can be.
         assert_eq!(side_panels(748.0, true, true, false), (false, true));
@@ -7565,6 +7835,84 @@ mod tests {
         assert_eq!(side_panels(748.0, true, false, false), (true, false));
         assert_eq!(side_panels(748.0, false, true, true), (false, true));
         assert_eq!(side_panels(748.0, false, false, true), (false, false));
+    }
+
+    #[test]
+    fn the_side_panels_shrink_alike_to_keep_the_viewer() {
+        // §2.4: the library at 316 and the inspector at 300, as preferred.
+        for (window, library, inspector, viewer) in [
+            (1440.0, 316.0, 300.0, 824.0),
+            (1100.0, 316.0, 300.0, 484.0),
+            (1000.0, 268.0, 252.0, 480.0),
+            (900.0, 220.0, 240.0, 440.0),
+            (820.0, 220.0, 240.0, 360.0),
+        ] {
+            let widths = panel_widths(window, 316.0, 300.0, (true, true));
+            assert_eq!(widths, (library, inspector), "{window}");
+            assert_eq!(window - widths.0 - widths.1, viewer, "{window}");
+        }
+        // One alone leaves the viewer 480 beside the gutter, within its
+        // least and the width preferred.
+        for (window, alone, viewer) in [(819.0, 316.0, 497.0), (760.0, 274.0, 480.0)] {
+            let (library, _) = panel_widths(window, 316.0, 300.0, (true, false));
+            assert_eq!(
+                (library, window - library - metrics::GUTTER),
+                (alone, viewer)
+            );
+        }
+        assert_eq!(panel_widths(760.0, 316.0, 300.0, (false, true)).1, 274.0);
+        assert_eq!(panel_widths(600.0, 316.0, 300.0, (false, true)).1, 240.0);
+        // One that gives all it can leaves the rest to the other.
+        assert_eq!(
+            panel_widths(1000.0, 230.0, 400.0, (true, true)),
+            (220.0, 300.0)
+        );
+    }
+
+    #[test]
+    fn the_panel_chords_show_and_hide_the_panels_but_not_while_typing() {
+        let chord = |key, typing| {
+            let ctx = egui::Context::default();
+            let modifiers = if cfg!(target_os = "macos") {
+                match key {
+                    Key::B => Modifiers::COMMAND,
+                    _ => Modifiers::COMMAND | Modifiers::ALT,
+                }
+            } else {
+                Modifiers::COMMAND | Modifiers::SHIFT
+            };
+            let raw = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let mut answer = (None, false);
+            let output = ctx.run_ui(raw, |ui| {
+                let action = ui.ctx().input_mut(|i| panel_chords(i, typing));
+                let left = ui.ctx().input(|i| {
+                    (i.events.iter()).any(|event| matches!(event, egui::Event::Key { .. }))
+                });
+                answer = (action, left);
+            });
+            output.drop_without_applying_deltas();
+            answer
+        };
+        assert!(matches!(
+            chord(Key::B, false),
+            (Some(Action::ToggleLibrary), false)
+        ));
+        assert!(matches!(
+            chord(Key::O, false),
+            (Some(Action::ToggleInspector), false)
+        ));
+        // A field keeps them, and they are left in the input for it.
+        assert!(matches!(chord(Key::B, true), (None, true)));
+        assert!(matches!(chord(Key::O, true), (None, true)));
     }
 
     #[test]
