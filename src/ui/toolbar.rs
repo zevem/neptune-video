@@ -660,10 +660,11 @@ fn save_state(ui: &mut Ui, p: &Palette, left: f32, middle: f32, state: &State, d
     } else {
         state.words
     };
-    // Changed on disk needs the person: its dot is in the attention colour,
-    // and its words in the body ink, since the attention colour alone is
-    // too faint to read in light.
-    let attention = p.legible(p.attention);
+    // Changed on disk needs the person: its dot is a fill, so the plain
+    // attention colour, as the inspector toggle's and the agent session's
+    // dots; its words are in the body ink, since that colour alone is too
+    // faint to read in light.
+    let attention = p.attention;
     if dot {
         let rect = Rect::from_min_size(pos2(left, middle - 14.0), vec2(DOT, 28.0));
         let response = ui.interact(rect, ui.id().with("save-state"), Sense::hover());
