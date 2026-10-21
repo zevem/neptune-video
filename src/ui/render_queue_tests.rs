@@ -853,3 +853,52 @@ fn a_refusal_is_said_in_the_footer_of_a_short_window() {
     bench.frame(Vec::new());
     assert!(!bench.says("file manager"));
 }
+
+#[test]
+fn a_short_window_keeps_the_queue_clear_of_the_title_bar() {
+    // §5.9.1: as tall as Preferences in a window under about 600 tall.
+    let bench = Bench::new(NARROW, Vec::new());
+    let sheet = (bench.seen.iter())
+        .find(|seen| seen.name == "Render queue" && seen.role == Role::Window)
+        .expect("the sheet is a window")
+        .rect;
+    assert!(
+        sheet.top() >= crate::theme::metrics::TOOLBAR_HEIGHT + 3.0,
+        "{sheet:?}"
+    );
+}
+
+#[test]
+fn a_long_folder_gives_up_its_parents_before_its_own_name() {
+    // Each character is a point wide, so that `room` is how many fit.
+    let fitted = |path: &str, room: usize| {
+        fitted_folder(Path::new(path), Some(Path::new("/home/someone")), |text| {
+            text.chars().count() <= room
+        })
+    };
+    if MAIN_SEPARATOR == '/' {
+        let run = "/tmp/runs/20261021-042123-d123-p4085471/1440x900-dark-fixture";
+        // With room, as the queue has always shown it.
+        assert_eq!(
+            fitted(run, 80),
+            "/…/20261021-042123-d123-p4085471/1440x900-dark-fixture"
+        );
+        // Then the parents go, and the folder's own name stays whole.
+        assert_eq!(fitted(run, 40), "/…/1440x900-dark-fixture");
+        assert_eq!(
+            fitted(
+                "/home/someone/Client Projects/Wedding 2026 Final/Exports",
+                20
+            ),
+            "~/…/Exports"
+        );
+        // Then the middle of its name, keeping how it starts and ends.
+        assert_eq!(fitted(run, 16), "/…/1440x9…ixture");
+        assert_eq!(
+            fitted("/home/someone/Wedding 2026 Final", 16),
+            "~/Wedding… Final"
+        );
+        // The home folder is named whatever the room.
+        assert_eq!(fitted("/home/someone", 4), "Home folder");
+    }
+}

@@ -655,8 +655,9 @@ fn choice_reason(
 
 // ---- The sheet ----------------------------------------------------------------
 
-/// The sheet at its largest; a smaller window keeps 12 points clear of it
-/// on every side.
+/// The sheet at its largest. A narrower window keeps 12 points clear of it
+/// on each side, and a shorter one keeps its title bar clear, as
+/// Preferences does (`sheets::sheet_height`).
 const WIDTH: f32 = 760.0;
 const HEIGHT: f32 = 640.0;
 /// Terminal's sheet header and footer.
@@ -680,10 +681,6 @@ const GAP: f32 = 14.0;
 const LIST: f32 = 260.0;
 /// A section's label over its card, Terminal's: its words 12 over the card.
 const LABEL: f32 = 24.0;
-/// A label with the switch that turns its card on: the words as far over
-/// the card as any label's, and the 22-point switch 6 clear of the card, as
-/// a control is of the edge of its row.
-const SWITCHED: f32 = 34.0;
 
 /// Terminal's sheet (`controls::sheet`) under the id the editor has always
 /// given it, which the tests and the notices find it by: `elevated`, with a
@@ -841,51 +838,34 @@ pub(super) fn header(
     closed
 }
 
-/// The label over a card, set in 4 from it as Terminal sets it. Returns
-/// its row, for a switch at its trailing end.
-fn section(ui: &mut Ui, p: &Palette, text: &str) -> Rect {
-    section_of(ui, p, text, LABEL)
-}
-
-/// The label over a card in a row `height` tall, as far over the card
-/// whatever room the row has over it.
-fn section_of(ui: &mut Ui, p: &Palette, text: &str, height: f32) -> Rect {
-    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), height));
+/// The label over a card, set in 4 from it as Terminal sets it.
+fn section(ui: &mut Ui, p: &Palette, text: &str) {
+    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), LABEL));
     let words = ui.painter().text(
-        pos2(rect.left() + 4.0, rect.bottom() - LABEL * 0.5),
+        pos2(rect.left() + 4.0, rect.center().y),
         Align2::LEFT_CENTER,
         text,
         theme::medium(11.5),
         p.secondary,
     );
     kit::said(ui, words, text);
-    rect
 }
 
-/// The switch that turns a whole card on, at the end of the card's label
-/// where the card's own controls end.
-fn section_switch(
+/// The first row of a card that a switch turns on, as Terminal's switch
+/// rows and the inspector's switch cards are: the card's name at the
+/// leading edge, on one line with its switch at the trailing one.
+fn switch_row(
     ui: &mut Ui,
     p: &Palette,
-    label: Rect,
-    on: &mut bool,
+    group: &mut Group,
     name: &str,
+    on: &mut bool,
     enabled: bool,
 ) -> egui::Response {
-    let at = Rect::from_min_size(
-        pos2(label.right() - 12.0 - 38.0, label.bottom() - 6.0 - 22.0),
-        vec2(38.0, 22.0),
-    );
-    controls::place(
-        ui,
-        at,
-        Layout::left_to_right(Align::Center),
-        ("section-switch", name),
-        |ui| {
-            ui.add_enabled_ui(enabled, |ui| controls::toggle(ui, *p, on, name))
-                .inner
-        },
-    )
+    row(ui, p, group, name, |ui, _| {
+        ui.add_enabled_ui(enabled, |ui| controls::toggle(ui, *p, on, name))
+            .inner
+    })
 }
 
 /// A row of an options card: its label at the leading edge and what `add`
@@ -1196,9 +1176,7 @@ pub fn show(
     let screen = ctx.content_rect();
     let size = vec2(
         WIDTH.min(screen.width() - 24.0).max(240.0),
-        HEIGHT
-            .min(screen.height() - 24.0)
-            .max(HEADER + FOOTER + 120.0),
+        super::sheets::sheet_height(HEIGHT, screen.height()).max(HEADER + FOOTER + 120.0),
     );
     let response = scaffold(ctx, p, Id::new("export-sheet"), "Export", size.x, |ui| {
         // Escape gives up a preset name being typed before it closes the
@@ -1951,11 +1929,6 @@ impl Sheet<'_, '_> {
     fn file(&mut self, ui: &mut Ui, state: &mut ExportSheetState) {
         let p = self.p;
         let extension = format!(".{}", state.settings.container.extension());
-        // Shown as the render queue shows where a job goes.
-        let folder_text = state.folder.as_ref().map_or_else(
-            || "Choose a folder…".to_owned(),
-            |folder| super::render_queue::short_folder(folder, state.home.as_deref()),
-        );
         let tip = state.folder.as_ref().map_or_else(
             || "Choose where the file is saved".to_owned(),
             |folder| format!("Saved in {}", folder.display()),
@@ -1979,7 +1952,8 @@ impl Sheet<'_, '_> {
                 );
             });
             row_after(ui, p, group, "Folder", lead, |ui, room| {
-                let folder = folder_button(ui, p, &folder_text, state.folder.as_deref(), room);
+                let folder =
+                    folder_button(ui, p, state.folder.as_deref(), state.home.as_deref(), room);
                 chose = folder.on_hover_text(tip).clicked();
             });
         });
@@ -2253,18 +2227,18 @@ impl Sheet<'_, '_> {
     fn video(&self, ui: &mut Ui, state: &mut ExportSheetState, caps: &Capabilities) {
         let p = self.p;
         let canvas = self.canvas();
-        let mut on = state.settings.video.is_some();
         ui.add_space(GAP);
-        let label = section_of(ui, p, "Video", SWITCHED);
-        section_switch(ui, p, label, &mut on, "Video", true).on_hover_text(if on {
-            "Turn off to export sound only"
-        } else {
-            "Turn on to export the picture"
-        });
-        if on != state.settings.video.is_some() {
-            state.set_video(on, caps);
-        }
         controls::group(ui, *p, |ui, group| {
+            let mut on = state.settings.video.is_some();
+            let hint = if on {
+                "Turn off to export sound only"
+            } else {
+                "Turn on to export the picture"
+            };
+            switch_row(ui, p, group, "Video", &mut on, true).on_hover_text(hint);
+            if on != state.settings.video.is_some() {
+                state.set_video(on, caps);
+            }
             // The file the picture or the sound goes in.
             let pool: &[Container] = if on {
                 &Container::VIDEO
@@ -2557,19 +2531,18 @@ impl Sheet<'_, '_> {
     fn audio(&self, ui: &mut Ui, state: &mut ExportSheetState, caps: &Capabilities) {
         let p = self.p;
         let video = state.settings.video.is_some();
-        let mut on = state.settings.audio.is_some();
         ui.add_space(GAP);
-        let label = section_of(ui, p, "Audio", SWITCHED);
-        section_switch(ui, p, label, &mut on, "Audio", video)
-            .on_disabled_hover_text("A sound-only file needs its sound");
-        if on != state.settings.audio.is_some() {
-            state.set_audio(on, caps);
-        }
-        let container = state.settings.container;
-        let Some(audio) = state.settings.audio.as_mut() else {
-            return;
-        };
         controls::group(ui, *p, |ui, group| {
+            let mut on = state.settings.audio.is_some();
+            switch_row(ui, p, group, "Audio", &mut on, video)
+                .on_disabled_hover_text("A sound-only file needs its sound");
+            if on != state.settings.audio.is_some() {
+                state.set_audio(on, caps);
+            }
+            let container = state.settings.container;
+            let Some(audio) = state.settings.audio.as_mut() else {
+                return;
+            };
             row(ui, p, group, "Codec", |ui, room| {
                 let options: Vec<(AudioCodec, String, Option<String>)> = (container.audio_codecs())
                     .iter()
@@ -2857,12 +2830,14 @@ fn trim(value: f64) -> String {
 }
 
 /// The folder the file goes in, as a Secondary button `width` wide led by
-/// the folder glyph, named with the whole path for accessibility.
+/// the folder glyph, named with the whole path for accessibility. It shows
+/// the folder as the render queue shows where a job goes, cut to fit so
+/// that the folder's own name stays.
 fn folder_button(
     ui: &mut Ui,
     p: &Palette,
-    text: &str,
     folder: Option<&Path>,
+    home: Option<&Path>,
     width: f32,
 ) -> egui::Response {
     let missing = folder.is_none();
@@ -2895,13 +2870,17 @@ fn folder_button(
             p.secondary,
         );
         let ink = if missing { p.muted } else { p.fg };
-        let galley = controls::elided(
-            painter,
-            text,
-            theme::regular(13.0),
-            ink,
-            rect.width() - 46.0,
+        let room = rect.width() - 46.0;
+        let text = folder.map_or_else(
+            || "Choose a folder…".to_owned(),
+            |folder| {
+                super::render_queue::fitted_folder(folder, home, |text| {
+                    let galley = painter.layout_no_wrap(text.to_owned(), theme::regular(13.0), ink);
+                    galley.size().x <= room
+                })
+            },
         );
+        let galley = controls::elided(painter, &text, theme::regular(13.0), ink, room);
         controls::galley_at(painter, pos2(rect.left() + 34.0, rect.center().y), galley);
     }
     response.on_hover_cursor(CursorIcon::PointingHand)

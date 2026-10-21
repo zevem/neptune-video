@@ -1058,18 +1058,17 @@ fn the_settings_are_in_sight_without_scrolling() {
         chip.top() >= top && chip.bottom() <= bottom,
         "the Recommended chip is in sight at {WIDE:?}"
     );
-    // At the smaller sizes the file, the preset, the range and the Video
-    // switch are, and what the file will be is always said in the footer.
+    // At the smaller sizes the file, the preset and the range are, and what
+    // the file will be is always said in the footer. The Video switch is at
+    // 760 × 560; in the least window the sheet keeps the title bar clear, as
+    // Terminal's do (§5.9.1), and the switch is a scroll away.
     for size in [NARROW, vec2(720.0, 520.0)] {
         let bench = Bench::new(size);
-        for name in [
-            "File name",
-            "Preset",
-            "YouTube 1080p",
-            "Whole timeline",
-            "Video",
-        ] {
+        for name in ["File name", "Preset", "YouTube 1080p", "Whole timeline"] {
             assert!(bench.in_sight(name), "{name} is in sight at {size:?}");
+        }
+        if size == NARROW {
+            assert!(bench.in_sight("Video"), "Video is in sight at {size:?}");
         }
         let (top, bottom) = bench.band();
         let chip = bench.chip("Recommended").rect;
@@ -1477,4 +1476,46 @@ fn a_refusal_is_said_in_the_footer_of_a_short_window_until_something_changes() {
     bench.click("MOV");
     assert_eq!(bench.state.refusal(), None);
     assert!(!bench.says("render queue holds"));
+}
+
+#[test]
+fn a_short_window_keeps_the_sheet_clear_of_the_title_bar() {
+    // §5.9.1: as tall as Preferences in a window under about 600 tall, so
+    // that the traffic lights, the title and the toolbar stay in sight.
+    for size in [NARROW, vec2(720.0, 520.0)] {
+        let bench = Bench::new(size);
+        let sheet = (bench.seen.iter())
+            .find(|seen| seen.name == "Export" && seen.role == Role::Window)
+            .expect("the sheet is a window")
+            .rect;
+        assert!(
+            sheet.top() >= crate::theme::metrics::TOOLBAR_HEIGHT + 3.0,
+            "{size:?}: {sheet:?}"
+        );
+        assert!(
+            (sheet.center().y - size.y * 0.5).abs() <= 1.0,
+            "{size:?}: {sheet:?}"
+        );
+    }
+}
+
+#[test]
+fn a_card_switch_shares_a_line_with_its_name() {
+    // §4.5: the switch that turns the picture or the sound on is the first
+    // row of its card, its name at the leading edge on one line with it.
+    for size in [WIDE, NARROW] {
+        let mut bench = Bench::new(size);
+        for name in ["Video", "Audio"] {
+            bench.reveal(name);
+            let switch = bench.get(name).rect;
+            let words = (bench.seen.iter())
+                .find(|seen| seen.name == name && seen.role == Role::Label)
+                .expect("the row's name is a label")
+                .rect;
+            assert!(
+                (words.center().y - switch.center().y).abs() < 0.5,
+                "{name} at {size:?}: {words:?} and {switch:?}"
+            );
+        }
+    }
 }

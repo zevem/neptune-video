@@ -31,8 +31,9 @@ use std::{
 };
 use uuid::Uuid;
 
-/// The sheet at its widest and tallest; a smaller window keeps 12 points
-/// clear of it on every side.
+/// The sheet at its widest and tallest. A narrower window keeps 12 points
+/// clear of it on each side, and a shorter one keeps its title bar clear,
+/// as Preferences does (`sheets::sheet_height`).
 const WIDTH: f32 = 560.0;
 const HEIGHT: f32 = 480.0;
 const HEADER: f32 = 52.0;
@@ -92,7 +93,7 @@ pub fn show(
     let home = directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
     let screen = ctx.content_rect();
     let width = WIDTH.min(screen.width() - 24.0).max(240.0);
-    let most = HEIGHT.min(screen.height() - 24.0);
+    let most = super::sheets::sheet_height(HEIGHT, screen.height());
     let id = Id::new("render-queue-sheet");
     let response = scaffold(ctx, p, id, "Render queue", width, |ui| {
         let finished = jobs.iter().any(|job| job.state.is_finished());
@@ -163,7 +164,7 @@ pub fn show(
         // as tall as it will be from its first frame and does not creep.
         let card = width - PAD * 2.0;
         let heights: Vec<f32> = (rows.iter())
-            .map(|job| row_height(ui, job, waiting, home.as_deref(), card))
+            .map(|job| row_height(ui, job, waiting, card))
             .collect();
         let (_, list) =
             ui.allocate_space(vec2(width, (most - HEADER - SUMMARY - FOOTER).max(80.0)));
@@ -367,6 +368,78 @@ pub(super) fn short_folder(folder: &Path, home: Option<&Path>) -> String {
     )
 }
 
+/// `short_folder` cut to what `fits`: the folders over the last go first,
+/// leaving `~/…/Exports`, then the middle of the last folder's own name, so
+/// that its start and its end, which tell one folder from the next, stay
+/// seen. Whatever still does not fit is cut short at its end where it is
+/// painted.
+pub(super) fn fitted_folder(
+    folder: &Path,
+    home: Option<&Path>,
+    fits: impl Fn(&str) -> bool,
+) -> String {
+    let short = short_folder(folder, home);
+    if fits(&short) {
+        return short;
+    }
+    let sep = MAIN_SEPARATOR;
+    let inside = home.and_then(|home| folder.strip_prefix(home).ok());
+    let Some(last) = (inside.unwrap_or(folder).components())
+        .filter_map(|part| match part {
+            Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .next_back()
+    else {
+        return short;
+    };
+    // What stands before the last folder: `~` or the root as written, and
+    // `…` for any folders between.
+    let lead = match inside {
+        Some(_) => format!("~{sep}"),
+        None => {
+            let root: String = (folder.components())
+                .take_while(|part| !matches!(part, Component::Normal(_)))
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            if root.ends_with(sep) || root.is_empty() {
+                root
+            } else {
+                format!("{root}{sep}")
+            }
+        }
+    };
+    let lead = if short == format!("{lead}{last}") {
+        lead
+    } else {
+        format!("{lead}…{sep}")
+    };
+    let whole = format!("{lead}{last}");
+    if fits(&whole) {
+        return whole;
+    }
+    // The most of the name's start and end that fits, found by halves.
+    let chars: Vec<char> = last.chars().collect();
+    let cut = |keep: usize| -> String {
+        let head: String = chars[..keep.div_ceil(2)].iter().collect();
+        let tail: String = chars[chars.len() - keep / 2..].iter().collect();
+        format!("{lead}{head}…{tail}")
+    };
+    let (mut low, mut high) = (1, chars.len().saturating_sub(1));
+    if low > high || !fits(&cut(low)) {
+        return whole;
+    }
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        if fits(&cut(mid)) {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    cut(low)
+}
+
 /// What a job makes, in a few words: "MP4 · H.264 · 1080p".
 fn made(settings: &ExportSettings) -> String {
     let mut parts = vec![settings.container.label().to_owned()];
@@ -472,11 +545,9 @@ fn moving(job: &RenderJobInfo, held: bool) -> bool {
         )
 }
 
-/// The folder a job's file goes in, shortened for its row.
-fn folder_of(job: &RenderJobInfo, home: Option<&Path>) -> Option<String> {
-    (job.destination.parent())
-        .filter(|folder| !folder.as_os_str().is_empty())
-        .map(|folder| short_folder(folder, home))
+/// The folder a job's file goes in.
+fn folder_of(job: &RenderJobInfo) -> Option<&Path> {
+    (job.destination.parent()).filter(|folder| !folder.as_os_str().is_empty())
 }
 
 /// What the queue says of a job besides its state, such as why it failed.
@@ -512,19 +583,13 @@ fn message_galley(
 
 /// How tall the row of `job` is in a card `card` wide: its name and status,
 /// then the lines its state has.
-fn row_height(
-    ui: &Ui,
-    job: &RenderJobInfo,
-    waiting: &[Uuid],
-    home: Option<&Path>,
-    card: f32,
-) -> f32 {
+fn row_height(ui: &Ui, job: &RenderJobInfo, waiting: &[Uuid], card: f32) -> f32 {
     let held = is_held(job, waiting);
     let mut height = ROW_PAD + NAME_LINE + LINE;
     if moving(job, held) {
         height += BAR_LINE;
     }
-    if folder_of(job, home).is_some() {
+    if folder_of(job).is_some() {
         height += LINE;
     }
     // Its colour does not change its height.
@@ -703,7 +768,7 @@ fn job_row(
 
     // Where it goes, under its status: the last folders, which tell jobs
     // apart, with the whole path on hover.
-    if let Some(folder) = folder_of(job, home) {
+    if let Some(folder) = folder_of(job) {
         let line = Rect::from_min_max(pos2(left, y), pos2(right, y + LINE));
         icons::paint(
             &painter,
@@ -711,13 +776,13 @@ fn job_row(
             Icon::Folder,
             p.muted,
         );
-        let galley = controls::elided(
-            &painter,
-            &folder,
-            theme::regular(11.5),
-            p.secondary,
-            right - left - 19.0,
-        );
+        let room = right - left - 19.0;
+        let font = theme::regular(11.5);
+        let folder = fitted_folder(folder, home, |text| {
+            let galley = painter.layout_no_wrap(text.to_owned(), font.clone(), p.secondary);
+            galley.size().x <= room
+        });
+        let galley = controls::elided(&painter, &folder, font, p.secondary, room);
         let shown = Rect::from_min_max(
             pos2(left, line.center().y - galley.size().y * 0.5),
             pos2(

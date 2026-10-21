@@ -264,8 +264,9 @@ struct Heard<R> {
 /// How tall a sheet that asks for `requested` is in a window this tall.
 /// Centred, it keeps clear of the title bar, as Preferences does, and is
 /// short only where the window is: in a window under about 600 tall it
-/// gives up height before it covers the toolbar, down to 240.
-fn sheet_height(requested: f32, window: f32) -> f32 {
+/// gives up height before it covers the toolbar, down to 240. Export and
+/// the render queue are as tall by the same rule.
+pub(super) fn sheet_height(requested: f32, window: f32) -> f32 {
     let clear = window - 2.0 * (metrics::TOOLBAR_HEIGHT + 4.0);
     requested
         .min(clear)
@@ -3476,6 +3477,100 @@ mod tests {
         let conflicted = |ctx: &egui::Context, p: &Palette| conflict(ctx, p, "Film", &changed);
         let said = answers(conflicted, vec![vec![], vec![], struck(Key::Enter)]);
         assert_eq!(said, [None, None, Some(ConflictAnswer::SaveAs)]);
+    }
+
+    /// Draws `ask` until it has settled and hands back where assistive
+    /// tools are told each named thing is.
+    fn laid_out<A>(
+        mut ask: impl FnMut(&egui::Context, &Palette) -> Option<A>,
+    ) -> Vec<(String, Rect)> {
+        let ctx = egui::Context::default();
+        let palette = Palette::new(Appearance::Dark, Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &palette);
+        ctx.enable_accesskit();
+        let mut seen = Vec::new();
+        for at in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                time: Some(at as f64 * 0.1),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                ask(ui.ctx(), &palette);
+            });
+            output.textures_delta.clear();
+            if let Some(update) = &output.platform_output.accesskit_update {
+                seen = (update.nodes.iter())
+                    .filter_map(|(_, node)| {
+                        let bounds = node.bounds()?;
+                        let name = node.label().or_else(|| node.value())?.to_owned();
+                        let rect = Rect::from_min_max(
+                            pos2(bounds.x0 as f32, bounds.y0 as f32),
+                            pos2(bounds.x1 as f32, bounds.y1 as f32),
+                        );
+                        Some((name, rect))
+                    })
+                    .collect();
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn a_dialog_foot_puts_the_default_last_and_what_gives_up_apart() {
+        // §5.9.5, §9.12: the answer that gives something up alone at the
+        // leading edge, Cancel before the confirming answer, and that one
+        // furthest out, 20 in from the sheet's edges and 8 apart. Each is
+        // found by its widest rect: the sheet's window, not its title.
+        let rect = |seen: &[(String, Rect)], name: &str| {
+            (seen.iter())
+                .filter(|(seen, _)| seen == name)
+                .map(|(_, rect)| *rect)
+                .max_by(|a, b| a.width().total_cmp(&b.width()))
+                .unwrap_or_else(|| panic!("FIXTURE: nothing is named \"{name}\""))
+        };
+        let seen = laid_out(|ctx, p| unsaved(ctx, p, "Film", &Pending::Quit));
+        // The window is told of with its 1-point border outside it.
+        let sheet = rect(&seen, "Save changes to “Film”?").shrink(1.0);
+        let (gives_up, cancel, save) = (
+            rect(&seen, "Don't save"),
+            rect(&seen, "Cancel"),
+            rect(&seen, "Save"),
+        );
+        assert!(
+            (gives_up.left() - sheet.left() - 20.0).abs() < 1.0,
+            "{gives_up:?} in {sheet:?}"
+        );
+        assert!(
+            gives_up.right() < cancel.left(),
+            "{gives_up:?} before {cancel:?}"
+        );
+        assert!(
+            (save.left() - cancel.right() - 8.0).abs() < 1.0,
+            "{cancel:?} then {save:?}"
+        );
+        assert!(
+            (sheet.right() - save.right() - 20.0).abs() < 1.0,
+            "{save:?} in {sheet:?}"
+        );
+        assert_eq!(cancel.center().y, save.center().y);
+        assert_eq!(gives_up.center().y, save.center().y);
+
+        // With nothing apart, the destructive answer still stands last and
+        // Cancel before it.
+        let question = crate::duck::question(2);
+        let seen = laid_out(|ctx, p| replace_keys(ctx, p, 2));
+        let sheet = rect(&seen, &question).shrink(1.0);
+        let (cancel, replace) = (rect(&seen, "Cancel"), rect(&seen, "Replace"));
+        assert!(
+            (replace.left() - cancel.right() - 8.0).abs() < 1.0,
+            "{cancel:?} then {replace:?}"
+        );
+        assert!(
+            (sheet.right() - replace.right() - 20.0).abs() < 1.0,
+            "{replace:?} in {sheet:?}"
+        );
     }
 
     #[test]
