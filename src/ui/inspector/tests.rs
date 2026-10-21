@@ -967,6 +967,11 @@ fn a_mask_is_added_edited_and_removed_as_whole_lists() {
 #[test]
 fn a_blend_mode_is_chosen_from_its_list() {
     let (mut bench, clip) = Bench::new();
+    // Between the keyed Crop and mask cards, it ends where their fields do.
+    bench.frame(Vec::new());
+    let end = |name: &str| bench.find(name).map(|seen| seen.rect.right());
+    assert!(end("Bottom").is_some());
+    assert_eq!(end("Blend mode"), end("Bottom"));
     let before = bench.steps();
     bench.click("Blend mode");
     bench.click("Screen");

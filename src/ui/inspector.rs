@@ -1531,10 +1531,17 @@ fn scrolled(
 ) {
     // The floating scroll bar has its own lane in the panel's gutter, beside
     // the cards and not on them, as Terminal's preferences keep their cards
-    // clear of theirs. The rows stay as wide as `rect`.
-    let scroll = ui.spacing().scroll;
-    let lane = rect.with_max_x(rect.right() + scroll.bar_outer_margin + scroll.bar_width);
+    // clear of theirs. The rows stay as wide as `rect`. The gutter is 8 to
+    // the window's edge, and its outer 4 are the window's resize band, which
+    // takes the pointer: the lane is the inner 4. The bar rests 2 wide, 2
+    // clear of the cards, and widens to 3 under the pointer, still clear of
+    // them and of the outline.
+    let mut scroll = ui.spacing().scroll;
+    scroll.bar_width = 3.0;
+    scroll.bar_outer_margin = 0.0;
+    let lane = rect.with_max_x(rect.right() + 1.0 + scroll.bar_width);
     let mut body = ui.new_child(egui::UiBuilder::new().max_rect(lane));
+    body.spacing_mut().scroll = scroll;
     // The rows are cut off above and under the pane, but not at its sides:
     // there they are cut 3 out, in the panel's gutter, so that the ring of
     // a control on the cards' edge is whole (§7.4).
@@ -1545,7 +1552,7 @@ fn scrolled(
     let shown = &mut body.spacing_mut().scroll;
     shown.dormant_handle_opacity = shown.active_handle_opacity;
     // Where the floating scroll bar starts, which a point's target stops
-    // short of. In its lane that is the cards' own edge.
+    // short of. In its lane that is 1 past the cards' own edge.
     let bar = lane.right() - scroll.bar_outer_margin - scroll.bar_width;
     ui.data_mut(|data| data.insert_temp(egui::Id::new("inspector-bar"), bar));
     let output = egui::ScrollArea::vertical()

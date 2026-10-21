@@ -938,7 +938,9 @@ impl<'a> Pane<'a> {
         // A title is drawn over the composition: it takes no blend or mask.
         if self.asset.is_some() {
             section(ui, p, "Compositing");
-            card(ui, p, |ui| {
+            // Between the keyed Crop and mask cards, its select ends where
+            // their fields do.
+            keyed_card(ui, p, |ui| {
                 tall_row(ui, p, "Blend", |ui| {
                     let width = ui.available_width().min(132.0);
                     select_list(
