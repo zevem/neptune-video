@@ -813,12 +813,12 @@ const OFF_SCREEN: &str = "The clip is not on screen at the playhead";
 /// Where the capsules at the picture's top start: inset in it, so
 /// they sit on it and not across its edge, or under the work cards over the
 /// viewer, which [`crate::ui::sheets::saves`] draws later in the frame as
-/// areas of their own. Where they were last laid out is what is known of
+/// areas of their own, under [`crate::ui::sheets::card_id`]. Where they were last laid out is what is known of
 /// them; a card not yet laid out is not waited for.
 fn capsules_head(ctx: &egui::Context, canvas: Rect, cards: &[u64]) -> f32 {
     let below = ctx.memory(|memory| {
         (cards.iter())
-            .filter_map(|request| memory.area_rect(Id::new(("save-audio", *request))))
+            .filter_map(|request| memory.area_rect(crate::ui::sheets::card_id(*request)))
             .map(|card| card.bottom() + 8.0)
             .fold(f32::NEG_INFINITY, f32::max)
     });

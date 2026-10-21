@@ -2488,6 +2488,12 @@ fn toast_surface(painter: &egui::Painter, rect: Rect, p: &Palette) {
     painter.rect_stroke(rect, radius, Stroke::new(1.0, p.border), StrokeKind::Inside);
 }
 
+/// The area a work card for `request` is drawn in, which the viewer reads
+/// back to lay its capsules under the cards.
+pub(crate) fn card_id(request: u64) -> Id {
+    Id::new(("save-audio", request))
+}
+
 /// Files being written, each with its progress and Cancel, and written ones
 /// offered to the project, each with Add to project and a way to dismiss
 /// it: at the top of the viewer, in the shape of a toast. Hands back where
@@ -2503,7 +2509,7 @@ pub fn saves(
     let width = card_width(viewer);
     let mut shown_at = Vec::with_capacity(cards.len());
     for card in cards {
-        let shown = egui::Area::new(Id::new(("save-audio", card.request)))
+        let shown = egui::Area::new(card_id(card.request))
             .order(egui::Order::Foreground)
             .fixed_pos(pos2(viewer.center().x - width * 0.5, y))
             .show(ctx, |ui| {
