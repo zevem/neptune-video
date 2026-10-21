@@ -74,6 +74,8 @@ struct Window {
     answers: Vec<render_queue::QueueAnswer>,
     /// How many times the button under the toasts was clicked.
     clicked_beneath: usize,
+    /// How soon the last frame asked to be drawn again.
+    wait: std::time::Duration,
 }
 
 impl Window {
@@ -102,6 +104,7 @@ impl Window {
             actions: Vec::new(),
             answers: Vec::new(),
             clicked_beneath: 0,
+            wait: std::time::Duration::MAX,
         };
         for _ in 0..4 {
             window.frame(0.05, Vec::new());
@@ -126,7 +129,12 @@ impl Window {
             {
                 self.clicked_beneath += 1;
             }
-            expire(ui.ctx(), &mut self.notices);
+            // As the application does: drawn again when the next clock is up.
+            let now = ui.input(|input| input.time);
+            if let Some(next) = expire(ui.ctx(), &mut self.notices) {
+                let wait = std::time::Duration::from_secs_f64((next - now).max(0.0));
+                ui.ctx().request_repaint_after(wait);
+            }
             if let Some(jobs) = &self.jobs
                 && let Some(answer) = render_queue::show(ui.ctx(), &self.palette, jobs, &[], None)
             {
@@ -143,6 +151,7 @@ impl Window {
             );
         });
         self.actions.extend(actions);
+        self.wait = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
         self.texts.clear();
         self.shown.clear();
         for clipped in &output.shapes {
@@ -407,6 +416,58 @@ fn a_toast_under_the_pointer_keeps_the_time_it_had_left() {
     assert_eq!(window.notices.len(), 1, "not at once");
     window.frame(1.0, Vec::new());
     assert!(window.notices.is_empty());
+}
+
+/// A warning and a problem stay until they are dismissed, and a window that
+/// shows them and is left alone stops drawing, whether the pointer is away,
+/// on a toast's words or on its Dismiss (performance.md, spec §5.8).
+#[test]
+fn a_window_showing_toasts_that_stay_goes_idle() {
+    let mut window = Window::new(
+        vec![
+            Notice {
+                kind: NoticeKind::Warning,
+                ..problem("Unsaved changes were restored")
+            },
+            problem("The folder could not be read"),
+        ],
+        None,
+    );
+    let idle = |window: &mut Window, events: Vec<Event>| {
+        window.frame(0.05, events);
+        for _ in 0..8 {
+            window.frame(1.0, Vec::new());
+        }
+        assert_eq!(window.placed().len(), 2);
+        assert!(
+            window.wait > std::time::Duration::from_secs(3600),
+            "{:?}",
+            window.wait
+        );
+    };
+    idle(&mut window, Vec::new());
+    let (_, words) = window.placed()[1].clone();
+    idle(&mut window, vec![Event::PointerMoved(words.center())]);
+    let dismiss = window.named("Dismiss");
+    assert_eq!(dismiss.len(), 2, "{:?}", window.named);
+    idle(&mut window, vec![Event::PointerMoved(dismiss[1].center())]);
+    idle(&mut window, vec![Event::PointerMoved(pos2(20.0, 500.0))]);
+    assert_eq!(window.notices.len(), 2, "they stay");
+    // FIXTURE: news on its clock is drawn again when its time is up.
+    let until = window.time + 4.0;
+    tell(
+        &mut window.notices,
+        Notice {
+            until,
+            ..notice("Copied 2 clips")
+        },
+    );
+    window.frame(0.05, Vec::new());
+    assert!(
+        window.wait <= std::time::Duration::from_secs(4),
+        "{:?}",
+        window.wait
+    );
 }
 
 #[test]
