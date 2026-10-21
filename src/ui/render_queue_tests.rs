@@ -9,7 +9,7 @@
 use super::*;
 use crate::theme::{Accent, Appearance};
 use editor_core::export::ExportSettings;
-use eframe::egui::{Event, Key, Modifiers, PointerButton, Pos2, Shape, accesskit::Role};
+use eframe::egui::{Color32, Event, Key, Modifiers, PointerButton, Pos2, Shape, accesskit::Role};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
 const WIDE: Vec2 = vec2(1440.0, 900.0);
@@ -202,9 +202,11 @@ impl Bench {
         for _ in 0..8 {
             self.frame(Vec::new());
             let top = self.get("Close render queue").rect.bottom();
+            // Spec §5.9.4: Clear finished moved into the header; the list
+            // ends at the footer's New export….
             let bottom = self
-                .find("Clear finished")
-                .map_or(self.size.y, |clear| clear.rect.top());
+                .find("New export…")
+                .map_or(self.size.y, |new| new.rect.top());
             let rect = self.get(name).rect;
             // The header's and the footer's controls do not scroll.
             let chrome = [
@@ -624,7 +626,9 @@ fn row_top(bench: &Bench, job: &str) -> f32 {
 /// Whether `name` is shown whole between the header and the footer.
 fn in_sight(bench: &Bench, name: &str) -> bool {
     let top = bench.get("Close render queue").rect.bottom();
-    let bottom = bench.get("Clear finished").rect.top();
+    // Spec §5.9.4: Clear finished moved into the header; the list ends at
+    // the footer's New export….
+    let bottom = bench.get("New export…").rect.top();
     let rect = bench.get(name).rect;
     rect.top() >= top && rect.bottom() <= bottom
 }

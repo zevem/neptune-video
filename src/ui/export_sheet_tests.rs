@@ -265,7 +265,12 @@ impl Bench {
 
     fn find(&self, name: &str) -> Option<&Seen> {
         (self.seen.iter())
-            .find(|seen| seen.name == name && !matches!(seen.role, Role::Label | Role::TextRun))
+            // Spec §5.9.1: the sheet itself is a Window named by its title,
+            // "Export", which is not the button of that name.
+            .find(|seen| {
+                seen.name == name
+                    && !matches!(seen.role, Role::Label | Role::TextRun | Role::Window)
+            })
     }
 
     fn get(&self, name: &str) -> &Seen {
@@ -468,11 +473,17 @@ fn the_sheet_shows_presets_and_every_section_at_both_sizes() {
         assert_eq!(bench.get("Recommended").toggled, Some(Toggled::True));
         assert!(bench.says("Recommended"), "the preset list shows it chosen");
 
-        // Two columns: the file on the left, the presets on the right, and
+        // Spec §5.9.3: two columns, the picture on the left and the file
+        // card first among the choices on the right, before the presets;
         // the footer inside the window.
         let file = bench.get("File name").rect;
         let preset = bench.get("YouTube 1080p").rect;
-        assert!(file.right() < preset.left(), "{file:?} beside {preset:?}");
+        assert!(file.bottom() <= preset.top(), "{file:?} before {preset:?}");
+        let poster = (bench.seen.iter())
+            .find(|seen| seen.name.starts_with("Output frame"))
+            .expect("the poster is there")
+            .rect;
+        assert!(poster.right() < file.left(), "{poster:?} beside {file:?}");
         let export = bench.get("Export").rect;
         assert!(
             export.right() <= size.x && export.bottom() <= size.y,
@@ -1003,27 +1014,35 @@ fn the_sheet_stays_inside_a_small_window() {
 
 #[test]
 fn the_settings_are_in_sight_without_scrolling() {
-    // At a common desktop size the preset, the picture's settings and the
-    // sound's are all in sight as the sheet opens.
+    // Spec §5.9.3: the file and the range come before the picture's cards
+    // now, so the sound's are under the fold. At a common desktop size the
+    // file, the preset and the picture's first settings are in sight as the
+    // sheet opens.
     let bench = Bench::new(WIDE);
     for name in [
+        "File name",
+        "Folder: /exports",
         "Preset",
-        "Recommended",
+        // The chip; the quality level of that name is further down.
+        "YouTube 1080p",
+        "Whole timeline",
         "Video",
         "1080p",
         "Frame rate",
-        "Codec",
-        "Encoder and speed",
-        "Audio",
-        "Audio codec",
     ] {
         assert!(bench.in_sight(name), "{name} is in sight at {WIDE:?}");
     }
-    // At the smaller sizes the preset and the picture's first settings
-    // are, and what the file will be is always said in the footer.
+    // At the smaller sizes the file, the preset, the range and the Video
+    // switch are, and what the file will be is always said in the footer.
     for size in [NARROW, vec2(720.0, 520.0)] {
         let bench = Bench::new(size);
-        for name in ["Preset", "Recommended", "Video", "1080p"] {
+        for name in [
+            "File name",
+            "Preset",
+            "YouTube 1080p",
+            "Whole timeline",
+            "Video",
+        ] {
             assert!(bench.in_sight(name), "{name} is in sight at {size:?}");
         }
         assert!(
@@ -1175,9 +1194,9 @@ fn a_sheet_opened_again_keeps_what_was_set_but_not_a_waiting_export() {
 
 #[test]
 fn a_scroll_bar_widened_under_the_pointer_covers_nothing() {
-    // At the small size both columns scroll. With the pointer over the
-    // summary's column its bar is drawn at its widest, where the values
-    // end: room is kept for it.
+    // At the small size the options column scrolls. With the pointer over
+    // it (spec §5.9.3: the folder is in it now) its bar is drawn at its
+    // widest, where the controls end: room is kept for it.
     let mut bench = Bench::new(NARROW);
     let over = bench.get("Folder: /exports").rect.center();
     for _ in 0..12 {
@@ -1185,7 +1204,7 @@ fn a_scroll_bar_widened_under_the_pointer_covers_nothing() {
     }
     assert!(
         bench.bars.iter().any(|bar| bar.left() > over.x),
-        "FIXTURE: the summary's column scrolls at {NARROW:?}: {:?}",
+        "FIXTURE: the options column scrolls at {NARROW:?}: {:?}",
         bench.bars
     );
     for bar in &bench.bars {
