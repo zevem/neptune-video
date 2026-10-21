@@ -647,11 +647,13 @@ pub fn show(
         },
     );
     if count > 0 {
+        // As wide as its actions, and laid out leading to trailing, so that
+        // Tab and a screen reader go through them as the eye does.
         let tools = Rect::from_min_max(pos2(field.right() + 4.0, row.top()), row.max);
         controls::place(
             ui,
             tools,
-            Layout::right_to_left(Align::Center),
+            Layout::left_to_right(Align::Center),
             "library-search-actions",
             |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
@@ -767,10 +769,10 @@ fn view_options(ui: &mut Ui, p: &Palette, grid: &mut bool, sort: &mut LibrarySor
     });
 }
 
-/// The Captions tab's controls on the search row, made from the trailing
-/// edge: what exports the track in view, what imports a subtitle file, and
-/// the switch of captions from speech, which stays pressed while its
-/// choices are open.
+/// The Captions tab's controls on the search row, in reading order: the
+/// switch of captions from speech, which stays pressed while its choices
+/// are open, what imports a subtitle file, and what exports the track in
+/// view.
 fn caption_actions(
     ui: &mut Ui,
     p: &Palette,
@@ -778,6 +780,16 @@ fn caption_actions(
     state: &mut CaptionsTabState,
     actions: &mut Vec<Action>,
 ) {
+    let open = state.speech_open;
+    if widgets::icon_toggle(ui, p, Icon::Speech, open, "Captions from speech").clicked() {
+        state.speech_open = !open;
+        if !open {
+            actions.push(Action::LookAtModels);
+        }
+    }
+    if icon_button(ui, p, Icon::Import, "Import SRT or VTT").clicked() {
+        actions.push(Action::ImportCaptions);
+    }
     if let Some(track) = track {
         let export = icon_button(ui, p, Icon::Export, "Export captions");
         egui::Popup::menu(&export).show(|ui| {
@@ -793,16 +805,6 @@ fn caption_actions(
             }
         });
     }
-    if icon_button(ui, p, Icon::Import, "Import SRT or VTT").clicked() {
-        actions.push(Action::ImportCaptions);
-    }
-    let open = state.speech_open;
-    if widgets::icon_toggle(ui, p, Icon::Speech, open, "Captions from speech").clicked() {
-        state.speech_open = !open;
-        if !open {
-            actions.push(Action::LookAtModels);
-        }
-    }
 }
 
 /// The footer, under every tab: a hairline, the import button with its
@@ -817,9 +819,9 @@ fn footer_row(
 ) {
     let left = footer.left() + LEADING;
     let right = footer.right() - TRAILING;
-    let line = footer.top() + 0.5;
-    ui.painter()
-        .line_segment([pos2(left, line), pos2(right, line)], p.hairline());
+    // On the row the viewer's transport line is on: epaint puts a point's
+    // line on a pixel, from the same top.
+    ui.painter().hline(left..=right, footer.top(), p.hairline());
     let middle = footer.center().y;
     let import = import_button(ui, p, pos2(left, middle));
     egui::Popup::menu(&import)

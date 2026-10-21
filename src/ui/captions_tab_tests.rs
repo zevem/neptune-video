@@ -613,6 +613,13 @@ struct Bench {
     size: Vec2,
     time: f64,
     seen: Vec<Seen>,
+    /// The names accessibility gives, in the order a screen reader walks
+    /// them: depth first through the tree.
+    reading: Vec<String>,
+    /// The name of the control that has the keyboard, if one has.
+    focused: Option<String>,
+    /// Where the scroll bars are.
+    bars: Vec<Rect>,
     refused: Vec<String>,
     said: Vec<String>,
     imports: usize,
@@ -659,6 +666,9 @@ impl Bench {
             size: vec2(300.0, 900.0),
             time: 0.0,
             seen: Vec::new(),
+            reading: Vec::new(),
+            focused: None,
+            bars: Vec::new(),
             refused: Vec::new(),
             said: Vec::new(),
             imports: 0,
@@ -735,6 +745,36 @@ impl Bench {
                     })
                 })
                 .collect();
+            let nodes: std::collections::HashMap<_, _> =
+                update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+            let name = |node: &egui::accesskit::Node| {
+                node.label().or_else(|| node.value()).map(str::to_owned)
+            };
+            self.focused = nodes.get(&update.focus).and_then(|node| name(node));
+            self.bars = (nodes.values())
+                .filter(|node| node.role() == Role::ScrollBar)
+                .filter_map(|node| node.bounds())
+                .map(|b| {
+                    Rect::from_min_max(
+                        pos2(b.x0 as f32, b.y0 as f32),
+                        pos2(b.x1 as f32, b.y1 as f32),
+                    )
+                })
+                .collect();
+            // The root is the one node that is no other's child.
+            let children: std::collections::HashSet<_> = (nodes.values())
+                .flat_map(|node| node.children().iter().copied())
+                .collect();
+            let mut walk: Vec<_> = (nodes.keys())
+                .filter(|id| !children.contains(id))
+                .copied()
+                .collect();
+            self.reading.clear();
+            while let Some(id) = walk.pop() {
+                let Some(node) = nodes.get(&id) else { continue };
+                self.reading.extend(name(node));
+                walk.extend(node.children().iter().rev().copied());
+            }
         }
         for action in actions {
             match action {
@@ -907,6 +947,51 @@ fn a_short_library_shows_every_way_to_start_captions_above_its_footer() {
         "{widths:?}"
     );
     assert!(bench.says("one track for each language"));
+    // The bar is in the trailing inset, where every other tab's is, and
+    // not over the column's side.
+    let right = bench.size.x;
+    assert!(
+        (bench.bars.iter()).any(|bar| bar.right() == right && bar.left() >= right - 6.0),
+        "{:?}",
+        bench.bars
+    );
+}
+
+#[test]
+fn the_search_row_reads_and_tabs_as_it_is_laid_out() {
+    let mut bench = Bench::new();
+    captioned(&mut bench.editor, "en", &[cue(0.0, 1.0, "One")]);
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    let names = [
+        "Search captions",
+        "Captions from speech",
+        "Import SRT or VTT",
+        "Export captions",
+    ];
+    // §7.4: leading to trailing, as the eye goes.
+    let lefts: Vec<_> = (names.iter())
+        .map(|name| bench.find(name).expect("on the search row").rect.left())
+        .collect();
+    assert!(lefts.is_sorted(), "{lefts:?}");
+    let read: Vec<_> = (bench.reading.iter())
+        .map(String::as_str)
+        .filter(|name| names.contains(name))
+        .collect();
+    assert_eq!(read, names, "read");
+    let mut tabbed: Vec<String> = Vec::new();
+    for _ in 0..20 {
+        if tabbed.len() == names.len() {
+            break;
+        }
+        bench.key(Key::Tab, Modifiers::NONE);
+        if let Some(name) = (bench.focused.as_deref()).filter(|name| names.contains(name))
+            && tabbed.last().map(String::as_str) != Some(name)
+        {
+            tabbed.push(name.to_owned());
+        }
+    }
+    assert_eq!(tabbed, names, "tabbed");
 }
 
 #[test]

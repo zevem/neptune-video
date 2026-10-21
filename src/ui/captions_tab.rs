@@ -782,7 +782,7 @@ pub fn show(
         }
     }
     let Some(track_id) = in_view(project, state.track, selection) else {
-        empty(ui, p, area, project, state, actions);
+        empty(ui, p, rect, project, state, actions);
         return;
     };
     let Some(track) = project.tracks.iter().find(|track| track.id == track_id) else {
@@ -1051,11 +1051,12 @@ fn text_of(clip: &Clip) -> &str {
 }
 
 /// With no caption track yet: what captions are here and how to begin, as
-/// an empty state of three actions. A short library scrolls to them.
+/// an empty state of three actions. A short library scrolls to them, its
+/// bar in the trailing inset as every other tab's is.
 fn empty(
     ui: &mut Ui,
     p: &Palette,
-    area: Rect,
+    rect: Rect,
     project: &Project,
     state: &mut CaptionsTabState,
     actions: &mut Vec<Action>,
@@ -1067,6 +1068,7 @@ fn empty(
         "New caption track",
         "Import SRT or VTT…",
     ];
+    let area = library::inset(rect);
     let width = area.width();
     let painter = ui.painter();
     // The hint wraps as every empty state's does, its lines kept even.
@@ -1106,91 +1108,100 @@ fn empty(
     // that they are not below the footer.
     let roomy = block + 24.0 <= area.height();
 
-    let mut body = ui.new_child(egui::UiBuilder::new().max_rect(area));
-    body.set_clip_rect(area.intersect(ui.clip_rect()));
+    let mut body = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    body.set_clip_rect(rect.intersect(ui.clip_rect()));
+    let inset = egui::Margin {
+        left: library::LEADING as i8,
+        right: library::TRAILING as i8,
+        ..Default::default()
+    };
     let output = egui::ScrollArea::vertical()
         .id_salt("captions-empty")
         .auto_shrink([false, false])
         .show(&mut body, |ui| {
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            let top = if roomy {
-                (area.height() * 0.4 - block * 0.5).max(12.0)
-            } else {
-                12.0
-            };
-            ui.add_space(top);
-            ui.with_layout(Layout::top_down(Align::Center), |ui| {
-                if roomy {
-                    let (glyph, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
-                    icons::paint(ui.painter(), glyph, Icon::Captions, p.muted);
-                    ui.add_space(8.0);
-                }
-                ui.label(
-                    egui::RichText::new("No captions yet")
-                        .font(theme::medium(14.0))
-                        .color(p.fg),
-                );
-                let hint = |ui: &mut Ui| {
-                    ui.scope(|ui| {
-                        ui.set_max_width(wrap);
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(HINT)
-                                    .font(theme::regular(12.0))
-                                    .color(p.secondary),
-                            )
-                            .halign(Align::Center)
-                            .wrap(),
-                        );
-                    });
+            egui::Frame::NONE.inner_margin(inset).show(ui, |ui| {
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                let top = if roomy {
+                    (area.height() * 0.4 - block * 0.5).max(12.0)
+                } else {
+                    12.0
                 };
-                if roomy {
-                    ui.add_space(4.0);
-                    hint(ui);
-                }
-                ui.add_space(12.0);
-                let button = |ui: &mut Ui, words: &str| {
-                    let response = ui
-                        .allocate_ui_with_layout(
-                            vec2(column, metrics::CONTROL_HEIGHT),
-                            Layout::top_down_justified(Align::Center),
-                            |ui| controls::button(ui, *p, words, controls::ButtonKind::Secondary),
-                        )
-                        .inner;
-                    // Reached by Tab, a button below the fold comes into view.
-                    if response.gained_focus() {
-                        response.scroll_to_me(None);
+                ui.add_space(top);
+                ui.with_layout(Layout::top_down(Align::Center), |ui| {
+                    if roomy {
+                        let (glyph, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
+                        icons::paint(ui.painter(), glyph, Icon::Captions, p.muted);
+                        ui.add_space(8.0);
                     }
-                    response
-                };
-                if button(ui, ACTIONS[0])
-                    .on_hover_text("Write captions from what is said on the timeline")
-                    .clicked()
-                {
-                    state.speech_open = true;
-                    actions.push(Action::LookAtModels);
-                }
-                ui.add_space(8.0);
-                let start = button(ui, ACTIONS[1]);
-                egui::Popup::menu(&start)
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| {
-                        if let Some(tag) = language_menu(ui, p, &mut state.language, None) {
-                            let (command, id) = new_track(project, &tag);
-                            actions.push(Action::Edit(command));
-                            state.track = Some(id);
-                        }
-                    });
-                ui.add_space(8.0);
-                if button(ui, ACTIONS[2]).clicked() {
-                    actions.push(Action::ImportCaptions);
-                }
-                if !roomy {
+                    ui.label(
+                        egui::RichText::new("No captions yet")
+                            .font(theme::medium(14.0))
+                            .color(p.fg),
+                    );
+                    let hint = |ui: &mut Ui| {
+                        ui.scope(|ui| {
+                            ui.set_max_width(wrap);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(HINT)
+                                        .font(theme::regular(12.0))
+                                        .color(p.secondary),
+                                )
+                                .halign(Align::Center)
+                                .wrap(),
+                            );
+                        });
+                    };
+                    if roomy {
+                        ui.add_space(4.0);
+                        hint(ui);
+                    }
                     ui.add_space(12.0);
-                    hint(ui);
-                }
-                ui.add_space(12.0);
+                    let button = |ui: &mut Ui, words: &str| {
+                        let response = ui
+                            .allocate_ui_with_layout(
+                                vec2(column, metrics::CONTROL_HEIGHT),
+                                Layout::top_down_justified(Align::Center),
+                                |ui| {
+                                    controls::button(ui, *p, words, controls::ButtonKind::Secondary)
+                                },
+                            )
+                            .inner;
+                        // Reached by Tab, a button below the fold comes into view.
+                        if response.gained_focus() {
+                            response.scroll_to_me(None);
+                        }
+                        response
+                    };
+                    if button(ui, ACTIONS[0])
+                        .on_hover_text("Write captions from what is said on the timeline")
+                        .clicked()
+                    {
+                        state.speech_open = true;
+                        actions.push(Action::LookAtModels);
+                    }
+                    ui.add_space(8.0);
+                    let start = button(ui, ACTIONS[1]);
+                    egui::Popup::menu(&start)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| {
+                            if let Some(tag) = language_menu(ui, p, &mut state.language, None) {
+                                let (command, id) = new_track(project, &tag);
+                                actions.push(Action::Edit(command));
+                                state.track = Some(id);
+                            }
+                        });
+                    ui.add_space(8.0);
+                    if button(ui, ACTIONS[2]).clicked() {
+                        actions.push(Action::ImportCaptions);
+                    }
+                    if !roomy {
+                        ui.add_space(12.0);
+                        hint(ui);
+                    }
+                    ui.add_space(12.0);
+                });
             });
         });
     kit::scroll_fades(ui, &output, p.chrome);
