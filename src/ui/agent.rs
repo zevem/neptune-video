@@ -764,28 +764,28 @@ fn written(text: &str, p: &Palette) -> LayoutJob {
 
 /// One tool step: what it was and how it ended, with the edit it made.
 fn step_row(ui: &mut Ui, p: &Palette, step: &Step) {
-    // The edit a step made is said quietly after it; why one was refused
-    // is the one line that explains a failure, and is read as the step is.
+    // The edit a step made is said after it, and why one was refused is the
+    // one line that explains a failure: both are read as the step is.
     let (mark, detail, ink) = match &step.state {
         StepState::Running => (Mark::Dot(p.muted), None, p.secondary),
         StepState::Done(edit) => (
             Mark::Glyph(Icon::CircleCheck, p.green),
-            edit.as_deref().map(|edit| (edit, p.muted)),
+            edit.as_deref(),
             p.secondary,
         ),
         StepState::Refused(why) => (
             Mark::Glyph(Icon::AlertCircle, p.red),
-            why.as_deref().map(|why| (why, p.secondary)),
+            why.as_deref(),
             p.secondary,
         ),
         StepState::Stopped => (Mark::Glyph(Icon::Close, p.muted), None, p.muted),
     };
     let mut text = plain(&step.what, theme::regular(12.0), ink);
-    if let Some((detail, ink)) = detail {
+    if let Some(detail) = detail {
         text.append(
             &format!("  {detail}"),
             0.0,
-            egui::TextFormat::simple(theme::regular(12.0), ink),
+            egui::TextFormat::simple(theme::regular(12.0), p.secondary),
         );
     }
     marked(ui, mark, text, 24.0);
