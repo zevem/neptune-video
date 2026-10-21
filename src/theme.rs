@@ -448,9 +448,20 @@ impl Palette {
         }
     }
 
-    /// The band a tile's name sits on over a picture, under white ink.
+    /// The band a tile's name sits on over a picture: a shade under white
+    /// ink in the dark, and in the light a frost under dark ink, which reads
+    /// over a picture as well and does not lay a dark slab along every tile.
     pub fn tile_band(&self) -> Color32 {
-        Color32::from_black_alpha(110)
+        if self.dark {
+            Color32::from_black_alpha(110)
+        } else {
+            Color32::from_white_alpha(190)
+        }
+    }
+
+    /// The ink of a name on `tile_band`.
+    pub fn tile_band_ink(&self) -> Color32 {
+        if self.dark { Color32::WHITE } else { self.fg }
     }
 
     /// A contrast line just inside a selection ring.

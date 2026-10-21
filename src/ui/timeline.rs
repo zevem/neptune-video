@@ -4619,8 +4619,8 @@ fn banded(track: &Track, tile: Rect) -> bool {
 fn name_ink(p: &Palette, selected: bool, banded: bool) -> Color32 {
     if selected {
         p.on_accent
-    } else if banded && p.dark {
-        Color32::WHITE
+    } else if banded {
+        p.tile_band_ink()
     } else {
         p.fg
     }
@@ -4792,9 +4792,7 @@ fn paint_clip(
     }
 
     // The name's row: a band over a picture, filled with the accent while
-    // the clip is selected. In the dark it is a shade under white ink; in
-    // the light a frost under dark ink, which reads over a picture as well
-    // and does not lay a dark slab along every light tile.
+    // the clip is selected.
     let row = if tall {
         Rect::from_min_size(inner.min, vec2(inner.width(), NAME_ROW))
     } else {
@@ -4808,13 +4806,7 @@ fn paint_clip(
             sw: 0,
             se: 0,
         };
-        let fill = if selected {
-            p.accent
-        } else if p.dark {
-            p.tile_band()
-        } else {
-            Color32::from_white_alpha(190)
-        };
+        let fill = if selected { p.accent } else { p.tile_band() };
         painter.rect_filled(band, top, fill.gamma_multiply(opacity));
     }
     let ink = name_ink(p, selected, banded).gamma_multiply(opacity);
