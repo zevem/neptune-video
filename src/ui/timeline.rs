@@ -1700,9 +1700,11 @@ fn volume_field(ui: &mut Ui, p: &Palette, value: &mut f32) -> Response {
     const UNIT: &str = " %";
     let surface = ui.painter().add(egui::Shape::Noop);
     let unit_font = theme::regular(12.5);
+    // The unit is in the value's ink, as Terminal's fields write it.
+    let ink = if ui.is_enabled() { p.fg } else { p.muted };
     let unit = ui
         .painter()
-        .layout_no_wrap(UNIT.to_owned(), unit_font.clone(), p.muted);
+        .layout_no_wrap(UNIT.to_owned(), unit_font.clone(), ink);
     let field = ui
         .scope(|ui| {
             // The drag value draws no surface of its own: this one is drawn
@@ -1778,7 +1780,7 @@ fn volume_field(ui: &mut Ui, p: &Palette, value: &mut f32) -> Response {
             rect.right() - 8.0 - unit.size().x,
             rect.center().y - unit.size().y * 0.5,
         );
-        ui.painter().galley(at, unit, p.muted);
+        ui.painter().galley(at, unit, ink);
     }
     field
 }

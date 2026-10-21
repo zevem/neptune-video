@@ -376,9 +376,9 @@ pub struct Number<'a> {
 
 /// A number that is dragged or typed, in a 26-point field that takes `size`.
 /// It is egui's drag value inside the surface, so its identity, typing and
-/// scrubbing are egui's; `label` names it beside its row. The axis and the
-/// unit are painted quieter than the value, which stands right-aligned
-/// before the unit.
+/// scrubbing are egui's; `label` names it beside its row. The axis is
+/// painted quieter than the value, which stands right-aligned before the
+/// unit; the unit is in the value's ink, as Terminal's fields write it.
 pub fn number_field(
     ui: &mut Ui,
     p: &Palette,
@@ -389,9 +389,11 @@ pub fn number_field(
 ) -> Response {
     let surface = ui.painter().add(Shape::Noop);
     let unit_font = theme::regular(12.5);
-    let unit = ui
-        .painter()
-        .layout_no_wrap(number.suffix.to_owned(), unit_font.clone(), p.muted);
+    let unit = ui.painter().layout_no_wrap(
+        number.suffix.to_owned(),
+        unit_font.clone(),
+        if ui.is_enabled() { p.fg } else { p.muted },
+    );
     let enabled = ui.is_enabled();
     let response = ui
         .scope(|ui| {

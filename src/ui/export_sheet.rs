@@ -1094,15 +1094,16 @@ fn field(
 ) -> egui::Response {
     let (_, rect) = ui.allocate_space(vec2(width, metrics::CONTROL_HEIGHT));
     controls::field_frame(ui, *p, rect, id, valid);
+    // The unit is in the value's ink, as Terminal's fields write it.
+    let ink = if ui.is_enabled() { p.fg } else { p.muted };
     let unit = suffix.map(|suffix| {
-        let galley =
-            (ui.painter()).layout_no_wrap(suffix.to_owned(), theme::regular(13.0), p.muted);
+        let galley = (ui.painter()).layout_no_wrap(suffix.to_owned(), theme::regular(13.0), ink);
         let at = pos2(
             rect.right() - 10.0 - galley.size().x,
             rect.center().y - galley.size().y * 0.5,
         );
         let shown = Rect::from_min_size(at, galley.size());
-        ui.painter().galley(at, galley, p.muted);
+        ui.painter().galley(at, galley, ink);
         (suffix, shown)
     });
     let after = unit.map_or(0.0, |(_, shown)| shown.width() + 4.0);

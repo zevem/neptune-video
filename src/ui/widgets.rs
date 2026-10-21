@@ -841,15 +841,16 @@ mod tests {
             Some("2.0 s"),
             "{seen:?}"
         );
-        // The unit is painted in its own quieter ink.
+        // Spec §4.3.2 (P10): the unit is painted apart, in the value's ink,
+        // as Terminal's fields write it.
         let shapes = frame(&ctx, Vec::new(), &mut add);
         let unit = shapes.iter().any(|shape| match shape {
             Shape::Text(text) => {
-                text.galley.text() == " s" && text.galley.job.sections[0].format.color == p.muted
+                text.galley.text() == " s" && text.galley.job.sections[0].format.color == p.fg
             }
             _ => false,
         });
-        assert!(unit, "the unit is muted");
+        assert!(unit, "the unit is in the value's ink");
     }
 
     #[test]
