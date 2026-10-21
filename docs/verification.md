@@ -5,6 +5,45 @@ editing evidence. Production readiness, CapCut/Palmier Pro parity and extreme
 performance remain goals requiring the gates below.
 Neptune Terminal was inspected read-only as the stack and engineering reference.
 
+## Interface revamp: acceptance (2026-10-21)
+
+The revamp gives Neptune Video Neptune Terminal's look and behaviour. It was
+accepted on branch `t3/revamp-ui-neptune-design` at `6a5a45e`. The host was
+Linux 7.0.0-38-generic x86_64 (i9-13900HX) with Rust 1.97.1. As the
+validation owner's workspace checks, formatting, the architecture check and
+`scripts/test-workspace.py --profile ci` passed. The tests passed
+**2,300 tests in 36 binaries**, with none failing or ignored (1,349 desktop and
+456 media). Denied-warning workspace all-target Clippy and the locked CI-profile build of the
+three binaries also passed. The final native captures are a `dev` build of
+`6a5a45e`, taken by the revamp's harness on a private Xvfb display at
+1600x1000. The window scale was 1.0, the renderer was lavapipe software
+Vulkan, and there was no compositor. The matrix holds 154 states at 1440x900
+and 760x560, in dark and light, with each state's AT-SPI tree. No state was
+missed. The captures, contact sheets and check logs are in
+[`artifacts/interface-revamp-2026-10-21/`](../artifacts/interface-revamp-2026-10-21),
+which is local because `artifacts/` is not tracked.
+
+The last review round read those captures against the design's §9
+checklist. This record keeps only the verdicts that reached it, which stop
+part-way through §9.4:
+
+| Area | Verdict |
+| --- | --- |
+| §9.1 Every state | Pass: rounded wells and scrim, no clipped text outside designed fades, no chrome accent in `project`, glyphs within 0.5 pt, Geist and JetBrains Mono per role, light inks identical to Terminal's |
+| §9.2 Window and toolbar | Pass: 44-pt toolbar, lights at 22/42/62, toggles, title button, launcher (centred, folded at 760), quiet Export, regions, project menu order and fit |
+| §9.3 Library | Pass, except that the Captions actions are out of order and the scroll bar lane differs between tabs. A "Missing" card cannot be shown, because no worker publishes that status yet |
+| §9.4 Viewer and transport | Pass for the stage, the picture inset and keyline, and the transport's disc, timecode, record dot and detail. The rest of §9.4 did not reach this record |
+| §9.10 Narrow window | Pass, except that the ruler's 12×13 marker flag is under 22 pt and §9.10 does not list it |
+| §9.13 Automated gates | Pass: no `ComboBox::from` and no palette `surface` or `sunken`. Spacing outside the §1.1 steps names the geometry it reproduces. The 91 accent-grep hits are content selection, drags, Primary, progress, focus, switches, solo or test and settings reads |
+
+§9.5 to §9.9, §9.11 and §9.12 are not recorded here and make no claim. Their
+captures are kept. The recordings in the next section are the native
+evidence for drags, playback and scrubbing. Nothing here covers macOS,
+Windows, a real GPU or compositor, HiDPI scale, or native hover, pressed,
+tooltip and animation states. Kittest tests paint those states in an egui
+pass, but they were not seen in a native window. No screen reader was used,
+and offline or missing media marks wait on a worker-published status.
+
 ## Interface revamp: drag, playback and scrubbing recordings (2026-10-21)
 
 The revamp's still captures cannot show a drag, playback or a scrub, so
