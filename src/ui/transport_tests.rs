@@ -7,7 +7,9 @@
 //!
 //! `FIXTURE:` is a precondition of the test itself and proves nothing about
 //! the transport. `ISSUE14:` is the behavior the issue describes.
-use super::{GROUP_GAP, SPEED, SourceInput, ViewerInput, ViewerState, show, show_source};
+use super::{
+    GROUP_GAP, PLAY, SPEED, SourceInput, ViewerInput, ViewerState, show, show_source, stage_palette,
+};
 use crate::{
     record::RecordView,
     textures::Textures,
@@ -15,7 +17,7 @@ use crate::{
     ui::{Action, ClipDraft, Selection, Transport},
 };
 use editor_core::{Asset, Clip, FrameRate, MediaKind, Project, Time};
-use eframe::egui::{self, Pos2, Rect, Shape, Vec2, pos2, vec2};
+use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use std::{path::PathBuf, sync::Arc};
 
 /// The viewer's pane in an 800×600 window with the library and the inspector
@@ -35,11 +37,17 @@ enum Deck {
 struct Painted {
     /// Filled circles: centre, radius and fill.
     discs: Vec<(Pos2, f32, egui::Color32)>,
+    /// Stroked circles: centre, radius and stroke.
+    rings: Vec<(Pos2, f32, Stroke)>,
+    /// Rectangles: where, their corners, fill and stroke.
+    rects: Vec<(Rect, CornerRadius, Color32, Stroke)>,
     /// Laid-out text and where it is.
     texts: Vec<(String, Rect)>,
     /// What accessibility is told: each name, where it is, and whether it
     /// can be used.
     names: Vec<(String, Rect, bool)>,
+    /// The name of what has the keyboard.
+    focused: Option<String>,
 }
 
 impl Painted {
@@ -50,7 +58,19 @@ impl Painted {
                     self.collect(shape);
                 }
             }
-            Shape::Circle(circle) => self.discs.push((circle.center, circle.radius, circle.fill)),
+            Shape::Circle(circle) => {
+                if circle.fill != Color32::TRANSPARENT {
+                    self.discs.push((circle.center, circle.radius, circle.fill));
+                }
+                if circle.stroke.width > 0.0 {
+                    self.rings
+                        .push((circle.center, circle.radius, circle.stroke));
+                }
+            }
+            Shape::Rect(rect) => {
+                self.rects
+                    .push((rect.rect, rect.corner_radius, rect.fill, rect.stroke))
+            }
             Shape::Text(text) => self.texts.push((
                 text.galley.text().to_owned(),
                 text.galley.rect.translate(text.pos.to_vec2()),
@@ -96,6 +116,8 @@ struct Pane {
     draft: Option<ClipDraft>,
     playing: bool,
     record: RecordView,
+    /// Whether the library is shown beside the viewer.
+    library: bool,
 }
 
 impl Pane {
@@ -134,6 +156,7 @@ impl Pane {
             draft: None,
             playing: false,
             record: RecordView::Idle,
+            library: true,
         }
     }
 
@@ -167,8 +190,9 @@ impl Pane {
                         looping: false,
                         media: None,
                         record: self.record,
-                        library: true,
+                        library: self.library,
                         quality: Default::default(),
+                        cards: &[],
                     },
                     &mut actions,
                 ),
@@ -209,6 +233,10 @@ impl Pane {
                     ))
                 })
                 .collect();
+            painted.focused = (update.nodes.iter())
+                .find(|(id, _)| *id == update.focus)
+                .and_then(|(_, node)| node.label())
+                .map(str::to_owned);
         }
         // No renderer takes this pass's texture changes, the font atlas among
         // them, and epaint refuses to drop them unless told it is meant.
@@ -564,4 +592,269 @@ fn an_empty_timeline_offers_nothing_to_play() {
         "the stage does not say the timeline is empty: {:?}",
         painted.names
     );
+}
+
+impl Pane {
+    /// The pointer moved to `at` and left there for a while: long enough
+    /// for a hover to light fully and a tooltip to show.
+    fn hover(&mut self, at: Pos2) -> Painted {
+        self.pass(vec![egui::Event::PointerMoved(at)]);
+        for _ in 0..90 {
+            self.pass(Vec::new());
+        }
+        self.pass(Vec::new()).1
+    }
+
+    /// The primary button pressed at `at` and still held.
+    fn hold(&mut self, at: Pos2) -> Painted {
+        self.pass(vec![egui::Event::PointerMoved(at)]);
+        self.pass(vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        self.pass(Vec::new()).1
+    }
+
+    /// Tab pressed until the control named `wanted` has the keyboard.
+    fn focus(&mut self, wanted: &str) -> Painted {
+        let tab = egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for _ in 0..40 {
+            self.pass(vec![tab.clone()]);
+            let (_, painted) = self.pass(Vec::new());
+            if painted.focused.as_deref() == Some(wanted) {
+                return painted;
+            }
+        }
+        panic!("FIXTURE: Tab never reached \"{wanted}\"");
+    }
+
+    /// The stage's palette, which the transport is drawn in.
+    fn stage(&self) -> Palette {
+        stage_palette(&self.palette)
+    }
+}
+
+/// Whether a rectangle filled `fill` was painted over `place`.
+fn filled(painted: &Painted, place: Rect, fill: Color32) -> bool {
+    (painted.rects.iter()).any(|(rect, _, shown, _)| *shown == fill && rect.contains_rect(place))
+}
+
+#[test]
+fn play_speed_and_record_light_on_hover_press_and_focus() {
+    // Spec §4.4.2–§4.4.4 and §9.12: hover fills `hover`, a press `pressed`,
+    // and the keyboard rings what it is on.
+    let (hover, pressed, ring) = {
+        let pane = Pane::new(Deck::Timeline, PANES[2]);
+        let p = pane.stage();
+        (p.hover, p.pressed, theme::tint(p.accent, 0.55))
+    };
+    let accent = Pane::new(Deck::Timeline, PANES[2]).stage().accent;
+    let disc_at = |painted: &Painted, at: Pos2, fill: Color32| {
+        (painted.discs.iter()).any(|(centre, radius, shown)| {
+            *shown == fill && centre.distance(at) < 0.5 && *radius >= PLAY * 0.5 - 0.5
+        })
+    };
+
+    // Play.
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    let rested = pane.rest();
+    let play = pane.play(&rested).center();
+    let painted = pane.hover(play);
+    assert!(
+        disc_at(&painted, play, hover),
+        "play does not light on hover"
+    );
+    let painted = pane.hold(play);
+    assert!(
+        disc_at(&painted, play, pressed),
+        "play does not darken while pressed"
+    );
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    let painted = pane.focus("Play (Space)");
+    assert!(
+        (painted.rings.iter()).any(|(centre, radius, stroke)| centre.distance(play) < 0.5
+            && (*radius - (PLAY * 0.5 + 2.0)).abs() < 0.01
+            && *stroke == Stroke::new(2.0, ring)),
+        "play has no focus ring: {:?}",
+        painted.rings
+    );
+
+    // Speed, which reads in its place.
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    // Found by what it reads, which is centred in it to a point.
+    let rested = pane.rest();
+    let speed = pane.speed(&rested).shrink(1.0);
+    let painted = pane.hover(speed.center());
+    assert!(
+        filled(&painted, speed, hover),
+        "speed does not light on hover"
+    );
+    let painted = pane.hold(speed.center());
+    assert!(
+        filled(&painted, speed, pressed),
+        "speed does not darken while pressed"
+    );
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    let painted = pane.focus("Playback speed, 1×");
+    assert!(
+        (painted.rects.iter())
+            .any(|(rect, _, _, stroke)| *stroke == Stroke::new(2.0, ring)
+                && rect.contains_rect(speed)),
+        "speed has no focus ring"
+    );
+
+    // Record, whose surface is its target's less a point all round.
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    let painted = pane.rest();
+    let disc = record_disc(&pane, &painted).unwrap();
+    let surface = Rect::from_center_size(disc, Vec2::splat(24.0));
+    let painted = pane.hover(disc);
+    assert!(
+        filled(&painted, surface, hover),
+        "record does not light on hover"
+    );
+    let painted = pane.hold(disc);
+    assert!(
+        filled(&painted, surface, pressed),
+        "record does not darken while pressed"
+    );
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    let painted = pane.focus("Record voiceover (R)");
+    assert!(
+        (painted.rects.iter()).any(|(rect, _, _, stroke)| *stroke == Stroke::new(1.5, accent)
+            && rect.contains_rect(surface)),
+        "record has no focus ring"
+    );
+}
+
+#[test]
+fn a_take_is_a_pill_with_its_level_in_the_colour_of_its_loudness() {
+    // Spec §4.4.3: an 80 × 28 pill at r14, and a level bar green below -12
+    // dBFS, yellow to -1 dB and red within 1 dB of full scale.
+    for (level, ink) in [(0.1, "green"), (0.5, "yellow"), (0.95, "red")] {
+        let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+        pane.record = RecordView::Recording {
+            elapsed: Time::from_seconds(3.6),
+            level,
+        };
+        let p = pane.stage();
+        let painted = pane.rest();
+        let pill = (painted.rects.iter())
+            .find(|(_, _, fill, _)| *fill == theme::tint(p.red, 0.14))
+            .unwrap_or_else(|| panic!("no take pill at level {level}"));
+        assert_eq!(pill.0.size(), vec2(80.0, 28.0), "the pill's size");
+        assert_eq!(pill.1, CornerRadius::same(14), "the pill's corners");
+        let fill = match ink {
+            "green" => p.green,
+            "yellow" => p.yellow,
+            _ => p.red,
+        };
+        let bar = |fill: Color32| {
+            (painted.rects.iter()).find(|(rect, _, shown, _)| {
+                *shown == fill && rect.height() == 4.0 && pill.0.contains_rect(*rect)
+            })
+        };
+        let track = bar(theme::tint(p.fg, 0.14))
+            .unwrap_or_else(|| panic!("no level track at level {level}"));
+        assert_eq!(track.0.width(), 24.0);
+        let lit = bar(fill).unwrap_or_else(|| panic!("the level at {level} is not {ink}"));
+        assert!(lit.0.left() == track.0.left() && lit.0.width() <= track.0.width());
+        // The time and the level are one block in the middle of what the
+        // stop square leaves.
+        let time = painted.text("0:03").unwrap();
+        let middle = (pill.0.left() + 28.0 + pill.0.right() - 12.0) * 0.5;
+        assert!((time.center().x - middle).abs() < 0.5);
+        assert!((track.0.center().x - middle).abs() < 0.5);
+    }
+}
+
+#[test]
+fn a_deck_with_nothing_to_play_says_why_on_each_control() {
+    // Spec §3.10 F12: a disabled control gives its reason on hover, in the
+    // words of its deck.
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    pane.project = Project::new("Empty");
+    let painted = pane.rest();
+    for name in ["Play (Space)", "Next frame (→)", "Go to end (End)"] {
+        let (rect, _) = painted.named(name).unwrap();
+        let painted = pane.hover(rect.center());
+        assert!(
+            painted
+                .text("Nothing to play: the timeline is empty")
+                .is_some(),
+            "{name} gives no reason on an empty timeline"
+        );
+    }
+    let mut pane = Pane::new(Deck::Source, PANES[2]);
+    pane.asset.duration = Time::ZERO;
+    let painted = pane.rest();
+    for name in ["Play (Space)", "Previous frame (←)"] {
+        let (rect, enabled) = painted.named(name).unwrap();
+        assert!(!enabled, "{name} can be used on a source of no length");
+        let painted = pane.hover(rect.center());
+        assert!(
+            painted
+                .text("Nothing to play: the timeline is empty")
+                .is_none()
+                && painted
+                    .text("Nothing to play: the file's length is not known")
+                    .is_some(),
+            "{name} on the source deck does not say why it has nothing to play"
+        );
+    }
+}
+
+#[test]
+fn an_empty_timeline_offers_the_import_only_where_the_library_does_not() {
+    // Spec §5.3: "Import media…" shows only when the library is empty or
+    // hidden.
+    let media = Asset::new(
+        PathBuf::from("/media/beside.mp4"),
+        MediaKind::Video,
+        Time::from_seconds(4.0),
+    );
+    for (library, holds, offered) in [
+        (true, false, true),
+        (true, true, false),
+        (false, true, true),
+        (false, false, true),
+    ] {
+        let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+        pane.project = Project::new("Empty");
+        if holds {
+            Arc::make_mut(&mut pane.project.assets).insert(media.id, media.clone());
+        }
+        pane.library = library;
+        let painted = pane.rest();
+        assert_eq!(
+            painted.named("Import media…").is_some(),
+            offered,
+            "library shown {library}, holding media {holds}"
+        );
+    }
+}
+
+#[test]
+fn without_a_media_service_the_stage_never_says_it_waits() {
+    // Spec §5.3 and §8.1 #9: no frame is on its way without a service, so
+    // the stage does not claim one is, however long it is looked at.
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    let clip = Clip::from_asset(&pane.asset, Time::ZERO);
+    Arc::make_mut(&mut pane.project.assets).insert(pane.asset.id, pane.asset.clone());
+    Arc::make_mut(&mut pane.project.tracks[0]).clips.push(clip);
+    for _ in 0..90 {
+        pane.pass(Vec::new());
+    }
+    let painted = pane.rest();
+    assert!(painted.text("Waiting for frames…").is_none());
+    let repaint = pane.ctx.has_requested_repaint();
+    assert!(!repaint, "the stage keeps the window awake for no frame");
 }

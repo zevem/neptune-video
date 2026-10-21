@@ -203,6 +203,7 @@ impl Stage {
                     record: Default::default(),
                     library: true,
                     quality: Default::default(),
+                    cards: &[],
                 },
                 &mut actions,
             );

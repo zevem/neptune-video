@@ -6268,6 +6268,10 @@ impl App {
                     record: self.recording.view(),
                     library: show_library,
                     quality: self.settings.preview.quality,
+                    cards: &(self.saved_audio.cards().into_iter())
+                        .chain(self.separating.cards())
+                        .map(|card| card.request)
+                        .collect::<Vec<_>>(),
                 },
                 actions,
             ),

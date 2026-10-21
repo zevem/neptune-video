@@ -6,7 +6,7 @@
 //! picture drawn steadied, in fractions of the source frame: a box drawn
 //! over something on the canvas is the place of the frame that is drawn
 //! there.
-use super::{Placed, ViewerState, frame, prompt};
+use super::{Placed, ViewerState, frame};
 use crate::{
     compose,
     theme::{self, Palette},
@@ -115,35 +115,30 @@ fn inside(region: &TrackRegion, at: [f32; 2]) -> bool {
     (0..2).all(|axis| (at[axis] - region.center[axis]).abs() <= region.size[axis] * 0.5)
 }
 
+/// What the stage asks while a region is chosen on it.
+pub(super) const REGION_PROMPT: &str = "Drag on the picture to draw the box to track";
+
 /// The stage while a region is chosen on it: the box is drawn on its clip's
 /// picture, a drag inside it moves it and a drag anywhere else on the
-/// picture draws a new one. Nothing is selected or moved meanwhile. Returns
-/// where the stage says what to do.
+/// picture draws a new one. Nothing is selected or moved meanwhile. What the
+/// stage asks meanwhile is said over all of it, by the caller.
 pub(super) fn choose_region(
     ui: &mut Ui,
     stage: Rect,
     picture: Option<Picture>,
     p: &Palette,
     state: &mut ViewerState,
-) -> Option<Rect> {
-    const NAME: &str = "Drag on the picture to draw the box to track";
-    let region = state.region?;
+) {
+    let Some(region) = state.region else {
+        return;
+    };
     let response = ui.interact(stage, Id::new("viewer-stage"), Sense::click_and_drag());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, NAME));
-    let said = prompt(
-        ui,
-        stage,
-        p,
-        if picture.is_some() {
-            NAME
-        } else {
-            "The clip is not on screen at the playhead"
-        },
-    );
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, REGION_PROMPT));
     let painter = ui.painter_at(stage);
     let Some(picture) = picture else {
         state.region_hold = None;
-        return Some(said);
+        return;
     };
     let pointer = ui.input(|i| i.pointer.latest_pos());
     if response.drag_started()
@@ -200,7 +195,6 @@ pub(super) fn choose_region(
     let centre = picture.to_screen(shown.center);
     painter.circle_filled(centre, 3.5, p.frame_halo());
     painter.circle_filled(centre, 2.5, p.accent);
-    Some(said)
 }
 
 /// The paths of the trackers the selected clip has to do with, on the
