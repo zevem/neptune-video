@@ -96,6 +96,22 @@ pub fn scroll_fade(painter: &Painter, rect: Rect, edge: Edge, ground: Color32) {
     }
 }
 
+/// The scroll fades of what a scroll area shows: one into `ground` at each
+/// edge its content runs on past, so that a line cut there is read as more
+/// and not as a sliver. None at an edge with nothing beyond it.
+pub fn scroll_fades<R>(ui: &Ui, output: &egui::scroll_area::ScrollAreaOutput<R>, ground: Color32) {
+    let shown = output.inner_rect;
+    let above = output.state.offset.y;
+    let below = output.content_size.y - above - shown.height();
+    let painter = ui.painter_at(shown);
+    if above > 0.5 {
+        scroll_fade(&painter, shown, Edge::Top, ground);
+    }
+    if below > 0.5 {
+        scroll_fade(&painter, shown, Edge::Bottom, ground);
+    }
+}
+
 // ---- Icon buttons --------------------------------------------------------
 
 /// Splits a control's name into what it does and the shortcut it gives in
@@ -961,6 +977,25 @@ pub fn menu_heading(ui: &mut Ui, p: &Palette, text: &str) {
     );
 }
 
+/// Words at the head of a menu, or where a heading would stand, that say
+/// why the rows under them cannot be used: Regular 11.5 `secondary`, set
+/// where the rows' words begin, wrapped within the menu and read as a
+/// label.
+pub fn menu_note(ui: &mut Ui, p: &Palette, text: &str) {
+    let width = ui.available_width();
+    let galley = ui.painter().layout(
+        text.to_owned(),
+        theme::regular(11.5),
+        p.secondary,
+        (width - 32.0 - 8.0).max(40.0),
+    );
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(width, galley.size().y + 12.0), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+    ui.painter()
+        .galley(rect.min + vec2(32.0, 6.0), galley, Color32::PLACEHOLDER);
+}
+
 // ---- Chips, badges and progress -----------------------------------------
 
 /// A pill that picks one of several named choices, such as a preset. The one
@@ -1294,6 +1329,50 @@ fn statement(
         ("empty-state-action", label),
         |ui| controls::button(ui, *p, label, ButtonKind::Secondary).clicked(),
     )
+}
+
+// ---- Painted words and sheets' keys -------------------------------------
+
+/// Tells assistive tools of words that are only painted: `text` over
+/// `rect`, where it is drawn, read as the label it stands for.
+pub fn said(ui: &Ui, rect: Rect, text: &str) {
+    ui.interact(rect, ui.auto_id_with(("said", text)), Sense::hover())
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+}
+
+/// Whether the sheet `id` is shown in this frame for the first time since it
+/// was last away: the frame whose keys were meant for what was there before.
+/// Asked again in the same frame, it says the same.
+pub fn opening(ctx: &egui::Context, id: Id) -> bool {
+    let frame = ctx.cumulative_frame_nr();
+    let key = id.with("shown");
+    let seen = ctx.data(|data| data.get_temp::<(u64, u64)>(key));
+    let first = match seen {
+        Some((first, last)) if last == frame || last + 1 == frame => first,
+        _ => frame,
+    };
+    ctx.data_mut(|data| data.insert_temp(key, (first, frame)));
+    first == frame
+}
+
+/// The Enters of this frame: whether one was pressed afresh, and whether
+/// one was held down or pressed as the sheet was `opening`, which was
+/// meant for what was there before (spec §5.9.1).
+pub fn enters(ctx: &egui::Context, opening: bool) -> (bool, bool) {
+    ctx.input(|input| {
+        (input.events.iter()).fold((false, false), |(fresh, carried), event| match event {
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                pressed: true,
+                repeat,
+                ..
+            } => {
+                let old = *repeat || opening;
+                (fresh || !old, carried || old)
+            }
+            _ => (fresh, carried),
+        })
+    })
 }
 
 // ---- Splitter --------------------------------------------------------------

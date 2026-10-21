@@ -787,23 +787,7 @@ pub(super) fn scrolled(
             ui.add_space(PAD);
         });
     });
-    faded(ui, &output, ground);
-}
-
-/// Fades into `ground` each edge of what a scroll area shows that its
-/// content runs on past, so that a line cut there fades out rather than
-/// being sliced.
-fn faded<R>(ui: &Ui, output: &egui::scroll_area::ScrollAreaOutput<R>, ground: Color32) {
-    let shown = output.inner_rect;
-    let above = output.state.offset.y;
-    let below = output.content_size.y - above - shown.height();
-    let painter = ui.painter_at(shown);
-    if above > 0.5 {
-        kit::scroll_fade(&painter, shown, kit::Edge::Top, ground);
-    }
-    if below > 0.5 {
-        kit::scroll_fade(&painter, shown, kit::Edge::Bottom, ground);
-    }
+    kit::scroll_fades(ui, &output, ground);
 }
 
 /// A sheet's 52-point title row: the title at its leading edge and, at the
@@ -824,7 +808,7 @@ pub(super) fn header(
         theme::semibold(15.0),
         p.fg,
     );
-    said(ui, words, title);
+    kit::said(ui, words, title);
     // The close control's centre is 26 in from the edge, as in Terminal.
     let controls = Rect::from_min_max(
         pos2(rect.left() + PAD, rect.top()),
@@ -857,13 +841,6 @@ pub(super) fn header(
     closed
 }
 
-/// Words that are only painted, named for those who do not see them as the
-/// labels they replaced were: `text` over `rect`, where it is drawn.
-pub(super) fn said(ui: &Ui, rect: Rect, text: &str) {
-    ui.interact(rect, ui.auto_id_with(("said", text)), Sense::hover())
-        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
-}
-
 /// The label over a card, set in 4 from it as Terminal sets it. Returns
 /// its row, for a switch at its trailing end.
 fn section(ui: &mut Ui, p: &Palette, text: &str) -> Rect {
@@ -881,7 +858,7 @@ fn section_of(ui: &mut Ui, p: &Palette, text: &str, height: f32) -> Rect {
         theme::medium(11.5),
         p.secondary,
     );
-    said(ui, words, text);
+    kit::said(ui, words, text);
     rect
 }
 
@@ -946,7 +923,7 @@ fn row_after<R>(
     group.row_with_height(ui, label, ROW, |ui| {
         // The label is 2 in from where the controls' room starts.
         let row = ui.max_rect();
-        said(
+        kit::said(
             ui,
             Rect::from_min_size(pos2(row.left() + 2.0, row.top()), vec2(words, row.height())),
             label,
@@ -976,7 +953,7 @@ fn wide<R>(
             theme::regular(13.0),
             p.fg,
         );
-        said(ui, words, label);
+        kit::said(ui, words, label);
     }
     let control = Rect::from_min_max(
         pos2(rect.left() + 12.0, rect.bottom() - 6.0 - 28.0),
@@ -1121,7 +1098,7 @@ fn field(
     );
     // Read after what is typed, where it is seen.
     if let Some((suffix, shown)) = unit {
-        said(ui, shown, suffix);
+        kit::said(ui, shown, suffix);
     }
     response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, ui.is_enabled(), name));
     response
@@ -1241,7 +1218,7 @@ pub fn show(
     // Enter exports, as the sheet's one Primary, when it is pressed afresh
     // while nothing has the keyboard: not one carried over from what was
     // there before the sheet, held down, or meant for a field or a button.
-    let opening = opening(ctx, Id::new("export-sheet"));
+    let opening = kit::opening(ctx, Id::new("export-sheet"));
     let enter = fresh_enter(ctx, opening) && ctx.memory(|memory| memory.focused()).is_none();
     let screen = ctx.content_rect();
     let size = vec2(
@@ -1335,37 +1312,10 @@ pub fn show(
     answer
 }
 
-/// Whether the sheet `id` is shown in this frame for the first time since it
-/// was last away: the frame whose keys were meant for what was there before.
-fn opening(ctx: &egui::Context, id: Id) -> bool {
-    let frame = ctx.cumulative_frame_nr();
-    let key = id.with("shown");
-    let seen = ctx.data(|data| data.get_temp::<(u64, u64)>(key));
-    let first = match seen {
-        Some((first, last)) if last == frame || last + 1 == frame => first,
-        _ => frame,
-    };
-    ctx.data_mut(|data| data.insert_temp(key, (first, frame)));
-    first == frame
-}
-
 /// An Enter pressed in this frame, and none that was held down or pressed
 /// as the sheet opened.
 fn fresh_enter(ctx: &egui::Context, opening: bool) -> bool {
-    let (fresh, carried) = ctx.input(|input| {
-        (input.events.iter()).fold((false, false), |(fresh, carried), event| match event {
-            egui::Event::Key {
-                key: egui::Key::Enter,
-                pressed: true,
-                repeat,
-                ..
-            } => {
-                let old = *repeat || opening;
-                (fresh || !old, carried || old)
-            }
-            _ => (fresh, carried),
-        })
-    });
+    let (fresh, carried) = kit::enters(ctx, opening);
     fresh && !carried
 }
 
@@ -1572,11 +1522,11 @@ fn footer(
                     pos2(room.left() + 22.0, room.center().y),
                     words,
                 );
-                said(ui, shown, "Checking encoders…");
+                kit::said(ui, shown, "Checking encoders…");
             } else if let Some(facts) = facts {
                 let words = (ui.painter()).layout_job(figures(facts, p.secondary, room.width()));
                 let shown = controls::galley_at(ui.painter(), room.left_center(), words);
-                said(ui, shown, facts);
+                kit::said(ui, shown, facts);
             }
         },
     );
@@ -2259,7 +2209,7 @@ impl Sheet<'_, '_> {
                                 }
                             }
                         });
-                    faded(ui, &output, p.elevated);
+                    kit::scroll_fades(ui, &output, p.elevated);
                 });
             });
             // The most used, as many as one row holds.

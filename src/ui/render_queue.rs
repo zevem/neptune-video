@@ -10,7 +10,7 @@
 //! and a fixed footer.
 use super::{
     controls::{self, ButtonKind},
-    export_sheet::{header, refusal_line, said, scaffold, scrolled},
+    export_sheet::{header, refusal_line, scaffold, scrolled},
     kit,
 };
 use crate::{
@@ -144,7 +144,7 @@ pub fn show(
                 theme::regular(12.0),
                 p.secondary,
             );
-            said(ui, words, &summary);
+            kit::said(ui, words, &summary);
         }
 
         let order_id = Id::new("render-queue-order");
@@ -657,7 +657,7 @@ fn job_row(
         .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &status));
     // The encoder is read after the status, as it is seen.
     if let Some((shown, encoder)) = encoder_shown {
-        said(ui, shown, encoder);
+        kit::said(ui, shown, encoder);
     }
     y += LINE;
 

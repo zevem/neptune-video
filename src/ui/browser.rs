@@ -290,7 +290,7 @@ pub fn show(
                 }
             });
         });
-    library::fade_when_clipped(ui, p, &output);
+    kit::scroll_fades(ui, &output, p.chrome);
 }
 
 #[expect(clippy::too_many_arguments, reason = "one call site per tile")]
@@ -504,13 +504,18 @@ fn swatch(painter: &Painter, rect: Rect, radius: u8, entry: Entry) {
     match entry {
         Entry::Effect(kind) => effect_swatch(painter, rect, radius, kind),
         Entry::Transition(kind) => transition_swatch(painter, rect, radius, kind),
-        Entry::Look(preset) => {
-            let (dark, light) = look_colours(preset);
-            sample(painter, rect, radius, &|level| {
-                theme::mix(dark, light, level)
-            });
-        }
+        Entry::Look(preset) => look_sample(painter, rect, radius, preset),
     }
+}
+
+/// A look on the sample frame in `rect`, rounded at `radius`: its shadows
+/// and its lights toned as the look leaves them. The library's look cards
+/// and the inspector's are drawn by it alike.
+pub(crate) fn look_sample(painter: &Painter, rect: Rect, radius: u8, preset: LookPreset) {
+    let (dark, light) = look_colours(preset);
+    sample(painter, rect, radius, &|level| {
+        theme::mix(dark, light, level)
+    });
 }
 
 /// The two colours a look leaves in the shadows and in the lights.

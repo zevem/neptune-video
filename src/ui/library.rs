@@ -1089,7 +1089,7 @@ fn media(
                 }
             }
         });
-    fade_when_clipped(ui, p, &output);
+    kit::scroll_fades(ui, &output, p.chrome);
 }
 
 /// The columns of cards in `width`, and each card's width: as many of at
@@ -1101,19 +1101,6 @@ pub(super) fn card_columns(width: f32) -> (usize, f32) {
     let columns = fit.max(if width >= TWO_COLUMNS { 2 } else { 1 });
     let cell = (width - CARD_GAP * (columns as f32 - 1.0)) / columns as f32;
     (columns, cell)
-}
-
-/// Says that a list runs on below what is shown: the scroll fade over its
-/// foot, while something is cut off there.
-pub(super) fn fade_when_clipped<R>(
-    ui: &Ui,
-    p: &Palette,
-    output: &egui::scroll_area::ScrollAreaOutput<R>,
-) {
-    let below = output.content_size.y - output.state.offset.y - output.inner_rect.height();
-    if below > 0.5 {
-        kit::scroll_fade(ui.painter(), output.inner_rect, kit::Edge::Bottom, p.chrome);
-    }
 }
 
 /// A heading over a group of cards: the look of a section label, read out

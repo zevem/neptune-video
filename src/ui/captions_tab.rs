@@ -1192,7 +1192,7 @@ fn empty(
                 ui.add_space(12.0);
             });
         });
-    library::fade_when_clipped(ui, p, &output);
+    kit::scroll_fades(ui, &output, p.chrome);
 }
 
 /// The rows of `shown` in `list`, the one under the playhead marked and

@@ -694,21 +694,6 @@ impl Pane<'_> {
     }
 }
 
-/// The two colours a look leaves in the shadows and in the lights, as the
-/// library's look cards tone their sample frame (`browser::look_colours`).
-fn look_colours(preset: LookPreset) -> (egui::Color32, egui::Color32) {
-    let rgb = egui::Color32::from_rgb;
-    match preset {
-        LookPreset::Cinematic => (rgb(18, 32, 40), rgb(226, 196, 150)),
-        LookPreset::TealOrange => (rgb(12, 74, 84), rgb(244, 150, 72)),
-        LookPreset::Vintage => (rgb(72, 50, 34), rgb(232, 212, 160)),
-        LookPreset::Faded => (rgb(70, 74, 84), rgb(214, 212, 204)),
-        LookPreset::Noir => (rgb(10, 10, 10), rgb(236, 236, 236)),
-        LookPreset::Warm => (rgb(92, 42, 20), rgb(255, 204, 138)),
-        LookPreset::Cool => (rgb(20, 40, 86), rgb(170, 214, 255)),
-    }
-}
-
 /// The narrowest a look card's swatch is, and the room between two. Three
 /// fit across the narrowest card, so the seven looks and the strength
 /// under them stay about a screen of the panel.
@@ -767,12 +752,11 @@ fn look_cards(
                 super::controls::focus_ring(painter, back, 10, *p);
             }
             let tile = Rect::from_min_size(cell.min, swatch);
-            let (dark, light) = look_colours(preset);
-            sample(
+            crate::ui::browser::look_sample(
                 &painter.with_clip_rect(tile.intersect(painter.clip_rect())),
                 tile,
                 8,
-                &|level| theme::mix(dark, light, level),
+                preset,
             );
             if chosen {
                 // Over a picture, as a badge is: white on a dark disc.
@@ -803,57 +787,6 @@ fn look_cards(
         }
     }
     picked
-}
-
-/// A point of `rect`, at parts of its width and height.
-fn at(rect: egui::Rect, x: f32, y: f32) -> egui::Pos2 {
-    egui::pos2(
-        rect.left() + rect.width() * x,
-        rect.top() + rect.height() * y,
-    )
-}
-
-/// Neptune Video: the library's sample frame (`browser::sample`), drawn
-/// here as it is there until the two share one painter. A sky lightening
-/// toward the horizon, a sun, two ridges and the ground, each a level of
-/// `ink` from dark (0) to light (1), rounded at `radius`. The painter is to
-/// clip to `rect`. Drawn with a handful of shapes, the same every frame.
-fn sample(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    radius: u8,
-    ink: &dyn Fn(f32) -> egui::Color32,
-) {
-    // Each band runs half a point under the next, so no seam shows, and is
-    // rounded at the corners of the frame it reaches.
-    let band = |top: f32, bottom: f32, level: f32| {
-        let mut band = egui::Rect::from_min_max(at(rect, 0.0, top), at(rect, 1.0, bottom));
-        if bottom < 1.0 {
-            band.max.y += 0.5;
-        }
-        let round = |at: bool| if at { radius } else { 0 };
-        let corners = egui::CornerRadius {
-            nw: round(top == 0.0),
-            ne: round(top == 0.0),
-            sw: round(bottom >= 1.0),
-            se: round(bottom >= 1.0),
-        };
-        painter.rect_filled(band, corners, ink(level));
-    };
-    band(0.0, 0.36, 0.3);
-    band(0.36, 0.56, 0.38);
-    band(0.56, 0.74, 0.47);
-    painter.circle_filled(at(rect, 0.72, 0.34), rect.height() * 0.12, ink(0.95));
-    let ridge = |points: [(f32, f32); 3], level: f32| {
-        painter.add(egui::Shape::convex_polygon(
-            points.iter().map(|(x, y)| at(rect, *x, *y)).collect(),
-            ink(level),
-            egui::Stroke::NONE,
-        ));
-    };
-    ridge([(-0.06, 0.76), (0.32, 0.44), (0.74, 0.76)], 0.24);
-    ridge([(0.34, 0.76), (0.7, 0.52), (1.08, 0.76)], 0.17);
-    band(0.74, 1.0, 0.1);
 }
 
 /// A part of a whole in hundredths, read beside the slider that sets it.

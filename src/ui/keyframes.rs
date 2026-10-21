@@ -24,8 +24,8 @@ use editor_core::{
     ParamKey, Project, Time, Track, gain_at, look, sound,
 };
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Response, Sense, Shape,
-    Stroke, StrokeKind, Ui, Vec2, emath::GuiRounding as _, pos2, vec2,
+    self, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Response, Sense, Shape, Stroke,
+    StrokeKind, Ui, Vec2, emath::GuiRounding as _, pos2, vec2,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -1139,7 +1139,7 @@ impl KeyframesState {
         // The easing is of the stretch that leaves a keyframe.
         let leaves = (self.selected.iter()).any(|key| leaves_segment(sheet.clip, key));
         if some && !leaves {
-            menu_note(ui, p, "No keyframe follows to ease to");
+            kit::menu_note(ui, p, "No keyframe follows to ease to");
         }
         ui.add_enabled_ui(leaves && !sheet.locked, |ui| {
             for (name, ease) in EASINGS {
@@ -2651,20 +2651,6 @@ fn diamond(center: Pos2, radius: f32) -> Vec<Pos2> {
 /// the controls wear, drawn round a point.
 fn ring(p: &Palette) -> Stroke {
     Stroke::new(2.0, theme::tint(p.accent, 0.55))
-}
-
-/// A line of a menu that says why its rows below cannot be used, where a
-/// heading would stand, and is read as one.
-fn menu_note(ui: &mut Ui, p: &Palette, text: &str) {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
-    ui.painter().text(
-        pos2(rect.left() + 32.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        text,
-        theme::medium(11.5),
-        p.secondary,
-    );
 }
 
 #[cfg(test)]

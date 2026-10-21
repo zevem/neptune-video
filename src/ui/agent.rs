@@ -16,7 +16,7 @@
 use super::{
     Action, PreferencesPane,
     controls::{self, ButtonKind, ButtonSize, elided, focus_ring, galley_at, place, viewport_id},
-    kit::{self, Edge},
+    kit,
     widgets::{self, menu_item, menu_style},
 };
 use crate::{
@@ -366,7 +366,7 @@ fn session_row(ui: &mut Ui, rect: Rect, input: &AgentInput, actions: &mut Vec<Ac
         .show(|ui| {
             menu_style(ui, 240.0);
             if let Some(problem) = problem {
-                menu_note(ui, p, problem);
+                kit::menu_note(ui, p, problem);
             }
             let copy = ui
                 .add_enabled_ui(command.is_some(), |ui| {
@@ -393,23 +393,6 @@ fn session_row(ui: &mut Ui, rect: Rect, input: &AgentInput, actions: &mut Vec<Ac
                 }
             }
         });
-}
-
-/// Words at the head of a menu that say why its rows cannot be used, set
-/// where the rows' words begin and read as a label.
-fn menu_note(ui: &mut Ui, p: &Palette, text: &str) {
-    let width = ui.available_width();
-    let galley = ui.painter().layout(
-        text.to_owned(),
-        theme::regular(11.5),
-        p.secondary,
-        (width - 32.0 - 8.0).max(40.0),
-    );
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(width, galley.size().y + 12.0), Sense::hover());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
-    ui.painter()
-        .galley(rect.min + vec2(32.0, 6.0), galley, Color32::PLACEHOLDER);
 }
 
 // ---- The conversation -----------------------------------------------------
@@ -500,13 +483,7 @@ fn conversation(
         });
     // Words that run on under the composer, or above under the session's
     // row, say so.
-    let shown = output.inner_rect;
-    if output.state.offset.y + shown.height() < output.content_size.y - 0.5 {
-        kit::scroll_fade(ui.painter(), shown, Edge::Bottom, p.chrome);
-    }
-    if output.state.offset.y > 0.5 {
-        kit::scroll_fade(ui.painter(), shown, Edge::Top, p.chrome);
-    }
+    kit::scroll_fades(ui, &output, p.chrome);
 }
 
 /// What the panel says before anything is asked: what the field does, what
@@ -1347,13 +1324,7 @@ fn model(ui: &mut Ui, room: Rect, input: &AgentInput, described: &str, actions: 
                     }
                 });
             // A list cut short by the window says it goes on.
-            let shown = list.inner_rect;
-            if list.state.offset.y + shown.height() < list.content_size.y - 0.5 {
-                kit::scroll_fade(ui.painter(), shown, Edge::Bottom, p.elevated);
-            }
-            if list.state.offset.y > 0.5 {
-                kit::scroll_fade(ui.painter(), shown, Edge::Top, p.elevated);
-            }
+            kit::scroll_fades(ui, &list, p.elevated);
         });
     kit::rich_tooltip(
         response,

@@ -1603,15 +1603,8 @@ fn scrolled(
                 }
             }
         });
-    let shown = output.inner_rect;
-    // A fade on each side that rows run on past, so that one cut there is
-    // read as more, not as a sliver.
-    if output.state.offset.y > 0.5 {
-        kit::scroll_fade(&ui.painter_at(shown), shown, kit::Edge::Top, p.chrome);
-    }
-    if output.state.offset.y + shown.height() < output.content_size.y - 1.0 {
-        kit::scroll_fade(&ui.painter_at(shown), shown, kit::Edge::Bottom, p.chrome);
-    }
+    // A fade on each side that rows run on past.
+    kit::scroll_fades(ui, &output, p.chrome);
 }
 
 /// Where the floating scroll bar of the pane being laid out starts. A

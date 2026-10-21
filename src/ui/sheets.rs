@@ -23,8 +23,8 @@ use crate::{
     theme::{self, Accent, Appearance, Palette, metrics, motion},
 };
 use eframe::egui::{
-    self, Align, Align2, Color32, CursorIcon, Event, Galley, Id, Key, Layout, Pos2, Rect, Sense,
-    Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
+    self, Align, Align2, Color32, CursorIcon, Galley, Id, Key, Layout, Pos2, Rect, Sense, Stroke,
+    StrokeKind, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 use std::{cell::Cell, path::PathBuf, sync::Arc};
 
@@ -213,21 +213,6 @@ fn scrim(ctx: &egui::Context, p: &Palette, id: Id) {
     );
 }
 
-/// Whether the sheet `id` is shown in this frame for the first time since it
-/// was last away: the frame whose keys were meant for what was there before.
-/// Asked again in the same frame, it says the same.
-fn opening(ctx: &egui::Context, id: Id) -> bool {
-    let frame = ctx.cumulative_frame_nr();
-    let key = id.with("shown");
-    let seen = ctx.data(|data| data.get_temp::<(u64, u64)>(key));
-    let first = match seen {
-        Some((first, last)) if last == frame || last + 1 == frame => first,
-        _ => frame,
-    };
-    ctx.data_mut(|data| data.insert_temp(key, (first, frame)));
-    first == frame
-}
-
 /// What a sheet heard in one frame besides its own controls.
 struct Heard<R> {
     inner: R,
@@ -269,29 +254,13 @@ fn scaffold<R>(
 ) -> Heard<R> {
     let name = id;
     let id = Id::new(id);
-    let opening = opening(ctx, id);
+    let opening = kit::opening(ctx, id);
     let typing_id = id.with("typing");
     // Escape takes the keyboard out of a field before egui shows the frame,
     // so whether one had it is what the last frame said.
     let was_typing = ctx.data(|data| data.get_temp::<bool>(typing_id)) == Some(true);
     let focused = ctx.memory(|memory| memory.focused()).is_some();
-    let (fresh, carried) = ctx.input(|input| {
-        input
-            .events
-            .iter()
-            .fold((false, false), |(fresh, carried), event| match event {
-                Event::Key {
-                    key: Key::Enter,
-                    pressed: true,
-                    repeat,
-                    ..
-                } => {
-                    let old = *repeat || opening;
-                    (fresh || !old, carried || old)
-                }
-                _ => (fresh, carried),
-            })
-    });
+    let (fresh, carried) = kit::enters(ctx, opening);
     let screen = ctx.content_rect();
     let frame = egui::Frame::new()
         .fill(p.elevated)
@@ -365,7 +334,7 @@ fn title_said(ui: &Ui, at: Pos2, title: &str) {
             title,
             theme::semibold(15.0),
         );
-        said(ui, words, title);
+        kit::said(ui, words, title);
     }
 }
 
@@ -922,7 +891,7 @@ pub fn checkpoints(
                                     });
                                 });
                             });
-                        fade_below(ui, p, &scrolled);
+                        kit::scroll_fades(ui, &scrolled, p.elevated);
                     }
                 },
             );
@@ -1016,19 +985,11 @@ fn checkpoint_row(
     );
     controls::galley_at(&painter, pos2(left, rect.center().y), name);
     // Its name and its age are said as they read, before the way back.
-    said(ui, name_at, &checkpoint.label);
+    kit::said(ui, name_at, &checkpoint.label);
     if let Some((at, words)) = age_at {
-        said(ui, at, &words);
+        kit::said(ui, at, &words);
     }
     restore.clicked()
-}
-
-/// Says that a sheet's list runs on below where it is cut off.
-fn fade_below<R>(ui: &Ui, p: &Palette, scrolled: &egui::scroll_area::ScrollAreaOutput<R>) {
-    let shown = scrolled.inner_rect;
-    if scrolled.state.offset.y + shown.height() < scrolled.content_size.y - 1.0 {
-        kit::scroll_fade(ui.painter(), shown, kit::Edge::Bottom, p.elevated);
-    }
 }
 
 // ---- Preferences -----------------------------------------------------------
@@ -1419,7 +1380,7 @@ fn card(
     };
     let at = ui.cursor().min;
     controls::section_label(ui, *p, &label);
-    said(
+    kit::said(
         ui,
         painted(
             ui,
@@ -1438,13 +1399,6 @@ fn painted(ui: &Ui, at: Pos2, words: &str, font: egui::FontId) -> Rect {
         .layout_no_wrap(words.to_owned(), font, Color32::PLACEHOLDER)
         .size();
     Rect::from_min_size(pos2(at.x, at.y - size.y * 0.5), size)
-}
-
-/// Tells assistive tools of words that are only painted, at `rect`, as the
-/// label they were before Terminal's rows drew them by hand.
-fn said(ui: &Ui, rect: Rect, words: &str) {
-    ui.interact(rect, ui.auto_id_with(("said", words)), Sense::hover())
-        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, words));
 }
 
 /// A row of a Preferences card, as tall as Terminal's, its label said too.
@@ -1467,7 +1421,7 @@ fn row_of<R>(
         label,
         theme::regular(13.0),
     );
-    said(ui, words, label);
+    kit::said(ui, words, label);
     rows.row_with_height(ui, label, height, add)
 }
 
@@ -1477,7 +1431,7 @@ fn note(ui: &mut Ui, rows: &mut Group, text: &str) {
     let width = ui.available_width();
     rows.note(ui, text);
     let bottom = ui.min_rect().bottom();
-    said(
+    kit::said(
         ui,
         Rect::from_min_max(
             pos2(at.x + 14.0, at.y + 10.0),
@@ -1565,7 +1519,7 @@ pub fn settings(
     let screen = ctx.content_rect();
     let query_id = Id::new("preferences-query");
     // A search is left behind when Preferences closes.
-    let mut query = if opening(ctx, Id::new("settings-sheet")) {
+    let mut query = if kit::opening(ctx, Id::new("settings-sheet")) {
         String::new()
     } else {
         ctx.data(|data| data.get_temp::<String>(query_id))
@@ -1634,7 +1588,7 @@ pub fn settings(
                     p.fg,
                 );
                 let words = painted(ui, at, "Preferences", theme::semibold(15.0));
-                said(ui, words, "Preferences");
+                kit::said(ui, words, "Preferences");
                 (
                     Rect::from_min_size(
                         pos2(list.left() + 8.0, top),
@@ -1733,7 +1687,7 @@ pub fn settings(
                                 ui.add_space(20.0);
                             });
                         });
-                    fade_below(ui, p, &scrolled);
+                    kit::scroll_fades(ui, &scrolled, p.elevated);
                 },
             );
         },

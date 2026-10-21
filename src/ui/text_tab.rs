@@ -781,7 +781,7 @@ pub fn show(
                 }
             });
         });
-    library::fade_when_clipped(ui, p, &output);
+    kit::scroll_fades(ui, &output, p.chrome);
     // The tile under the pointer plays; the others rest.
     let now = ui.input(|i| i.time);
     state.playing = match (hovered, state.playing) {

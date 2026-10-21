@@ -4,7 +4,7 @@
 use super::*;
 use crate::ui::render_queue;
 use editor_core::export::{ExportSettings, RenderJobInfo, RenderState};
-use eframe::egui::{Modifiers, PointerButton, Shape};
+use eframe::egui::{Event, Modifiers, PointerButton, Shape};
 use uuid::Uuid;
 
 const NARROW: Vec2 = vec2(760.0, 560.0);
