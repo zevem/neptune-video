@@ -3100,6 +3100,60 @@ mod tests {
         }
     }
 
+    // N27: the Checkpoints sheet keeps one height whatever its list holds,
+    // so its field and its title do not move as the list is read, as its
+    // first checkpoint appears or as more do.
+    #[test]
+    fn the_checkpoints_sheet_holds_still_as_its_list_fills() {
+        let ctx = egui::Context::default();
+        let palette = Palette::new(Appearance::Dark, Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &palette);
+        ctx.enable_accesskit();
+        let mut state = CheckpointsState::default();
+        let mut time = 0.0;
+        let mut frame = |state: &mut CheckpointsState| {
+            let mut seen = Vec::new();
+            for _ in 0..3 {
+                time += 0.1;
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 700.0))),
+                    time: Some(time),
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    checkpoints(ui.ctx(), &palette, state, true);
+                });
+                output.textures_delta.clear();
+                if let Some(update) = &output.platform_output.accesskit_update {
+                    seen = (update.nodes.iter())
+                        .filter_map(|(_, node)| {
+                            let bounds = node.bounds()?;
+                            let name = node.label()?.to_owned();
+                            Some((name, [bounds.x0, bounds.y0, bounds.x1, bounds.y1]))
+                        })
+                        .filter(|(name, _)| name == "Checkpoints" || name == "Checkpoint name")
+                        .collect::<Vec<_>>();
+                    seen.sort_by(|a, b| a.0.cmp(&b.0));
+                }
+            }
+            seen
+        };
+        let checkpoint = |index: u64| Checkpoint {
+            path: format!("/projects/film.{index}.nvp").into(),
+            label: format!("Checkpoint {index}"),
+            made: Some(index),
+        };
+        let reading = frame(&mut state);
+        assert!(!reading.is_empty(), "FIXTURE: the sheet is named");
+        state.list = Some(Ok(Vec::new()));
+        assert_eq!(frame(&mut state), reading, "none yet");
+        state.list = Some(Ok(vec![checkpoint(1)]));
+        assert_eq!(frame(&mut state), reading, "the first");
+        state.list = Some(Ok((1..20).map(checkpoint).collect()));
+        assert_eq!(frame(&mut state), reading, "more than fit");
+    }
+
     /// The cards of files being saved, and a notice, drawn in real egui
     /// passes over a viewer `width` wide that reaches the window's trailing
     /// edge, where the toasts are.
