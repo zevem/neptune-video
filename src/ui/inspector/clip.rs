@@ -8,19 +8,23 @@
 //!
 //! A section is a method of [`Pane`] chosen in [`rows`]: one that is not
 //! written yet is [`Pane::placeholder`], and filling it is replacing that arm.
-use super::{InspectorInput, InspectorState, ProjectDraft, Section, card, fact, title};
+use super::{
+    FIELD, Ink, InspectorInput, InspectorState, PAIRED_GAP, ProjectDraft, SWITCH, Section, Thumb,
+    button, button_row, card, fact, keyed_card, keyed_row, note, number, number_with,
+    object_header, paired_width, row, section, section_switch, select_list, tall_row, time_fact,
+};
 use crate::{
-    icons::{self, Icon},
+    icons::Icon,
     normalize,
     speed::{self, Curve},
-    theme::{self, Palette},
+    theme::Palette,
     timefmt,
     ui::{
         Action, ClipDraft, EASINGS,
         fades::{self, FadeEdge},
-        icon_of_media, icon_of_track, tone_of_media, tone_of_track,
+        icon_of_media, icon_of_track, kit, tone_of_media, tone_of_track,
         viewer::fitted_size,
-        widgets::{self, KeyRow, KeyState, Kind, row, section},
+        widgets::{self, KeyRow, KeyState, Kind},
         with_key,
     },
 };
@@ -29,20 +33,9 @@ use editor_core::{
     Project, Time, Track, TrackKind, Transform, look, sound,
 };
 use eframe::egui::{
-    self, CornerRadius, Key, Rect, Response, Sense, SetOpenCommand, Stroke, StrokeKind, Ui,
-    WidgetInfo, WidgetType, vec2,
+    self, Key, Rect, Response, Sense, SetOpenCommand, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 use uuid::Uuid;
-
-/// The width of a field that has a row to itself, and of one of two in a row.
-pub(super) const FIELD: f32 = 78.0;
-const PAIRED_FIELD: f32 = 62.0;
-const PAIRED_NARROW: f32 = 50.0;
-/// The gap between the two fields of a row.
-const PAIRED_GAP: f32 = 4.0;
-/// The room a row of two fields keeps for its name ("Position" whole), the
-/// gaps beside it and the frames of its fields.
-const PAIRED_LABEL: f32 = 88.0;
 
 /// The values a row shows together, which are keyframed together: a value
 /// written at a time gives the others of its row a keyframe there too.
@@ -59,6 +52,8 @@ pub(super) struct Field {
     /// The stored value's range.
     pub min: f32,
     pub max: f32,
+    /// The axis, before the value, where the row's name says it.
+    pub prefix: Option<&'static str>,
     pub suffix: &'static str,
     pub decimals: usize,
     /// Shown units a point of drag moves the value by.
@@ -74,15 +69,17 @@ const POSITION: Field = Field {
     scale: 1.0,
     min: -100_000.0,
     max: 100_000.0,
-    suffix: " X",
+    prefix: Some("X"),
+    suffix: "",
     decimals: 0,
     speed: 1.0,
-    width: PAIRED_FIELD,
+    width: super::PAIRED_FIELD,
     log: false,
 };
 const ROTATION: Field = Field {
     min: -3600.0,
     max: 3600.0,
+    prefix: None,
     suffix: "°",
     decimals: 1,
     speed: 0.5,
@@ -93,6 +90,7 @@ const PERCENT: Field = Field {
     scale: 100.0,
     min: 0.0,
     max: 1.0,
+    prefix: None,
     suffix: " %",
     decimals: 0,
     speed: 0.5,
@@ -279,37 +277,14 @@ impl Layout {
     }
 }
 
-/// A layout's button: the canvas with the part the layout fills.
+/// A layout's button: the canvas with the part the layout fills, pressed
+/// while it is the clip's layout.
 fn layout_button(ui: &mut Ui, p: &Palette, layout: Layout, on: bool) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(30.0, 26.0), Sense::click());
+    let (_, response) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
     let enabled = ui.is_enabled();
     response
         .widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, enabled, on, layout.label()));
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter();
-        let radius = CornerRadius::same(6);
-        if on {
-            painter.rect_filled(rect, radius, theme::tint(p.accent, 0.16));
-        } else if response.hovered() && enabled {
-            painter.rect_filled(rect, radius, p.hover);
-        }
-        if response.has_focus() {
-            painter.rect_stroke(rect, radius, Stroke::new(1.5, p.accent), StrokeKind::Inside);
-        }
-        let ink = if !enabled {
-            p.muted.gamma_multiply(0.5)
-        } else if on {
-            p.accent
-        } else {
-            p.secondary
-        };
-        icons::paint(
-            painter,
-            Rect::from_center_size(rect.center(), vec2(20.0, 20.0)),
-            layout.icon(),
-            ink,
-        );
-    }
+    kit::paint_icon_button(ui, p, &response, layout.icon(), on, None);
     response.on_hover_text(layout.label())
 }
 
@@ -342,58 +317,60 @@ pub(super) struct Pane<'a> {
     pub actions: &'a mut Vec<Action>,
 }
 
-/// What stays above a clip's rows: its name, and the sections it is offered
-/// when it has more than one. Hands back the section whose rows are shown.
+/// What stays above a clip's rows in `rect`: its header, and under it the
+/// sections it is offered when it has more than one. Hands back the section
+/// whose rows are shown and where what stays above them ends.
 pub(super) fn head(
     ui: &mut Ui,
     input: &InspectorInput,
+    rect: Rect,
     track: &Track,
     clip: &Clip,
     state: &mut InspectorState,
     compact: bool,
-) -> Option<Section> {
+) -> (Option<Section>, f32) {
     let (p, project) = (input.p, input.project);
     let rate = project.settings.frame_rate;
     let asset = clip.asset_id().and_then(|id| project.assets.get(&id));
-    let detail = format!("{} · {}", track.name, timefmt::timecode(clip.start, rate));
-    if compact {
-        super::compact_title(ui, p, &clip.name, &detail);
-    } else {
-        title(
-            ui,
-            p,
-            asset.map_or(icon_of_track(track.kind), |asset| icon_of_media(asset.kind)),
-            p.tone(asset.map_or(tone_of_track(track.kind), |asset| tone_of_media(asset.kind))),
-            &clip.name,
-            &detail,
-        );
-    }
-    if track.locked {
-        ui.label(
-            egui::RichText::new("This clip's track is locked.")
-                .font(theme::regular(12.0))
-                .color(p.muted),
-        );
-    }
+    let icon = asset.map_or(icon_of_track(track.kind), |asset| icon_of_media(asset.kind));
+    let tone =
+        Ink::Tone(asset.map_or(tone_of_track(track.kind), |asset| tone_of_media(asset.kind)));
+    // A picture shows its poster; a sound its wave, and a title its glyph.
+    let thumb = match asset.map(|asset| asset.kind) {
+        Some(MediaKind::Video | MediaKind::Image | MediaKind::Gif) => Thumb::Picture(
+            asset.and_then(|asset| input.textures.poster(asset.id)),
+            icon,
+            tone,
+        ),
+        Some(MediaKind::Audio) => Thumb::Glyph(Icon::Music, Ink::Wave),
+        _ if track.kind == TrackKind::Audio => Thumb::Glyph(Icon::Music, Ink::Wave),
+        _ => Thumb::Glyph(icon, tone),
+    };
+    let words = format!("{} · ", track.name);
+    let time = timefmt::timecode(clip.start, rate);
+    object_header(ui, p, rect, thumb, &clip.name, (&words, &time), compact);
 
     // The section last chosen stays chosen for the clips that have it.
     let offered = sections(track, clip);
+    let Some(first) = offered.first() else {
+        return (None, rect.bottom());
+    };
     let mut section = if offered.contains(&state.section) {
         state.section
     } else {
-        *offered.first()?
+        *first
     };
-    if offered.len() > 1 {
-        let mut options = [(Section::Video, ""); 5];
-        for (option, section) in options.iter_mut().zip(offered) {
-            *option = (*section, section.label());
-        }
-        let width = ui.available_width();
-        if widgets::segmented(ui, p, &mut section, &options[..offered.len()], width) {
-            state.section = section;
-        }
+    if offered.len() < 2 {
+        return (Some(section), rect.bottom());
     }
-    Some(section)
+    let switch = Rect::from_min_size(
+        pos2(rect.left(), rect.bottom() + 4.0),
+        vec2(rect.width(), SWITCH),
+    );
+    if section_switch(ui, p, switch, offered, &mut section) {
+        state.section = section;
+    }
+    (Some(section), switch.bottom())
 }
 
 /// The rows of one of a clip's sections; of a clip that has none, its
@@ -434,6 +411,9 @@ pub(super) fn rows(
         state: &mut *state,
         actions,
     };
+    if track.locked {
+        note(ui, p, "This clip's track is locked.");
+    }
     ui.add_enabled_ui(!track.locked, |ui| match section {
         None | Some(Section::Audio) => pane.audio(ui),
         Some(Section::Video) => pane.video(ui),
@@ -458,9 +438,9 @@ pub(super) fn rows(
 fn section_timing(ui: &mut Ui, p: &Palette, clip: &Clip, rate: editor_core::FrameRate) {
     section(ui, p, "Timing");
     card(ui, p, |ui| {
-        fact(ui, p, "Start", timefmt::timecode(clip.start, rate));
-        fact(ui, p, "End", timefmt::timecode(clip.end(), rate));
-        fact(ui, p, "Duration", timefmt::timecode(clip.duration, rate));
+        time_fact(ui, p, "Start", timefmt::timecode(clip.start, rate));
+        time_fact(ui, p, "End", timefmt::timecode(clip.end(), rate));
+        time_fact(ui, p, "Duration", timefmt::timecode(clip.duration, rate));
         if clip.linked_id.is_some() {
             fact(ui, p, "Linked", "Yes");
         }
@@ -542,12 +522,13 @@ impl<'a> Pane<'a> {
         } else {
             field.speed
         };
-        let changed = widgets::named_number(
+        let changed = number_with(
             ui,
+            self.p,
             &mut shown,
-            range,
+            &range,
             speed,
-            field.suffix,
+            (field.prefix, field.suffix),
             field.decimals,
             field.width,
             name,
@@ -696,14 +677,14 @@ impl<'a> Pane<'a> {
                 }
                 return;
             }
-            ui.label(
-                egui::RichText::new(if easing.is_some() {
+            super::menu_heading(
+                ui,
+                p,
+                if easing.is_some() {
                     "Easing from this keyframe"
                 } else {
                     "No keyframe follows to ease to"
-                })
-                .font(theme::medium(11.0))
-                .color(p.muted),
+                },
             );
             ui.add_enabled_ui(easing.is_some(), |ui| {
                 for (name, ease) in EASINGS {
@@ -716,7 +697,7 @@ impl<'a> Pane<'a> {
                     }
                 }
             });
-            widgets::hairline(ui, p);
+            widgets::menu_separator(ui, p);
             let remove = widgets::menu_item(ui, p, Some(Icon::Trash), "Remove animation", "");
             reach(&remove, ui.is_enabled());
             if remove.clicked() {
@@ -818,7 +799,7 @@ impl<'a> Pane<'a> {
         let state = self.key_state(None, keys);
         let p = self.p;
         let what = label.to_lowercase();
-        let row = widgets::keyed_row(ui, p, label, &what, state, |ui| fields(self, ui));
+        let row = keyed_row(ui, p, label, &what, state, |ui| fields(self, ui), |_| {});
         self.key_controls(ui, &row, None, AnimTarget::Clip, keys, &clip_value);
     }
 
@@ -834,12 +815,7 @@ impl<'a> Pane<'a> {
 
     /// A section nothing is edited in yet.
     pub(super) fn placeholder(&mut self, ui: &mut Ui, text: &str) {
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new(text)
-                .font(theme::regular(12.0))
-                .color(self.p.muted),
-        );
+        card(ui, self.p, |ui| note(ui, self.p, text));
     }
 
     fn video(&mut self, ui: &mut Ui) {
@@ -849,21 +825,22 @@ impl<'a> Pane<'a> {
         }
 
         section(ui, p, "Transform");
-        card(ui, p, |ui| {
-            // Two fields give way before the row's other controls do: a
-            // narrow panel has them narrower, the same whether or not the
-            // steps between keyframes are shown, and the name is left whole.
-            let spare = ui.available_width() - 3.0 * widgets::SMALL_BUTTON - PAIRED_LABEL;
+        keyed_card(ui, p, |ui| {
             self.clip_row(
                 ui,
                 "Position",
                 &[ParamKey::PositionX, ParamKey::PositionY],
                 |pane, ui| {
+                    // A narrow card has narrower fields, and the name is
+                    // left whole.
                     let x = Field {
-                        width: (spare * 0.5).clamp(PAIRED_NARROW, PAIRED_FIELD),
+                        width: paired_width(ui),
                         ..POSITION
                     };
-                    let y = Field { suffix: " Y", ..x };
+                    let y = Field {
+                        prefix: Some("Y"),
+                        ..x
+                    };
                     ui.spacing_mut().item_spacing.x = PAIRED_GAP;
                     pane.clip_field(ui, ParamKey::PositionX, &x, "Position X");
                     pane.clip_field(ui, ParamKey::PositionY, &y, "Position Y");
@@ -879,8 +856,9 @@ impl<'a> Pane<'a> {
                     let x = pane.shown(None, ParamKey::ScaleX, x);
                     let y = pane.shown(None, ParamKey::ScaleY, y);
                     let mut percent = x * 100.0;
-                    let field = widgets::named_number(
+                    let field = number(
                         ui,
+                        pane.p,
                         &mut percent,
                         1.0..=10_000.0,
                         0.5,
@@ -911,22 +889,35 @@ impl<'a> Pane<'a> {
             let t = &mut self.next.transform;
             row(ui, p, "Flip", |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if widgets::icon_toggle(ui, p, Icon::FlipVertical, t.flip_y, "Flip vertically")
+                if kit::small_icon_toggle(ui, p, Icon::FlipVertical, t.flip_y, "Flip vertically")
                     .clicked()
                 {
                     t.flip_y = !t.flip_y;
                 }
-                if widgets::icon_toggle(ui, p, Icon::FlipHorizontal, t.flip_x, "Flip horizontally")
-                    .clicked()
+                if kit::small_icon_toggle(
+                    ui,
+                    p,
+                    Icon::FlipHorizontal,
+                    t.flip_x,
+                    "Flip horizontally",
+                )
+                .clicked()
                 {
                     t.flip_x = !t.flip_x;
                 }
             });
+            if self.next.transform != Transform::default() {
+                button_row(ui, p, |ui| {
+                    if button(ui, p, Some(Icon::Rotate), "Reset transform", Kind::Plain).clicked() {
+                        self.next.transform = Transform::default();
+                    }
+                });
+            }
         });
 
         if self.asset.is_some() {
             section(ui, p, "Crop");
-            card(ui, p, |ui| {
+            keyed_card(ui, p, |ui| {
                 const SIDES: [(ParamKey, &str); 4] = [
                     (ParamKey::CropLeft, "Left"),
                     (ParamKey::CropTop, "Top"),
@@ -948,51 +939,29 @@ impl<'a> Pane<'a> {
                 }
             });
         }
-        if self.next.transform != Transform::default() {
-            ui.horizontal(|ui| {
-                if widgets::button(ui, p, Some(Icon::Rotate), "Reset transform", Kind::Plain)
-                    .clicked()
-                {
-                    self.next.transform = Transform::default();
-                }
-            });
-        }
 
         // A title is drawn over the composition: it takes no blend or mask.
         if self.asset.is_some() {
             section(ui, p, "Compositing");
             card(ui, p, |ui| {
-                widgets::fitted_row(ui, p, "Blend", |ui| {
-                    let blend = &mut self.next.blend;
-                    let name = |mode: BlendMode| {
-                        BLENDS
-                            .iter()
-                            .find(|(listed, _)| *listed == mode)
-                            .map_or("Normal", |(_, name)| name)
-                    };
-                    egui::ComboBox::from_id_salt("blend-mode")
-                        .icon(widgets::combo_icon)
-                        .selected_text(name(*blend))
-                        .width(118.0)
-                        // Every mode at once: nine rows are few enough that
-                        // none should be found by scrolling.
-                        .height(BLENDS.len() as f32 * 40.0)
-                        .show_ui(ui, |ui| {
-                            for (mode, name) in BLENDS {
-                                ui.selectable_value(blend, mode, name);
-                            }
-                        })
-                        .response
-                        .widget_info(|| {
-                            WidgetInfo::labeled(WidgetType::ComboBox, true, "Blend mode")
-                        });
+                tall_row(ui, p, "Blend", |ui| {
+                    let width = ui.available_width().min(132.0);
+                    select_list(
+                        ui,
+                        p,
+                        "blend-mode",
+                        "Blend mode",
+                        &mut self.next.blend,
+                        &BLENDS,
+                        width,
+                    );
                 });
             });
             self.masks(ui);
         }
         if self.asset.is_some_and(|asset| asset.has_audio) {
             section(ui, p, "Sound");
-            card(ui, p, |ui| self.sound_rows(ui));
+            keyed_card(ui, p, |ui| self.sound_rows(ui));
         }
     }
 
@@ -1024,18 +993,20 @@ impl<'a> Pane<'a> {
         ];
         let free = self.key_state(None, &WRITTEN) == KeyState::Off;
         section(ui, p, "Layout");
-        ui.add_enabled_ui(free, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-                for layout in Layout::ALL {
-                    let laid = layout.apply(&self.next.transform, source, canvas);
-                    let on = free && laid == self.next.transform;
-                    let button = layout_button(ui, p, layout, on)
-                        .on_disabled_hover_text("Position, scale or crop is animated");
-                    if button.clicked() {
-                        self.next.transform = laid;
+        card(ui, p, |ui| {
+            ui.add_enabled_ui(free, |ui| {
+                button_row(ui, p, |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for layout in Layout::ALL {
+                        let laid = layout.apply(&self.next.transform, source, canvas);
+                        let on = free && laid == self.next.transform;
+                        let button = layout_button(ui, p, layout, on)
+                            .on_disabled_hover_text("Position, scale or crop is animated");
+                        if button.clicked() {
+                            self.next.transform = laid;
+                        }
                     }
-                }
+                });
             });
         });
     }
@@ -1052,7 +1023,7 @@ impl<'a> Pane<'a> {
             return;
         }
         section(ui, p, "Playback");
-        card(ui, p, |ui| {
+        keyed_card(ui, p, |ui| {
             if timed {
                 self.speed_row(ui);
                 if audible {
@@ -1072,11 +1043,7 @@ impl<'a> Pane<'a> {
     /// volume 0 keeps its rows.
     fn sound_rows(&mut self, ui: &mut Ui) {
         if sound::owned(self.project, self.clip) {
-            ui.label(
-                egui::RichText::new(fades::OWNED)
-                    .font(theme::regular(12.0))
-                    .color(self.p.muted),
-            );
+            note(ui, self.p, fades::OWNED);
             return;
         }
         self.volume_row(ui);
@@ -1092,16 +1059,15 @@ impl<'a> Pane<'a> {
     fn normalize_row(&mut self, ui: &mut Ui) {
         let p = self.p;
         let refused = normalize::refusal(self.project, self.clip.id);
-        ui.horizontal(|ui| {
+        button_row(ui, p, |ui| {
             ui.add_enabled_ui(refused.is_none(), |ui| {
-                let button =
-                    widgets::button(ui, p, Some(Icon::Volume), normalize::LABEL, Kind::Plain)
-                        .on_hover_text(format!(
-                            "Set the volume so the clip reaches {} LUFS, its peak at most {} dBTP",
-                            normalize::TARGET,
-                            normalize::CEILING
-                        ))
-                        .on_disabled_hover_text(refused.as_deref().unwrap_or_default());
+                let button = button(ui, p, Some(Icon::Volume), normalize::LABEL, Kind::Plain)
+                    .on_hover_text(format!(
+                        "Set the volume so the clip reaches {} LUFS, its peak at most {} dBTP",
+                        normalize::TARGET,
+                        normalize::CEILING
+                    ))
+                    .on_disabled_hover_text(refused.as_deref().unwrap_or_default());
                 if button.clicked() {
                     self.actions.push(Action::Normalize(vec![self.clip.id]));
                 }
@@ -1114,6 +1080,7 @@ impl<'a> Pane<'a> {
     /// fade may be held finer, as one a handle left on a frame is: a field
     /// left reading what it read has changed nothing.
     fn fade_row(&mut self, ui: &mut Ui, edge: FadeEdge) {
+        let p = self.p;
         let (held, other) = match edge {
             FadeEdge::In => (self.next.fade_in, self.next.fade_out),
             FadeEdge::Out => (self.next.fade_out, self.next.fade_in),
@@ -1124,8 +1091,8 @@ impl<'a> Pane<'a> {
         let read = |seconds: f32| format!("{:.2}", f64::from(seconds));
         let before = read(shown);
         let range = 0.0..=room.as_seconds() as f32;
-        let changed = row(ui, self.p, name, |ui| {
-            widgets::named_number(ui, &mut shown, range, 0.01, " s", 2, FIELD, name).changed()
+        let changed = row(ui, p, name, |ui| {
+            number(ui, p, &mut shown, range, 0.01, " s", 2, FIELD, name).changed()
         });
         // The field takes what it reads for typed when the focus leaves it.
         if changed && read(shown) != before {
@@ -1149,9 +1116,7 @@ impl<'a> Pane<'a> {
             row(ui, p, "Speed", |ui| {
                 let mut shown = self.next.rate as f32;
                 let range = slowest..=fastest;
-                if widgets::named_number(ui, &mut shown, range, 0.01, " ×", 2, FIELD, "Speed")
-                    .changed()
-                {
+                if number(ui, p, &mut shown, range, 0.01, " ×", 2, FIELD, "Speed").changed() {
                     self.next.rate = f64::from(shown).clamp(speed::SLOWEST, speed::FASTEST);
                 }
             });
@@ -1172,8 +1137,7 @@ impl<'a> Pane<'a> {
         row(ui, p, label, |ui| {
             let mut shown = (mean * self.next.rate) as f32;
             let range = (mean as f32 * slowest)..=(mean as f32 * fastest);
-            if widgets::named_number(ui, &mut shown, range, 0.01, " ×", 2, FIELD, "Speed").changed()
-            {
+            if number(ui, p, &mut shown, range, 0.01, " ×", 2, FIELD, "Speed").changed() {
                 self.next.rate = (f64::from(shown) / mean).clamp(speed::SLOWEST, speed::FASTEST);
             }
         });

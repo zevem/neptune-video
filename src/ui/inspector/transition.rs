@@ -4,19 +4,22 @@
 //! Its rows write the clip's draft as the rest of the inspector does, so a
 //! scrubbed length is one undo step and an Escape gives it up. Removing it
 //! and keeping it as its kind's default are [`Action`]s.
-use super::{InspectorInput, InspectorState, card, clip::FIELD, look::is_default, title};
+use super::{
+    FIELD, Ink, InspectorInput, InspectorState, Thumb, button, button_row, card, look::is_default,
+    note, number, object_header, row, section, select_list, select_popup, tall_row,
+};
 use crate::{
     icons::Icon,
     rules, theme,
-    ui::{
-        Action, ClipDraft, EASINGS, transitions,
-        widgets::{self, Kind, row, section},
-    },
+    ui::{Action, ClipDraft, EASINGS, kit, transitions, widgets::Kind},
 };
 use editor_core::{
     Clip, Ease, ParamKey, ParamSpec, ParamValue, Time, Track, Transition, TransitionEdge, look,
 };
-use eframe::egui::{self, Ui, WidgetInfo, WidgetType};
+use eframe::egui::{Rect, Ui};
+
+/// The width of the selects of a transition's card.
+const SELECT: f32 = 132.0;
 
 /// The easings a transition is offered by name: the ones that take it from
 /// one clip to the other without stopping short or running past.
@@ -52,8 +55,9 @@ fn param_row(ui: &mut Ui, p: &theme::Palette, transition: &mut Transition, spec:
     row(ui, p, name, |ui| {
         let span = (spec.max - spec.min) * 100.0;
         let mut shown = stored * 100.0;
-        let field = widgets::named_number(
+        let field = number(
             ui,
+            p,
             &mut shown,
             spec.min * 100.0..=spec.max * 100.0,
             f64::from(span / 300.0).max(0.001),
@@ -71,11 +75,40 @@ fn param_row(ui: &mut Ui, p: &theme::Palette, transition: &mut Transition, spec:
         }
         let reset = format!("Reset {}", name.to_lowercase());
         if !is_default(stored, spec)
-            && widgets::small_icon_button(ui, p, Icon::Rotate, &reset).clicked()
+            && kit::small_icon_button(ui, p, Icon::Rotate, &reset).clicked()
         {
             transition.params.retain(|param| param.key != spec.key);
         }
     });
+}
+
+/// The header of the transition at `edge` of `clip` in `rect`: its kind,
+/// and which end of which clip it is at.
+pub(super) fn head(
+    ui: &mut Ui,
+    input: &InspectorInput,
+    rect: Rect,
+    clip: &Clip,
+    edge: TransitionEdge,
+    compact: bool,
+) {
+    let p = input.p;
+    let Some(stored) = transitions::of(clip, edge) else {
+        return;
+    };
+    let words = match edge {
+        TransitionEdge::In => format!("Start of {}", clip.name),
+        TransitionEdge::Out => format!("End of {}", clip.name),
+    };
+    object_header(
+        ui,
+        p,
+        rect,
+        Thumb::Glyph(Icon::Transition, Ink::Secondary),
+        transitions::name(stored.kind),
+        (&words, ""),
+        compact,
+    );
 }
 
 #[expect(clippy::too_many_arguments, reason = "one call site in the frame")]
@@ -104,45 +137,37 @@ pub(super) fn pane(
         .unwrap_or_else(|| stored.clone());
     let mut shown = held.clone();
 
-    title(
-        ui,
-        p,
-        Icon::Transition,
-        p.accent,
-        transitions::name(shown.kind),
-        &match edge {
-            TransitionEdge::In => format!("Start of {}", clip.name),
-            TransitionEdge::Out => format!("End of {}", clip.name),
-        },
-    );
     if track.locked {
-        ui.label(
-            egui::RichText::new("This clip's track is locked.")
-                .font(theme::regular(12.0))
-                .color(p.muted),
-        );
+        note(ui, p, "This clip's track is locked.");
     }
     ui.add_enabled_ui(!track.locked, |ui| {
         section(ui, p, "Transition");
         card(ui, p, |ui| {
-            widgets::fitted_row(ui, p, "Kind", |ui| {
-                let mut kind = shown.kind;
-                // Tall enough for every kind: none is under a scroll.
-                egui::ComboBox::from_id_salt("transition-kind")
-                    .icon(widgets::combo_icon)
-                    .selected_text(transitions::name(kind))
-                    .width(118.0)
-                    .height(540.0)
-                    .show_ui(ui, |ui| {
+            tall_row(ui, p, "Kind", |ui| {
+                let width = ui.available_width().min(SELECT);
+                // Every kind is listed: none is under a scroll.
+                let (_, chosen) = select_popup(
+                    ui,
+                    p,
+                    ("transition-kind", "Transition kind"),
+                    transitions::name(shown.kind),
+                    width,
+                    false,
+                    |ui| {
+                        let mut chosen = None;
                         for listed in transitions::KINDS {
-                            ui.selectable_value(&mut kind, listed, transitions::name(listed));
+                            let on = listed == shown.kind;
+                            let name = transitions::name(listed);
+                            if kit::menu_row(ui, p, None, name, "", false, Some(on)).clicked() {
+                                chosen = Some(listed);
+                            }
                         }
-                    })
-                    .response
-                    .widget_info(|| {
-                        WidgetInfo::labeled(WidgetType::ComboBox, true, "Transition kind")
-                    });
-                if kind != shown.kind {
+                        chosen
+                    },
+                );
+                if let Some(kind) = chosen.flatten()
+                    && kind != shown.kind
+                {
                     shown = transitions::with_kind(&shown, kind);
                 }
             });
@@ -150,8 +175,9 @@ pub(super) fn pane(
                 row(ui, p, "Duration", |ui| {
                     let mut seconds = shown.duration.as_seconds() as f32;
                     let range = shortest.as_seconds() as f32..=longest.as_seconds() as f32;
-                    let field = widgets::named_number(
+                    let field = number(
                         ui,
+                        p,
                         &mut seconds,
                         range,
                         0.01,
@@ -167,32 +193,56 @@ pub(super) fn pane(
                     }
                 });
             }
-            widgets::fitted_row(ui, p, "Easing", |ui| {
+            tall_row(ui, p, "Easing", |ui| {
+                let width = ui.available_width().min(SELECT);
                 let mut ease = shown.ease;
-                egui::ComboBox::from_id_salt("transition-easing")
-                    .icon(widgets::combo_icon)
-                    .selected_text(ease_name(ease))
-                    .width(118.0)
-                    .show_ui(ui, |ui| {
-                        for (name, listed) in EASINGS {
-                            if OFFERED.contains(&name) {
-                                ui.selectable_value(&mut ease, listed, name);
+                let offered: Vec<(Ease, &str)> = (EASINGS.iter())
+                    .filter(|(name, _)| OFFERED.contains(name))
+                    .map(|(name, listed)| (*listed, *name))
+                    .collect();
+                if offered.iter().any(|(listed, _)| *listed == ease) {
+                    select_list(
+                        ui,
+                        p,
+                        "transition-easing",
+                        "Transition easing",
+                        &mut ease,
+                        &offered,
+                        width,
+                    );
+                } else {
+                    // An easing the list does not name is shown as custom.
+                    let (_, chosen) = select_popup(
+                        ui,
+                        p,
+                        ("transition-easing", "Transition easing"),
+                        ease_name(ease),
+                        width,
+                        false,
+                        |ui| {
+                            let mut chosen = None;
+                            for (listed, name) in &offered {
+                                if kit::menu_row(ui, p, None, name, "", false, Some(false))
+                                    .clicked()
+                                {
+                                    chosen = Some(*listed);
+                                }
                             }
-                        }
-                    })
-                    .response
-                    .widget_info(|| {
-                        WidgetInfo::labeled(WidgetType::ComboBox, true, "Transition easing")
-                    });
+                            chosen
+                        },
+                    );
+                    if let Some(listed) = chosen.flatten() {
+                        ease = listed;
+                    }
+                }
                 shown.ease = ease;
             });
             for spec in look::transition_spec(shown.kind) {
                 param_row(ui, p, &mut shown, spec);
             }
         });
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            if widgets::button(ui, p, Some(Icon::Trash), "Remove", Kind::Plain)
+        button_row(ui, p, |ui| {
+            if button(ui, p, Some(Icon::Trash), "Remove", Kind::Plain)
                 .on_hover_text("Remove this transition (Delete)")
                 .clicked()
             {
@@ -202,7 +252,7 @@ pub(super) fn pane(
                 "New {} transitions start with this length, easing and values",
                 transitions::name(shown.kind).to_lowercase()
             );
-            if widgets::button(ui, p, None, "Save as default", Kind::Plain)
+            if button(ui, p, None, "Save as default", Kind::Plain)
                 .on_hover_text(keep)
                 .clicked()
             {

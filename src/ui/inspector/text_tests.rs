@@ -420,3 +420,47 @@ fn a_graphic_is_kept_as_a_template_by_its_name() {
     assert_eq!(name, "Lower third");
     assert_eq!(**content, bench.clip(clip).content);
 }
+
+#[test]
+fn a_colour_well_opens_its_own_picker_and_edits_its_own_colour() {
+    // Spec §5.4 colour well; AGENTS.md: an action keeps its stable target.
+    // The text's colour and its outline's and shadow's are wells of one
+    // name in three cards, and each opens and moves only its own.
+    let (mut bench, title) = titled(Section::Text);
+    bench.size = vec2(300.0, 2400.0);
+    bench.click("Outline");
+    bench.click("Shadow");
+    bench.frame(Vec::new());
+    let mut wells: Vec<Rect> = (bench.seen.iter())
+        .filter(|seen| seen.name == "Colour" && seen.role == Role::ColorWell)
+        .map(|seen| seen.rect)
+        .collect();
+    wells.sort_by(|a, b| a.top().total_cmp(&b.top()));
+    assert!(
+        wells.len() >= 3,
+        "a well each for the text, outline and shadow"
+    );
+    let colours = |bench: &Bench| {
+        let ClipContent::Text { color, style, .. } = &bench.clip(title).content else {
+            panic!("not a title");
+        };
+        let outline = style.outline.as_ref().map(|outline| outline.color);
+        let shadow = style.shadow.as_ref().map(|shadow| shadow.color);
+        (*color, outline, shadow)
+    };
+    let (text, outline, shadow) = colours(&bench);
+    let before = bench.steps();
+
+    // The text's own well is the first of them.
+    bench.press(wells[0].center());
+    bench.release(wells[0].center());
+    bench.focus("Saturation and brightness");
+    bench.key(Key::ArrowDown, Modifiers::NONE);
+    bench.frame(Vec::new());
+    bench.commit();
+    let (text_now, outline_now, shadow_now) = colours(&bench);
+    assert_ne!(text_now, text, "the text's colour moved");
+    assert_eq!(outline_now, outline, "the outline's did not");
+    assert_eq!(shadow_now, shadow, "nor the shadow's");
+    assert_eq!(bench.steps(), before + 1, "{:?}", bench.refused);
+}

@@ -6,12 +6,15 @@
 //! gesture ends: a word typed, a colour picked, a value dragged. Sizes the
 //! project keeps in ems (outline, shadow, padding, spacing) are shown in
 //! canvas pixels at the title's size, which is how they look.
-use super::{card, clip::Pane, fact};
+use super::{
+    FIELD, LEAD, LIST_HEIGHT, PAIRED_GAP, button, card, clip::Pane, controls, fact, number, row,
+    section, select_list, select_popup, tall_row, text_field, well,
+};
 use crate::{
-    theme::{self, Palette},
+    theme::{self, Palette, metrics},
     ui::{
-        Action, PresetChange,
-        widgets::{self, fitted_row, row, section},
+        Action, PresetChange, kit,
+        widgets::{self, Kind},
     },
 };
 use editor_core::{
@@ -19,7 +22,7 @@ use editor_core::{
     HighlightMode, TextAlign, TextAnimation, TextAnimationKind, TextBackground, TextCase,
     TextOutline, TextShadow, TextStyle, TextUnit, Time, title,
 };
-use eframe::egui::{self, Ui, WidgetInfo, WidgetType, ecolor::Hsva, widgets::color_picker};
+use eframe::egui::{self, Ui, WidgetInfo, WidgetType, vec2};
 
 const WEIGHTS: [(u16, &str); 9] = [
     (100, "Thin"),
@@ -82,13 +85,11 @@ pub(super) fn kind_name(kind: TextAnimationKind) -> &'static str {
     }
 }
 
-fn name_of<T: PartialEq + Copy>(options: &[(T, &'static str)], value: T) -> &'static str {
-    (options.iter())
-        .find(|(option, _)| *option == value)
-        .map_or("", |(_, name)| name)
-}
+/// The width of a select of a title's card: the span of a pair of fields,
+/// so that a card's values start at one place.
+const SELECT: f32 = 132.0;
 
-/// A menu of named values in a row.
+/// A select of named values in a row, named by the row.
 fn choice<T: PartialEq + Copy>(
     ui: &mut Ui,
     p: &Palette,
@@ -97,33 +98,35 @@ fn choice<T: PartialEq + Copy>(
     options: &[(T, &'static str)],
     salt: &str,
 ) {
-    fitted_row(ui, p, label, |ui| {
-        egui::ComboBox::from_id_salt(salt)
-            .icon(widgets::combo_icon)
-            .selected_text(name_of(options, *value))
-            .width(128.0)
-            .height(options.len() as f32 * 40.0)
-            .show_ui(ui, |ui| {
-                for (option, name) in options {
-                    ui.selectable_value(value, *option, *name);
-                }
-            })
-            .response
-            .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, label));
+    tall_row(ui, p, label, |ui| {
+        let width = ui.available_width().min(SELECT);
+        select_list(ui, p, salt, label, value, options, width);
     });
 }
 
 /// A length the project keeps in ems, shown in canvas pixels at `size`.
-fn em_field(ui: &mut Ui, value: &mut f32, size: f32, range: [f32; 2], name: &str) {
+fn em_field(ui: &mut Ui, p: &Palette, value: &mut f32, size: f32, range: [f32; 2], name: &str) {
+    em_field_sized(ui, p, value, size, range, (name, FIELD));
+}
+
+fn em_field_sized(
+    ui: &mut Ui,
+    p: &Palette,
+    value: &mut f32,
+    size: f32,
+    range: [f32; 2],
+    (name, width): (&str, f32),
+) {
     let mut shown = *value * size;
-    let field = widgets::named_number(
+    let field = number(
         ui,
+        p,
         &mut shown,
         range[0] * size..=range[1] * size,
         0.25,
         " px",
         1,
-        super::clip::FIELD,
+        width,
         name,
     );
     if field.changed() {
@@ -132,106 +135,110 @@ fn em_field(ui: &mut Ui, value: &mut f32, size: f32, range: [f32; 2], name: &str
 }
 
 fn em_row(ui: &mut Ui, p: &Palette, label: &str, value: &mut f32, size: f32, range: [f32; 2]) {
-    row(ui, p, label, |ui| em_field(ui, value, size, range, label));
+    row(ui, p, label, |ui| {
+        em_field(ui, p, value, size, range, label)
+    });
+}
+
+/// A row of two lengths in ems, each named.
+fn em_pair(
+    ui: &mut Ui,
+    p: &Palette,
+    label: &str,
+    (first, second): (&mut f32, &mut f32),
+    size: f32,
+    range: [f32; 2],
+    names: [&str; 2],
+) {
+    row(ui, p, label, |ui| {
+        ui.spacing_mut().item_spacing.x = PAIRED_GAP;
+        let width = super::paired_width(ui);
+        em_field_sized(ui, p, first, size, range, (names[0], width));
+        em_field_sized(ui, p, second, size, range, (names[1], width));
+    });
 }
 
 fn color_row(ui: &mut Ui, p: &Palette, label: &str, color: &mut [u8; 4], brand: &[[u8; 4]]) {
     row(ui, p, label, |ui| {
-        color_button(ui, p, label, color, brand);
+        well::well(ui, p, label, color, true, brand);
     });
 }
 
-/// A colour's button and its picker, with the person's brand colours over
-/// the picker. Changed when a colour is picked or dragged to.
-fn color_button(
-    ui: &mut Ui,
-    p: &Palette,
-    label: &str,
-    color: &mut [u8; 4],
-    brand: &[[u8; 4]],
-) -> egui::Response {
-    let id = ui.auto_id_with("colour");
-    let popup = id.with("popup");
-    let open = egui::Popup::is_id_open(ui.ctx(), popup);
-    let size = ui.spacing().interact_size;
-    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::ColorButton, true, label));
-    let shown = |color: [u8; 4]| {
-        let [r, g, b, a] = color;
-        egui::Color32::from_rgba_unmultiplied(r, g, b, a)
-    };
-    if ui.is_rect_visible(rect) {
-        let visuals = if open {
-            &ui.visuals().widgets.open
-        } else {
-            ui.style().interact(&response)
-        };
-        let rect = rect.expand(visuals.expansion);
-        color_picker::show_color_at(ui.painter(), shown(*color), rect.shrink(1.0));
-        ui.painter().rect_stroke(
-            rect,
-            visuals.corner_radius.at_most(2),
-            egui::Stroke::new(1.0, visuals.bg_fill),
-            egui::StrokeKind::Inside,
-        );
-    }
-    // The hue is kept while the colour is the one picked, so a grey keeps
-    // the hue it was dragged from.
-    let kept: Option<([u8; 4], Hsva)> = ui.data(|data| data.get_temp(id));
-    let mut hsva = match kept {
-        Some((was, hsva)) if was == *color => hsva,
-        _ => Hsva::from_srgba_unmultiplied(*color),
-    };
-    let mut changed = false;
-    egui::Popup::menu(&response)
-        .id(popup)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            ui.spacing_mut().slider_width = 275.0;
-            if !brand.is_empty() {
-                ui.label(
-                    egui::RichText::new("Brand colours")
-                        .font(theme::regular(11.5))
-                        .color(p.muted),
-                );
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    for swatch in brand {
-                        let (rect, picked) =
-                            ui.allocate_exact_size(egui::Vec2::splat(20.0), egui::Sense::click());
-                        let name = format!("Brand colour {}", crate::ui::text_tab::hex(*swatch));
-                        picked.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &name));
-                        color_picker::show_color_at(ui.painter(), shown(*swatch), rect.shrink(1.0));
-                        let ring = if picked.hovered() || *swatch == *color {
-                            egui::Stroke::new(1.5, p.accent)
-                        } else {
-                            egui::Stroke::new(1.0, p.border)
-                        };
-                        ui.painter().rect_stroke(
-                            rect,
-                            egui::CornerRadius::same(4),
-                            ring,
-                            egui::StrokeKind::Inside,
-                        );
-                        if picked.clicked() {
-                            *color = *swatch;
-                            hsva = Hsva::from_srgba_unmultiplied(*swatch);
-                            changed = true;
-                        }
+/// How wide a title's lines may be before they wrap, or off: a number field
+/// that reads "Off" at nought, which the kit's field does not say.
+fn wrap_field(ui: &mut Ui, p: &Palette, wrap: &mut f32) {
+    let surface = ui.painter().add(egui::Shape::Noop);
+    let size = vec2(FIELD, metrics::INSPECTOR_CONTROL);
+    let enabled = ui.is_enabled();
+    let response = ui
+        .scope(|ui| {
+            let style = ui.style_mut();
+            style
+                .text_styles
+                .insert(style.drag_value_text_style.clone(), theme::regular(12.5));
+            style.spacing.interact_size = size;
+            style.spacing.button_padding = vec2(8.0, 0.0);
+            let visuals = &mut style.visuals;
+            if !enabled {
+                visuals.override_text_color = Some(p.muted);
+            }
+            visuals.text_edit_bg_color = Some(egui::Color32::TRANSPARENT);
+            visuals.selection.stroke = egui::Stroke::NONE;
+            for widget in [
+                &mut visuals.widgets.inactive,
+                &mut visuals.widgets.hovered,
+                &mut visuals.widgets.active,
+                &mut visuals.widgets.open,
+            ] {
+                widget.weak_bg_fill = egui::Color32::TRANSPARENT;
+                widget.bg_fill = egui::Color32::TRANSPARENT;
+                widget.bg_stroke = egui::Stroke::NONE;
+                widget.corner_radius = egui::CornerRadius::same(7);
+            }
+            let drag = egui::DragValue::new(wrap)
+                .range(0.0..=16384.0)
+                .speed(2.0)
+                .custom_formatter(|value, _| {
+                    if value <= 0.0 {
+                        "Off".to_owned()
+                    } else {
+                        format!("{value:.0} px")
+                    }
+                })
+                .custom_parser(|text| {
+                    let text = text.trim().trim_end_matches("px").trim();
+                    if text.eq_ignore_ascii_case("off") {
+                        Some(0.0)
+                    } else {
+                        text.parse().ok()
                     }
                 });
-                ui.add_space(6.0);
-            }
-            if color_picker::color_picker_hsva_2d(ui, &mut hsva, color_picker::Alpha::OnlyBlend) {
-                *color = hsva.to_srgba_unmultiplied();
-                changed = true;
-            }
-        });
-    if changed {
-        response.mark_changed();
-        ui.data_mut(|data| data.insert_temp(id, (*color, hsva)));
+            let layout = egui::Layout::centered_and_justified(ui.layout().main_dir())
+                .with_main_align(egui::Align::Max);
+            ui.allocate_ui_with_layout(size, layout, |ui| ui.add(drag))
+                .inner
+        })
+        .inner;
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::DragValue, enabled, "Wrap at"));
+    let rect = egui::Rect::from_center_size(response.rect.center(), size);
+    let mut shapes = vec![egui::Shape::rect_filled(rect, 7, p.control)];
+    if response.has_focus() {
+        shapes.push(egui::Shape::rect_stroke(
+            rect.expand(2.5),
+            9,
+            egui::Stroke::new(3.0, theme::tint(p.accent, 0.28)),
+            egui::StrokeKind::Inside,
+        ));
+        shapes.push(egui::Shape::rect_stroke(
+            rect,
+            7,
+            egui::Stroke::new(1.0, p.accent),
+            egui::StrokeKind::Inside,
+        ));
+    } else if enabled && response.hovered() {
+        shapes.push(egui::Shape::rect_filled(rect, 7, p.hover));
     }
-    response
+    ui.painter().set(surface, egui::Shape::Vec(shapes));
 }
 
 /// What the clip shows kept as one of the person's presets, under a name
@@ -247,46 +254,43 @@ fn keep_card(
     section(ui, p, "Preset");
     card(ui, p, |ui| {
         row(ui, p, label, |ui| {
-            let button = widgets::button(ui, p, None, "Keep…", widgets::Kind::Plain);
-            let opened = button.clicked();
+            let keep = button(ui, p, None, "Keep…", Kind::Plain);
+            let opened = keep.clicked();
             if opened {
                 default.clone_into(name);
             }
-            egui::Popup::menu(&button)
+            egui::Popup::menu(&keep)
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                 .show(|ui| {
                     widgets::menu_style(ui, 240.0);
-                    ui.label(
+                    ui.add(egui::Label::new(
                         egui::RichText::new("Name")
                             .font(theme::regular(11.5))
-                            .color(p.muted),
-                    );
-                    let field = ui.add(
-                        egui::TextEdit::singleline(name)
-                            .desired_width(f32::INFINITY)
-                            .font(theme::regular(12.5)),
-                    );
-                    field.widget_info(|| {
-                        WidgetInfo::labeled(WidgetType::TextEdit, true, "Preset name")
-                    });
+                            .color(p.secondary),
+                    ));
+                    let id = ui.id().with("preset-name");
+                    let field = text_field(ui, p, id, name, "Preset name", ui.available_width());
                     if opened {
                         field.request_focus();
                     }
                     let returned =
                         field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     ui.add_space(6.0);
-                    let keep = widgets::button(ui, p, None, "Keep", widgets::Kind::Primary);
-                    if keep.clicked() || returned {
-                        kept = Some(name.clone());
-                        ui.close();
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let keep = button(ui, p, None, "Keep", Kind::Primary);
+                        if keep.clicked() || returned {
+                            kept = Some(name.clone());
+                            ui.close();
+                        }
+                    });
                 });
         });
     });
     kept
 }
 
-/// A heading of a card whose rows are there only while it is on.
+/// The first row of a card whose other rows are there only while it is on:
+/// the card is named by its switch.
 fn switched<T>(
     ui: &mut Ui,
     p: &Palette,
@@ -305,14 +309,69 @@ fn switched<T>(
 }
 
 fn note(ui: &mut Ui, p: &Palette, text: &str) {
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(text)
-                .font(theme::regular(11.5))
-                .color(p.muted),
-        )
-        .wrap(),
+    super::note(ui, p, text);
+}
+
+/// A quiet line of a list: what it holds when it holds no row to choose.
+fn menu_line(ui: &mut Ui, p: &Palette, text: &str) {
+    ui.add(egui::Label::new(
+        egui::RichText::new(text)
+            .font(theme::regular(12.0))
+            .color(p.secondary),
+    ));
+}
+
+/// A text the person writes in, across the card: a multi-line field on the
+/// card's own material, named by `hint`.
+fn words_field(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, rows: usize) {
+    super::rule(ui, p);
+    egui::Frame::NONE
+        .inner_margin(egui::Margin {
+            left: LEAD as i8,
+            right: LEAD as i8,
+            top: 8,
+            bottom: 8,
+        })
+        .show(ui, |ui| writing(ui, p, text, hint, rows));
+}
+
+/// A multi-line field `rows` tall, named and hinted by `hint`: edged as
+/// every field is, with the accent's outline and halo while it has the
+/// keyboard (§3.10). Its words are set 8 in from its edge.
+fn writing(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, rows: usize) {
+    let surface = ui.painter().add(egui::Shape::Noop);
+    let response = ui.add(
+        egui::TextEdit::multiline(text)
+            .desired_rows(rows)
+            .desired_width(f32::INFINITY)
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 5)))
+            .font(theme::regular(13.0))
+            .hint_text(hint),
     );
+    let rect = response.rect;
+    let mut shapes = vec![egui::Shape::rect_filled(rect, 7, p.control)];
+    if response.has_focus() {
+        shapes.push(egui::Shape::rect_stroke(
+            rect.expand(2.5),
+            9,
+            egui::Stroke::new(3.0, theme::tint(p.accent, 0.28)),
+            egui::StrokeKind::Inside,
+        ));
+        shapes.push(egui::Shape::rect_stroke(
+            rect,
+            7,
+            egui::Stroke::new(1.0, p.accent),
+            egui::StrokeKind::Inside,
+        ));
+    } else {
+        shapes.push(egui::Shape::rect_stroke(
+            rect,
+            7,
+            p.hairline(),
+            egui::StrokeKind::Inside,
+        ));
+    }
+    ui.painter().set(surface, egui::Shape::Vec(shapes));
 }
 
 /// The families a title may name: the lane's, the project's font files and
@@ -336,43 +395,67 @@ pub(super) fn font_rows(
     filter: &mut String,
     salt: &str,
 ) {
-    fitted_row(ui, p, "Font", |ui| {
-        egui::ComboBox::from_id_salt(("family", salt))
-            .icon(widgets::combo_icon)
-            .selected_text(font.family.as_str())
-            .width(150.0)
-            .height(320.0)
-            .show_ui(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(filter)
-                        .hint_text("Search fonts")
-                        .desired_width(f32::INFINITY),
+    tall_row(ui, p, "Font", |ui| {
+        let width = ui.available_width().min(SELECT);
+        // The search stays in view over the families, which scroll.
+        let (_, picked) = select_popup(
+            ui,
+            p,
+            (("family", salt), "Font"),
+            font.family.as_str(),
+            width,
+            false,
+            |ui| {
+                let id = ui.id().with(("font-search", salt));
+                controls::search_field_sized(
+                    ui,
+                    *p,
+                    id,
+                    filter,
+                    "Search fonts",
+                    "Search fonts",
+                    vec2(ui.available_width(), 28.0),
                 );
+                ui.add_space(4.0);
                 let Some(all) = family_list(families, project) else {
-                    ui.label("Looking for fonts…");
-                    return;
+                    menu_line(ui, p, "Looking for fonts…");
+                    return None;
                 };
                 let wanted = filter.trim().to_lowercase();
+                let mut picked = None;
                 let mut shown = 0;
-                for name in all
-                    .iter()
-                    .filter(|name| name.to_lowercase().contains(&wanted))
-                {
-                    if shown == LISTED {
-                        ui.label("Search to find more");
-                        break;
-                    }
-                    shown += 1;
-                    if ui.selectable_label(font.family == *name, name).clicked() {
-                        font.family.clone_from(name);
-                    }
-                }
-                if shown == 0 {
-                    ui.label("No font has that name");
-                }
-            })
-            .response
-            .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, "Font"));
+                egui::ScrollArea::vertical()
+                    .max_height(LIST_HEIGHT)
+                    .show(ui, |ui| {
+                        for name in
+                            (all.iter()).filter(|name| name.to_lowercase().contains(&wanted))
+                        {
+                            if shown == LISTED {
+                                menu_line(ui, p, "Search to find more");
+                                break;
+                            }
+                            shown += 1;
+                            // Neptune Video: §5.4 shows each family in its
+                            // own face here. The families are the title
+                            // lane's, which egui has not loaded, and loading
+                            // them is file reads the frame may not wait on;
+                            // until the lane hands faces over, a row is set
+                            // in the menu's face.
+                            let on = font.family == *name;
+                            if kit::menu_row(ui, p, None, name, "", false, Some(on)).clicked() {
+                                picked = Some(name.clone());
+                            }
+                        }
+                        if shown == 0 {
+                            menu_line(ui, p, "No font has that name");
+                        }
+                    });
+                picked
+            },
+        );
+        if let Some(name) = picked.flatten() {
+            font.family = name;
+        }
     });
     if let Some(all) = family_list(families, project)
         && !all.contains(&font.family)
@@ -387,23 +470,26 @@ pub(super) fn font_rows(
             ),
         );
     }
-    fitted_row(ui, p, "Weight", |ui| {
-        let current = WEIGHTS
+    tall_row(ui, p, "Weight", |ui| {
+        let width = ui.available_width().min(SELECT);
+        // A weight between the named ones reads as the nearest.
+        let mut nearest = WEIGHTS
             .iter()
             .min_by_key(|(weight, _)| weight.abs_diff(font.weight))
-            .map_or("", |(_, name)| name);
-        egui::ComboBox::from_id_salt(("weight", salt))
-            .icon(widgets::combo_icon)
-            .selected_text(current)
-            .width(128.0)
-            .height(WEIGHTS.len() as f32 * 40.0)
-            .show_ui(ui, |ui| {
-                for (weight, name) in WEIGHTS {
-                    ui.selectable_value(&mut font.weight, weight, name);
-                }
-            })
-            .response
-            .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, "Weight"));
+            .map_or(font.weight, |(weight, _)| *weight);
+        let before = nearest;
+        select_list(
+            ui,
+            p,
+            ("weight", salt),
+            "Weight",
+            &mut nearest,
+            &WEIGHTS,
+            width,
+        );
+        if nearest != before {
+            font.weight = nearest;
+        }
     });
     row(ui, p, "Italic", |ui| {
         if widgets::switch(ui, p, font.italic, "Italic").clicked() {
@@ -424,45 +510,22 @@ fn style_cards(
 ) {
     section(ui, p, "Layout");
     card(ui, p, |ui| {
-        let width = ui.available_width();
-        widgets::segmented(ui, p, &mut style.align, &ALIGNS, width);
+        super::choice(ui, p, &mut style.align, &ALIGNS);
         row(ui, p, "Line height", |ui| {
-            widgets::named_number(
+            number(
                 ui,
+                p,
                 &mut style.line_height,
                 0.5..=4.0,
                 0.01,
                 "×",
                 2,
-                super::clip::FIELD,
+                FIELD,
                 "Line height",
             );
         });
         em_row(ui, p, "Spacing", &mut style.tracking, size, [-0.5, 2.0]);
-        row(ui, p, "Wrap at", |ui| {
-            ui.add_sized(
-                [super::clip::FIELD, 24.0],
-                egui::DragValue::new(&mut style.wrap)
-                    .range(0.0..=16384.0)
-                    .speed(2.0)
-                    .custom_formatter(|value, _| {
-                        if value <= 0.0 {
-                            "Off".to_owned()
-                        } else {
-                            format!("{value:.0} px")
-                        }
-                    })
-                    .custom_parser(|text| {
-                        let text = text.trim().trim_end_matches("px").trim();
-                        if text.eq_ignore_ascii_case("off") {
-                            Some(0.0)
-                        } else {
-                            text.parse().ok()
-                        }
-                    }),
-            )
-            .widget_info(|| WidgetInfo::labeled(WidgetType::DragValue, true, "Wrap at"));
-        });
+        row(ui, p, "Wrap at", |ui| wrap_field(ui, p, &mut style.wrap));
         choice(
             ui,
             p,
@@ -473,7 +536,6 @@ fn style_cards(
         );
     });
 
-    section(ui, p, "Outline");
     card(ui, p, |ui| {
         switched(ui, p, "Outline", &mut style.outline, || TextOutline {
             color: [0, 0, 0, 255],
@@ -485,7 +547,6 @@ fn style_cards(
         }
     });
 
-    section(ui, p, "Shadow");
     card(ui, p, |ui| {
         switched(ui, p, "Shadow", &mut style.shadow, || TextShadow {
             color: [0, 0, 0, 160],
@@ -494,28 +555,20 @@ fn style_cards(
         });
         if let Some(shadow) = &mut style.shadow {
             color_row(ui, p, "Colour", &mut shadow.color, brand);
-            row(ui, p, "Offset", |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                em_field(
-                    ui,
-                    &mut shadow.offset[1],
-                    size,
-                    [-2.0, 2.0],
-                    "Shadow offset down",
-                );
-                em_field(
-                    ui,
-                    &mut shadow.offset[0],
-                    size,
-                    [-2.0, 2.0],
-                    "Shadow offset right",
-                );
-            });
+            let [right, down] = &mut shadow.offset;
+            em_pair(
+                ui,
+                p,
+                "Offset",
+                (down, right),
+                size,
+                [-2.0, 2.0],
+                ["Shadow offset down", "Shadow offset right"],
+            );
             em_row(ui, p, "Blur", &mut shadow.blur, size, [0.0, 1.0]);
         }
     });
 
-    section(ui, p, "Background");
     card(ui, p, |ui| {
         switched(ui, p, "Background", &mut style.background, || {
             TextBackground {
@@ -526,26 +579,18 @@ fn style_cards(
             }
         });
         if let Some(background) = &mut style.background {
-            let width = ui.available_width();
-            widgets::segmented(ui, p, &mut background.shape, &SHAPES, width);
+            super::choice(ui, p, &mut background.shape, &SHAPES);
             color_row(ui, p, "Colour", &mut background.color, brand);
-            row(ui, p, "Padding", |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                em_field(
-                    ui,
-                    &mut background.padding[1],
-                    size,
-                    [0.0, 4.0],
-                    "Padding above and below",
-                );
-                em_field(
-                    ui,
-                    &mut background.padding[0],
-                    size,
-                    [0.0, 4.0],
-                    "Padding at the sides",
-                );
-            });
+            let [sides, above] = &mut background.padding;
+            em_pair(
+                ui,
+                p,
+                "Padding",
+                (above, sides),
+                size,
+                [0.0, 4.0],
+                ["Padding above and below", "Padding at the sides"],
+            );
             em_row(ui, p, "Corners", &mut background.radius, size, [0.0, 4.0]);
         }
     });
@@ -567,24 +612,42 @@ fn animation_card(
         let longest = room.min(Time::from_seconds(LONGEST));
         let fits = longest >= frame;
         let none = "None";
-        fitted_row(ui, p, "Style", |ui| {
-            let mut kind = animation.map(|animation| animation.kind);
+        tall_row(ui, p, "Style", |ui| {
+            let kind = animation.map(|animation| animation.kind);
+            let width = ui.available_width().min(SELECT);
+            let mut picked = None;
             ui.add_enabled_ui(fits || animation.is_some(), |ui| {
-                egui::ComboBox::from_id_salt(("animation", salt))
-                    .icon(widgets::combo_icon)
-                    .selected_text(kind.map_or(none, kind_name))
-                    .width(128.0)
-                    .height(10.0 * 40.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut kind, None, none);
-                        for option in TextAnimationKind::ALL {
-                            ui.selectable_value(&mut kind, Some(option), kind_name(option));
+                // Every style is listed: none is under a scroll.
+                let (_, chosen) = select_popup(
+                    ui,
+                    p,
+                    (("animation", salt), label),
+                    kind.map_or(none, kind_name),
+                    width,
+                    false,
+                    |ui| {
+                        let mut chosen = None;
+                        if kit::menu_row(ui, p, None, none, "", false, Some(kind.is_none()))
+                            .clicked()
+                        {
+                            chosen = Some(None);
                         }
-                    })
-                    .response
-                    .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, label));
+                        for option in TextAnimationKind::ALL {
+                            let on = kind == Some(option);
+                            if kit::menu_row(ui, p, None, kind_name(option), "", false, Some(on))
+                                .clicked()
+                            {
+                                chosen = Some(Some(option));
+                            }
+                        }
+                        chosen
+                    },
+                );
+                picked = chosen.flatten();
             });
-            if kind != animation.map(|animation| animation.kind) {
+            if let Some(kind) = picked
+                && kind != animation.map(|animation| animation.kind)
+            {
                 *animation = kind.map(|kind| match animation {
                     // Another style keeps the timing and takes its usual unit.
                     Some(was) => TextAnimation {
@@ -617,14 +680,15 @@ fn animation_card(
         );
         let seconds = |ui: &mut Ui, value: &mut Time, min: Time, max: Time, name: &str| {
             let mut shown = value.as_seconds() as f32;
-            let field = widgets::named_number(
+            let field = number(
                 ui,
+                p,
                 &mut shown,
                 min.as_seconds() as f32..=max.as_seconds().max(min.as_seconds()) as f32,
                 0.01,
                 " s",
                 2,
-                super::clip::FIELD,
+                FIELD,
                 name,
             );
             if field.changed() {
@@ -683,19 +747,19 @@ fn karaoke_card(
         let Some(highlight) = highlight else {
             return;
         };
-        let width = ui.available_width();
-        widgets::segmented(ui, p, &mut highlight.mode, &HIGHLIGHTS, width);
+        super::choice(ui, p, &mut highlight.mode, &HIGHLIGHTS);
         color_row(ui, p, "Colour", &mut highlight.color, brand);
         row(ui, p, "Word size", |ui| {
             let mut percent = highlight.scale * 100.0;
-            let field = widgets::named_number(
+            let field = number(
                 ui,
+                p,
                 &mut percent,
                 100.0..=200.0,
                 0.5,
                 " %",
                 0,
-                super::clip::FIELD,
+                FIELD,
                 "Word size",
             );
             if field.changed() {
@@ -703,7 +767,9 @@ fn karaoke_card(
             }
         });
         row(ui, p, "Words to come", |ui| {
-            widgets::slider(ui, p, &mut highlight.upcoming, 1.0, 120.0, "Words to come");
+            // The label is laid out: the slider has the rest of the row.
+            let width = ui.available_width().min(120.0);
+            widgets::slider(ui, p, &mut highlight.upcoming, 1.0, width, "Words to come");
         });
     });
 }
@@ -730,16 +796,8 @@ impl Pane<'_> {
         };
         section(ui, p, "Text");
         card(ui, p, |ui| {
-            ui.add(
-                egui::TextEdit::multiline(text)
-                    .desired_rows(2)
-                    .desired_width(f32::INFINITY)
-                    .frame(egui::Frame::NONE)
-                    .font(theme::regular(13.0))
-                    .hint_text("Text"),
-            );
+            words_field(ui, p, text, "Text", 2);
             if let Some(language) = &language {
-                widgets::hairline(ui, p);
                 fact(ui, p, "Language", language.as_str());
             }
         });
@@ -755,16 +813,7 @@ impl Pane<'_> {
                 "title",
             );
             row(ui, p, "Size", |ui| {
-                widgets::named_number(
-                    ui,
-                    font_size,
-                    1.0..=4096.0,
-                    1.0,
-                    " px",
-                    0,
-                    super::clip::FIELD,
-                    "Size",
-                )
+                number(ui, p, font_size, 1.0..=4096.0, 1.0, " px", 0, FIELD, "Size")
             });
             color_row(ui, p, "Colour", color, brand);
         });
@@ -839,26 +888,28 @@ impl Pane<'_> {
         if texts > 0 {
             section(ui, p, "Text");
             card(ui, p, |ui| {
-                for (index, element) in elements.iter_mut().enumerate() {
+                for element in elements.iter_mut() {
                     let ElementKind::Text { text, .. } = &mut element.kind else {
                         continue;
                     };
-                    if index > 0 {
-                        ui.add_space(2.0);
-                    }
-                    ui.label(
-                        egui::RichText::new(&element.name)
-                            .font(theme::regular(11.5))
-                            .color(p.muted),
-                    );
-                    ui.add(
-                        egui::TextEdit::multiline(text)
-                            .desired_rows(1)
-                            .desired_width(f32::INFINITY)
-                            .frame(egui::Frame::NONE)
-                            .font(theme::regular(13.0))
-                            .hint_text(element.name.as_str()),
-                    );
+                    // The part's name over its words.
+                    super::rule(ui, p);
+                    egui::Frame::NONE
+                        .inner_margin(egui::Margin {
+                            left: LEAD as i8,
+                            right: LEAD as i8,
+                            top: 8,
+                            bottom: 8,
+                        })
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(&element.name)
+                                    .font(theme::regular(11.5))
+                                    .color(p.secondary),
+                            ));
+                            writing(ui, p, text, element.name.as_str(), 1);
+                        });
                 }
             });
         }
@@ -972,14 +1023,15 @@ fn graphic_animation(
             card(ui, p, |ui| {
                 row(ui, p, "Between parts", |ui| {
                     let mut shown = stagger_held.as_seconds() as f32;
-                    let field = widgets::named_number(
+                    let field = number(
                         ui,
+                        p,
                         &mut shown,
                         0.0..=1.0,
                         0.005,
                         " s",
                         2,
-                        super::clip::FIELD,
+                        FIELD,
                         "Between parts",
                     );
                     if field.changed() {

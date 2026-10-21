@@ -16,24 +16,23 @@
 //! worker as an [`Action::Track`], and the path comes back as one tracker.
 //! Following, renaming and removing are the project's own commands.
 use super::{
-    card,
-    clip::{FIELD, Pane},
-    look::set_param,
+    FIELD, LEAD, button, button_row, card, clip::Pane, fitted_row, look::set_param, note, number,
+    row, section, select_menu, tall_row, text_field, wide_row,
 };
 use crate::{
     icons::Icon,
     steady::Status,
     theme,
     ui::{
-        Action, ClipDraft, TrackRegion, TrackRequest, viewer,
-        widgets::{self, Kind, row, section},
+        Action, ClipDraft, TrackRegion, TrackRequest, kit, viewer,
+        widgets::{self, Kind},
     },
 };
 use editor_core::{
     AnimTarget, Clip, Command, Effect, EffectKind, Follow, MediaKind, ParamKey, Time, Tracker,
     look, render,
 };
-use eframe::egui::{self, CornerRadius, Sense, Ui, WidgetInfo, WidgetType, vec2};
+use eframe::egui::{self, Rect, Ui, WidgetInfo, WidgetType, vec2};
 use uuid::Uuid;
 
 /// What a tracker is called until it is renamed: the first free "Tracker n".
@@ -71,40 +70,33 @@ fn shown_until(clip: &Clip, playhead: Time) -> Time {
         .fold(clip.source_time(playhead), Time::max)
 }
 
-pub(super) fn note(ui: &mut Ui, p: &theme::Palette, text: &str) {
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(text)
-                .font(theme::regular(11.5))
-                .color(p.muted),
-        )
-        .wrap(),
-    );
-}
-
-/// How far something the analysis worker does has got: what it is, a
-/// figure, and a bar named `name` for those who do not see it.
+/// How far something the analysis worker does has got: what it is and a
+/// figure, and under them a bar named `name` for those who do not see it.
 pub(super) fn bar(ui: &mut Ui, p: &theme::Palette, title: &str, name: &str, done: f32) {
     let done = done.clamp(0.0, 1.0);
     let percent = (done * 100.0).round() as i32;
-    row(ui, p, title, |ui| {
+    super::fitted_row(ui, p, title, |ui| {
         ui.label(
             egui::RichText::new(format!("{percent} %"))
-                .font(theme::regular(12.5))
-                .color(p.fg),
+                .font(theme::mono(11.0))
+                .color(p.secondary),
         );
     });
-    let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
-    response.widget_info(|| {
-        let mut info = WidgetInfo::labeled(WidgetType::ProgressIndicator, true, name);
-        info.value = Some(f64::from(done));
-        info
-    });
-    let painter = ui.painter();
-    painter.rect_filled(bar, CornerRadius::same(2), p.pressed);
-    let mut filled = bar;
-    filled.set_width(bar.width() * done);
-    painter.rect_filled(filled, CornerRadius::same(2), p.accent);
+    egui::Frame::NONE
+        .inner_margin(egui::Margin {
+            left: LEAD as i8,
+            right: LEAD as i8,
+            top: 0,
+            bottom: 10,
+        })
+        .show(ui, |ui| {
+            // The bar's own track is the card's fill, which would not show
+            // on a card: its end is drawn pressed, under it, to be read
+            // against.
+            let track = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 4.0));
+            ui.painter().rect_filled(track, 2, p.pressed);
+            kit::progress_bar(ui, p, Some(done), p.accent, name)
+        });
 }
 
 impl Pane<'_> {
@@ -142,14 +134,16 @@ impl Pane<'_> {
             .filter(|shown| shown.clip == clip.id && shown.asset == asset.id);
         let suggested = shown.as_ref().and_then(|shown| shown.suggested);
         let mut edited: Option<Vec<Effect>> = None;
-        card(ui, p, |ui| {
+        // Its keyed rows are there only with the effect: without it, the
+        // switch ends at the card's edge as other switches do.
+        super::card_of(ui, p, found.is_some(), |ui| {
             let on = found.is_some_and(|index| list[index].enabled);
             let full = found.is_none() && list.len() >= look::MAX_EFFECTS;
             let mut removed = false;
-            widgets::fitted_row(ui, p, "Steady the camera", |ui| {
+            fitted_row(ui, p, "Steady the camera", |ui| {
                 if found.is_some() {
-                    removed = widgets::small_icon_button(ui, p, Icon::Trash, "Remove Stabilize")
-                        .clicked();
+                    removed =
+                        kit::small_icon_button(ui, p, Icon::Trash, "Remove Stabilize").clicked();
                 }
                 ui.add_enabled_ui(!full, |ui| {
                     let switch = widgets::switch(ui, p, on, "Stabilize")
@@ -202,9 +196,9 @@ impl Pane<'_> {
                 }
                 if let Some(zoom) = suggested {
                     let fits = (crop - zoom).abs() < 0.005;
-                    widgets::fitted_row(ui, p, &format!("Borders hide at {zoom:.2} ×"), |ui| {
+                    fitted_row(ui, p, &format!("Borders hide at {zoom:.2} ×"), |ui| {
                         ui.add_enabled_ui(!fits, |ui| {
-                            let fit = widgets::button(ui, p, None, "Fit crop", Kind::Plain)
+                            let fit = button(ui, p, None, "Fit crop", Kind::Plain)
                                 .on_hover_text(
                                     "Set the crop to the least that hides the borders of this clip",
                                 )
@@ -233,8 +227,6 @@ impl Pane<'_> {
                     edited = Some(stack);
                 }
             }
-            widgets::hairline(ui, p);
-            ui.add_space(2.0);
             self.steady_state(ui, asset.id, shown.as_ref().map(|shown| &shown.status), on);
         });
         self.next.effects = match edited {
@@ -250,10 +242,11 @@ impl Pane<'_> {
         let p = self.p;
         if let Some(Status::Analysing(done)) = status {
             bar(ui, p, "Analysing", "Analysing the video", *done);
-            ui.add_space(4.0);
-            if widgets::button(ui, p, None, "Cancel analysis", Kind::Plain).clicked() {
-                self.actions.push(Action::CancelStabilize);
-            }
+            button_row(ui, p, |ui| {
+                if button(ui, p, None, "Cancel analysis", Kind::Plain).clicked() {
+                    self.actions.push(Action::CancelStabilize);
+                }
+            });
             return;
         }
         let unsteadied = if on {
@@ -279,18 +272,12 @@ impl Pane<'_> {
             }
             Some(Status::Analysing(_)) => (String::new(), false),
         };
-        let state = ui.add(
-            egui::Label::new(
-                egui::RichText::new(&line)
-                    .font(theme::regular(11.5))
-                    .color(p.muted),
-            )
-            .wrap(),
-        );
+        let state = note(ui, p, &line);
         state.widget_info(|| {
             WidgetInfo::labeled(WidgetType::Label, true, format!("Stabilization: {line}"))
         });
-        ui.add_space(2.0);
+        // Measuring is the one thing to do when a steadied clip waits for
+        // it; measuring again never is.
         let (label, kind) = if again {
             ("Analyse again", Kind::Plain)
         } else if on {
@@ -298,12 +285,14 @@ impl Pane<'_> {
         } else {
             ("Analyse", Kind::Plain)
         };
-        let analyse = widgets::button(ui, p, None, label, kind).on_hover_text(
-            "Measure the camera's motion through the whole video, in the background",
-        );
-        if analyse.clicked() {
-            self.actions.push(Action::Stabilize(asset));
-        }
+        button_row(ui, p, |ui| {
+            let analyse = button(ui, p, None, label, kind).on_hover_text(
+                "Measure the camera's motion through the whole video, in the background",
+            );
+            if analyse.clicked() {
+                self.actions.push(Action::Stabilize(asset));
+            }
+        });
         note(
             ui,
             p,
@@ -331,14 +320,15 @@ impl Pane<'_> {
             }
             let Some(region) = self.state.region else {
                 let full = self.project.trackers.len() >= look::MAX_TRACKERS;
-                ui.add_enabled_ui(!full, |ui| {
-                    let begin =
-                        widgets::button(ui, p, Some(Icon::Plus), "Track a region", Kind::Plain)
+                button_row(ui, p, |ui| {
+                    ui.add_enabled_ui(!full, |ui| {
+                        let begin = button(ui, p, Some(Icon::Plus), "Track a region", Kind::Plain)
                             .on_hover_text("Choose a box on the picture for a tracker to follow")
                             .on_disabled_hover_text("A project holds 64 trackers at most");
-                    if begin.clicked() {
-                        self.state.region = Some(TrackRegion::new(self.clip.id, asset.id));
-                    }
+                        if begin.clicked() {
+                            self.state.region = Some(TrackRegion::new(self.clip.id, asset.id));
+                        }
+                    });
                 });
                 note(
                     ui,
@@ -355,10 +345,11 @@ impl Pane<'_> {
     fn progress(&mut self, ui: &mut Ui, name: &str, done: f32) {
         let p = self.p;
         bar(ui, p, &format!("Tracking {name}"), "Tracking", done);
-        ui.add_space(4.0);
-        if widgets::button(ui, p, None, "Cancel tracking", Kind::Plain).clicked() {
-            self.actions.push(Action::CancelTracking);
-        }
+        button_row(ui, p, |ui| {
+            if button(ui, p, None, "Cancel tracking", Kind::Plain).clicked() {
+                self.actions.push(Action::CancelTracking);
+            }
+        });
     }
 
     /// A path that has come and waits: adding it is an edit, and it came
@@ -366,12 +357,11 @@ impl Pane<'_> {
     fn ready(&mut self, ui: &mut Ui, name: &str, why: &str) {
         let p = self.p;
         note(ui, p, &format!("{name} is ready. {why}"));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            if widgets::button(ui, p, None, "Add tracker", Kind::Primary).clicked() {
+        button_row(ui, p, |ui| {
+            if button(ui, p, None, "Add tracker", Kind::Primary).clicked() {
                 self.actions.push(Action::AddTracked);
             }
-            let discard = widgets::button(ui, p, None, "Discard", Kind::Plain)
+            let discard = button(ui, p, None, "Discard", Kind::Plain)
                 .on_hover_text("Give the tracked path up");
             if discard.clicked() {
                 self.actions.push(Action::CancelTracking);
@@ -386,8 +376,9 @@ impl Pane<'_> {
         let mut next = region;
         let field = |ui: &mut Ui, value: &mut f32, least: f32, label: &str| {
             let mut shown = *value * 100.0;
-            let response = widgets::named_number(
+            let response = number(
                 ui,
+                p,
                 &mut shown,
                 least * 100.0..=100.0,
                 0.2,
@@ -421,8 +412,6 @@ impl Pane<'_> {
         if next != region {
             self.state.region = Some(next);
         }
-        widgets::hairline(ui, p);
-        ui.add_space(2.0);
         // The box is drawn on the frame the canvas shows at the playhead,
         // and the path starts on that very frame: the viewer's own reading
         // of which one that is. Frames are read forwards through the source
@@ -435,9 +424,9 @@ impl Pane<'_> {
             viewer::source_frame(self.project, asset, clip, self.playhead)
         });
         let until = shown_until(clip, self.playhead);
-        ui.horizontal(|ui| {
+        button_row(ui, p, |ui| {
             ui.add_enabled_ui(on_clip && !backwards && from < until, |ui| {
-                let track = widgets::button(ui, p, None, "Track", Kind::Primary)
+                let track = button(ui, p, None, "Track", Kind::Primary)
                     .on_hover_text(
                         "Follow the box from the frame at the playhead through what the clip shows after it",
                     )
@@ -459,7 +448,7 @@ impl Pane<'_> {
                     self.state.region = None;
                 }
             });
-            if widgets::button(ui, p, None, "Cancel", Kind::Plain).clicked() {
+            if button(ui, p, None, "Cancel", Kind::Plain).clicked() {
                 self.state.region = None;
             }
         });
@@ -496,21 +485,35 @@ impl Pane<'_> {
                     .map_or("None", |tracker| tracker.name.as_str())
             };
             let mut pick = chosen;
-            widgets::fitted_row(ui, p, "Tracker", |ui| {
-                egui::ComboBox::from_id_salt("follow-tracker")
-                    .icon(widgets::combo_icon)
-                    .selected_text(name(chosen))
-                    .width(118.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut pick, None, "None");
-                        for tracker in project.trackers.values() {
-                            ui.selectable_value(&mut pick, Some(tracker.id), &tracker.name);
+            tall_row(ui, p, "Tracker", |ui| {
+                let width = ui.available_width().min(132.0);
+                let (_, picked) = select_menu(
+                    ui,
+                    p,
+                    ("follow-tracker", "Tracker to follow"),
+                    name(chosen),
+                    width,
+                    |ui| {
+                        let mut picked = None;
+                        if kit::menu_row(ui, p, None, "None", "", false, Some(chosen.is_none()))
+                            .clicked()
+                        {
+                            picked = Some(None);
                         }
-                    })
-                    .response
-                    .widget_info(|| {
-                        WidgetInfo::labeled(WidgetType::ComboBox, true, "Tracker to follow")
-                    });
+                        for tracker in project.trackers.values() {
+                            let on = chosen == Some(tracker.id);
+                            if kit::menu_row(ui, p, None, &tracker.name, "", false, Some(on))
+                                .clicked()
+                            {
+                                picked = Some(Some(tracker.id));
+                            }
+                        }
+                        picked
+                    },
+                );
+                if let Some(picked) = picked.flatten() {
+                    pick = picked;
+                }
             });
             if pick != chosen {
                 self.next.follow = pick.map(|id| self.follow_of(id));
@@ -523,8 +526,9 @@ impl Pane<'_> {
                 (1, "Offset Y", "Follow offset Y"),
             ] {
                 row(ui, p, label, |ui| {
-                    widgets::named_number(
+                    number(
                         ui,
+                        p,
                         &mut follow.offset[axis],
                         -100_000.0..=100_000.0,
                         1.0,
@@ -541,9 +545,9 @@ impl Pane<'_> {
                     render::tracked_clip(project, self.playhead, self.clip.id, tracker)
                 })
                 .is_some();
-            ui.horizontal(|ui| {
+            button_row(ui, p, |ui| {
                 ui.add_enabled_ui(seen, |ui| {
-                    let centre = widgets::button(ui, p, None, "Centre on point", Kind::Plain)
+                    let centre = button(ui, p, None, "Centre on point", Kind::Plain)
                         .on_hover_text("Put the clip's centre on the tracked point")
                         .on_disabled_hover_text(
                             "The tracked clip is not on screen at the playhead",
@@ -555,7 +559,7 @@ impl Pane<'_> {
                         }
                     }
                 });
-                if widgets::button(ui, p, None, "Stop following", Kind::Plain).clicked() {
+                if button(ui, p, None, "Stop following", Kind::Plain).clicked() {
                     self.next.follow = None;
                 }
             });
@@ -616,61 +620,49 @@ impl Pane<'_> {
             .filter(|(id, _)| *id == tracker.id)
             .map(|(_, name)| name.clone());
         let mut name = typed.clone().unwrap_or_else(|| tracker.name.clone());
-        ui.horizontal(|ui| {
-            ui.set_min_height(widgets::SMALL_BUTTON);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let remove = widgets::small_icon_button(
-                    ui,
-                    p,
-                    Icon::Trash,
-                    &format!("Remove {}", tracker.name),
-                );
-                if remove.clicked() {
-                    self.actions.push(Action::Edit(Command::RemoveTracker {
-                        tracker_id: tracker.id,
+        let field = ui.id().with(("tracker-name", tracker.id));
+        wide_row(ui, p, super::TALL_ROW, |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let width = (ui.available_width() - widgets::SMALL_BUTTON - 4.0).max(40.0);
+            let response = text_field(
+                ui,
+                p,
+                field,
+                &mut name,
+                &format!("Name of {}", tracker.name),
+                width,
+            );
+            if response.changed() {
+                // A tracker's name is held to 64 characters.
+                if name.chars().count() > 64 {
+                    name = name.chars().take(64).collect();
+                }
+                self.state.rename = Some((tracker.id, name.clone()));
+            }
+            // Leaving the field, by Return or by going elsewhere, is the
+            // rename. An Escape gave up what was typed.
+            if response.lost_focus() && typed.is_some() {
+                self.state.rename = None;
+                let name = name.trim();
+                if !self.state.cancelled && !name.is_empty() && name != tracker.name {
+                    self.actions.push(Action::Edit(Command::SetTracker {
+                        tracker: Tracker {
+                            name: name.to_owned(),
+                            ..tracker.clone()
+                        },
                     }));
                 }
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut name)
-                        .desired_width(ui.available_width())
-                        .char_limit(64)
-                        .font(theme::regular(12.5)),
-                );
-                response.widget_info(|| {
-                    WidgetInfo::labeled(
-                        WidgetType::TextEdit,
-                        true,
-                        format!("Name of {}", tracker.name),
-                    )
-                });
-                if response.changed() {
-                    self.state.rename = Some((tracker.id, name.clone()));
-                }
-                // Leaving the field, by Return or by going elsewhere, is the
-                // rename. An Escape gave up what was typed.
-                if response.lost_focus() && typed.is_some() {
-                    self.state.rename = None;
-                    let name = name.trim();
-                    if !self.state.cancelled && !name.is_empty() && name != tracker.name {
-                        self.actions.push(Action::Edit(Command::SetTracker {
-                            tracker: Tracker {
-                                name: name.to_owned(),
-                                ..tracker.clone()
-                            },
-                        }));
-                    }
-                }
-            });
+            }
+            let remove =
+                kit::small_icon_button(ui, p, Icon::Trash, &format!("Remove {}", tracker.name));
+            if remove.clicked() {
+                self.actions.push(Action::Edit(Command::RemoveTracker {
+                    tracker_id: tracker.id,
+                }));
+            }
         });
         let of = (self.project.assets.get(&tracker.asset_id))
             .map_or("Missing media", |asset| asset.name.as_str());
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(format!("{of} · {}", facts(tracker)))
-                    .font(theme::regular(11.5))
-                    .color(p.muted),
-            )
-            .truncate(),
-        );
+        note(ui, p, &format!("{of} · {}", facts(tracker)));
     }
 }
