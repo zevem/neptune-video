@@ -1529,25 +1529,30 @@ fn scrolled(
     salt: impl std::hash::Hash + std::fmt::Debug,
     add: impl FnOnce(&mut Ui),
 ) {
-    let mut body = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    // The floating scroll bar has its own lane in the panel's gutter, beside
+    // the cards and not on them, as Terminal's preferences keep their cards
+    // clear of theirs. The rows stay as wide as `rect`.
+    let scroll = ui.spacing().scroll;
+    let lane = rect.with_max_x(rect.right() + scroll.bar_outer_margin + scroll.bar_width);
+    let mut body = ui.new_child(egui::UiBuilder::new().max_rect(lane));
     // The rows are cut off above and under the pane, but not at its sides:
     // there they are cut 3 out, in the panel's gutter, so that the ring of
     // a control on the cards' edge is whole (§7.4).
-    body.set_clip_rect(rect.expand2(vec2(3.0, 0.0)).intersect(ui.clip_rect()));
+    body.set_clip_rect((rect.expand2(vec2(3.0, 0.0)).union(lane)).intersect(ui.clip_rect()));
     // Its bar shows without the pointer over it, as Terminal's does: a fade
     // in the gap between two cards is chrome on chrome, and the bar is what
     // says that the rows go on.
     let shown = &mut body.spacing_mut().scroll;
     shown.dormant_handle_opacity = shown.active_handle_opacity;
     // Where the floating scroll bar starts, which a point's target stops
-    // short of: the bar is laid over the rows and takes what is under it.
-    let scroll = ui.spacing().scroll;
-    let bar = rect.right() - scroll.bar_outer_margin - scroll.bar_width;
+    // short of. In its lane that is the cards' own edge.
+    let bar = lane.right() - scroll.bar_outer_margin - scroll.bar_width;
     ui.data_mut(|data| data.insert_temp(egui::Id::new("inspector-bar"), bar));
     let output = egui::ScrollArea::vertical()
         .id_salt(salt)
         .auto_shrink([false, false])
         .show(&mut body, |ui| {
+            ui.set_max_width(rect.width());
             ui.spacing_mut().item_spacing.y = 0.0;
             add(ui);
             // The control the keyboard has, when it has just moved there

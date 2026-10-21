@@ -305,7 +305,15 @@ impl Pane<'_> {
     fn track_region(&mut self, ui: &mut Ui) {
         let p = self.p;
         let Some(asset) = self.asset else { return };
-        section(ui, p, "Track a region");
+        // The button that starts it names the card, and its other states
+        // say what they are. Only the box being chosen, whose rows are
+        // numbers, is headed.
+        let choosing = asset.kind == MediaKind::Video
+            && self.state.tracking.is_none()
+            && self.state.region.is_some();
+        if choosing {
+            section(ui, p, "Track a region");
+        }
         card(ui, p, |ui| {
             if asset.kind != MediaKind::Video {
                 note(ui, p, "Only a video has motion to track.");

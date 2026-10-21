@@ -4,8 +4,8 @@
 //! whole new list, held in the draft and committed as one `SetMasks`. The
 //! mask whose rows are open is the one the viewer outlines.
 use super::{
-    button, button_row, card_head, choice, clip::Pane, fitted_row, head_button, keyed_card, note,
-    section,
+    button, button_row, card, card_head, choice, clip::Pane, fitted_row, head_button, keyed_card,
+    note, section,
 };
 use crate::{
     icons::Icon,
@@ -73,6 +73,9 @@ impl Pane<'_> {
                     }
                 });
             });
+        }
+        if list.is_empty() {
+            card(ui, p, |ui| note(ui, p, "No masks on this clip."));
         }
         button_row(ui, p, |ui| {
             ui.add_enabled_ui(list.len() < look::MAX_MASKS, |ui| {

@@ -570,7 +570,7 @@ impl Pane<'_> {
         };
         let mapped = clip.retime.is_some() || self.next.retime.is_some();
 
-        section(ui, p, "Speed");
+        // The card starts under the switch: its first row names it.
         card(ui, p, |ui| {
             self.speed_row(ui);
             // The speeds offered by name; none is chosen at any other.

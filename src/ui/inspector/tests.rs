@@ -924,11 +924,15 @@ fn a_key_colour_is_a_swatch_and_a_table_a_list_of_tables() {
 #[test]
 fn a_mask_is_added_edited_and_removed_as_whole_lists() {
     let (mut bench, clip) = Bench::new();
+    // An empty list says so in a card, as the effects do.
+    bench.frame(Vec::new());
+    assert!(bench.has("No masks on this clip."));
     let before = bench.steps();
     bench.click("Add mask");
     bench.click("Ellipse");
     assert_eq!(bench.steps(), before + 1);
     assert_eq!(bench.last(), "Change masks");
+    assert!(!bench.has("No masks on this clip."));
     let mask = bench.clip(clip).masks[0].clone();
     assert_eq!(mask.shape, MaskShape::Ellipse);
     assert_eq!(bench.state.mask, Some(mask.id), "the new mask is open");

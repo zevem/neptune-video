@@ -799,14 +799,14 @@ impl Pane<'_> {
         else {
             return;
         };
-        section(ui, p, "Text");
+        // The words start under the switch, which names them, and the font's
+        // card under them is named by its first row.
         card(ui, p, |ui| {
             words_field(ui, p, text, "Text", 2);
             if let Some(language) = &language {
                 fact(ui, p, "Language", language.as_str());
             }
         });
-        section(ui, p, "Font");
         card(ui, p, |ui| {
             font_rows(
                 ui,
@@ -944,7 +944,7 @@ impl Pane<'_> {
             ElementKind::Text { style, .. } => Some(style.font.clone()),
             _ => None,
         }) {
-            section(ui, p, "Font");
+            // Named by its first row.
             card(ui, p, |ui| {
                 font_rows(
                     ui,
