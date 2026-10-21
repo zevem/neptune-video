@@ -9,8 +9,11 @@ Neptune Terminal was inspected read-only as the stack and engineering reference.
 
 The revamp gives Neptune Video Neptune Terminal's look and behaviour. This
 record holds the final review round, round 6, of branch
-`t3/revamp-ui-neptune-design` at `5e6fb77`: its §9 verdicts, the findings
-it left open, what was fixed since round 4, and what it did not verify.
+`t3/revamp-ui-neptune-design` at `5e6fb77`: its §9 verdicts, what was
+fixed since round 4, and what it did not verify. Round 6 left six low
+findings. The final polish, `93569b0` and `263bd4d`, closes them; its
+checks and captures are under "Final polish" below, and the §9 rows it
+changed say so.
 
 **Host and build.** Linux 7.0.0-38-generic x86_64 (i9-13900HX) with Rust
 1.97.1. The captures come from the `dev` binary `target/debug/neptune-video`,
@@ -72,7 +75,7 @@ a test covers it, the test is named.
 | §9.3 Tab strip | Pass | Six names at 316 (1440 `library-*`). Six 41-pt icon cells at 760, glyphs within 0.5 pt. The hover name is not captured; every AT-SPI tab keeps its name |
 | §9.3 Search row 28 pt with the tab's own actions | Pass | Media shows "View options"; Captions shows "Captions from speech", then "Import SRT or VTT"; Effects, Transitions and Looks show none |
 | §9.3 Kind filter one 22-pt row | Pass | `library-media` at both sizes |
-| §9.3 Grid and selection | Pass | 147×83 r8 wells at 1440, 71-pt wells at 760. `library-media-selected` shows the pressed backing and the 2-pt accent ring |
+| §9.3 Grid and selection | Pass 147×83 r8 wells at 1440 and 71-pt wells at 760 in round 6. `library-media-selected` shows the pressed backing and the 2-pt accent ring. The final polish keeps cards 8 pt in from both sides (146×82 at 1440), so a chosen card's backing ends 4 pt before the viewer |
 | §9.3 "Missing" in yellow | Not verifiable | No worker publishes a missing status yet (out of scope), and the fixture has no missing media |
 | §9.3 Footer | Pass | Hairline, "Import media or add a folder" and the gear stay in place over scrolling bodies. At 760 the footer line shares row 289 with the transport line |
 | §9.3 `empty` | Pass at 1440 | Library empty state with a Secondary "Import…", the viewer's "Import media…" also Secondary, no accent. At 760 the inspector is the panel shown, so the library's empty state is off screen |
@@ -94,10 +97,10 @@ a test covers it, the test is named.
 | §9.6 Tool strip, groups, ruler | Pass | Strip 34, ruler 24 with labels in the upper half. Gaps of 2 within a group and 12 between. Toggles neutral pressed |
 | §9.6 Playhead and pin | Pass | `fg` with its halo. The 12×11 pin sits in the ruler's lower half and does not cover "0:00"; the marker flag does not cover "0:04" |
 | §9.6 Heads | Pass | Tone stripe, `secondary` glyphs, neutral cells, the target track's card pressed |
-| §9.6 Solo as a pressed cell with an accent headphones glyph | Not verifiable | The fixture solos no track. `heads_tests::a_soloed_head_shows_its_solo_cell_pressed_with_its_glyph_in_the_accent` |
+| §9.6 Solo as a pressed cell with an accent headphones glyph | Not verifiable | The fixture solos no track. `heads_tests::a_soloed_head_shows_its_solo_cell_pressed_with_its_glyph_in_the_accent`, and since the final polish `heads_tests::a_soloed_heads_glyph_reads_on_its_cell_under_every_accent` and `theme::tests::a_switch_that_is_on_keeps_the_accent_and_reads_on_its_cell` (3:1 for all nine accents in both appearances) |
 | §9.6 Adjacent cuts readable | Pass | A 1-px lane gap between clips |
 | §9.6 Selected tile | Pass | Accent ring, keyline, lifted body and band, with the focus ring nested outside |
-| §9.6 Trim bars only on hover | Pass at rest | No bar on an unselected tile. Hover is not captured. See P10R6-TL-1 for the selected tile's light start bar |
+| §9.6 Trim bars only on hover | Pass at rest | No bar on an unselected tile. Hover is not captured. Since the final polish the selected tile's bars stand on a keyline rim, which the final `video-selected` captures show unbroken over the poster in light (P10R6-TL-1) |
 | §9.6 Waveform in `wave()`, one mesh per tile | Pass | Inks sampled in both appearances. The mesh count is a §9.13 test |
 | §9.6 Fades and beat ticks | Not verifiable | The fixture's fades are 0 s and it has no beat grid. Fade handles are correct in `audio-selected`; mesh and tick counts are §9.13 tests |
 | §9.6 `transition-selected` | Pass | At 760 the dissolve diagonal runs whole inside its 2-pt ring, which stands 3 px clear of the trim bar |
@@ -116,55 +119,69 @@ a test covers it, the test is named.
 | §9.9 Every sheet | Pass | Every sheet capture: r14 corners and scrim equal Terminal's, close at right − 26, 60-pt footer with the confirming action first. Preferences has no footer, as in Terminal |
 | §9.9 `settings`, `settings-scrolled`, `settings-bottom` | Pass | Appearance selected, rows 42, nine swatches, Light │ Dark │ System; both "Auto" choices and "Proxy cache size"; the grouped Keyboard pane with keycaps. Fills equal Terminal's |
 | §9.9 `export`, `export-scrolled` | Pass | Two columns at both sizes. Chips are neutral pressed with a check. The only accent besides the poster is the on switch and the Export Primary. The footer stays while the body scrolls |
-| §9.9 `render-queue` | Pass, except a running bar | `render-queue-jobs`: one card with hairline rows, 4-pt bars, "33 %" in mono, failure text exactly `red`, and the empty state's Secondary "New export…". A rendering job never holds still for a capture, so its accent bar is not seen. Rows are 74–92 tall rather than 56, because each carries its folder line |
+| §9.9 `render-queue` | Pass, except a running bar | `render-queue-jobs`: one card with hairline rows, 4-pt bars, "33 %" in mono, failure text in red (since the final polish `Palette::failure_ink`, 4.5:1 on the card), and the empty state's Secondary "New export…". A rendering job never holds still for a capture, so its accent bar is not seen. Rows are 74–92 tall rather than 56, because each carries its folder line |
 | §9.10 Exactly one side panel; a fresh window shows the inspector | Pass for stills | One toggle is checked in each of the 82 captures at 760: the inspector in 68, the library in the 14 `library-*`. The swap's motion is by the panel-slide tests in §9.12 |
 | §9.10 Lanes at least 592 wide; timeline full width | Pass | Ruler (162,373,592,24) and timeline 6–754 in every 760 capture |
-| §9.10 No control under 22 pt; menus and sheets fit | Fail, documentation only | The inspector's speed and master-curve points are 20×20 and are not among §9.10's pinned exceptions (P10R6-W1). Every other control under 22 pt is pinned, including the 12×13 marker flag. Menus fit with more than 8 pt, sheets with 12 or more (Export 12–748) |
+| §9.10 No control under 22 pt; menus and sheets fit | Pass after the final polish | Round 6 failed this on the inspector's 20×20 speed and colour-curve points (P10R6-W1). Speed points now have 22×22 targets. Curve points stay 20×20 and §9.10 pins them: a 22-pt end point would reach the inspector's edge at 760. Every other control under 22 pt is pinned, including the 12×13 marker flag. Menus fit with more than 8 pt, sheets with 12 or more (Export 12–748) |
 | §9.11 Cards #e0e0e3 on #ececef | Pass | Sheet cards are #f2f2f2 on white, as in Terminal |
 | §9.11 Viewer stays dark | Pass | Stage #101012; the transport is within 8 per channel of dark |
 | §9.11 Timeline white with #f7f7f7 lanes | Pass | Also the ruler, head cards and playhead halo |
-| §9.11 Status inks follow `legible()` | Not verifiable | No light capture shows the snap guide, "Missing", a count pill, a warning toast, a stale plan, recovery or solo. The code routes them through `legible()`, except solo (P10R6-LT-1) |
+| §9.11 Status inks follow `legible()` | Not verifiable | No light capture shows the snap guide, "Missing", a count pill, a warning toast, a stale plan, recovery or solo. The code routes them through `legible()`. Solo uses `Palette::switch_ink()`, Terminal's `readable` rule at 3:1, since the final polish (P10R6-LT-1) |
 | §9.11 Lighter shadows, black(70) scrim | Pass | The scrim and sheet corner equal Terminal's light Preferences |
 | §9.12 Evidence the harness does not capture | Pass | The tests and recordings in the table below |
-| §9.13 Focused test modules | Pass | 1,356 desktop library tests at `5e6fb77` |
+| §9.13 Focused test modules | Pass | 1,356 desktop library tests at `5e6fb77`; 1,361 at `263bd4d` |
 | §9.13 Mesh-count tests unchanged | Pass | Fades 0/1/2/1, volume `shaded.len() == 2`, beats `ticks == [12]`, one wave mesh per sound tile |
 | §9.13 `add_space` steps | Pass | Every literal outside the §1.1 steps names the geometry it reproduces |
 | §9.13 Accent budget | Pass | 91 grep hits, the same set as `6a5a45e`, all in allowed classes |
 | §9.13 No `ComboBox::from`; no `surface` or `sunken` | Pass | 0 hits each |
 | Guard rails | Pass | The plan collector's closed 4-point path count, `ProgressIndicator` names and values, the percent strings, and accessible names (162 AT-SPI trees against the baseline's 134: every change is a §7.2 rename, a row moved into a submenu, or another change the design asks for) |
 
-### Open findings
+### Final polish
 
-All are low. None changes a command, the project or history.
+The final polish closes round 6's six findings. None changes a command,
+the project or history.
 
-- **P10R6-W1** (documentation). The inspector's speed points and master
-  curve points are 20 × 20 drag targets, under §9.10's 22-pt floor, and
-  §9.10 does not pin them. They predate the revamp. Until §9.10 names them,
-  §9.10 fails on this one item.
-- **P10R6-LIB-1.** A chosen right-column library card's pressed backing
-  ends 2 pt from the viewer, against 4 pt on the left and Terminal's 8. Its
-  keyboard focus ring reaches the viewer's edge line. The cause is the
-  spec's own numbers: the backing grows 4 pt past the cell and the ring 2
-  pt past that, against a 6-pt trailing inset.
-- **P10R6-TL-1.** In light, a selected picture tile's start trim bar is
-  near-black with no rim and breaks up over dark poster frames, down to
-  1.04:1. By the code, dark has the same fault over light frames, about
-  1.5:1. The baseline's light grips were also dark over the picture.
-- **P10R6-SH-1.** Each render-queue row creates its actions back to front,
-  before the job's name, so Tab and a screen reader reach Cancel first and
-  read the controls before the name. The sheet footers' confirming-first
-  order is intended and is not part of this.
+- **P10R6-LIB-1.** Library cards keep the 8-pt leading inset on both sides
+  (`library::cards_width`), in Media, Text, Effects, Transitions and Looks.
+  A chosen right-column card's backing now ends 4 pt before the viewer.
+- **P10R6-TL-1.** Every trim bar is drawn on a rim of the keyline, so a
+  selected tile's bars read over dark and light frames in both
+  appearances.
 - **P10R6-LT-1.** The solo glyph, on a track head and in the graph legend,
-  is drawn in the raw accent rather than `legible(accent)`. On the light
-  pressed cell it computes to 2.85:1 under Blue and 1.52:1 under Yellow, so
-  a soloed head can read fainter than an unsoloed one. Three spec rows still
-  describe solo as yellow, against owner decision 3.
-- **P10R6-LT-2** (documentation). The spec's §6 known limit gives
-  render-queue failure text 4.27:1 on the light sheet. The text now sits on
-  the queue card and measures 3.82:1 in light and 3.92:1 in dark.
+  is the accent made readable on its pressed cell with Terminal's
+  `readable` rule (`Palette::switch_ink`). It stays the accent where that
+  already reads; light Yellow becomes #866500, as `legible` has it. No
+  painted-frame test measures the graph legend's glyph; the theme test
+  covers the colour it uses.
+- **P10R6-SH-1.** Each render-queue row makes its name first and its
+  actions leading to trailing, so Tab and a screen reader take the row as
+  it is read. Nothing moved on screen.
+  `render_queue_tests::a_row_reads_and_tabs_as_it_is_laid_out` fails on
+  the old order.
+- **P10R6-LT-2.** A failed job's words use `Palette::failure_ink`: red
+  made readable at 4.5:1 on the queue card, #ce3228 in light and #ff736c
+  in dark. The Export sheet's footer refusal line and its other red text
+  are still `red` on the bare sheet, 4.27:1 in light.
+- **P10R6-W1.** Speed points have 22×22 targets, drawn as before. Colour
+  curve points stay 20×20 and are pinned in §9.10.
+
+**Checks at `263bd4d`.** On the same host, the desktop library tests passed
+1,361, with none failing or ignored.
+`clippy --locked -p neptune-video --all-targets -- -D warnings`,
+`cargo fmt --all --check` and `scripts/check-architecture.py` passed. The
+whole workspace was not rerun.
+
+**Captures at `263bd4d`.** The harness ran the `dev` binary built at
+`263bd4d` on a private Xvfb display (`:129`) for the six states the polish
+changed: `library-media-selected`, `video-selected`,
+`transition-selected`, `render-queue-jobs`, `inspector-video-speed` and
+`inspector-video-color`. It took 24 captures at both sizes in both
+appearances, with none missed, now in `captures-final/` beside the round-6
+matrix. The full matrix was not captured again, and no verifier other
+than the fixing agents and the integrator read these captures.
 
 P10R6-G1, which found this record still describing the round-4 build, is
-closed by this update.
+closed.
 
 ### Fixed since round 4
 
