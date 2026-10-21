@@ -48,12 +48,14 @@ fn problem(text: &str) -> Notice {
     }
 }
 
-/// A window of `NARROW` that shows `notices` as the application does: the
-/// clocks first, then the toasts, the render queue open over them when
-/// `jobs` is given, and kept clear of the `cards` of work over the viewer.
+/// A window of `NARROW`, or of `size`, that shows `notices` as the
+/// application does: the clocks first, then the toasts, the render queue
+/// open over them when `jobs` is given, and kept clear of the `cards` of
+/// work over the viewer.
 /// A button may stand where a toast can come, as the right panel's tabs do.
 struct Window {
     ctx: egui::Context,
+    size: Vec2,
     palette: Palette,
     notices: Vec<Notice>,
     jobs: Option<Vec<RenderJobInfo>>,
@@ -73,6 +75,10 @@ struct Window {
 
 impl Window {
     fn new(notices: Vec<Notice>, jobs: Option<Vec<RenderJobInfo>>) -> Self {
+        Self::sized(NARROW, notices, jobs)
+    }
+
+    fn sized(size: Vec2, notices: Vec<Notice>, jobs: Option<Vec<RenderJobInfo>>) -> Self {
         let ctx = egui::Context::default();
         let palette = Palette::new(Appearance::Dark, Accent::default());
         theme::install_fonts(&ctx);
@@ -80,6 +86,7 @@ impl Window {
         ctx.enable_accesskit();
         let mut window = Self {
             ctx,
+            size,
             palette,
             notices,
             jobs,
@@ -102,7 +109,7 @@ impl Window {
     fn frame(&mut self, after: f64, events: Vec<Event>) {
         self.time += after;
         let raw = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, NARROW)),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
             time: Some(self.time),
             events,
             ..Default::default()
@@ -327,7 +334,13 @@ fn a_toast_under_the_pointer_keeps_the_time_it_had_left() {
 
 #[test]
 fn a_dismiss_in_sight_answers_over_a_sheet_that_opened_after_it() {
-    let mut window = Window::new(vec![problem("The folder could not be read")], None);
+    // The queue is as tall whatever it lists, and at 560 a problem's toast
+    // does not fit under it and waits (spec §5.8); 640 leaves it room.
+    let mut window = Window::sized(
+        vec2(760.0, 640.0),
+        vec![problem("The folder could not be read")],
+        None,
+    );
     // The sheet opens over a problem already shown: egui puts a new modal
     // on top of every layer, and its backdrop would take the click.
     window.jobs = Some(vec![done("a.mp4")]);

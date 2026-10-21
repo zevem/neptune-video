@@ -23,8 +23,8 @@ use crate::{
     theme::{self, Accent, Appearance, Palette, metrics, motion},
 };
 use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, CursorIcon, Event, Galley, Id, Key, Layout, Pos2,
-    Rect, Sense, Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
+    self, Align, Align2, Color32, CursorIcon, Event, Galley, Id, Key, Layout, Pos2, Rect, Sense,
+    Stroke, StrokeKind, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 use std::{cell::Cell, path::PathBuf, sync::Arc};
 
@@ -148,17 +148,6 @@ impl Notice {
     }
 }
 
-/// The surface of the export sheet and the render queue, until they are
-/// drawn on the scaffold here.
-pub(crate) fn sheet(p: &Palette) -> egui::Frame {
-    egui::Frame::NONE
-        .fill(p.elevated)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(metrics::SHEET_RADIUS))
-        .shadow(p.sheet_shadow())
-        .inner_margin(egui::Margin::same(18))
-}
-
 /// Lays `add` out at the cursor in a column exactly `width` wide, for what
 /// a sheet scrolls.
 ///
@@ -181,20 +170,6 @@ pub(crate) fn column<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R)
         vec2(width, column.min_rect().height()),
     ));
     inner
-}
-
-/// A card of rows on a sheet, until the export sheet and the render queue
-/// use Terminal's.
-pub(crate) fn group(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
-    egui::Frame::NONE
-        .fill(p.control)
-        .corner_radius(CornerRadius::same(metrics::CONTROL_RADIUS + 2))
-        .inner_margin(egui::Margin::symmetric(12, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 2.0;
-            add(ui);
-        });
 }
 
 // ---- The scaffold ----------------------------------------------------------
@@ -3549,7 +3524,7 @@ mod tests {
         let outline = (rects.iter())
             .find(|rect| rect.rect == screen.shrink(6.0) && rect.stroke.width > 0.0)
             .expect("an outline inset from the window's edge");
-        assert_eq!(outline.corner_radius, CornerRadius::same(10));
+        assert_eq!(outline.corner_radius, egui::CornerRadius::same(10));
         assert!(
             !rects.iter().any(|rect| rect.rect == screen),
             "no square fill covers the window"

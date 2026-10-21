@@ -25,6 +25,7 @@ pub const SMALL_BUTTON: f32 = metrics::SMALL_BUTTON;
 
 /// A pane's well: the content surface, rounded, with a hairline inside its
 /// edge.
+#[allow(dead_code, reason = "only the adapters' test calls it now")]
 pub fn panel(ui: &Ui, rect: Rect, p: &Palette) {
     kit::pane_well(ui.painter(), rect, p.bg, p);
 }
@@ -35,6 +36,7 @@ pub fn truncated(ui: &Ui, text: &str, font: FontId, color: Color32, width: f32) 
 }
 
 /// The same dropdown chevron as a select's, in egui's existing icon slot.
+#[allow(dead_code, reason = "only the adapters' test calls it now")]
 pub fn combo_icon(ui: &Ui, rect: Rect, visuals: &egui::style::WidgetVisuals, _is_open: bool) {
     let side = rect.width().min(rect.height()).min(12.0);
     icons::paint(
@@ -223,6 +225,7 @@ pub fn segmented<T: PartialEq + Copy>(
 }
 
 /// A small heading over a group of rows.
+#[allow(dead_code, reason = "only the adapters' test calls it now")]
 pub fn section(ui: &mut Ui, p: &Palette, text: &str) {
     ui.add_space(2.0);
     ui.label(
@@ -233,6 +236,7 @@ pub fn section(ui: &mut Ui, p: &Palette, text: &str) {
 }
 
 /// A label at the leading edge and a control at the trailing edge of one row.
+#[allow(dead_code, reason = "only the adapters' test calls it now")]
 pub fn row<R>(ui: &mut Ui, p: &Palette, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     kit::row(ui, p, label, RowFit::LEGACY, add)
 }
@@ -254,6 +258,7 @@ pub fn splitter(ui: &mut Ui, p: &Palette, rect: Rect, id: Id, vertical: bool) ->
 
 /// The quiet statement an empty panel makes: an icon, a line and a hint. It
 /// stands where it stood, since a caller may set an action under it.
+#[allow(dead_code, reason = "only the adapters' test calls it now")]
 pub fn empty_state(ui: &mut Ui, p: &Palette, rect: Rect, icon: Icon, title: &str, hint: &str) {
     kit::empty_state_as_before(ui, p, rect, icon, title, hint);
 }
@@ -505,6 +510,7 @@ pub fn slider(
 }
 
 /// As [`small_icon_button`], for a state: pressed while it is on.
+#[allow(dead_code, reason = "only the adapters' test calls it now")]
 pub fn small_icon_toggle(ui: &mut Ui, p: &Palette, icon: Icon, on: bool, label: &str) -> Response {
     kit::small_icon_toggle(ui, p, icon, on, label)
 }
@@ -542,6 +548,7 @@ pub fn switch(ui: &mut Ui, p: &Palette, on: bool, label: &str) -> Response {
 
 /// The heading of a group of rows that opens and closes: a chevron and a
 /// name, cut with an ellipsis, over the width that is left.
+#[allow(dead_code, reason = "only the adapters' test calls it now")]
 pub fn disclosure(ui: &mut Ui, p: &Palette, open: bool, text: &str, dim: bool) -> Response {
     let size = vec2(ui.available_width().max(24.0), SMALL_BUTTON);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());

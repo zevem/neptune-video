@@ -3914,7 +3914,12 @@ mod tests {
                 text: "Saving the audio".to_owned(),
                 shown: crate::extract::Shown::Writing(0.5),
             };
-            under = crate::ui::sheets::saves(ui.ctx(), p, &[card], viewer, &mut Vec::new());
+            // The window hands the toasts where the cards are; the
+            // capsules start 8 under the lowest.
+            let shown = crate::ui::sheets::saves(ui.ctx(), p, &[card], viewer, &mut Vec::new());
+            under = (shown.iter())
+                .map(|card| card.bottom() + 8.0)
+                .fold(f32::NEG_INFINITY, f32::max);
         });
         output.drop_without_applying_deltas();
         assert!(
