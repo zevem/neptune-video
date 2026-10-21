@@ -10,7 +10,10 @@ use super::*;
 use crate::theme::{Accent, Appearance};
 use editor_core::export::ExportSettings;
 use eframe::egui::{Color32, Event, Key, Modifiers, PointerButton, Pos2, Shape, accesskit::Role};
-use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{MAIN_SEPARATOR, Path, PathBuf},
+};
 
 const WIDE: Vec2 = vec2(1440.0, 900.0);
 const NARROW: Vec2 = vec2(760.0, 560.0);
@@ -96,6 +99,10 @@ struct Bench {
     /// Why the last request failed, as the application hands it in.
     refusal: Option<String>,
     seen: Vec<Seen>,
+    /// The names AccessKit gives, in the order a screen reader takes them.
+    reading: Vec<String>,
+    /// The name of the node with the keyboard.
+    focused: Option<String>,
     painted: Vec<(String, Color32)>,
     answers: Vec<QueueAnswer>,
 }
@@ -116,6 +123,8 @@ impl Bench {
             held: Vec::new(),
             refusal: None,
             seen: Vec::new(),
+            reading: Vec::new(),
+            focused: None,
             painted: Vec::new(),
             answers: Vec::new(),
         };
@@ -170,6 +179,25 @@ impl Bench {
                     })
                 })
                 .collect();
+            let nodes: HashMap<_, _> = update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+            let name = |node: &egui::accesskit::Node| {
+                node.label().or_else(|| node.value()).map(str::to_owned)
+            };
+            self.focused = nodes.get(&update.focus).and_then(|node| name(node));
+            // The root is the one node that is no other's child.
+            let children: HashSet<_> = (nodes.values())
+                .flat_map(|node| node.children().iter().copied())
+                .collect();
+            let mut walk: Vec<_> = (nodes.keys())
+                .filter(|id| !children.contains(id))
+                .copied()
+                .collect();
+            self.reading.clear();
+            while let Some(id) = walk.pop() {
+                let Some(node) = nodes.get(&id) else { continue };
+                self.reading.extend(name(node));
+                walk.extend(node.children().iter().rev().copied());
+            }
         }
         self.painted.clear();
         for clipped in &output.shapes {
@@ -255,6 +283,17 @@ impl Bench {
         self.frame(vec![Event::PointerMoved(at)]);
         self.frame(vec![button(true)]);
         self.frame(vec![button(false)]);
+        self.frame(Vec::new());
+    }
+
+    fn key(&mut self, key: Key, modifiers: Modifiers) {
+        self.frame(vec![Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }]);
         self.frame(Vec::new());
     }
 
@@ -452,17 +491,119 @@ fn a_job_says_how_far_it_has_got_and_why_it_failed() {
         bench.painted_in("/home/someone/Exports"),
         Some(bench.palette.secondary)
     );
-    let red = bench.palette.red;
+    let red = bench.palette.failure_ink();
     let mut bench = bench;
     // The failed job's message is just over the last row, the job done
     // first.
     bench.reveal("Remove “done.mp4” from the list");
+    assert_eq!(bench.painted_in("Failed after 0:12"), Some(red));
     assert_eq!(bench.painted_in("No space left on device"), Some(red));
     assert_ne!(
         bench.painted_in("rendered in software"),
         Some(red),
         "a note is not a failure"
     );
+}
+
+#[test]
+fn a_failure_is_red_that_reads_on_the_card() {
+    // §6: the failure's words are 12 points, so they hold 4.5:1 on the
+    // queue's card, `control` over the sheet, in either appearance, and
+    // stay red.
+    for appearance in [Appearance::Dark, Appearance::Light] {
+        let p = Palette::new(appearance, Accent::default());
+        let ink = p.failure_ink();
+        let card = p.elevated.blend(p.control);
+        let ratio = theme::contrast(ink, card);
+        assert!(ratio >= 4.5, "{appearance:?}: {ink:?} at {ratio:.2}:1");
+        assert!(
+            ink.r() > ink.g().saturating_add(80) && ink.r() > ink.b().saturating_add(80),
+            "{appearance:?}: {ink:?} is still red"
+        );
+    }
+}
+
+#[test]
+fn a_row_reads_and_tabs_as_it_is_laid_out() {
+    // §7.4: each row's name, then its actions leading to trailing, as the
+    // eye goes, for a held job, one waiting, one paused, one rendering and
+    // ones finished.
+    let jobs = vec![
+        job("b.mp4", RenderState::Queued),
+        job("a.mp4", RenderState::Paused),
+        job("c.mp4", RenderState::Queued),
+    ];
+    let a = jobs[1].id;
+    let mut bench = Bench::new(WIDE, jobs);
+    bench.held = vec![a];
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    let names = [
+        "a.mp4",
+        "Render “a.mp4” sooner",
+        "Render “a.mp4” later",
+        "Start “a.mp4”",
+        "Cancel “a.mp4”",
+    ];
+    let lefts: Vec<_> = (names.iter())
+        .map(|name| {
+            (bench.seen.iter())
+                .find(|seen| seen.name == *name)
+                .unwrap_or_else(|| panic!("FIXTURE: {name} is listed"))
+                .rect
+                .left()
+        })
+        .collect();
+    assert!(lefts.is_sorted(), "{lefts:?}");
+    let read: Vec<_> = (bench.reading.iter())
+        .map(String::as_str)
+        .filter(|name| names.contains(name))
+        .collect();
+    assert_eq!(read, names, "read");
+    // Tab takes the held job's actions from Render sooner to Cancel. The
+    // first waiting job's actions come before them, as its row does.
+    let actions = &names[1..];
+    let mut tabbed: Vec<String> = Vec::new();
+    for _ in 0..20 {
+        if tabbed.len() == actions.len() {
+            break;
+        }
+        bench.key(Key::Tab, Modifiers::NONE);
+        if let Some(name) = (bench.focused.as_deref()).filter(|name| actions.contains(name))
+            && tabbed.last().map(String::as_str) != Some(name)
+        {
+            tabbed.push(name.to_owned());
+        }
+    }
+    assert_eq!(tabbed, actions, "tabbed");
+
+    // Every other state's row reads its name, then its actions in the
+    // order they stand.
+    let bench = Bench::new(WIDE, every_state());
+    for job in [
+        "rendering.mp4",
+        "paused.mp4",
+        "first.mp4",
+        "finalizing.mp4",
+        "done.mp4",
+        "failed.mp4",
+    ] {
+        let quoted = format!("“{job}”");
+        let row: Vec<&str> = (bench.reading.iter())
+            .map(String::as_str)
+            .filter(|name| {
+                *name == job || (name.contains(&quoted) && !name.starts_with("Progress"))
+            })
+            .collect();
+        assert_eq!(row.first(), Some(&job), "{row:?}");
+        let lefts: Vec<f32> = (row.iter().skip(1))
+            .map(|name| bench.get(name).rect.left())
+            .collect();
+        assert!(
+            !lefts.is_empty() && lefts.is_sorted(),
+            "{job}: {row:?} at {lefts:?}"
+        );
+    }
 }
 
 #[test]
@@ -684,7 +825,7 @@ fn a_long_failure_is_cut_to_two_lines_and_said_whole() {
     );
     assert_eq!(
         bench.painted_in("line 0 of what FFmpeg said"),
-        Some(bench.palette.red)
+        Some(bench.palette.failure_ink())
     );
     assert!(
         in_sight(&bench, "Cancel “next.mp4”"),

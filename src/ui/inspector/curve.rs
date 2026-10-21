@@ -21,7 +21,9 @@ use eframe::egui::{
 pub(super) const IDENTITY: [[f32; 2]; 2] = [[0.0, 0.0], [1.0, 1.0]];
 /// The least two neighbouring points are apart along the input.
 const GAP: f32 = 0.01;
-/// The side of a point's target, and the radius it is drawn at.
+/// The side of a point's target, and the radius it is drawn at. The target
+/// is under §9.10's 22, which pins it: an end point's is over the well's
+/// rim, and a wider one would reach the inspector's edge at its narrowest.
 const TARGET: f32 = 20.0;
 const RADIUS: f32 = 4.5;
 /// The line is drawn through this many places.

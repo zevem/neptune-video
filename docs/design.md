@@ -142,6 +142,9 @@ and the snap guide, which turns to ink when the accent is Yellow. Amber,
 the Agent tab, "Changed on disk". It turns yellow when the accent is Orange.
 In the light appearance yellow and amber used as text, glyphs or thin lines
 go through `Palette::legible`, which darkens them where they would not read.
+A render job's failure is said in `Palette::failure_ink`: red, taken toward
+the ink until its 12-point words hold 4.5:1 on the queue's card, as Terminal
+makes its red readable on its surfaces.
 `muted` is for painted placeholders such as the launcher's, disabled ink and
 minor glyphs, never for notes or body copy. A text field's hint is egui's
 weak text, `fg` at 60 %, as in Terminal's composer. A media kind's tone is

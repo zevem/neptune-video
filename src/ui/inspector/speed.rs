@@ -35,8 +35,9 @@ use uuid::Uuid;
 /// silent: everywhere else its speed changes its pitch.
 const SILENT: &str = "Sound is silent where the clip is held, reversed or ramped; elsewhere speed changes its pitch.";
 
-/// The side of a point's target, and the radius it is drawn at.
-const TARGET: f32 = 20.0;
+/// The side of a point's target, §9.10's least, and the radius it is drawn
+/// at.
+const TARGET: f32 = 22.0;
 const RADIUS: f32 = 4.5;
 /// How far the pointer travels before a drag takes a direction.
 const TRAVEL: f32 = 3.0;

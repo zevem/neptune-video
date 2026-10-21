@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
     icons::{self, Icon},
-    theme::{self, Accent, Palette},
+    theme::{self, Accent, Palette, metrics},
     timefmt,
 };
 use editor_core::{
@@ -52,6 +52,8 @@ const ROW_PAD: f32 = 8.0;
 const NAME_LINE: f32 = 22.0;
 const LINE: f32 = 18.0;
 const BAR_LINE: f32 = 14.0;
+/// The room between a row's actions.
+const ACTION_GAP: f32 = 2.0;
 
 /// What the person asked of the queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -566,7 +568,7 @@ fn message_galley(
 ) -> Option<std::sync::Arc<egui::Galley>> {
     let message = message_of(job)?;
     let color = if job.state == RenderState::Failed {
-        p.red
+        p.failure_ink()
     } else {
         p.secondary
     };
@@ -645,31 +647,15 @@ fn job_row(
     let right = rect.right() - 12.0;
     let mut y = rect.top() + ROW_PAD;
 
-    // The actions, at the trailing end of the name's line, always shown.
+    // The name, cut short before the actions at the trailing end of its
+    // line, which are always shown. It is made first, and the actions
+    // leading to trailing, so that Tab and a screen reader take the row as
+    // it is read (§7.4).
+    let offered = actions(job, name, held, place);
+    let count = offered.len() as f32;
+    let width = count * metrics::SMALL_BUTTON + (count - 1.0).max(0.0) * ACTION_GAP;
     let line = Rect::from_min_max(pos2(left, y), pos2(right, y + NAME_LINE));
-    let actions = controls::place(
-        ui,
-        line,
-        Layout::right_to_left(Align::Center),
-        ("render-queue-actions", job.id),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            let mut act = |ui: &mut Ui, icon, label: String, enabled: bool, asked| {
-                let clicked = ui
-                    .add_enabled_ui(enabled, |ui| kit::small_icon_button(ui, p, icon, &label))
-                    .inner
-                    .clicked();
-                if clicked && enabled {
-                    answer = Some(asked);
-                }
-            };
-            actions(&mut act, ui, job, name, held, place);
-            ui.min_rect().left()
-        },
-    );
-
-    // The name, cut short before the actions.
-    let room = (actions - 8.0 - left).max(0.0);
+    let room = (right - width - 8.0 - left).max(0.0);
     let galley = controls::elided(&painter, name, theme::medium(13.0), p.fg, room);
     let cut = galley.elided;
     let words = Rect::from_min_size(
@@ -682,6 +668,24 @@ fn job_row(
     if cut {
         named.on_hover_text(name);
     }
+    controls::place(
+        ui,
+        Rect::from_min_max(pos2(right - width, line.top()), line.max),
+        Layout::left_to_right(Align::Center),
+        ("render-queue-actions", job.id),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = ACTION_GAP;
+            for (icon, label, enabled, asked) in offered {
+                let clicked = ui
+                    .add_enabled_ui(enabled, |ui| kit::small_icon_button(ui, p, icon, &label))
+                    .inner
+                    .clicked();
+                if clicked && enabled {
+                    answer = Some(asked);
+                }
+            }
+        },
+    );
     y += NAME_LINE;
 
     // What it is doing: done with a check, failed in the problem colour,
@@ -710,7 +714,7 @@ fn job_row(
         end -= 12.0;
     }
     let ink = if job.state == RenderState::Failed {
-        p.red
+        p.failure_ink()
     } else {
         p.secondary
     };
@@ -806,7 +810,7 @@ fn job_row(
         let shown = Rect::from_min_size(at, galley.size());
         let message = galley.text().to_owned();
         let color = if job.state == RenderState::Failed {
-            p.red
+            p.failure_ink()
         } else {
             p.secondary
         };
@@ -821,126 +825,96 @@ fn job_row(
     answer
 }
 
-/// The actions a job's state allows, trailing first, as `act` makes them.
+/// The actions a job's state allows, leading to trailing: each one's
+/// glyph, name, whether it can be taken now and what it asks.
 fn actions(
-    act: &mut impl FnMut(&mut Ui, Icon, String, bool, QueueAnswer),
-    ui: &mut Ui,
     job: &RenderJobInfo,
     name: &str,
     held: bool,
     place: Option<(usize, usize)>,
-) {
+) -> Vec<(Icon, String, bool, QueueAnswer)> {
     let id = job.id;
+    let cancel = |icon| {
+        (
+            icon,
+            format!("Cancel “{name}”"),
+            true,
+            QueueAnswer::Cancel(id),
+        )
+    };
+    let remove = (
+        Icon::Trash,
+        format!("Remove “{name}” from the list"),
+        true,
+        QueueAnswer::Remove(id),
+    );
     match job.state {
-        RenderState::Done => {
-            act(
-                ui,
-                Icon::Trash,
-                format!("Remove “{name}” from the list"),
-                true,
-                QueueAnswer::Remove(id),
-            );
-            act(
-                ui,
+        RenderState::Done => vec![
+            (
                 Icon::Folder,
                 format!("Show “{name}” in its folder"),
                 true,
                 QueueAnswer::Reveal(id),
-            );
-        }
-        RenderState::Failed | RenderState::Cancelled => {
-            act(
-                ui,
-                Icon::Trash,
-                format!("Remove “{name}” from the list"),
-                true,
-                QueueAnswer::Remove(id),
-            );
-            act(
-                ui,
+            ),
+            remove,
+        ],
+        RenderState::Failed | RenderState::Cancelled => vec![
+            (
                 Icon::Loop,
                 format!("Render “{name}” again"),
                 true,
                 QueueAnswer::Retry(id),
-            );
-        }
+            ),
+            remove,
+        ],
         // Waiting its turn, or held until started.
         RenderState::Queued | RenderState::Paused if held || job.state == RenderState::Queued => {
-            act(
-                ui,
-                Icon::Close,
-                format!("Cancel “{name}”"),
-                true,
-                QueueAnswer::Cancel(id),
-            );
-            if held {
-                act(
-                    ui,
-                    Icon::Play,
-                    format!("Start “{name}”"),
-                    true,
-                    QueueAnswer::Resume(id),
-                );
-            }
+            let mut offered = Vec::with_capacity(4);
             if let Some((at, of)) = place {
-                act(
-                    ui,
-                    Icon::ArrowDown,
-                    format!("Render “{name}” later"),
-                    at + 1 < of,
-                    QueueAnswer::MoveDown(id),
-                );
-                act(
-                    ui,
+                offered.push((
                     Icon::ArrowUp,
                     format!("Render “{name}” sooner"),
                     at > 0,
                     QueueAnswer::MoveUp(id),
-                );
+                ));
+                offered.push((
+                    Icon::ArrowDown,
+                    format!("Render “{name}” later"),
+                    at + 1 < of,
+                    QueueAnswer::MoveDown(id),
+                ));
             }
+            if held {
+                offered.push((
+                    Icon::Play,
+                    format!("Start “{name}”"),
+                    true,
+                    QueueAnswer::Resume(id),
+                ));
+            }
+            offered.push(cancel(Icon::Close));
+            offered
         }
         // Started, then paused.
-        RenderState::Queued | RenderState::Paused => {
-            act(
-                ui,
-                Icon::Stop,
-                format!("Cancel “{name}”"),
-                true,
-                QueueAnswer::Cancel(id),
-            );
-            act(
-                ui,
+        RenderState::Queued | RenderState::Paused => vec![
+            (
                 Icon::Play,
                 format!("Resume “{name}”"),
                 true,
                 QueueAnswer::Resume(id),
-            );
-        }
-        RenderState::Preparing | RenderState::Rendering => {
-            act(
-                ui,
-                Icon::Stop,
-                format!("Cancel “{name}”"),
-                true,
-                QueueAnswer::Cancel(id),
-            );
-            act(
-                ui,
+            ),
+            cancel(Icon::Stop),
+        ],
+        RenderState::Preparing | RenderState::Rendering => vec![
+            (
                 Icon::Pause,
                 format!("Pause “{name}”"),
                 true,
                 QueueAnswer::Pause(id),
-            );
-        }
-        RenderState::Finalizing => {
-            act(
-                ui,
-                Icon::Stop,
-                format!("Cancel “{name}”"),
-                true,
-                QueueAnswer::Cancel(id),
-            );
-        }
+            ),
+            cancel(Icon::Stop),
+        ],
+        RenderState::Finalizing => vec![cancel(Icon::Stop)],
     }
 }
 

@@ -384,6 +384,14 @@ impl Palette {
         }
     }
 
+    /// Red as the words of a failure on a sheet's card, `control` over
+    /// `elevated`: the red where it holds the 4.5:1 a 12-point line needs
+    /// there, and otherwise deepened in the light and lifted in the dark
+    /// until it does, as Terminal's red is on its surfaces.
+    pub fn failure_ink(&self) -> Color32 {
+        readable(self.red, &[self.elevated.blend(self.control)], 4.5)
+    }
+
     pub fn hairline(&self) -> Stroke {
         Stroke::new(1.0, self.separator)
     }
