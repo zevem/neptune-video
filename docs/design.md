@@ -141,10 +141,11 @@ and the snap guide, which turns to ink when the accent is Yellow. Amber,
 the Agent tab, "Changed on disk". It turns yellow when the accent is Orange.
 In the light appearance yellow and amber used as text, glyphs or thin lines
 go through `Palette::legible`, which darkens them where they would not read.
-`muted` is for placeholders, disabled ink and minor glyphs, never for notes or
-body copy. A media kind's tone is decoration: a clip also says what it is
-with its icon and its name, and its selection with a ring, a keyline and a
-lifted body.
+`muted` is for painted placeholders such as the launcher's, disabled ink and
+minor glyphs, never for notes or body copy. A text field's hint is egui's
+weak text, `fg` at 60 %, as in Terminal's composer. A media kind's tone is
+decoration: a clip also says what it is with its icon and its name, and its
+selection with a ring, a keyline and a lifted body.
 
 ## The stage, the timecode and the timeline
 

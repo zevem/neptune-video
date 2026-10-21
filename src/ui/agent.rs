@@ -42,15 +42,16 @@ const MARKED: f32 = 24.0;
 /// Words without a mark stand this far in from either edge.
 const TEXT_INSET: f32 = 6.0;
 /// The share of the width a line of the person's takes at most.
-const BUBBLE: f32 = 0.85;
+const BUBBLE: f32 = 0.86;
 
-/// The composer: its corner, and the inset of its controls from its edge.
-const RADIUS: u8 = 12;
+/// The composer's corner, as Terminal's: its controls' corner and their
+/// inset from its edge.
+const RADIUS: u8 = 14;
 const INSET: f32 = 8.0;
 /// The row of controls at the surface's foot, and the room over the words
 /// and beside them: they begin where the row's switch does.
 const FOOT: f32 = 30.0;
-const TOP: f32 = 10.0;
+const TOP: f32 = 12.0;
 const SIDE: f32 = INSET;
 /// The room between the words and the row under them.
 const GAP: f32 = 4.0;
@@ -664,14 +665,16 @@ fn bubble(ui: &mut Ui, p: &Palette, text: &str, font: FontId) {
     let width = ui.available_width();
     let room = (width * BUBBLE - 20.0).max(40.0);
     let galley = ui.painter().layout(text.to_owned(), font, p.fg, room);
-    let size = galley.size() + vec2(20.0, 16.0);
+    // Terminal's bubble: a row's corner, and 10 by 7 round its words.
+    let size = galley.size() + vec2(20.0, 14.0);
     let (row, response) = ui.allocate_exact_size(vec2(width, size.y), Sense::hover());
     let rect = Rect::from_min_size(pos2(row.right() - size.x, row.top()), size);
     ui.interact(rect, response.id.with("said"), Sense::hover())
         .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
-    ui.painter().rect_filled(rect, RADIUS, p.control);
     ui.painter()
-        .galley(rect.min + vec2(10.0, 8.0), galley, p.fg);
+        .rect_filled(rect, metrics::ROW_RADIUS, p.control);
+    ui.painter()
+        .galley(rect.min + vec2(10.0, 7.0), galley, p.fg);
 }
 
 /// What came of a line: one row per action, each with its mark and words.
@@ -1090,7 +1093,10 @@ fn composer_surface(
                     ui.add(
                         egui::TextEdit::multiline(&mut state.input)
                             .id(field)
-                            .hint_text(egui::RichText::new(hint).font(font.clone()).color(p.muted))
+                            // egui paints a field's hint in its weak text,
+                            // `fg` at 60 %, whatever colour it is given: as
+                            // Terminal's composer shows it.
+                            .hint_text(egui::RichText::new(hint).font(font.clone()))
                             .font(font)
                             .frame(egui::Frame::NONE)
                             .background_color(Color32::TRANSPARENT)
