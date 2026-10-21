@@ -374,6 +374,17 @@ impl Bench {
         self.frame(Vec::new());
     }
 
+    /// Opens the clip menu at `pos` and, where it has one, its Audio menu:
+    /// the rows of a clip's sound are in it (§5.7.3).
+    fn audio_menu_at(&mut self, pos: Pos2) {
+        self.secondary_click_at(pos);
+        if let Some(audio) = self.find("Audio").map(|row| row.rect.center()) {
+            for _ in 0..4 {
+                self.frame(vec![Event::PointerMoved(audio)]);
+            }
+        }
+    }
+
     fn escape(&mut self) {
         self.frame(vec![Event::Key {
             key: Key::Escape,
@@ -840,32 +851,33 @@ fn a_fade_is_drawn_as_the_curve_the_sound_follows() {
 
 // ---- The clip menu --------------------------------------------------------
 
+// §5.7.3: the rows of a clip's sound are in its Audio menu.
 #[test]
 fn the_clip_menu_fades_the_selected_clips_and_removes_their_fades() {
     let (mut bench, [shot, voice, bed]) = Bench::new();
     let steps = bench.steps();
-    bench.secondary_click_at(bench.tile(voice).center());
+    bench.audio_menu_at(bench.tile(voice).center());
     bench.click("Fade in 0.5 s");
     assert_eq!(bench.steps(), steps + 1, "{:?}", bench.refused);
     assert_eq!(bench.last(), "Change fades");
     assert_eq!(bench.fades(voice), (fades::QUICK, Time::ZERO));
-    bench.secondary_click_at(bench.tile(voice).center());
+    bench.audio_menu_at(bench.tile(voice).center());
     bench.click("Fade out 0.5 s");
     assert_eq!(bench.fades(voice), (fades::QUICK, fades::QUICK));
     // Asked for again it is there already: shown, and not to be chosen.
-    bench.secondary_click_at(bench.tile(voice).center());
+    bench.audio_menu_at(bench.tile(voice).center());
     assert!(bench.find("Fade out 0.5 s").is_some_and(|row| row.disabled));
     assert!(bench.find("Remove fades").is_some_and(|row| !row.disabled));
     bench.click("Remove fades");
     assert_eq!(bench.fades(voice), (Time::ZERO, Time::ZERO));
     assert_eq!(bench.steps(), steps + 3);
-    bench.secondary_click_at(bench.tile(voice).center());
+    bench.audio_menu_at(bench.tile(voice).center());
     assert!(bench.find("Remove fades").is_some_and(|row| row.disabled));
     bench.escape();
 
     // Several selected clips fade in one step: a picture clip's sound too.
     bench.selection.clips = vec![shot, voice, bed];
-    bench.secondary_click_at(bench.tile(bed).center());
+    bench.audio_menu_at(bench.tile(bed).center());
     bench.click("Fade out 0.5 s");
     assert_eq!(bench.steps(), steps + 4, "{:?}", bench.refused);
     for clip in [shot, voice, bed] {
@@ -878,6 +890,7 @@ fn the_clip_menu_fades_the_selected_clips_and_removes_their_fades() {
     assert!(bench.refused.is_empty() && bench.said.is_empty());
 }
 
+// §5.7.3: the rows of a clip's sound are in its Audio menu.
 #[test]
 fn the_clip_menu_offers_no_fade_of_a_title_or_of_sound_the_linked_clip_owns() {
     let (mut bench, [shot, ..]) = Bench::new();
@@ -887,7 +900,7 @@ fn the_clip_menu_offers_no_fade_of_a_title_or_of_sound_the_linked_clip_owns() {
     let title_id = title.id;
     text.clips.push(title);
     bench.edit(Command::AddTrack { track: text });
-    bench.secondary_click_at(bench.tile(title_id).center());
+    bench.audio_menu_at(bench.tile(title_id).center());
     assert!(bench.has("Split at playhead"), "the menu is open");
     assert!(!bench.has("Fade in 0.5 s") && !bench.has("Remove fades"));
     bench.escape();
@@ -898,7 +911,7 @@ fn the_clip_menu_offers_no_fade_of_a_title_or_of_sound_the_linked_clip_owns() {
     bench.edit(detach);
     let steps = bench.steps();
     bench.selection.clear();
-    bench.secondary_click_at(bench.tile(shot).center());
+    bench.audio_menu_at(bench.tile(shot).center());
     for (label, _) in fades::MENU {
         assert!(bench.find(label).is_some_and(|row| row.disabled), "{label}");
     }
@@ -907,6 +920,7 @@ fn the_clip_menu_offers_no_fade_of_a_title_or_of_sound_the_linked_clip_owns() {
     assert_eq!(bench.fades(shot), (Time::ZERO, Time::ZERO));
 }
 
+// §5.7.3: the rows of a clip's sound are in its Audio menu.
 #[test]
 fn the_clip_menu_normalizes_the_selected_clips_that_are_heard() {
     const NORMALIZE: &str = "Normalize loudness";
@@ -915,7 +929,7 @@ fn the_clip_menu_normalizes_the_selected_clips_that_are_heard() {
     // edited until each is measured.
     bench.selection.clips = vec![voice, bed];
     let steps = bench.steps();
-    bench.secondary_click_at(bench.tile(bed).center());
+    bench.audio_menu_at(bench.tile(bed).center());
     bench.click(NORMALIZE);
     assert_eq!(bench.normalized, [vec![voice, bed]]);
     assert_eq!(bench.steps(), steps);
@@ -927,7 +941,7 @@ fn the_clip_menu_normalizes_the_selected_clips_that_are_heard() {
     text.clips.push(title);
     bench.edit(Command::AddTrack { track: text });
     bench.selection.clear();
-    bench.secondary_click_at(bench.tile(title_id).center());
+    bench.audio_menu_at(bench.tile(title_id).center());
     assert!(bench.has("Split at playhead"), "the menu is open");
     assert!(!bench.has(NORMALIZE));
     bench.escape();
@@ -937,12 +951,13 @@ fn the_clip_menu_normalizes_the_selected_clips_that_are_heard() {
     let detach = rules::detach_audio(bench.editor.project(), shot).unwrap();
     bench.edit(detach);
     bench.selection.clear();
-    bench.secondary_click_at(bench.tile(shot).center());
+    bench.audio_menu_at(bench.tile(shot).center());
     assert!(bench.find(NORMALIZE).is_some_and(|row| row.disabled));
     bench.click(NORMALIZE);
     assert_eq!(bench.normalized.len(), 1);
 }
 
+// §5.7.3: the rows of a clip's sound are in its Audio menu.
 #[test]
 fn the_menu_of_an_audio_lane_clip_ducks_the_selected_clips() {
     use crate::duck::{DEPTH, LABEL};
@@ -951,14 +966,14 @@ fn the_menu_of_an_audio_lane_clip_ducks_the_selected_clips() {
     // chosen; nothing is edited until the others' sound is read.
     bench.selection.only(bed);
     let steps = bench.steps();
-    bench.secondary_click_at(bench.tile(bed).center());
+    bench.audio_menu_at(bench.tile(bed).center());
     bench.click(LABEL);
     assert_eq!(bench.ducked, [(vec![bed], DEPTH)]);
     assert_eq!(bench.steps(), steps);
 
     // A clip on a video lane has no row, though its sound is heard.
     bench.selection.only(shot);
-    bench.secondary_click_at(bench.tile(shot).center());
+    bench.audio_menu_at(bench.tile(shot).center());
     assert!(bench.has("Normalize loudness"), "the menu is open");
     assert!(!bench.has(LABEL));
     bench.escape();
@@ -966,7 +981,7 @@ fn the_menu_of_an_audio_lane_clip_ducks_the_selected_clips() {
     // On a locked track the row is shown and not to be chosen.
     bench.lock(voice);
     bench.selection.only(voice);
-    bench.secondary_click_at(bench.tile(voice).center());
+    bench.audio_menu_at(bench.tile(voice).center());
     assert!(bench.find(LABEL).is_some_and(|row| row.disabled));
     bench.click(LABEL);
     assert_eq!(bench.ducked.len(), 1);
@@ -974,11 +989,12 @@ fn the_menu_of_an_audio_lane_clip_ducks_the_selected_clips() {
     // Beside a clip that is ducked, the locked one is passed over and still
     // asked for: a selected clip is no voice.
     bench.selection.clips = vec![voice, bed];
-    bench.secondary_click_at(bench.tile(bed).center());
+    bench.audio_menu_at(bench.tile(bed).center());
     bench.click(LABEL);
     assert_eq!(bench.ducked[1], (vec![voice, bed], DEPTH));
 }
 
+// §5.7.3: the rows of a clip's sound are in its Audio menu.
 #[test]
 fn the_clip_menu_saves_the_span_of_sound_the_clip_plays() {
     use crate::extract::{LABEL, Source};
@@ -988,7 +1004,7 @@ fn the_clip_menu_saves_the_span_of_sound_the_clip_plays() {
     let steps = bench.steps();
     for clip in [shot, voice] {
         bench.selection.only(clip);
-        bench.secondary_click_at(bench.tile(clip).center());
+        bench.audio_menu_at(bench.tile(clip).center());
         bench.click(LABEL);
     }
     assert_eq!(bench.saved, [Source::Clip(shot), Source::Clip(voice)]);
@@ -1001,7 +1017,7 @@ fn the_clip_menu_saves_the_span_of_sound_the_clip_plays() {
     text.clips.push(title);
     bench.edit(Command::AddTrack { track: text });
     bench.selection.clear();
-    bench.secondary_click_at(bench.tile(title_id).center());
+    bench.audio_menu_at(bench.tile(title_id).center());
     assert!(bench.has("Split at playhead"), "the menu is open");
     assert!(!bench.has(LABEL));
     bench.escape();
@@ -1011,10 +1027,11 @@ fn the_clip_menu_saves_the_span_of_sound_the_clip_plays() {
     let detach = rules::detach_audio(bench.editor.project(), shot).unwrap();
     bench.edit(detach);
     bench.selection.clear();
-    bench.secondary_click_at(bench.tile(shot).center());
+    bench.audio_menu_at(bench.tile(shot).center());
     assert!(bench.find(LABEL).is_some_and(|row| !row.disabled));
 }
 
+// §5.7.3: the rows of a clip's sound are in its Audio menu.
 #[test]
 fn the_clip_menu_separates_a_clip_that_is_heard_once_a_separator_is_found() {
     use crate::stems::{LABEL, LOOKING, NEEDS_TOOL, Tool};
@@ -1027,7 +1044,7 @@ fn the_clip_menu_separates_a_clip_that_is_heard_once_a_separator_is_found() {
     for (tool, words) in [(Tool::Missing, NEEDS_TOOL), (Tool::Looking, LOOKING)] {
         bench.separator = tool;
         bench.selection.only(voice);
-        bench.secondary_click_at(bench.tile(voice).center());
+        bench.audio_menu_at(bench.tile(voice).center());
         let row = bench.find(LABEL).expect("the row is shown");
         assert!(row.disabled);
         let at = row.rect.center();
@@ -1049,7 +1066,7 @@ fn the_clip_menu_separates_a_clip_that_is_heard_once_a_separator_is_found() {
     let steps = bench.steps();
     for clip in [shot, voice] {
         bench.selection.only(clip);
-        bench.secondary_click_at(bench.tile(clip).center());
+        bench.audio_menu_at(bench.tile(clip).center());
         bench.click(LABEL);
     }
     assert_eq!(bench.separated, [shot, voice]);
@@ -1060,12 +1077,12 @@ fn the_clip_menu_separates_a_clip_that_is_heard_once_a_separator_is_found() {
     let detach = rules::detach_audio(bench.editor.project(), shot).unwrap();
     bench.edit(detach);
     bench.selection.clear();
-    bench.secondary_click_at(bench.tile(shot).center());
+    bench.audio_menu_at(bench.tile(shot).center());
     assert!(bench.find(LABEL).is_some_and(|row| row.disabled));
     bench.escape();
 
     // A locked track keeps its clip from being turned down.
     bench.lock(voice);
-    bench.secondary_click_at(bench.tile(voice).center());
+    bench.audio_menu_at(bench.tile(voice).center());
     assert!(bench.find(LABEL).is_some_and(|row| row.disabled));
 }

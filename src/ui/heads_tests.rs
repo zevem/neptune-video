@@ -17,6 +17,8 @@ struct Seen {
     rect: Rect,
     role: Role,
     disabled: bool,
+    /// Whether a check box is checked.
+    toggled: Option<egui::accesskit::Toggled>,
 }
 
 struct Bench {
@@ -29,7 +31,23 @@ struct Bench {
     seen: Vec<Seen>,
     /// Every line of text the last frame painted, and where.
     written: Vec<(String, Rect)>,
+    /// The colour of every line of text and glyph the last frame painted,
+    /// and where.
+    inked: Vec<(Rect, Color32)>,
+    /// Every rectangle the last frame filled, and with what.
+    filled: Vec<(Rect, Color32)>,
+    /// Every rectangle the last frame stroked, and with what.
+    stroked: Vec<(Rect, Color32)>,
+    /// How many meshes the last frame painted.
+    meshes: usize,
+    /// What the timeline asked of the application that is not an edit,
+    /// where a test lets it ask; anywhere else such a request fails it.
+    asked: Option<Vec<Action>>,
     refused: Vec<String>,
+    /// Whether the timeline is told snapping is on.
+    snapping: bool,
+    /// The node that held the keyboard focus after the last frame.
+    focused: Option<egui::accesskit::NodeId>,
 }
 
 const NAMES: [&str; 4] = ["Video 1", "Audio 1", "Audio 2", "Text 1"];
@@ -38,11 +56,11 @@ impl Bench {
     /// A video track, two audio tracks and a text track, the first three
     /// with a clip of media that has sound.
     fn new() -> Self {
-        let ctx = egui::Context::default();
-        let palette = Palette::new(Appearance::Dark, Accent::default());
-        theme::install_fonts(&ctx);
-        theme::apply(&ctx, &palette);
-        ctx.enable_accesskit();
+        Self::of(Self::project(true))
+    }
+
+    /// The tracks of [`Bench::new`], with their clips or with none.
+    fn project(clips: bool) -> Project {
         let mut project = Project::new("Heads");
         project.tracks.clear();
         for (name, kind) in NAMES.into_iter().zip([
@@ -52,7 +70,7 @@ impl Bench {
             TrackKind::Text,
         ]) {
             let mut track = Track::new(name, kind);
-            if kind != TrackKind::Text {
+            if clips && kind != TrackKind::Text {
                 let path = format!("/media/{name}.mp4");
                 let mut asset = Asset::new(path.into(), MediaKind::Video, Time(4_000_000));
                 asset.has_audio = true;
@@ -61,6 +79,15 @@ impl Bench {
             }
             project.tracks.push(Arc::new(track));
         }
+        project
+    }
+
+    fn of(project: Project) -> Self {
+        let ctx = egui::Context::default();
+        let palette = Palette::new(Appearance::Dark, Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &palette);
+        ctx.enable_accesskit();
         let mut bench = Self {
             ctx,
             palette,
@@ -70,7 +97,14 @@ impl Bench {
             time: 0.0,
             seen: Vec::new(),
             written: Vec::new(),
+            inked: Vec::new(),
+            filled: Vec::new(),
+            stroked: Vec::new(),
+            meshes: 0,
+            asked: None,
             refused: Vec::new(),
+            snapping: false,
+            focused: None,
         };
         bench.frame(Vec::new());
         bench
@@ -97,13 +131,23 @@ impl Bench {
 
     /// One frame of the application with these events in it.
     fn frame(&mut self, events: Vec<Event>) {
-        fn texts(shape: &egui::Shape, found: &mut Vec<(String, Rect)>) {
+        fn texts(shape: &egui::Shape, found: &mut Vec<(String, Rect)>, bench: &mut Bench) {
             match shape {
-                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, found)),
-                egui::Shape::Text(text) => found.push((
-                    text.galley.text().to_owned(),
-                    Rect::from_min_size(text.pos, text.galley.size()),
-                )),
+                egui::Shape::Vec(shapes) => {
+                    (shapes.iter()).for_each(|shape| texts(shape, found, bench))
+                }
+                egui::Shape::Text(text) => {
+                    let rect = Rect::from_min_size(text.pos, text.galley.size());
+                    found.push((text.galley.text().to_owned(), rect));
+                    bench.inked.push((rect, text.fallback_color));
+                }
+                egui::Shape::Rect(rect) => {
+                    bench.filled.push((rect.rect, rect.fill));
+                    if rect.stroke.width > 0.0 {
+                        bench.stroked.push((rect.rect, rect.stroke.color));
+                    }
+                }
+                egui::Shape::Mesh(_) => bench.meshes += 1,
                 _ => {}
             }
         }
@@ -129,7 +173,7 @@ impl Bench {
                     p: &self.palette,
                     project: &project,
                     playhead: Time::ZERO,
-                    snapping: false,
+                    snapping: self.snapping,
                     media: None,
                     can_paste: false,
                     freeze_hold: Time(2_000_000),
@@ -139,11 +183,17 @@ impl Bench {
             );
         });
         output.textures_delta.clear();
-        self.written.clear();
+        let mut written = Vec::new();
+        self.inked.clear();
+        self.filled.clear();
+        self.stroked.clear();
+        self.meshes = 0;
         for clipped in &output.shapes {
-            texts(&clipped.shape, &mut self.written);
+            texts(&clipped.shape, &mut written, self);
         }
+        self.written = written;
         if let Some(update) = &output.platform_output.accesskit_update {
+            self.focused = Some(update.focus);
             self.seen = (update.nodes.iter())
                 .filter_map(|(id, node)| {
                     let bounds = node.bounds()?;
@@ -156,6 +206,7 @@ impl Bench {
                         ),
                         role: node.role(),
                         disabled: node.is_disabled(),
+                        toggled: node.toggled(),
                     })
                 })
                 .collect();
@@ -167,7 +218,10 @@ impl Bench {
                         self.refused.push(error.to_string());
                     }
                 }
-                other => panic!("FIXTURE: the timeline asked for {other:?}"),
+                other => match &mut self.asked {
+                    Some(asked) => asked.push(other),
+                    None => panic!("FIXTURE: the timeline asked for {other:?}"),
+                },
             }
         }
     }
@@ -391,8 +445,8 @@ fn the_toggles_of_every_head_fit_a_156_point_head_and_leave_its_name_room() {
             "{name}: {name_width} in {}",
             room.span()
         );
-        // And the longest volume a head says under it.
-        let figure = width_of(&ctx, "800%", theme::regular(10.5));
+        // And the longest volume a head says under it, in Regular 11 (§4.4.5).
+        let figure = width_of(&ctx, "800%", theme::regular(11.0));
         assert!(figure <= room.span(), "{kind:?}: {figure}");
     }
 
@@ -834,4 +888,189 @@ fn a_head_says_under_its_name_a_volume_that_is_not_the_one_it_starts_with() {
     // that carries sound is tall enough.
     assert!(lane_height(TrackKind::Audio) >= HEAD_FIGURE);
     assert!(lane_height(TrackKind::Video) >= HEAD_FIGURE);
+}
+
+// §4.4.5, with the owner's decision on Solo: a soloed head's Solo cell is
+// pressed and its Headphones glyph is in the accent, not yellow. Off, the
+// cell is bare and its glyph muted.
+#[test]
+fn a_soloed_head_shows_its_solo_cell_pressed_with_its_glyph_in_the_accent() {
+    let mut bench = Bench::new();
+    let p = bench.palette;
+    let cell = (bench.toggle("Audio 1", "Solo track"))
+        .expect("FIXTURE: Audio 1 has a solo")
+        .rect;
+    let glyphs = |bench: &Bench| -> Vec<Color32> {
+        (bench.inked.iter())
+            .filter(|(rect, _)| cell.contains_rect(*rect))
+            .map(|(_, ink)| *ink)
+            .collect()
+    };
+    let pressed = |bench: &Bench| {
+        (bench.filled.iter()).any(|(rect, fill)| cell.contains_rect(*rect) && *fill == p.pressed)
+    };
+    assert_eq!(glyphs(&bench), [p.muted]);
+    assert!(!pressed(&bench));
+    bench.switch("Audio 1", "Solo track");
+    assert!(bench.track("Audio 1").solo, "{:?}", bench.refused);
+    assert_eq!(glyphs(&bench), [p.accent]);
+    assert!(pressed(&bench));
+}
+
+// §7.2: the tool strip's snapping toggle is "Snapping (N)", a check box that
+// says whether snapping is on, and its zoom is the slider "Timeline zoom".
+#[test]
+fn the_tool_strip_names_its_snapping_toggle_and_its_zoom() {
+    use egui::accesskit::Toggled;
+    let mut bench = Bench::new();
+    let snapping = bench.find("Snapping (N)").expect("the snapping toggle");
+    assert_eq!(snapping.role, Role::CheckBox);
+    assert_eq!(snapping.toggled, Some(Toggled::False));
+    assert!(snapping.rect.bottom() <= STRIP, "{:?}", snapping.rect);
+    let zoom = bench.find("Timeline zoom").expect("the zoom slider");
+    assert_eq!(zoom.role, Role::Slider);
+    assert!(zoom.rect.bottom() <= STRIP, "{:?}", zoom.rect);
+
+    // Turned on, it keeps its name: only the check box says so.
+    bench.snapping = true;
+    bench.frame(Vec::new());
+    let snapping = bench.find("Snapping (N)").expect("the snapping toggle, on");
+    assert_eq!(snapping.role, Role::CheckBox);
+    assert_eq!(snapping.toggled, Some(Toggled::True));
+    assert!(!bench.has("Snapping is on (N)"));
+    assert!(!bench.has("Snapping is off (N)"));
+}
+
+// §7.3: the arrows are the zoom slider's while it has the keyboard. Each one
+// steps the zoom, and the focus stays on the slider for the next.
+#[test]
+fn the_arrows_step_the_zoom_slider_and_leave_the_focus_on_it() {
+    let mut bench = Bench::new();
+    bench.focus("Timeline zoom");
+    let slider = bench.find("Timeline zoom").expect("the zoom slider").node;
+    assert_eq!(bench.focused, Some(slider));
+    let mut zoom = bench.timeline.zoom;
+    for press in 0..2 {
+        bench.key(Key::ArrowRight);
+        assert!(bench.timeline.zoom > zoom, "press {press}: the zoom rose");
+        assert_eq!(
+            bench.focused,
+            Some(slider),
+            "press {press}: the focus stayed"
+        );
+        zoom = bench.timeline.zoom;
+    }
+    bench.key(Key::ArrowLeft);
+    assert!(bench.timeline.zoom < zoom, "the left arrow lowers it");
+    assert_eq!(bench.focused, Some(slider));
+}
+
+// TL4 and §7.2: in a pane too narrow for the whole tool strip, the Edit and
+// Insert groups fold into "More timeline actions", whose rows ask for what
+// their buttons did. What never folds keeps a whole target in the strip.
+#[test]
+fn a_narrow_strip_folds_its_edit_and_insert_groups_into_one_menu() {
+    let mut bench = Bench::new();
+    bench.size = vec2(300.0, 420.0);
+    bench.asked = Some(Vec::new());
+    bench.frame(Vec::new());
+    assert_eq!(Fold::of(bench.size.x), Fold::Edit);
+    for gone in [
+        "Split at playhead (S)",
+        "Add marker at playhead (M)",
+        "Add text at playhead (T)",
+        "Add track",
+    ] {
+        assert!(!bench.has(gone), "\"{gone}\" folded away");
+    }
+    let kept = [
+        "Keyframes of the selected clip (U)",
+        "Graph editor (G)",
+        "Snapping (N)",
+        "Zoom out",
+        "Zoom in",
+        "Fit timeline to window (Shift+Z)",
+        "More timeline actions",
+    ];
+    for name in kept {
+        let seen = (bench.controls())
+            .find(|seen| seen.name.starts_with(name))
+            .unwrap_or_else(|| panic!("\"{name}\" is in the strip"));
+        let rect = seen.rect;
+        assert!(rect.width() >= 28.0, "{name}: {rect:?}");
+        assert!(
+            rect.right() <= bench.size.x && rect.bottom() <= STRIP,
+            "{name}: {rect:?}"
+        );
+    }
+
+    // Its rows are what folded, and one asks for what its button did.
+    bench.click("More timeline actions");
+    for row in ["Split at playhead", "Add text at playhead", "Add track"] {
+        assert!(bench.has(row), "the menu has \"{row}\"");
+    }
+    bench.click("Add marker at playhead");
+    assert!(
+        matches!(bench.asked.as_deref(), Some([Action::AddMarker])),
+        "{:?}",
+        bench.asked
+    );
+    assert!(!bench.has("Add text at playhead"), "the menu closed");
+}
+
+// §9.12: a head cell under the pointer is filled `hover`, and one the
+// keyboard reaches with Tab wears the focus ring.
+#[test]
+fn a_head_cell_is_lit_under_the_pointer_and_ringed_when_tab_reaches_it() {
+    let mut bench = Bench::new();
+    let p = bench.palette;
+    let seen = (bench.toggle("Audio 1", "Solo track")).expect("FIXTURE: Audio 1 has a solo");
+    let (cell, node) = (seen.rect, seen.node);
+    let lit =
+        |bench: &Bench| (bench.filled.iter()).any(|(rect, fill)| *rect == cell && *fill == p.hover);
+    assert!(!lit(&bench));
+    bench.frame(vec![Event::PointerMoved(cell.center())]);
+    for _ in 0..10 {
+        bench.frame(Vec::new());
+    }
+    assert!(lit(&bench), "the cell under the pointer is lit");
+    bench.frame(vec![Event::PointerMoved(pos2(400.0, 400.0))]);
+    for _ in 0..10 {
+        bench.frame(Vec::new());
+    }
+    assert!(!lit(&bench), "and dark again once the pointer leaves");
+
+    let ring = theme::tint(p.accent, 0.55);
+    let ringed = |bench: &Bench| {
+        (bench.stroked.iter()).any(|(rect, stroke)| *rect == cell.expand(2.0) && *stroke == ring)
+    };
+    assert!(!ringed(&bench));
+    let mut presses = 0;
+    while bench.focused != Some(node) {
+        bench.key(Key::Tab);
+        presses += 1;
+        assert!(presses < 60, "Tab reaches the solo cell of Audio 1");
+    }
+    assert!(ringed(&bench), "the cell the keyboard is on is ringed");
+}
+
+// §5.5.7: an empty timeline shows one ghost row saying where media goes, in
+// the muted ink and drawn in lines: no mesh.
+#[test]
+fn an_empty_timeline_shows_a_ghost_row_and_paints_no_mesh() {
+    let bench = Bench::of(Bench::project(false));
+    let p = bench.palette;
+    let (_, said) = (bench.written.iter())
+        .find(|(text, _)| text == "Drag media here")
+        .expect("the ghost row says where media goes");
+    assert!(said.left() >= HEAD_WIDTH, "in the lanes: {said:?}");
+    assert!(
+        (bench.inked.iter()).any(|(rect, ink)| rect == said && *ink == p.muted),
+        "in the muted ink"
+    );
+    assert_eq!(bench.meshes, 0);
+
+    // A timeline with a clip has no ghost row.
+    let bench = Bench::new();
+    assert!(!(bench.written.iter()).any(|(text, _)| text == "Drag media here"));
 }
