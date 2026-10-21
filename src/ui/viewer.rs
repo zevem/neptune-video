@@ -825,45 +825,71 @@ fn capsules_head(ctx: &egui::Context, canvas: Rect, cards: &[u64]) -> f32 {
     (canvas.top() + CAPSULE_INSET).max(below)
 }
 
+/// What the stage's foot says: the first of these that holds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Status<'a> {
+    /// The frame a layer on screen asks for could not be decoded, named by
+    /// its asset. Said at once, and for as long as it fails.
+    CantDecode(&'a str),
+    /// Layers on screen have gone a moment without the frames on their way.
+    Waiting,
+    /// `Auto` stepped the preview down.
+    HalfQuality,
+}
+
+impl Status<'_> {
+    fn words(self) -> String {
+        match self {
+            Status::CantDecode(name) => format!("Can't decode {name}"),
+            Status::Waiting => "Waiting for frames…".to_owned(),
+            Status::HalfQuality => "Half quality".to_owned(),
+        }
+    }
+
+    fn dot(self, p: &Palette) -> Color32 {
+        match self {
+            Status::CantDecode(_) => p.red,
+            Status::Waiting | Status::HalfQuality => p.muted,
+        }
+    }
+}
+
 /// What the stage's foot says, and in how many seconds it is to be looked
-/// at again: that layers wait for frames, once they have gone without one
-/// for a moment, or that `Auto` stepped the preview down. `since` is when
-/// the waiting began, kept from frame to frame. The window is woken once,
-/// when the moment is up, and draws nothing that moves meanwhile.
-fn stage_status(
+/// at again: that a layer's frame could not be decoded, that layers wait for
+/// frames, once they have gone without one for a moment, or that `Auto`
+/// stepped the preview down. `since` is when the waiting began, kept from
+/// frame to frame. The window is woken once, when the moment is up, and
+/// draws nothing that moves meanwhile.
+fn stage_status<'a>(
     since: &mut Option<f64>,
     now: f64,
     waiting: bool,
+    undecodable: Option<&'a str>,
     quality: PreviewQuality,
     detail: u32,
-) -> (Option<&'static str>, Option<f64>) {
+) -> (Option<Status<'a>>, Option<f64>) {
     let waited = if waiting {
         now - *since.get_or_insert(now)
     } else {
         *since = None;
         0.0
     };
+    if let Some(name) = undecodable {
+        // Waiting goes on being timed beneath it.
+        let again = (waiting && waited < WAITING_AFTER).then(|| WAITING_AFTER - waited);
+        return (Some(Status::CantDecode(name)), again);
+    }
     if waiting && waited < WAITING_AFTER {
         return (None, Some(WAITING_AFTER - waited));
     }
-    let words = if waiting {
-        Some("Waiting for frames…")
+    let status = if waiting {
+        Some(Status::Waiting)
     } else if quality == PreviewQuality::Auto && detail > 1 {
-        Some("Half quality")
+        Some(Status::HalfQuality)
     } else {
         None
     };
-    (words, None)
-}
-
-/// Whether a frame is on its way to the layer kept for `viewing`. The
-/// textures do not say yet: a layer whose frame could not be decoded, whose
-/// file is gone or whose worker stopped asks for nothing more, and from here
-/// looks like one whose frame is coming. Until they say, no layer is taken to
-/// wait, and the stage says nothing of it rather than that it waits for a
-/// frame given up.
-fn awaits(_textures: &Textures, _viewing: Viewing) -> bool {
-    false
+    (status, None)
 }
 
 /// The points a press takes hold of the selected layer by: its corners and
@@ -1263,6 +1289,9 @@ pub fn show(
     // Whether a media layer on screen has no picture yet to be drawn with,
     // and one is on its way.
     let mut waiting = false;
+    // The asset of the topmost layer on screen whose frame could not be
+    // decoded.
+    let mut undecodable = None;
     for ((run, given), canvas_texture) in runs.iter().zip(given).zip(canvas_of) {
         match run {
             Run::Title(index) => {
@@ -1317,7 +1346,13 @@ pub fn show(
                     let picture = textures.picture(Viewing::Clip(layer.clip));
                     waiting |= canvas_texture.is_none()
                         && picture.is_none()
-                        && awaits(textures, Viewing::Clip(layer.clip));
+                        && textures.awaits(Viewing::Clip(layer.clip));
+                    if textures.undecodable(Viewing::Clip(layer.clip))
+                        && let LayerSource::Media { asset_id, .. } = &layer.source
+                        && let Some(asset) = project.assets.get(asset_id)
+                    {
+                        undecodable = Some(asset.name.as_str());
+                    }
                     if canvas_texture.is_none()
                         && let Some(texture) = picture
                     {
@@ -1448,6 +1483,7 @@ pub fn show(
         &mut state.waiting_since,
         now,
         waiting,
+        undecodable,
         input.quality,
         textures.detail(),
     );
@@ -1455,12 +1491,19 @@ pub fn show(
         ui.ctx()
             .request_repaint_after(Duration::from_secs_f64(after));
     }
-    if let Some(words) = status {
+    if let Some(status) = status {
         let painter = ui.painter_at(stage);
         let bottom = (stage.bottom()).min(canvas.bottom()) - STATUS_INSET;
-        capsule(&painter, p, words, Some(p.muted), stage, |size| {
-            Rect::from_min_size(pos2(stage.center().x - size.x * 0.5, bottom - size.y), size)
-        });
+        capsule(
+            &painter,
+            p,
+            &status.words(),
+            Some(status.dot(p)),
+            stage,
+            |size| {
+                Rect::from_min_size(pos2(stage.center().x - size.x * 0.5, bottom - size.y), size)
+            },
+        );
     }
     if empty {
         // Where the library is beside the stage and holds media, clips are
@@ -3945,18 +3988,21 @@ mod tests {
         // ambient animation: one look again, then none.
         use PreviewQuality::{Auto, Full, Half, Quarter};
         let mut since = None;
-        let (said, again) = stage_status(&mut since, 10.0, true, Full, 1);
+        let (said, again) = stage_status(&mut since, 10.0, true, None, Full, 1);
         assert_eq!((said, again), (None, Some(WAITING_AFTER)));
-        let (said, again) = stage_status(&mut since, 10.3, true, Full, 1);
+        let (said, again) = stage_status(&mut since, 10.3, true, None, Full, 1);
         assert!(said.is_none() && again.is_some_and(|after| (after - 0.2).abs() < 1e-9));
         for now in [10.5, 12.0] {
             assert_eq!(
-                stage_status(&mut since, now, true, Full, 1),
-                (Some("Waiting for frames…"), None)
+                stage_status(&mut since, now, true, None, Full, 1),
+                (Some(Status::Waiting), None)
             );
         }
         // Done waiting, it starts over.
-        assert_eq!(stage_status(&mut since, 12.1, false, Full, 1), (None, None));
+        assert_eq!(
+            stage_status(&mut since, 12.1, false, None, Full, 1),
+            (None, None)
+        );
         assert_eq!(since, None);
         // "Half quality" only where Auto stepped down.
         for (quality, detail, half) in [
@@ -3966,13 +4012,43 @@ mod tests {
             (Half, 2, false),
             (Quarter, 4, false),
         ] {
-            let (said, again) = stage_status(&mut None, 0.0, false, quality, detail);
+            let (said, again) = stage_status(&mut None, 0.0, false, None, quality, detail);
             assert_eq!(
-                said == Some("Half quality"),
+                said == Some(Status::HalfQuality),
                 half,
                 "{quality:?} at {detail}"
             );
             assert_eq!(again, None);
         }
+    }
+
+    #[test]
+    fn a_frame_that_cannot_be_decoded_is_said_at_once_and_first() {
+        // Spec §5.3: "Can't decode clip-b.mp4" with a red dot, for as long
+        // as it fails, before waiting and before half quality.
+        use PreviewQuality::Auto;
+        let mut since = None;
+        let (said, again) = stage_status(&mut since, 10.0, true, Some("clip-b.mp4"), Auto, 2);
+        assert_eq!(said, Some(Status::CantDecode("clip-b.mp4")));
+        assert_eq!(
+            again,
+            Some(WAITING_AFTER),
+            "the waiting beneath it is timed"
+        );
+        let (said, again) = stage_status(&mut since, 11.0, true, Some("clip-b.mp4"), Auto, 2);
+        assert_eq!(
+            (said, again),
+            (Some(Status::CantDecode("clip-b.mp4")), None)
+        );
+        let said = said.expect("said");
+        assert_eq!(said.words(), "Can't decode clip-b.mp4");
+        let p = Palette::new(crate::theme::Appearance::Dark, crate::theme::Accent::Blue);
+        assert_eq!(said.dot(&p), p.red);
+        assert_eq!(Status::Waiting.dot(&p), p.muted);
+        // Once it decodes, what lies beneath is said.
+        assert_eq!(
+            stage_status(&mut since, 11.5, true, None, Auto, 2),
+            (Some(Status::Waiting), None)
+        );
     }
 }
