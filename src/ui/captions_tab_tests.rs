@@ -697,6 +697,7 @@ impl Bench {
                 &mut self.selection,
                 &mut self.textures,
                 &mut self.titles,
+                &mut crate::peaks::HeldPeaks::default(),
                 &LibraryInput {
                     p: &self.palette,
                     project: &project,

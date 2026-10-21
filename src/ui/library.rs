@@ -19,6 +19,7 @@ use super::{
 };
 use crate::{
     icons::{self, Icon},
+    peaks::HeldPeaks,
     presets::Presets,
     textures::Textures,
     theme::{self, Palette, metrics},
@@ -29,7 +30,7 @@ use editor_core::{
     Asset, Command, FolderId, MediaFolder, MediaKind, Project, Time, TrackId,
     captions::SubtitleFormat,
 };
-use editor_media::{MediaService, ProxyStatus};
+use editor_media::{MediaService, Peaks, ProxyStatus};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, Id, Layout, Painter, Rect, Response, Sense, Stroke,
     StrokeKind, TextureId, Ui, Vec2, WidgetInfo, WidgetType, epaint::RectShape, pos2, vec2,
@@ -567,6 +568,9 @@ pub fn show(
     selection: &mut Selection,
     textures: &mut Textures,
     titles: &mut Titles,
+    // The sound of the media cards in view, which they want as they are
+    // drawn.
+    peaks: &mut HeldPeaks,
     input: &LibraryInput,
     actions: &mut Vec<Action>,
 ) -> (bool, LibrarySort) {
@@ -712,7 +716,7 @@ pub fn show(
             kind_filter(ui, p, kinds, &mut state.kind);
             let body = Rect::from_min_max(pos2(body.left(), kinds.bottom() + 6.0), body.max);
             media(
-                ui, body, state, selection, textures, input, grid, sort, actions,
+                ui, body, state, selection, textures, peaks, input, grid, sort, actions,
             );
         }
     }
@@ -925,6 +929,7 @@ fn media(
     state: &mut LibraryState,
     selection: &mut Selection,
     textures: &mut Textures,
+    peaks: &mut HeldPeaks,
     input: &LibraryInput,
     grid: bool,
     sort: LibrarySort,
@@ -1074,7 +1079,11 @@ fn media(
                             if let Some(media) = input.media {
                                 textures.want_poster(media, asset);
                             }
-                            asset_cell(ui, cell, asset, selection, textures, grid, input, actions);
+                            if asset.kind == MediaKind::Audio {
+                                peaks.want(asset);
+                            }
+                            let cells = (&mut *selection, &*textures, peaks.held(asset));
+                            asset_cell(ui, cell, asset, cells, grid, input, actions);
                         }
                     }
                 }
@@ -1523,13 +1532,48 @@ fn folder_cell(
         .clicked()
 }
 
-#[expect(clippy::too_many_arguments, reason = "one call site per cell")]
+/// The sound of a file `duration` long across `area`, one column a point
+/// wide for each stretch of it, from `peaks`. Says whether there was any to
+/// draw.
+fn paint_wave(
+    painter: &egui::Painter,
+    area: Rect,
+    duration: Time,
+    peaks: &Peaks,
+    ink: Color32,
+) -> bool {
+    let (middle, half) = (area.center().y, area.height() * 0.5);
+    let columns = area.width().floor().max(0.0) as usize;
+    let at = |column: usize| Time((duration.0 as f64 * column as f64 / columns as f64) as i64);
+    let mut mesh = egui::Mesh::default();
+    for column in 0..columns {
+        // Stretches the file has no sound for are left bare.
+        let Some((min, max)) = peaks.range(at(column), at(column + 1)) else {
+            continue;
+        };
+        let mut top = middle - f32::from(max) / 128.0 * half;
+        let mut bottom = middle - f32::from(min) / 128.0 * half;
+        if bottom - top < 1.0 {
+            let centre = (top + bottom) * 0.5;
+            (top, bottom) = (centre - 0.5, centre + 0.5);
+        }
+        let x = area.left() + column as f32;
+        mesh.add_colored_rect(Rect::from_min_max(pos2(x, top), pos2(x + 1.0, bottom)), ink);
+    }
+    let drawn = !mesh.is_empty();
+    if drawn {
+        painter.add(egui::Shape::mesh(mesh));
+    }
+    drawn
+}
+
+/// A media card or row. `held` is the sound of a sound's card, once its
+/// peaks are held.
 fn asset_cell(
     ui: &mut Ui,
     rect: Rect,
     asset: &Asset,
-    selection: &mut Selection,
-    textures: &Textures,
+    (selection, textures, held): (&mut Selection, &Textures, Option<&Arc<Peaks>>),
     grid: bool,
     input: &LibraryInput,
     actions: &mut Vec<Action>,
@@ -1558,15 +1602,26 @@ fn asset_cell(
     let poster = textures.poster(asset.id);
     match poster {
         Some(texture) => cover(painter, picture, radius, texture.id(), texture.size_vec2()),
-        // A sound has no picture: the level line its waveform starts from,
-        // across the well, as a tile's is before its peaks are held.
+        // A sound has no picture: its waveform across the well, the whole
+        // file in its width, or the level line it starts from, as a tile's
+        // is, until its peaks are held.
         None if asset.kind == MediaKind::Audio => {
             let reach = picture.x_range().shrink(if grid { 10.0 } else { 5.0 });
-            painter.hline(
-                reach,
-                picture.center().y,
-                Stroke::new(1.0, well.wave().gamma_multiply(0.5)),
-            );
+            let drawn = held.is_some_and(|peaks| {
+                let height = picture.height() * if grid { 0.56 } else { 0.7 };
+                let area = Rect::from_center_size(
+                    pos2(reach.center(), picture.center().y),
+                    vec2(reach.span(), height),
+                );
+                paint_wave(painter, area, asset.duration, peaks, well.wave())
+            });
+            if !drawn {
+                painter.hline(
+                    reach,
+                    picture.center().y,
+                    Stroke::new(1.0, well.wave().gamma_multiply(0.5)),
+                );
+            }
         }
         // Still being looked at, or nothing to show: what it is, quietly.
         None => icons::paint(
@@ -1822,6 +1877,123 @@ mod tests {
             .collect()
     }
 
+    // N3: a sound's card wants its peaks as it is drawn, through the held
+    // peaks the timeline's tiles use, and only a sound's.
+    #[test]
+    fn a_sounds_card_wants_its_peaks_as_it_is_drawn() {
+        let ctx = egui::Context::default();
+        let palette = Palette::new(crate::theme::Appearance::Dark, Default::default());
+        theme::install_fonts(&ctx);
+        let mut project = Project::new("Cards");
+        let mut song = asset("song.wav", MediaKind::Audio, 4.0, 50);
+        song.has_audio = true;
+        let mut shot = asset("shot.mp4", MediaKind::Video, 4.0, 50);
+        shot.has_audio = true;
+        for asset in [&song, &shot] {
+            Arc::make_mut(&mut project.assets).insert(asset.id, asset.clone());
+        }
+        let mut peaks = crate::peaks::HeldPeaks::default();
+        peaks.begin_frame();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(320.0, 600.0))),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let rect = ui.max_rect();
+            show(
+                ui,
+                rect,
+                &mut LibraryState::default(),
+                &mut Selection::default(),
+                &mut Textures::default(),
+                &mut Titles::default(),
+                &mut peaks,
+                &LibraryInput {
+                    p: &palette,
+                    project: &project,
+                    media: None,
+                    grid: true,
+                    sort: LibrarySort::default(),
+                    importing: 0,
+                    problem: None,
+                    previewing: None,
+                    playhead: Time::ZERO,
+                    presets: &Arc::default(),
+                    speech: captions_tab::SpeechInput {
+                        view: &crate::speech::SpeechView::Idle,
+                        settings: &crate::speech::SpeechSettings::default(),
+                        inventory: None,
+                    },
+                },
+                &mut Vec::new(),
+            );
+        });
+        output.textures_delta.clear();
+        let wanted: Vec<_> = (peaks.take_wants().into_iter()).map(|(id, _)| id).collect();
+        assert_eq!(wanted, [song.id], "the sound's, and not the video's");
+    }
+
+    // N3: the waveform is a column a point wide for each stretch of the
+    // file, as tall as its peaks, and none where there is no sound.
+    #[test]
+    fn a_sounds_waveform_spans_its_well_by_its_peaks() {
+        let ctx = egui::Context::default();
+        // One second: loud for its first half, silent after.
+        let buckets = (0..100)
+            .map(|at| {
+                if at < 50 {
+                    [(-64i8) as u8, 64, 0, 0]
+                } else {
+                    [0, 0, 0, 0]
+                }
+            })
+            .collect();
+        let peaks = Peaks { buckets };
+        let area = Rect::from_min_size(pos2(10.0, 0.0), vec2(40.0, 20.0));
+        let mut columns = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter();
+            assert!(paint_wave(
+                painter,
+                area,
+                Time::from_seconds(1.0),
+                &peaks,
+                Color32::WHITE
+            ));
+            assert!(!paint_wave(
+                painter,
+                area,
+                Time::from_seconds(1.0),
+                &Peaks::default(),
+                Color32::WHITE
+            ));
+        });
+        output.textures_delta.clear();
+        for clipped in &output.shapes {
+            if let egui::Shape::Mesh(mesh) = &clipped.shape {
+                for quad in mesh.vertices.chunks(4) {
+                    let rect = Rect::from_points(&quad.iter().map(|v| v.pos).collect::<Vec<_>>());
+                    columns.push(rect);
+                }
+            }
+        }
+        assert_eq!(columns.len(), 40, "a column for each point");
+        assert!(
+            (columns.iter()).all(|column| column.width() == 1.0 && area.contains_rect(*column))
+        );
+        // Half of full scale above and below the middle, then a point.
+        assert!(
+            (columns[0].height() - 10.0).abs() < 0.01,
+            "{:?}",
+            columns[0]
+        );
+        assert!(
+            (columns[39].height() - 1.0).abs() < 0.01,
+            "{:?}",
+            columns[39]
+        );
+    }
+
     /// Draws the media tab once and hands back the focus rings that were
     /// painted, as the rects they outline.
     fn rings(ctx: &egui::Context, project: &Project, grid: bool, focus: Option<Id>) -> Vec<Rect> {
@@ -1847,6 +2019,7 @@ mod tests {
                     &mut selection,
                     &mut textures,
                     &mut Titles::default(),
+                    &mut crate::peaks::HeldPeaks::default(),
                     &LibraryInput {
                         p: &palette,
                         project,
@@ -2112,6 +2285,7 @@ mod tests {
                     &mut self.selection,
                     &mut self.textures,
                     &mut Titles::default(),
+                    &mut crate::peaks::HeldPeaks::default(),
                     &LibraryInput {
                         p: &palette,
                         project: &self.project,
@@ -2468,6 +2642,7 @@ mod tests {
                     selection,
                     &mut textures,
                     &mut titles,
+                    &mut crate::peaks::HeldPeaks::default(),
                     &LibraryInput {
                         p: &palette,
                         project,

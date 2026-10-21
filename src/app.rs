@@ -6185,6 +6185,7 @@ impl App {
                 &mut self.selection,
                 &mut self.textures,
                 &mut self.viewer.titles,
+                &mut self.peaks,
                 &LibraryInput {
                     p: &p,
                     project: &project,
