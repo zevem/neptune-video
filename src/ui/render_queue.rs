@@ -631,12 +631,14 @@ fn job_row(
         } else {
             Icon::Film
         };
-        icons::paint(
-            &painter,
-            Rect::from_center_size(poster.center(), Vec2::splat(16.0)),
-            glyph,
-            stage.muted,
-        );
+        kit::on_dark(&painter, || {
+            icons::paint(
+                &painter,
+                Rect::from_center_size(poster.center(), Vec2::splat(16.0)),
+                glyph,
+                stage.muted,
+            );
+        });
     }
 
     let left = rect.left() + TEXT;

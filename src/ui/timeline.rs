@@ -2709,7 +2709,9 @@ fn paint_volume(
     match volume_readout(tile, area, clip, zoom, (x, y), galley.size()) {
         Some(readout) => {
             readout_pill(painter, readout);
-            painter.galley(readout.min, galley, Color32::WHITE);
+            kit::on_dark(painter, || {
+                painter.galley(readout.min, galley, Color32::WHITE);
+            });
             true
         }
         None => false,
@@ -4882,18 +4884,20 @@ fn paint_clip(
         }
         if glyph {
             let at = Rect::from_center_size(center, Vec2::splat(12.0));
-            icons::paint(
-                &clipped,
-                at.translate(vec2(0.0, 1.0)),
-                Icon::Transition,
-                halo,
-            );
-            icons::paint(
-                &clipped,
-                at,
-                Icon::Transition,
-                Color32::WHITE.gamma_multiply(opacity),
-            );
+            kit::on_dark(&clipped, || {
+                icons::paint(
+                    &clipped,
+                    at.translate(vec2(0.0, 1.0)),
+                    Icon::Transition,
+                    halo,
+                );
+                icons::paint(
+                    &clipped,
+                    at,
+                    Icon::Transition,
+                    Color32::WHITE.gamma_multiply(opacity),
+                );
+            });
         }
     }
 
@@ -5063,7 +5067,9 @@ fn row_badge(
     let black = Color32::from_black_alpha((140.0 * opacity) as u8);
     painter.rect_filled(pill, 8, black);
     let at = pos2(pill.left() + 5.0, pill.center().y - galley.size().y * 0.5);
-    painter.galley(at, galley, Color32::WHITE.gamma_multiply(opacity));
+    kit::on_dark(painter, || {
+        painter.galley(at, galley, Color32::WHITE.gamma_multiply(opacity));
+    });
     pill
 }
 

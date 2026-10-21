@@ -14,7 +14,7 @@ use crate::{
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, CursorIcon, Galley, Id, Layout, Painter, Pos2,
     Rect, Response, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
-    pos2, vec2,
+    epaint::FontColorTransferFunction, layers::ShapeIdx, pos2, vec2,
 };
 use std::{ops::RangeInclusive, sync::Arc};
 
@@ -123,6 +123,86 @@ pub fn scroll_fades<R>(ui: &Ui, output: &egui::scroll_area::ScrollAreaOutput<R>,
     if below > 0.5 {
         scroll_fade(&painter, shown, Edge::Bottom, ground);
     }
+}
+
+// ---- Ink on a dark ground -----------------------------------------------
+
+/// Where `painter`'s next shape goes in its layer, for [`keep_text_weight`].
+pub fn first_shape(painter: &Painter) -> ShapeIdx {
+    painter
+        .ctx()
+        .graphics_mut(|graphics| graphics.entry(painter.layer_id()).next_idx())
+}
+
+/// Gives the words and glyphs `painter` drew from `from` on the weight they
+/// have in the dark appearance. They sit on a ground that is dark in either
+/// appearance: the stage, a picture's well, a badge.
+///
+/// egui keeps one glyph atlas. In the light appearance it stores coverage as
+/// alpha, the curve meant for dark ink on a light ground, and the dark
+/// appearance stores `2c - c²`. Light ink on a dark ground would come out
+/// thinner in light than in dark. Two strikes of coverage `c` cover
+/// `1 - (1 - c)²`, which is `2c - c²`, so the text is struck twice where the
+/// atlas holds plain coverage and reads the same in either appearance.
+pub fn keep_text_weight(painter: &Painter, from: ShapeIdx) {
+    let curve = painter.ctx().global_style().visuals.text_options;
+    if curve.color_transfer_function != FontColorTransferFunction::Off {
+        return;
+    }
+    painter.ctx().graphics_mut(|graphics| {
+        let list = graphics.entry(painter.layer_id());
+        for index in from.0..list.next_idx().0 {
+            list.mutate_shape(ShapeIdx(index), |clipped| strike_twice(&mut clipped.shape));
+        }
+    });
+}
+
+/// Paints with `paint` what sits on a dark ground in either appearance, its
+/// words and glyphs at their dark weight ([`keep_text_weight`]). The names
+/// and chrome beside the ground are painted outside it.
+pub fn on_dark<R>(painter: &Painter, paint: impl FnOnce() -> R) -> R {
+    let from = first_shape(painter);
+    let painted = paint();
+    keep_text_weight(painter, from);
+    painted
+}
+
+fn strike_twice(shape: &mut Shape) {
+    match shape {
+        Shape::Vec(shapes) => shapes.iter_mut().for_each(strike_twice),
+        Shape::Text(text) => {
+            let alpha = ink_alpha(text);
+            if alpha <= 0.0 {
+                return;
+            }
+            // Translucent ink, as in a fade, strikes twice at the opacity
+            // whose two strikes reach the one strike's core: `1 - √(1 - a)`.
+            text.opacity_factor *= (1.0 - (1.0 - alpha).sqrt()) / alpha;
+            *shape = Shape::Vec(vec![Shape::Text(text.clone()), Shape::Text(text.clone())]);
+        }
+        _ => {}
+    }
+}
+
+/// The most opaque ink a text shape paints its glyphs in, from 0 to 1.
+fn ink_alpha(text: &egui::epaint::TextShape) -> f32 {
+    let ink = text
+        .override_text_color
+        .map(|color| color.a())
+        .unwrap_or_else(|| {
+            (text.galley.rows.iter())
+                .flat_map(|placed| {
+                    let visuals = &placed.row.visuals;
+                    visuals.mesh.vertices[visuals.glyph_vertex_range.clone()].iter()
+                })
+                .map(|vertex| match vertex.color {
+                    Color32::PLACEHOLDER => text.fallback_color.a(),
+                    color => color.a(),
+                })
+                .max()
+                .unwrap_or(0)
+        });
+    (f32::from(ink) / 255.0 * text.opacity_factor).min(1.0)
 }
 
 // ---- Icon buttons --------------------------------------------------------
@@ -1080,7 +1160,8 @@ fn paint_chip(
 
 /// A small label over a picture, such as a duration: a dark band 16 tall
 /// with white ink, its left edge at `left_center`. Numbers are set in the
-/// monospace face. Returns the badge's rect.
+/// monospace face, at their dark weight in either appearance. Returns the
+/// badge's rect.
 pub fn badge(painter: &Painter, left_center: Pos2, text: &str) -> Rect {
     let numeric = text
         .chars()
@@ -1097,7 +1178,9 @@ pub fn badge(painter: &Painter, left_center: Pos2, text: &str) -> Rect {
         vec2(galley.size().x + 12.0, 16.0),
     );
     painter.rect_filled(rect, 8, Color32::from_black_alpha(140));
-    painter.galley(rect.center() - galley.size() * 0.5, galley, ink);
+    on_dark(painter, || {
+        painter.galley(rect.center() - galley.size() * 0.5, galley, ink);
+    });
     rect
 }
 

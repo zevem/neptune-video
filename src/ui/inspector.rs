@@ -1180,12 +1180,14 @@ fn object_header(
             // The tile is the stage's dark in either appearance. None of
             // these inks follows the accent.
             let stage = Palette::stage_palette(theme::Accent::default());
-            icons::paint(
-                painter,
-                Rect::from_center_size(tile.center(), Vec2::splat(14.0)),
-                icon,
-                ink.on(&stage),
-            );
+            kit::on_dark(painter, || {
+                icons::paint(
+                    painter,
+                    Rect::from_center_size(tile.center(), Vec2::splat(14.0)),
+                    icon,
+                    ink.on(&stage),
+                );
+            });
         }
     }
     painter.rect_stroke(
@@ -1720,12 +1722,14 @@ fn asset_pane(
                 ),
             );
         }
-        None => icons::paint(
-            ui.painter(),
-            Rect::from_center_size(picture.center(), Vec2::splat(30.0)),
-            icon_of_media(asset.kind),
-            tone,
-        ),
+        None => kit::on_dark(ui.painter(), || {
+            icons::paint(
+                ui.painter(),
+                Rect::from_center_size(picture.center(), Vec2::splat(30.0)),
+                icon_of_media(asset.kind),
+                tone,
+            );
+        }),
     }
     ui.painter().rect_stroke(
         picture,

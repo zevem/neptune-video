@@ -312,3 +312,114 @@ fn an_empty_state_s_hint_leaves_no_word_alone_on_its_last_line() {
     });
     assert_eq!(one, Some(1));
 }
+
+/// The words and glyphs of each text shape `shape` paints, with the opacity
+/// each is struck at: a word struck twice is found twice.
+fn strikes(shape: &Shape, found: &mut Vec<(String, f32)>) {
+    match shape {
+        Shape::Vec(shapes) => shapes.iter().for_each(|shape| strikes(shape, found)),
+        Shape::Text(text) => found.push((text.galley.text().to_owned(), text.opacity_factor)),
+        _ => {}
+    }
+}
+
+/// What `add` strikes in one pass of a window in `appearance`.
+fn struck_in(appearance: Appearance, add: impl FnMut(&mut Ui)) -> Vec<(String, f32)> {
+    let ctx = egui::Context::default();
+    theme::install_fonts(&ctx);
+    theme::apply(&ctx, &Palette::new(appearance, Accent::Blue));
+    let mut output = ctx.run_ui(egui::RawInput::default(), add);
+    output.textures_delta.clear();
+    let mut found = Vec::new();
+    for clipped in &output.shapes {
+        strikes(&clipped.shape, &mut found);
+    }
+    found
+}
+
+/// Text on a dark ground is struck twice where the glyph atlas holds plain
+/// coverage, as in the light appearance, and once in the dark, whose atlas
+/// already holds `2c - c²`. Translucent text keeps its core: two strikes at
+/// `1 - √(1 - a)` cover `a`. Text painted before the dark ground, the
+/// chrome's, is left as it is.
+#[test]
+fn text_on_a_dark_ground_keeps_its_dark_weight_in_either_appearance() {
+    for (appearance, twice) in [(Appearance::Light, true), (Appearance::Dark, false)] {
+        let found = struck_in(appearance, |ui| {
+            let painter = ui.painter();
+            let font = theme::mono(15.0);
+            painter.text(
+                pos2(0.0, 0.0),
+                Align2::LEFT_TOP,
+                "chrome",
+                font.clone(),
+                Color32::BLACK,
+            );
+            let from = first_shape(painter);
+            painter.text(
+                pos2(0.0, 20.0),
+                Align2::LEFT_TOP,
+                "opaque",
+                font.clone(),
+                Color32::WHITE,
+            );
+            let half = Color32::WHITE.gamma_multiply(0.5);
+            painter.text(pos2(0.0, 40.0), Align2::LEFT_TOP, "half", font, half);
+            keep_text_weight(painter, from);
+        });
+        let count = |name: &str| found.iter().filter(|(text, _)| text == name).count();
+        assert_eq!(count("chrome"), 1, "{appearance:?}");
+        assert_eq!(count("opaque"), if twice { 2 } else { 1 }, "{appearance:?}");
+        assert_eq!(count("half"), if twice { 2 } else { 1 }, "{appearance:?}");
+        let opacity = |name: &str| found.iter().find(|(text, _)| text == name).map(|(_, o)| *o);
+        assert_eq!(opacity("opaque"), Some(1.0));
+        let a = f32::from(Color32::WHITE.gamma_multiply(0.5).a()) / 255.0;
+        let struck = if twice {
+            (1.0 - (1.0 - a).sqrt()) / a
+        } else {
+            1.0
+        };
+        let half = opacity("half").expect("the translucent text is painted");
+        assert!(
+            (half - struck).abs() < 1e-4,
+            "{appearance:?}: {half} against {struck}"
+        );
+        if twice {
+            // Two strikes at that opacity reach the one strike's core.
+            let core = 1.0 - (1.0 - a * half).powi(2);
+            assert!((core - a).abs() < 1e-4, "{core} against {a}");
+        }
+    }
+}
+
+/// A badge over a picture says its words at their dark weight in either
+/// appearance, and what `on_dark` paints a glyph in is struck the same way,
+/// while the words beside it are not (spec §6).
+#[test]
+fn a_badge_and_a_glyph_on_a_dark_well_keep_their_dark_weight() {
+    for (appearance, twice) in [(Appearance::Light, 2), (Appearance::Dark, 1)] {
+        let found = struck_in(appearance, |ui| {
+            let painter = ui.painter();
+            badge(painter, pos2(10.0, 10.0), "0:08");
+            on_dark(painter, || {
+                icons::paint(
+                    painter,
+                    Rect::from_min_size(pos2(10.0, 40.0), Vec2::splat(14.0)),
+                    Icon::Play,
+                    Color32::WHITE,
+                );
+            });
+            painter.text(
+                pos2(10.0, 60.0),
+                Align2::LEFT_TOP,
+                "Name",
+                theme::medium(13.0),
+                Color32::BLACK,
+            );
+        });
+        let count = |name: &str| found.iter().filter(|(text, _)| text == name).count();
+        assert_eq!(count("0:08"), twice, "{appearance:?}");
+        assert_eq!(found.len(), 2 * twice + 1, "{appearance:?}: {found:?}");
+        assert_eq!(count("Name"), 1, "{appearance:?}");
+    }
+}

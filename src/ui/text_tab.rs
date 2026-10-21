@@ -1138,11 +1138,13 @@ impl Tile<'_> {
                     Color32::from_gray(230),
                     inner.width(),
                 );
-                ui.painter().galley(
-                    inner.center() - label.size() * 0.5,
-                    label,
-                    Color32::from_gray(230),
-                );
+                kit::on_dark(ui.painter(), || {
+                    ui.painter().galley(
+                        inner.center() - label.size() * 0.5,
+                        label,
+                        Color32::from_gray(230),
+                    );
+                });
             }
         }
     }

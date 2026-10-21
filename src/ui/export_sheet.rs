@@ -1662,19 +1662,21 @@ impl Sheet<'_, '_> {
         // The stage is dark in either appearance; so is what is drawn on it.
         let stage = Palette::stage_palette(Accent::default());
         let Some(video) = video else {
-            icons::paint(
-                &painter,
-                Rect::from_center_size(well.center() - vec2(0.0, 9.0), Vec2::splat(22.0)),
-                Icon::Music,
-                stage.muted,
-            );
-            painter.text(
-                well.center() + vec2(0.0, 15.0),
-                Align2::CENTER_CENTER,
-                "Sound only",
-                theme::regular(12.0),
-                stage.secondary,
-            );
+            kit::on_dark(&painter, || {
+                icons::paint(
+                    &painter,
+                    Rect::from_center_size(well.center() - vec2(0.0, 9.0), Vec2::splat(22.0)),
+                    Icon::Music,
+                    stage.muted,
+                );
+                painter.text(
+                    well.center() + vec2(0.0, 15.0),
+                    Align2::CENTER_CENTER,
+                    "Sound only",
+                    theme::regular(12.0),
+                    stage.secondary,
+                );
+            });
             return;
         };
         // The output's shape, as large as the well holds it.
@@ -1720,12 +1722,14 @@ impl Sheet<'_, '_> {
                     corners,
                     theme::mix(p.stage(), Color32::WHITE, 0.07),
                 );
-                icons::paint(
-                    &painter,
-                    Rect::from_center_size(picture.center(), Vec2::splat(22.0)),
-                    Icon::Film,
-                    stage.muted,
-                );
+                kit::on_dark(&painter, || {
+                    icons::paint(
+                        &painter,
+                        Rect::from_center_size(picture.center(), Vec2::splat(22.0)),
+                        Icon::Film,
+                        stage.muted,
+                    );
+                });
             }
         }
     }

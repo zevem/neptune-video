@@ -343,9 +343,10 @@ sent and seen.
 The light appearance has the same layout, components and states; only token
 values change. The window is #ececef and the timeline #ffffff, cards stay the
 translucent `control` rather than white, and floating surfaces are white with
-a border and a lighter shadow. The stage and the poster wells stay dark, and
-the stage's text is struck twice so it keeps the weight the dark appearance's
-glyph curve gives it. Over a picture a tile's name sits on a light frost under
+a border and a lighter shadow. The stage and the poster wells stay dark. The
+text and glyphs on them, and on the dark badges and discs over pictures and
+tiles, are struck twice, so they keep the weight the dark appearance's glyph
+curve gives them. Over a picture a tile's name sits on a light frost under
 dark ink. Appearance is Light, Dark or System; System follows the platform and
 is dark where the platform does not say.
 

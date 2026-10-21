@@ -530,7 +530,9 @@ fn proxy_badge(ui: &Ui, well: &Palette, id: Id, picture: Rect, grid: bool, mark:
         ),
     };
     painter.rect_filled(badge, CornerRadius::same(5), fill);
-    icons::paint(painter, badge.shrink(side * 0.2), icon, color);
+    kit::on_dark(painter, || {
+        icons::paint(painter, badge.shrink(side * 0.2), icon, color);
+    });
     if let ProxyMark::Making(Some(done)) = mark {
         let track = Rect::from_min_max(
             pos2(picture.left() + 4.0, picture.bottom() - 5.0),
@@ -1624,12 +1626,14 @@ fn asset_cell(
             }
         }
         // Still being looked at, or nothing to show: what it is, quietly.
-        None => icons::paint(
-            painter,
-            Rect::from_center_size(picture.center(), Vec2::splat(16.0)),
-            icon_of_media(asset.kind),
-            well.muted,
-        ),
+        None => kit::on_dark(painter, || {
+            icons::paint(
+                painter,
+                Rect::from_center_size(picture.center(), Vec2::splat(16.0)),
+                icon_of_media(asset.kind),
+                well.muted,
+            );
+        }),
     }
 
     // The asset in the source monitor says so on its picture.
@@ -1637,12 +1641,14 @@ fn asset_cell(
         let side = if grid { 18.0 } else { 14.0 };
         let mark = Rect::from_min_size(picture.min + vec2(4.0, 4.0), Vec2::splat(side));
         painter.rect_filled(mark, CornerRadius::same(5), Color32::from_black_alpha(140));
-        icons::paint(
-            painter,
-            mark.shrink(side * 0.24),
-            Icon::Play,
-            Color32::WHITE,
-        );
+        kit::on_dark(painter, || {
+            icons::paint(
+                painter,
+                mark.shrink(side * 0.24),
+                Icon::Play,
+                Color32::WHITE,
+            );
+        });
     }
     // A video with a proxy, or one on its way, says so on its picture.
     let proxy_status = textures.proxy_status(asset.id);
@@ -1688,12 +1694,14 @@ fn asset_cell(
             side * 0.5,
             Color32::from_black_alpha(if preview.hovered() { 200 } else { 150 }),
         );
-        icons::paint(
-            painter,
-            badge.shrink(side * 0.27),
-            Icon::Play,
-            Color32::WHITE,
-        );
+        kit::on_dark(painter, || {
+            icons::paint(
+                painter,
+                badge.shrink(side * 0.27),
+                Icon::Play,
+                Color32::WHITE,
+            );
+        });
         if preview.clicked() {
             actions.push(Action::PreviewAsset(asset.id));
         }

@@ -764,12 +764,14 @@ fn look_cards(
                 // Over a picture, as a badge is: white on a dark disc.
                 let centre = pos2(tile.right() - 10.0, tile.top() + 10.0);
                 painter.circle_filled(centre, 8.0, egui::Color32::from_black_alpha(150));
-                crate::icons::paint(
-                    painter,
-                    Rect::from_center_size(centre, Vec2::splat(12.0)),
-                    Icon::Check,
-                    egui::Color32::WHITE,
-                );
+                kit::on_dark(painter, || {
+                    crate::icons::paint(
+                        painter,
+                        Rect::from_center_size(centre, Vec2::splat(12.0)),
+                        Icon::Check,
+                        egui::Color32::WHITE,
+                    );
+                });
             }
             painter.rect_stroke(
                 tile,
