@@ -1183,17 +1183,43 @@ pub fn empty_state(
     action: Option<&str>,
 ) -> bool {
     let words = (icon, title, hint);
-    statement(ui, p, rect, words, action, |block| {
+    statement(ui, p, rect, words, Some(28.0), action, |block| {
         rect.top() + rect.height() * 0.4 - block * 0.5
     })
 }
 
+/// The empty state of a small region, such as a plot: its glyph is 24, and
+/// left out where the region is too short to hold it above the words with
+/// room to spare. It offers no action.
+pub fn small_empty_state(
+    ui: &mut Ui,
+    p: &Palette,
+    rect: Rect,
+    icon: Icon,
+    title: &str,
+    hint: &str,
+) {
+    const GLYPH: f32 = 24.0;
+    // The room kept above and below the block.
+    const ROOM: f32 = 16.0;
+    let title_height = (ui.painter())
+        .layout_no_wrap(title.to_owned(), theme::medium(14.0), p.fg)
+        .size()
+        .y;
+    let glyph = (rect.height() >= GLYPH + 8.0 + title_height + ROOM * 2.0).then_some(GLYPH);
+    statement(ui, p, rect, (icon, title, hint), glyph, None, |block| {
+        rect.top() + rect.height() * 0.4 - block * 0.5
+    });
+}
+
 /// An empty state whose block starts where `top` puts it, given its height.
+/// The glyph is as large as `glyph` says, or left out.
 fn statement(
     ui: &mut Ui,
     p: &Palette,
     rect: Rect,
     (icon, title, hint): (Icon, &str, &str),
+    glyph: Option<f32>,
     action: Option<&str>,
     top: impl FnOnce(f32) -> f32,
 ) -> bool {
@@ -1209,8 +1235,7 @@ fn statement(
     } else {
         0.0
     };
-    let block = 28.0
-        + 8.0
+    let block = glyph.map_or(0.0, |size| size + 8.0)
         + title_galley.size().y
         + if hint.is_empty() {
             0.0
@@ -1220,9 +1245,14 @@ fn statement(
         + action_height;
     let top = top(block);
     let x = rect.center().x;
-    let glyph = Rect::from_center_size(pos2(x, top + 14.0), Vec2::splat(28.0));
-    icons::paint(&painter, glyph, icon, p.muted);
-    let title_top = glyph.bottom() + 8.0;
+    let title_top = match glyph {
+        Some(size) => {
+            let glyph = Rect::from_center_size(pos2(x, top + size * 0.5), Vec2::splat(size));
+            icons::paint(&painter, glyph, icon, p.muted);
+            glyph.bottom() + 8.0
+        }
+        None => top,
+    };
     let title_rect = Rect::from_min_size(
         pos2(x - title_galley.size().x * 0.5, title_top),
         title_galley.size(),

@@ -1818,7 +1818,7 @@ impl KeyframesState {
             // Said in the plot alone: the legend's column keeps its place.
             // A graph under a short timeline says the first line.
             let hint = if area.height() >= 96.0 { hint } else { "" };
-            kit::empty_state(ui, p, area, Icon::ChartLine, title, hint, None);
+            kit::small_empty_state(ui, p, area, Icon::ChartLine, title, hint);
             return;
         };
         let names = self.names(project, track, clip, &clip.animation);
