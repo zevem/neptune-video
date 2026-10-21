@@ -113,8 +113,9 @@ consistent surface and contrast hierarchy. Hover lifts a fill; a control that
 stays on is `pressed`, not the accent; a disabled control is dimmed and says
 why on hover. Track lock, visibility, mute and solo controls show their
 actual state: a soloed track's headphones take the accent on a pressed cell,
-and the mute control of a track that another's solo silences is dimmer than
-one that is only off and says why. A head keeps 22-point targets and its
+taken toward the ink until they hold 3:1 there under any accent, and the mute
+control of a track that another's solo silences is dimmer than one that is
+only off and says why. A head keeps 22-point targets and its
 track's name whole: three controls stand side by side, four in two columns,
 never four in a row of a 156-point head. A track's volume is a percent field
 in its head's menu, and a head says a volume that is not 100% under the name.

@@ -51,15 +51,25 @@ pub(super) fn inset(rect: Rect) -> Rect {
         pos2(rect.right() - TRAILING, rect.bottom()),
     )
 }
+
+/// The width a grid of cards has in a library `width` wide. A card's
+/// backing stands 4 out from it and its focus ring 6, so the cards keep the
+/// leading inset on the trailing side too, where the search row and the
+/// tabs keep 6: either side, a chosen card's backing ends 4 from the edge
+/// and its ring 2, as Terminal's rows keep room on both sides.
+pub(super) const fn cards_width(width: f32) -> f32 {
+    width - 2.0 * LEADING
+}
+
 /// The search row under the tab strip, and the kinds row under it.
 const SEARCH: f32 = 28.0;
 const KINDS: f32 = 22.0;
 /// A card's least width, beside others: three of 146⅔ fill 456 points.
-/// Two columns of 147 fill the 302 points of a library at its default
-/// width, and two are kept down to the narrowest library's 206, so that a
+/// Two columns of 146 fill the 300 points of a library at its default
+/// width, and two are kept down to the narrowest library's 204, so that a
 /// narrow window still shows a whole row of named cards.
 const CARD_LEAST: f32 = (456.0 - 2.0 * CARD_GAP) / 3.0;
-const TWO_COLUMNS: f32 = *crate::settings::LIBRARY_WIDTHS.start() - LEADING - TRAILING;
+const TWO_COLUMNS: f32 = cards_width(*crate::settings::LIBRARY_WIDTHS.start());
 pub(super) const CARD_GAP: f32 = 8.0;
 /// Between two rows of cards: the hover of one does not meet the next.
 pub(super) const CARD_ROW_GAP: f32 = 10.0;
@@ -1044,11 +1054,10 @@ fn media(
     let mut area = ui.new_child(egui::UiBuilder::new().max_rect(list));
     area.set_clip_rect(list.intersect(ui.clip_rect()));
     area.spacing_mut().item_spacing = Vec2::ZERO;
-    let width = list.width() - LEADING - TRAILING;
     let (columns, cell_width) = if grid {
-        card_columns(width)
+        card_columns(cards_width(list.width()))
     } else {
-        (1, width)
+        (1, list.width() - LEADING - TRAILING)
     };
     let well = cell_width * 9.0 / 16.0;
     // A card stands 6 below its row's top, so that its rings are not cut by
@@ -1109,9 +1118,9 @@ fn media(
     kit::scroll_fades(ui, &output, p.chrome);
 }
 
-/// The columns of cards in `width`, and each card's width: as many of at
-/// least [`CARD_LEAST`] as fit with the gaps between them, and two from
-/// [`TWO_COLUMNS`].
+/// The columns of cards in a grid `width` wide (see [`cards_width`]), and
+/// each card's width: as many of at least [`CARD_LEAST`] as fit with the
+/// gaps between them, and two from [`TWO_COLUMNS`].
 pub(super) fn card_columns(width: f32) -> (usize, f32) {
     // A hair over, so that 456 is three and not two and a rounding.
     let fit = ((width + CARD_GAP) / (CARD_LEAST + CARD_GAP) + 1e-4).floor() as usize;
@@ -3163,19 +3172,21 @@ mod tests {
     #[test]
     fn cards_are_two_across_from_the_narrowest_library_and_three_from_456() {
         for (width, columns) in [
-            (205.0, 1),
-            (206.0, 2),
-            (260.0, 2),
+            (203.0, 1),
+            (204.0, 2),
+            (258.0, 2),
             (285.0, 2),
-            (302.0, 2),
+            (300.0, 2),
             (455.0, 2),
             (456.0, 3),
             (506.0, 3),
         ] {
             assert_eq!(card_columns(width).0, columns, "at {width}");
         }
-        let (_, cell) = card_columns(302.0);
-        assert!((cell - 147.0).abs() < 0.01, "{cell}");
+        // The default library's cards, 8 in from either side.
+        assert_eq!(cards_width(316.0), 300.0);
+        let (_, cell) = card_columns(300.0);
+        assert!((cell - 146.0).abs() < 0.01, "{cell}");
         let (_, cell) = card_columns(456.0);
         assert!(cell >= 146.6, "{cell}");
     }

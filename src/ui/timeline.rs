@@ -2018,7 +2018,8 @@ fn track_heads(
                 actions.push(Action::Edit(state(None, None, Some(!track.muted))));
             }
             // A soloed track's headphones take the accent, on a pressed
-            // cell as the others that are on.
+            // cell as the others that are on; an accent that would be faint
+            // on that cell is taken toward the ink until it reads.
             if toggle(
                 ui,
                 "solo",
@@ -2029,7 +2030,7 @@ fn track_heads(
                 } else {
                     "Solo track"
                 },
-                track.solo.then_some(p.accent),
+                track.solo.then(|| p.switch_ink()),
             ) {
                 actions.push(Action::Edit(tracks::solo(track, !track.solo)));
             }
@@ -5091,7 +5092,12 @@ fn paint_clip(
                 pos2(x, rect.center().y),
                 vec2(3.0, (rect.height() - 10.0).max(4.0)),
             );
-            painter.rect_filled(bar, 2, shade.gamma_multiply(opacity.max(0.6)));
+            // On a rim of the selection's keyline, so that a bar over a
+            // poster reads on a frame as dark or as light as itself; at the
+            // start it meets the keyline that runs beside it.
+            let opacity = opacity.max(0.6);
+            painter.rect_filled(bar.expand(1.0), 3, p.keyline().gamma_multiply(opacity));
+            painter.rect_filled(bar, 2, shade.gamma_multiply(opacity));
         }
     }
     // The chosen transition's ring, over the clip's.

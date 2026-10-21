@@ -931,8 +931,9 @@ fn a_head_says_under_its_name_a_volume_that_is_not_the_one_it_starts_with() {
 }
 
 // §4.4.5, with the owner's decision on Solo: a soloed head's Solo cell is
-// pressed and its Headphones glyph is in the accent, not yellow. Off, the
-// cell is bare and its glyph in the secondary ink.
+// pressed and its Headphones glyph is in the accent, not yellow, made
+// readable on the cell where it would be faint. Off, the cell is bare and
+// its glyph in the secondary ink.
 #[test]
 fn a_soloed_head_shows_its_solo_cell_pressed_with_its_glyph_in_the_accent() {
     let mut bench = Bench::new();
@@ -953,8 +954,49 @@ fn a_soloed_head_shows_its_solo_cell_pressed_with_its_glyph_in_the_accent() {
     assert!(!pressed(&bench));
     bench.switch("Audio 1", "Solo track");
     assert!(bench.track("Audio 1").solo, "{:?}", bench.refused);
-    assert_eq!(glyphs(&bench), [p.accent]);
+    assert_eq!(glyphs(&bench), [p.switch_ink()]);
     assert!(pressed(&bench));
+}
+
+// The solo glyph reads on its pressed cell under every accent, in either
+// appearance: at least a glyph's 3:1 on what is painted under it, with the
+// pointer still on the head that was just soloed. Yellow and Orange in the
+// light are the faintest accents there.
+#[test]
+fn a_soloed_heads_glyph_reads_on_its_cell_under_every_accent() {
+    for appearance in [Appearance::Dark, Appearance::Light] {
+        for (accent, name) in Accent::ALL {
+            let mut bench = Bench::new();
+            bench.palette = Palette::new(appearance, accent);
+            theme::apply(&bench.ctx, &bench.palette);
+            bench.switch("Audio 1", "Solo track");
+            assert!(bench.track("Audio 1").solo, "{:?}", bench.refused);
+            let p = bench.palette;
+            let cell = (bench.toggle("Audio 1", "Unsolo track"))
+                .expect("FIXTURE: Audio 1 is soloed")
+                .rect;
+            let [(_, glyph)] = (bench.inked.iter())
+                .filter(|(rect, _)| cell.contains_rect(*rect))
+                .copied()
+                .collect::<Vec<_>>()[..]
+            else {
+                panic!("{appearance:?}/{name}: one glyph in the cell");
+            };
+            // What the frame laid under the glyph, one fill over another.
+            let ground = (bench.filled.iter())
+                .filter(|(rect, _)| rect.contains(cell.center()))
+                .fold(p.bg, |under, (_, fill)| under.blend(*fill));
+            let ratio = theme::contrast(glyph, ground);
+            assert!(
+                ratio >= 3.0,
+                "{appearance:?}/{name}: {glyph:?} on {ground:?} is {ratio:.2}:1"
+            );
+            assert_eq!(glyph, p.switch_ink(), "{appearance:?}/{name}");
+            if appearance == Appearance::Light && accent == Accent::Yellow {
+                assert_eq!(glyph, theme::color(0x866500), "as legible() has it");
+            }
+        }
+    }
 }
 
 // §7.2: the tool strip's snapping toggle is "Snapping (N)", a check box that

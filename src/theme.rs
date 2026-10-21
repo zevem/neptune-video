@@ -267,6 +267,30 @@ pub fn contrast(a: Color32, b: Color32) -> f32 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+/// `ink` where it holds `minimum` on every one of `grounds`; otherwise taken
+/// a twentieth at a time toward white or black, whichever reads better on
+/// them, until it does. Terminal makes its accent readable on its surfaces
+/// so.
+pub fn readable(ink: Color32, grounds: &[Color32], minimum: f32) -> Color32 {
+    let score = |ink| {
+        (grounds.iter())
+            .map(|&ground| contrast(ink, ground))
+            .fold(f32::INFINITY, f32::min)
+    };
+    if score(ink) >= minimum {
+        return ink;
+    }
+    let target = if score(Color32::WHITE) > score(Color32::BLACK) {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    };
+    (1..=20)
+        .map(|step| mix(ink, target, step as f32 / 20.0))
+        .find(|adjusted| score(*adjusted) >= minimum)
+        .unwrap_or(target)
+}
+
 impl Palette {
     /// The palette of an appearance. `System` is resolved by the app before
     /// it gets here; one that is not is painted dark.
@@ -398,6 +422,20 @@ impl Palette {
         } else {
             mix(c, Color32::BLACK, 0.4)
         }
+    }
+
+    /// The glyph of a switch in a track head that is on, a soloed track's
+    /// headphones or a curve shown alone: the accent (owner decision 3),
+    /// on its `pressed` cell over the head's card, at rest or lit, of a
+    /// track edits go to or not. Where the accent falls under a glyph's
+    /// 3:1 on one of those, it is deepened in the light and lifted in the
+    /// dark until it reads: Yellow's becomes #866500, as `legible` has it.
+    pub fn switch_ink(&self) -> Color32 {
+        let grounds = [self.control, self.pressed].map(|card| {
+            let card = self.bg.blend(card);
+            [card, card.blend(self.hover)].map(|under| under.blend(self.pressed))
+        });
+        readable(self.accent, grounds.as_flattened(), 3.0)
     }
 
     /// The identity colour of a kind of media. Decoration only: a clip also
@@ -787,6 +825,38 @@ mod tests {
         assert_eq!(p.tone(Tone::Video), color(0x8e9cc7));
         let light = Palette::new(Appearance::Light, Accent::default());
         assert_eq!(light.tone(Tone::Video), color(0x55658f));
+    }
+
+    #[test]
+    fn a_switch_that_is_on_keeps_the_accent_and_reads_on_its_cell() {
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            for (accent, name) in Accent::ALL {
+                let p = Palette::new(appearance, accent);
+                let ink = p.switch_ink();
+                // The pressed cell on a head's card and on a target's,
+                // each at rest and lit.
+                for card in [p.control, p.pressed] {
+                    for lit in [Color32::TRANSPARENT, p.hover] {
+                        let ground = p.bg.blend(card).blend(lit).blend(p.pressed);
+                        let ratio = contrast(ink, ground);
+                        assert!(ratio >= 3.0, "{appearance:?}/{name}: {ratio:.2}:1");
+                    }
+                }
+                // An accent that already reads is kept as it is; one that
+                // does not is only as far from it as it must be, so the hue
+                // is still the accent's.
+                let kept = matches!(
+                    (appearance, accent),
+                    (
+                        Appearance::Dark,
+                        Accent::Orange | Accent::Yellow | Accent::Green
+                    ) | (Appearance::Light, Accent::Indigo)
+                );
+                assert_eq!(ink == p.accent, kept, "{appearance:?}/{name}: {ink:?}");
+            }
+        }
+        let yellow = Palette::new(Appearance::Light, Accent::Yellow);
+        assert_eq!(yellow.switch_ink(), yellow.legible(yellow.accent));
     }
 
     #[test]

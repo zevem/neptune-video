@@ -2448,7 +2448,7 @@ impl KeyframesState {
             p,
             alone_cell,
             Id::new(("keyframe-legend-solo", clip.id, lane)),
-            (Icon::Focus, alone.then_some(p.accent)),
+            (Icon::Focus, alone.then(|| p.switch_ink())),
             (alone, alone),
             solo,
         );

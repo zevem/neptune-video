@@ -1549,3 +1549,44 @@ fn a_chosen_dissolve_keeps_its_diagonal_in_a_narrow_ring() {
     assert_eq!(shown.len(), 1, "one whole diagonal, unbroken: {shown:?}");
     assert!(shown[0] >= 15.0, "{shown:?}");
 }
+
+#[test]
+fn a_selected_tiles_trim_bars_stand_on_a_keyline_rim_in_either_appearance() {
+    // §4.4.6 and P10 round 6: a bar over a poster lies on a frame that may
+    // be as dark (in the light) or as light (in the dark) as itself, so
+    // each stands on a rim of the selection's keyline, drawn under it.
+    let (mut bench, ..) = Bench::new();
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        bench.palette = Palette::new(appearance, Accent::default());
+        theme::apply(&bench.ctx, &bench.palette);
+        bench.frame(Vec::new());
+        bench.frame(Vec::new());
+        let p = bench.palette;
+        let rects: Vec<(Rect, egui::Color32)> = (bench.shapes.iter())
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect) => Some((rect.rect, rect.fill)),
+                _ => None,
+            })
+            .collect();
+        let bar = theme::tint(p.fg, 0.8);
+        let bars: Vec<usize> = (0..rects.len())
+            .filter(|&at| rects[at].1 == bar && rects[at].0.width() == 3.0)
+            .collect();
+        assert_eq!(
+            bars.len(),
+            2,
+            "{appearance:?}: the selected tile's two bars"
+        );
+        for at in bars {
+            let (rect, _) = rects[at];
+            assert!(
+                rects[..at]
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .any(|(rim, fill)| { *fill == p.keyline() && *rim == rect.expand(1.0) }),
+                "{appearance:?}: the bar at {rect:?} has its rim under it"
+            );
+        }
+    }
+}

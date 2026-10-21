@@ -27,10 +27,11 @@ use eframe::egui::{
 
 /// What a card has under its well: its name, 6 below it.
 const NAME_HEIGHT: f32 = 24.0;
-/// Round the cards: room for their rings, which stand 6 out from them.
+/// Round the cards: room for their rings, which stand 6 out from them,
+/// and the same on either side (see [`library::cards_width`]).
 const MARGIN: egui::Margin = egui::Margin {
     left: library::LEADING as i8,
-    right: library::TRAILING as i8,
+    right: library::LEADING as i8,
     top: 6,
     bottom: 8,
 };
@@ -249,7 +250,7 @@ pub fn show(
     let mut body = ui.new_child(egui::UiBuilder::new().max_rect(rect));
     body.set_clip_rect(rect.intersect(ui.clip_rect()));
     body.spacing_mut().item_spacing = Vec2::ZERO;
-    let width = rect.width() - library::LEADING - library::TRAILING;
+    let width = library::cards_width(rect.width());
     let (columns, tile_width) = library::card_columns(width);
     let well = tile_width * 9.0 / 16.0;
     let tile_height = well + NAME_HEIGHT;
