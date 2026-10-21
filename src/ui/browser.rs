@@ -577,9 +577,9 @@ fn transition_swatch(painter: &Painter, rect: Rect, radius: u8, kind: Transition
             sample_in(painter, rect.translate(half), rect, radius, &grey);
             let incoming = rect.translate(half - size * towards);
             sample_in(painter, incoming, rect, radius, &steel);
-            // On a disc of its own, as the play offer is, so that it reads
-            // over whatever of the frame it lands on.
-            let middle = incoming.intersect(rect).center();
+            // On a disc of its own, as the play offer is, on the seam the
+            // two pictures meet at, where neither's sun is.
+            let middle = rect.center();
             painter.circle_filled(middle, 9.0, Color32::from_black_alpha(140));
             arrow(middle + towards * 2.5, towards);
         }

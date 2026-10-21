@@ -1357,33 +1357,51 @@ fn statement(
 /// the narrowest width that keeps them that few, so that no word is left
 /// alone on the last.
 fn balanced(painter: &Painter, hint: &str, ink: Color32, width: f32) -> Arc<Galley> {
-    let lay = |width: f32| {
-        let mut job =
-            egui::text::LayoutJob::simple(hint.to_owned(), theme::regular(12.0), ink, width);
-        job.halign = Align::Center;
-        painter.layout_job(job)
+    let mut job = egui::text::LayoutJob::simple(
+        hint.to_owned(),
+        theme::regular(12.0),
+        ink,
+        balanced_width(painter, hint, width),
+    );
+    job.halign = Align::Center;
+    painter.layout_job(job)
+}
+
+/// The width at which an empty state's hint, in its 12-pt face and at most
+/// `width` wide, takes the fewest lines it needs and they are as even as
+/// the words allow. An empty state built by hand wraps its hint at it.
+pub(crate) fn balanced_width(painter: &Painter, hint: &str, width: f32) -> f32 {
+    let rows = |width: f32| {
+        painter
+            .layout(
+                hint.to_owned(),
+                theme::regular(12.0),
+                Color32::PLACEHOLDER,
+                width,
+            )
+            .rows
+            .len()
     };
-    let galley = lay(width);
-    let rows = galley.rows.len();
-    if rows < 2 {
-        return galley;
+    let fewest = rows(width);
+    if fewest < 2 {
+        return width;
     }
     // Each line is at least its share of the hint on one line; a few
     // halvings find the narrowest that still holds it in as many.
     let single = painter
-        .layout_no_wrap(hint.to_owned(), theme::regular(12.0), ink)
+        .layout_no_wrap(hint.to_owned(), theme::regular(12.0), Color32::PLACEHOLDER)
         .size()
         .x;
-    let (mut narrow, mut wide) = ((single / rows as f32).floor(), width);
+    let (mut narrow, mut wide) = ((single / fewest as f32).floor(), width);
     while wide - narrow > 1.0 {
         let middle = ((narrow + wide) * 0.5).floor();
-        if lay(middle).rows.len() > rows {
+        if rows(middle) > fewest {
             narrow = middle;
         } else {
             wide = middle;
         }
     }
-    lay(wide)
+    wide
 }
 
 // ---- Painted words, sheets' keys and scrim ------------------------------

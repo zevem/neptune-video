@@ -1068,9 +1068,10 @@ fn empty(
         "Import SRT or VTT…",
     ];
     let width = area.width();
-    let wrap = (width - 16.0).clamp(40.0, 260.0);
-    // The three ways in stand as one column, as wide as the widest.
     let painter = ui.painter();
+    // The hint wraps as every empty state's does, its lines kept even.
+    let wrap = kit::balanced_width(painter, HINT, (width - 32.0).clamp(40.0, 260.0));
+    // The three ways in stand as one column, as wide as the widest.
     let column = ACTIONS
         .iter()
         .map(|words| {
