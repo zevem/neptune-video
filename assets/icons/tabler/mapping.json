@@ -874,6 +874,17 @@
       "meaning": "Solo: hear this track alone."
     },
     {
+      "icon": "Focus",
+      "style": "outline",
+      "name": "focus-2",
+      "file": "outline/focus-2.svg",
+      "source": "https://raw.githubusercontent.com/tabler/tabler-icons/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/focus-2.svg",
+      "sha256": "e65067d7e9a84d35727d1a1fc69bf59917f12df80df0754c85e09399eaefd1fb",
+      "upstream_icon_version": "1.6",
+      "unicode": "ebd3",
+      "meaning": "Show one curve alone in the graph editor: isolation that is not about sound."
+    },
+    {
       "icon": "Adjustments",
       "style": "outline",
       "name": "adjustments-horizontal",

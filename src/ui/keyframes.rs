@@ -2435,14 +2435,15 @@ impl KeyframesState {
             self.shown_serial += 1;
         }
         // A curve shown alone is a switch that is on: pressed, its glyph
-        // in the accent, as a soloed track's is.
+        // in the accent, as a soloed track's is. Its glyph is a focus, not
+        // the track's headphones: it isolates a curve, not a sound.
         let alone = self.solo == Some(lane);
         let toggled = legend_toggle(
             ui,
             p,
             alone_cell,
             Id::new(("keyframe-legend-solo", clip.id, lane)),
-            (Icon::Headphones, alone.then_some(p.accent)),
+            (Icon::Focus, alone.then_some(p.accent)),
             (alone, alone),
             solo,
         );

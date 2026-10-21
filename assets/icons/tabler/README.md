@@ -20,7 +20,8 @@ the boundary. Previous/next frame use a single chevron. The graph editor
 uses `ease-in-out-control-points`, its value-axis fit uses `viewport-tall`,
 and transitions use `transition-right`. A keyframe at the playhead uses the
 official filled `keyframe` variant. `Music` retains an audio-wave metaphor
-with `wave-sine`, and track solo uses `headphones`. "Open recent" uses
+with `wave-sine`, track solo uses `headphones`, and the graph legend's solo,
+which shows one curve alone, uses `focus-2`. "Open recent" uses
 `clock`, apart from the checkpoints' `history`. Canvas layout controls use
 `aspect-ratio` and the corresponding `align-box` corner or side glyphs. The
 record disc and status dots use the filled `circle`, frame steps the filled
@@ -30,8 +31,8 @@ choices `sun`, `moon` and `device-desktop`. The busy spinner turns
 `loader-2`. These are all upstream glyphs, with no bespoke paths; the ones
 Neptune Terminal also uses are copied from its set unchanged.
 
-The native UI embeds `outline.ttf` and `filled.ttf`, containing only the 98
-glyphs used by Neptune Video's 100 `Icon` variants. They are generated from the official
+The native UI embeds `outline.ttf` and `filled.ttf`, containing only the 99
+glyphs used by Neptune Video's 101 `Icon` variants. They are generated from the official
 `@tabler/icons-webfont` package at the same pinned version. `font-source.json`
 records the verified archive and font hashes, retained glyph counts and font
 metrics; `glyphs.rs` supplies the exhaustive Rust mapping.

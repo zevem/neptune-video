@@ -111,6 +111,8 @@ pub enum Icon {
     /// A filled circle: the record disc and status dots.
     Disc,
     Headphones,
+    /// The graph legend's solo: one curve shown alone, which is not sound.
+    Focus,
     Adjustments,
     Info,
     AlertCircle,
