@@ -2000,40 +2000,39 @@ fn a_selected_key_on_a_locked_track_is_still_seen_to_be_selected() {
 }
 
 #[test]
-fn the_chevrons_read_the_selection_again_only_when_it_or_a_track_changes() {
-    let (bench, clip, _) = Bench::new();
-    let ctx = egui::Context::default();
-    let read = |selection: &Selection, project: &Project| {
-        let mut chosen = None;
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            publish_chosen(ui, project, selection);
-            chosen = ui.ctx().data(|data| data.get_temp::<Chosen>(chosen_id()));
-        });
-        output.textures_delta.clear();
-        chosen.expect("the chosen clips are told")
+fn a_chevron_takes_the_ink_of_its_tiles_name_in_the_frame_it_is_drawn() {
+    // P6-6 and N21: the chevron is told the ink of the name it stands
+    // before as its tile is drawn, so it never lags the selection by a
+    // frame, and stands out on a light tile as the name does.
+    let (mut bench, _, _) = Bench::new();
+    bench.frame(Vec::new());
+    let ink = |bench: &Bench| {
+        let toggle = bench
+            .find("Keyframes of shot.mp4")
+            .expect("the chevron")
+            .rect;
+        (bench.shapes.iter())
+            .find_map(|clipped| match &clipped.shape {
+                Shape::Text(text) if toggle.contains(text.visual_bounding_rect().center()) => {
+                    Some(text.fallback_color)
+                }
+                _ => None,
+            })
+            .expect("the chevron's glyph")
     };
-    let project = bench.editor.project().clone();
-    let first = read(&bench.selection, &project);
-    assert_eq!(
-        first.get(&clip),
-        Some(&true),
-        "a picture's name stands on a band"
-    );
-    let again = read(&bench.selection, &project);
-    assert!(
-        Arc::ptr_eq(&first, &again),
-        "an unchanged frame writes nothing"
-    );
-    assert!(read(&Selection::default(), &project).is_empty());
-
-    // The same selection over a changed track is read again.
-    let mut changed = project.clone();
-    let held = (changed.tracks.iter_mut())
-        .find(|track| track.clips.iter().any(|held| held.id == clip))
-        .expect("the clip's track");
-    Arc::make_mut(held).kind = TrackKind::Audio;
-    let first = read(&bench.selection, &project);
-    let after = read(&bench.selection, &changed);
-    assert!(!Arc::ptr_eq(&first, &after));
-    assert_eq!(after.get(&clip), Some(&false), "a sound's name has no band");
+    // Selected, it stands on the accent band.
+    assert_eq!(ink(&bench), bench.palette.on_accent.gamma_multiply(0.8));
+    // Open, and the selection gone in the frame it is drawn: the band's ink.
+    bench.click("Keyframes of shot.mp4");
+    bench.selection = Selection::default();
+    // Not under the pointer, which lights it, once its light has faded.
+    bench.frame(vec![Event::PointerGone]);
+    for _ in 0..10 {
+        bench.frame(Vec::new());
+    }
+    assert_eq!(ink(&bench), Color32::WHITE.gamma_multiply(0.8));
+    // In the light, the foreground, as the name's.
+    bench.palette = Palette::new(Appearance::Light, Accent::default());
+    bench.frame(Vec::new());
+    assert_eq!(ink(&bench), bench.palette.fg.gamma_multiply(0.8));
 }

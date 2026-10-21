@@ -3009,15 +3009,19 @@ fn draw_lanes(
     // with animation, and the clip whose lane is open, which for a clip
     // with sound may be the empty row of its volume.
     let open = (state.keys.lane_rows(project)).and_then(|_| state.keys.lane_clip());
-    let mut toggles: Vec<(ClipId, Rect)> = Vec::new();
+    // Each with the ink of the name it stands before, as its tile is drawn
+    // in this frame.
+    let mut toggles: Vec<(ClipId, Rect, Color32)> = Vec::new();
     for (row, clip) in clips_drawn(rows, geometry) {
-        let animated = !clip.animation.is_empty() && selection.contains(clip.id);
+        let selected = selection.contains(clip.id);
+        let animated = !clip.animation.is_empty() && selected;
         if !(animated || open == Some(clip.id)) {
             continue;
         }
         let tile = clip_rect(geometry, row, clip.start, clip.end());
         if tile.width() >= LANE_TOGGLE_TILE {
-            toggles.push((clip.id, lane_toggle(tile)));
+            let ink = name_ink(p, selected, banded(row.track, tile));
+            toggles.push((clip.id, lane_toggle(tile), ink));
         }
     }
     let band = rows.iter().find(|row| row.lane > 0.0).map(|row| {
@@ -3113,7 +3117,7 @@ fn draw_lanes(
     // `offer` below.
     let claimed = |pos: Pos2| {
         band.is_some_and(|band| band.contains(pos))
-            || toggles.iter().any(|(_, rect)| rect.contains(pos))
+            || toggles.iter().any(|(_, rect, _)| rect.contains(pos))
             || handles.iter().any(|(.., rect)| rect.contains(pos))
             || faders.iter().any(|(.., rect)| rect.contains(pos))
     };
@@ -3621,7 +3625,7 @@ fn draw_lanes(
         {
             trimmed_tile = Some((rect, *edge, *delta));
         }
-        let chevron = toggles.iter().any(|(id, _)| *id == clip.id);
+        let chevron = toggles.iter().any(|(id, ..)| *id == clip.id);
         // A fade that is held is drawn as long as it is held, a volume line
         // where it is held, and one bent by keys that are held as those
         // keys would bend it.
@@ -3699,10 +3703,10 @@ fn draw_lanes(
     {
         let mut over_lanes = ui.new_child(egui::UiBuilder::new().max_rect(lanes));
         over_lanes.set_clip_rect(lanes);
-        for (id, rect) in &toggles {
+        for (id, rect, ink) in &toggles {
             let is_open = open == Some(*id);
             if let Some((_, clip)) = project.clip(*id)
-                && keyframes::disclosure(&mut over_lanes, p, *rect, clip, is_open)
+                && keyframes::disclosure(&mut over_lanes, p, *rect, clip, is_open, *ink)
             {
                 state.keys.set_lane((!is_open).then_some(*id));
             }
@@ -4597,6 +4601,26 @@ struct Marks {
     heard: bool,
 }
 
+/// Whether a tile this tall on `track` writes its name on a band: a
+/// picture's or a title's does, over what it shows; a sound's, and a tile
+/// too short for a poster, on the tile.
+fn banded(track: &Track, tile: Rect) -> bool {
+    carries_poster(tile.height()) && track.kind != TrackKind::Audio
+}
+
+/// The ink of a tile's name, and of what stands in its row: on the accent
+/// while it is selected, white on a band in the dark, and the foreground
+/// otherwise.
+fn name_ink(p: &Palette, selected: bool, banded: bool) -> Color32 {
+    if selected {
+        p.on_accent
+    } else if banded && p.dark {
+        Color32::WHITE
+    } else {
+        p.fg
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "painting one clip needs its whole context"
@@ -4635,9 +4659,7 @@ fn paint_clip(
     let inner = rect.shrink(1.0);
     let clipped = painter.with_clip_rect(inner.intersect(painter.clip_rect()));
     let tall = carries_poster(rect.height());
-    // A picture's name sits on a band over it; a sound's and a title's on
-    // the tile.
-    let banded = tall && track.kind != TrackKind::Audio;
+    let banded = banded(track, rect);
 
     // A held volume line whose fades leave its sound no room for its percent
     // says it in the name's row.
@@ -4790,14 +4812,7 @@ fn paint_clip(
         };
         painter.rect_filled(band, top, fill.gamma_multiply(opacity));
     }
-    let ink = if selected {
-        p.on_accent
-    } else if banded && p.dark {
-        Color32::WHITE
-    } else {
-        p.fg
-    };
-    let ink = ink.gamma_multiply(opacity);
+    let ink = name_ink(p, selected, banded).gamma_multiply(opacity);
 
     // At the trailing end of the row: what keeps the track from an edit,
     // the link, how the clip is retimed and a held volume's percent. The

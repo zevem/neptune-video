@@ -21,13 +21,13 @@ use crate::{
 };
 use editor_core::{
     AnimTarget, AnimTrack, Clip, ClipId, ClipOverride, Command, Ease, FrameRate, Keyframe,
-    ParamKey, Project, Time, Track, TrackKind, gain_at, look, sound,
+    ParamKey, Project, Time, Track, gain_at, look, sound,
 };
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Response, Sense, Shape,
     Stroke, StrokeKind, Ui, Vec2, emath::GuiRounding as _, pos2, vec2,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// The height of one parameter's row in the lane. A lane is as many rows as
@@ -824,7 +824,6 @@ impl KeyframesState {
             self.pointer_focus = None;
         }
         let project = input.project;
-        publish_chosen(ui, project, selection);
         let id = if self.graph {
             selection.single()
         } else {
@@ -2559,65 +2558,6 @@ fn moved_tracks(clip: &Clip, picked: &[KeyRef], (delta, lift): (Time, f32)) -> V
     moved(clip, picked, delta, lift)
 }
 
-/// The clips selected as the frame starts, as the tiles' chevrons read
-/// them, each with whether its name stands on a band: a chevron takes the
-/// ink of what it stands on.
-///
-/// A hand-off until the chevron's call is given the tile's own selected
-/// state and ink: a selection changed later in the same frame reaches the
-/// chevron one frame after the tile.
-type Chosen = Arc<HashMap<ClipId, bool>>;
-
-/// What the chosen clips were last read from: the selection's clips and
-/// the project's tracks, held so that a frame in which neither changed is
-/// told by comparing them, not by visiting every clip again.
-#[derive(Clone)]
-struct ChosenFrom {
-    clips: Arc<[ClipId]>,
-    tracks: Arc<[Arc<Track>]>,
-}
-
-fn chosen_id() -> Id {
-    Id::new("keyframe-lane-chosen")
-}
-
-/// Tells the tiles' chevrons which clips are selected, and whether each
-/// is a picture's, whose name and chevron stand on a band. A frame costs
-/// a step for each selected clip and each track; the clips are visited
-/// only when the selection or a track has changed, so an idle frame, or
-/// one of playback, allocates nothing and visits no clip.
-fn publish_chosen(ui: &Ui, project: &Project, selection: &Selection) {
-    let from_id = chosen_id().with("from");
-    let held = ui.ctx().data(|data| data.get_temp::<ChosenFrom>(from_id));
-    let same = held.is_some_and(|held| {
-        *held.clips == *selection.clips
-            && held.tracks.len() == project.tracks.len()
-            && (held.tracks.iter().zip(&project.tracks)).all(|(held, now)| Arc::ptr_eq(held, now))
-    });
-    if same {
-        return;
-    }
-    let mut chosen: HashMap<ClipId, bool> =
-        (selection.clips.iter()).map(|&id| (id, false)).collect();
-    if !chosen.is_empty() {
-        for track in &project.tracks {
-            for clip in &track.clips {
-                if let Some(banded) = chosen.get_mut(&clip.id) {
-                    *banded = track.kind == TrackKind::Video;
-                }
-            }
-        }
-    }
-    let from = ChosenFrom {
-        clips: selection.clips.as_slice().into(),
-        tracks: project.tracks.as_slice().into(),
-    };
-    ui.ctx().data_mut(|data| {
-        data.insert_temp(chosen_id(), Chosen::new(chosen));
-        data.insert_temp(from_id, from);
-    });
-}
-
 /// Where the graph's own actions stand in its plot `area`.
 fn corner_rect(area: Rect) -> Rect {
     Rect::from_min_size(
@@ -2634,8 +2574,16 @@ fn keys_clip(view: Rect) -> Rect {
     view.with_min_x(view.min.x - (DIAMOND_HOVER + 3.0 + 1.0))
 }
 
-/// The chevron on a clip's tile that opens and closes its lane.
-pub(super) fn disclosure(ui: &mut Ui, p: &Palette, rect: Rect, clip: &Clip, open: bool) -> bool {
+/// The chevron on a clip's tile that opens and closes its lane, in `ink`,
+/// the ink of the name it stands before as the tile is drawn.
+pub(super) fn disclosure(
+    ui: &mut Ui,
+    p: &Palette,
+    rect: Rect,
+    clip: &Clip,
+    open: bool,
+    ink: Color32,
+) -> bool {
     let response = ui.interact(
         rect,
         Id::new(("keyframe-lane-toggle", clip.id)),
@@ -2647,20 +2595,6 @@ pub(super) fn disclosure(ui: &mut Ui, p: &Palette, rect: Rect, clip: &Clip, open
         info.selected = Some(open);
         info
     });
-    // The ink of what the chevron stands on. A selected picture's band is
-    // the accent; a sound's or a title's tile has no band, and its chevron
-    // stands on the tile, in the body's ink, selected or not. Otherwise
-    // white on a dark tile and ink on a light one, as the name.
-    let chosen = ui.ctx().data(|data| {
-        let chosen = data.get_temp::<Chosen>(chosen_id())?;
-        chosen.get(&clip.id).copied()
-    });
-    let ink = match chosen {
-        Some(true) => p.on_accent,
-        Some(false) => p.fg,
-        None if p.dark => Color32::WHITE,
-        None => p.fg,
-    };
     let painter = ui.painter();
     let hover = kit::hover_amount(ui, &response);
     if hover > 0.0 {
