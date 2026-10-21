@@ -35,8 +35,8 @@ use std::{
 };
 use uuid::Uuid;
 
-/// A look's least width: two to a library of 300, as many more as fit.
-const TILE_MIN: f32 = 116.0;
+/// An emoji's least width; every other look is laid out as the library's
+/// other cards are, by [`library::card_columns`].
 const EMOJI_MIN: f32 = 40.0;
 /// What a card has under its well: its name, 6 below it.
 const NAME_HEIGHT: f32 = 24.0;
@@ -738,12 +738,16 @@ pub fn show(
                             continue;
                         }
                     }
-                    // Emoji are small squares; every other look is a card.
+                    // Emoji are small squares; every other look is a card,
+                    // as many across as on the library's other tabs.
                     let compact = *group == Group::Emoji;
-                    let least = if compact { EMOJI_MIN } else { TILE_MIN };
-                    let gap = library::CARD_GAP;
-                    let columns = ((width + gap) / (least + gap)).floor().max(1.0) as usize;
-                    let tile_width = (width - gap * (columns as f32 - 1.0)) / columns as f32;
+                    let (columns, tile_width) = if compact {
+                        let gap = library::CARD_GAP;
+                        let columns = ((width + gap) / (EMOJI_MIN + gap)).floor().max(1.0) as usize;
+                        (columns, (width - gap * (columns as f32 - 1.0)) / columns as f32)
+                    } else {
+                        library::card_columns(width)
+                    };
                     let tile_height = if compact {
                         tile_width
                     } else {

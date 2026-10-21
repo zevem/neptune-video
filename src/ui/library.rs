@@ -56,9 +56,10 @@ const SEARCH: f32 = 28.0;
 const KINDS: f32 = 22.0;
 /// A card's least width, beside others: three of 146⅔ fill 456 points.
 /// Two columns of 147 fill the 302 points of a library at its default
-/// width, and two are kept down to the 286 of a library of 300.
+/// width, and two are kept down to the narrowest library's 206, so that a
+/// narrow window still shows a whole row of named cards.
 const CARD_LEAST: f32 = (456.0 - 2.0 * CARD_GAP) / 3.0;
-const TWO_COLUMNS: f32 = 286.0;
+const TWO_COLUMNS: f32 = *crate::settings::LIBRARY_WIDTHS.start() - LEADING - TRAILING;
 pub(super) const CARD_GAP: f32 = 8.0;
 /// Between two rows of cards: the hover of one does not meet the next.
 pub(super) const CARD_ROW_GAP: f32 = 10.0;
@@ -3131,11 +3132,12 @@ mod tests {
     }
 
     #[test]
-    fn cards_are_two_across_at_the_default_width_and_three_from_456() {
+    fn cards_are_two_across_from_the_narrowest_library_and_three_from_456() {
         for (width, columns) in [
-            (206.0, 1),
-            (285.0, 1),
-            (286.0, 2),
+            (205.0, 1),
+            (206.0, 2),
+            (260.0, 2),
+            (285.0, 2),
             (302.0, 2),
             (455.0, 2),
             (456.0, 3),
