@@ -8,7 +8,7 @@ use crate::{
     speech::{self, CueLength, Inventory, SpeechRequest, SpeechSettings, SpeechView},
     theme::{self, Palette, metrics},
     ui::{
-        Action, Selection,
+        Action, Selection, library,
         widgets::{self, Kind},
     },
 };
@@ -65,9 +65,26 @@ fn note(ui: &mut Ui, p: &Palette, text: &str) {
         egui::Label::new(
             egui::RichText::new(text)
                 .font(theme::regular(11.5))
-                .color(p.muted),
+                .color(p.secondary),
         )
         .wrap(),
+    );
+}
+
+/// A group of the panel's choices on a card of its own, as Preferences
+/// groups its rows.
+fn card(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
+    let background = ui.painter().add(egui::Shape::Noop);
+    let framed = egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(10, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            add(ui);
+        });
+    ui.painter().set(
+        background,
+        egui::epaint::RectShape::filled(framed.response.rect, 10, p.control),
     );
 }
 
@@ -113,7 +130,10 @@ pub fn status(
     if matches!(view, SpeechView::Idle) {
         return 0.0;
     }
-    let card = rect.shrink2(vec2(10.0, 0.0));
+    let card = Rect::from_min_max(
+        pos2(rect.left() + library::LEADING, rect.top()),
+        pos2(rect.right() - library::TRAILING, rect.bottom()),
+    );
     let background = ui.painter().add(egui::Shape::Noop);
     let mut body = ui.new_child(
         egui::UiBuilder::new()
@@ -208,11 +228,7 @@ pub fn status(
     let shape = Rect::from_min_max(card.min, pos2(card.right(), used.bottom()));
     ui.painter().set(
         background,
-        egui::epaint::RectShape::filled(
-            shape,
-            CornerRadius::same(metrics::CONTROL_RADIUS),
-            p.control,
-        ),
+        egui::epaint::RectShape::filled(shape, CornerRadius::same(10), p.control),
     );
     shape.height() + 8.0
 }
@@ -240,8 +256,11 @@ pub fn panel(
             let mut ui = outer.new_child(
                 egui::UiBuilder::new()
                     .max_rect(Rect::from_min_size(
-                        outer.cursor().min + vec2(10.0, 0.0),
-                        vec2(outer.available_width() - 20.0, f32::INFINITY),
+                        outer.cursor().min + vec2(library::LEADING, 0.0),
+                        vec2(
+                            outer.available_width() - library::LEADING - library::TRAILING,
+                            f32::INFINITY,
+                        ),
                     ))
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
@@ -264,9 +283,13 @@ pub fn panel(
                 p,
                 "Made on this computer from the timeline's sound. Nothing is uploaded.",
             );
-            ui.add_space(4.0);
+            ui.add_space(2.0);
 
+            // What the cards find out, for the button under them.
+            let mut missing = false;
+            let mut times = None;
             // The model.
+            card(ui, p, |ui| {
             caption(ui, p, "Model");
             let model = wide_chooser(
                 ui,
@@ -300,7 +323,7 @@ pub fn panel(
                             ui.close();
                         }
                     }
-                    ui.separator();
+                    widgets::menu_separator(ui, p);
                     if let Some(file) = &settings.file {
                         let name = model_name(&settings);
                         widgets::menu_item(ui, p, Some(Icon::Check), &name, "Yours")
@@ -312,7 +335,7 @@ pub fn panel(
                     }
                 });
             let catalog = settings.catalog();
-            let missing =
+            missing =
                 settings.file.is_none() && !input.inventory.is_some_and(|seen| seen.has(catalog));
             match &settings.file {
                 Some(_) => note(ui, p, "A Whisper model file of your own."),
@@ -327,9 +350,10 @@ pub fn panel(
                 ),
                 None => note(ui, p, &format!("{}. On this computer.", catalog.note)),
             }
-            ui.add_space(2.0);
+            });
 
             // The language spoken.
+            card(ui, p, |ui| {
             caption(ui, p, "Language spoken");
             let shown = (settings.language.as_deref())
                 .map_or_else(|| "Detect from speech".to_owned(), languages::label);
@@ -343,7 +367,7 @@ pub fn panel(
                         settings.language = None;
                         ui.close();
                     }
-                    ui.separator();
+                    widgets::menu_separator(ui, p);
                     let current = settings.language.clone();
                     if let Some(tag) = language_menu(ui, p, &mut state.language, current.as_deref())
                     {
@@ -357,9 +381,10 @@ pub fn panel(
                     "Whisper does not know this language, so it tells the language from the sound.",
                 );
             }
-            ui.add_space(2.0);
+            });
 
             // What is heard.
+            card(ui, p, |ui| {
             caption(ui, p, "Captions from");
             let stretch = wide_chooser(
                 ui,
@@ -380,7 +405,7 @@ pub fn panel(
                         }
                     }
                 });
-            let times = state.stretch.times(project, selection);
+            times = state.stretch.times(project, selection);
             if times.is_none() {
                 note(
                     ui,
@@ -391,9 +416,10 @@ pub fn panel(
                     },
                 );
             }
-            ui.add_space(2.0);
+            });
 
             // How long each caption is.
+            card(ui, p, |ui| {
             caption(ui, p, "Caption length");
             let length = wide_chooser(
                 ui,
@@ -425,7 +451,8 @@ pub fn panel(
                         .color(p.fg),
                 );
             });
-            ui.add_space(6.0);
+            });
+            ui.add_space(4.0);
 
             let working = input.view.working();
             let label = if missing {

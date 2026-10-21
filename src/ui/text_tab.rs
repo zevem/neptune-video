@@ -12,7 +12,7 @@
 mod catalog;
 
 use super::{
-    Action, PresetChange, Selection,
+    Action, PresetChange, Selection, controls, kit, library,
     widgets::{self, Kind},
 };
 use crate::{
@@ -35,18 +35,23 @@ use std::{
 };
 use uuid::Uuid;
 
+/// A look's least width: two to a library of 300, as many more as fit.
 const TILE_MIN: f32 = 116.0;
 const EMOJI_MIN: f32 = 40.0;
-const TILE_GAP: f32 = 8.0;
-const NAME_HEIGHT: f32 = 22.0;
+/// What a card has under its well: its name, 6 below it.
+const NAME_HEIGHT: f32 = 24.0;
 const SWATCH: f32 = 22.0;
+/// Round the cards: room for their rings, which stand 6 out from them.
+const MARGIN: egui::Margin = egui::Margin {
+    left: library::LEADING as i8,
+    right: library::TRAILING as i8,
+    top: 6,
+    bottom: 8,
+};
 /// How soon after a double click gave a tile another click is part of it.
 const AGAIN: f64 = 0.35;
 /// How long a tile rests at its full look before it plays again.
 const REST: f64 = 1.0;
-/// What every look's tile is drawn on, in both appearances: titles are
-/// mostly light, and are made to be seen on pictures.
-const BACKDROP: Color32 = Color32::from_rgb(38, 38, 46);
 
 /// The headings the tab lists looks under, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -685,95 +690,98 @@ pub fn show(
     }
     let any = groups.iter().any(|(_, looks)| !looks.is_empty());
     if !any && !query.is_empty() {
-        widgets::empty_state(
+        kit::empty_state(
             ui,
             p,
             rect,
             crate::icons::Icon::Search,
             "No matches",
             "Nothing here has that name.",
+            None,
         );
         return;
     }
 
-    let mut body = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(10.0, 0.0))));
-    body.set_clip_rect(rect);
+    let mut body = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    body.set_clip_rect(rect.intersect(ui.clip_rect()));
     body.spacing_mut().item_spacing = Vec2::ZERO;
-    // The scroll bar has the last points of the panel to itself.
-    let width = body.available_width() - 6.0;
+    let width = rect.width() - library::LEADING - library::TRAILING;
     let enter = ui.input(|i| i.key_pressed(Key::Enter));
     let mut hovered = None;
-    egui::ScrollArea::vertical()
+    let output = egui::ScrollArea::vertical()
         .id_salt("text-tab")
         .auto_shrink([false, false])
         .show(&mut body, |ui| {
-            for (group, looks) in &groups {
-                let mine = *group == Group::Yours;
-                if looks.is_empty() && !(mine && query.is_empty()) {
-                    continue;
-                }
-                ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new(group.heading())
-                        .font(theme::medium(11.5))
-                        .color(p.muted),
-                );
-                ui.add_space(4.0);
-                if mine && query.is_empty() {
-                    brand_colors(ui, p, state, input.presets, width, actions);
-                    if looks.is_empty() {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(
-                                    "Keep a title's look or a graphic from the inspector to find it here.",
+            egui::Frame::NONE.inner_margin(MARGIN).show(ui, |ui| {
+                ui.set_width(width);
+                for (group, looks) in &groups {
+                    let mine = *group == Group::Yours;
+                    if looks.is_empty() && !(mine && query.is_empty()) {
+                        continue;
+                    }
+                    library::heading(ui, p, group.heading());
+                    ui.add_space(4.0);
+                    if mine && query.is_empty() {
+                        brand_colors(ui, p, state, input.presets, width, actions);
+                        if looks.is_empty() {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(
+                                        "Keep a title's look or a graphic from the inspector to find it here.",
+                                    )
+                                    .font(theme::regular(11.5))
+                                    .color(p.secondary),
                                 )
-                                .font(theme::regular(11.5))
-                                .color(p.muted),
-                            )
-                            .wrap(),
-                        );
-                        ui.add_space(10.0);
-                        continue;
+                                .wrap(),
+                            );
+                            ui.add_space(10.0);
+                            continue;
+                        }
                     }
-                }
-                let compact = *group == Group::Emoji;
-                let least = if compact { EMOJI_MIN } else { TILE_MIN };
-                let columns = ((width + TILE_GAP) / (least + TILE_GAP)).floor().max(1.0) as usize;
-                let tile_width = (width - TILE_GAP * (columns as f32 - 1.0)) / columns as f32;
-                let tile_height = if compact {
-                    tile_width
-                } else {
-                    (tile_width * 0.56).round() + NAME_HEIGHT
-                };
-                let mut row = Rect::NOTHING;
-                for (index, look) in looks.iter().enumerate() {
-                    let column = index % columns;
-                    if column == 0 {
-                        (row, _) = ui
-                            .allocate_exact_size(vec2(width, tile_height + TILE_GAP), Sense::hover());
-                    }
-                    let cell = Rect::from_min_size(
-                        pos2(
-                            row.left() + column as f32 * (tile_width + TILE_GAP),
-                            row.top(),
-                        ),
-                        vec2(tile_width, tile_height),
-                    );
-                    if !ui.is_rect_visible(cell) {
-                        continue;
-                    }
-                    let shown = Tile {
-                        look,
-                        compact,
-                        rect: cell,
+                    // Emoji are small squares; every other look is a card.
+                    let compact = *group == Group::Emoji;
+                    let least = if compact { EMOJI_MIN } else { TILE_MIN };
+                    let gap = library::CARD_GAP;
+                    let columns = ((width + gap) / (least + gap)).floor().max(1.0) as usize;
+                    let tile_width = (width - gap * (columns as f32 - 1.0)) / columns as f32;
+                    let tile_height = if compact {
+                        tile_width
+                    } else {
+                        tile_width * 9.0 / 16.0 + NAME_HEIGHT
                     };
-                    if shown.show(ui, state, selection, titles, input, enter, actions) {
-                        hovered = Some(look.id);
+                    let mut row = Rect::NOTHING;
+                    for (index, look) in looks.iter().enumerate() {
+                        let column = index % columns;
+                        if column == 0 {
+                            (row, _) = ui.allocate_exact_size(
+                                vec2(width, tile_height + library::CARD_ROW_GAP),
+                                Sense::hover(),
+                            );
+                        }
+                        let cell = Rect::from_min_size(
+                            pos2(
+                                row.left() + column as f32 * (tile_width + library::CARD_GAP),
+                                row.top(),
+                            ),
+                            vec2(tile_width, tile_height),
+                        );
+                        if !ui.is_rect_visible(cell.expand(6.0)) {
+                            continue;
+                        }
+                        let shown = Tile {
+                            look,
+                            compact,
+                            rect: cell,
+                        };
+                        if shown.show(ui, state, selection, titles, input, enter, actions) {
+                            hovered = Some(look.id);
+                        }
                     }
+                    ui.add_space(6.0);
                 }
-                ui.add_space(6.0);
-            }
+            });
         });
+    library::fade_when_clipped(ui, p, &output);
     // The tile under the pointer plays; the others rest.
     let now = ui.input(|i| i.time);
     state.playing = match (hovered, state.playing) {
@@ -817,21 +825,30 @@ fn brand_colors(
             Color32::from_rgba_unmultiplied(r, g, b, a),
             rect.shrink(1.0),
         );
-        let ring = if response.hovered() || response.has_focus() {
-            Stroke::new(1.5, p.accent)
+        let ring = if response.hovered() {
+            Stroke::new(1.5, p.secondary)
         } else {
             Stroke::new(1.0, p.border)
         };
         ui.painter()
             .rect_stroke(rect, CornerRadius::same(4), ring, StrokeKind::Inside);
+        if response.has_focus() {
+            controls::focus_ring(ui.painter(), rect, 4, *p);
+        }
         let response = response.on_hover_text(format!(
             "{} is offered in every colour of the inspector. Right-click to remove it.",
             hex(*color)
         ));
         response.context_menu(|ui| {
             widgets::menu_style(ui, 180.0);
-            if widgets::menu_item(ui, p, Some(crate::icons::Icon::Trash), "Remove colour", "")
-                .clicked()
+            if widgets::menu_item_destructive(
+                ui,
+                p,
+                Some(crate::icons::Icon::Trash),
+                "Remove colour",
+                "",
+            )
+            .clicked()
             {
                 actions.push(Action::Presets(PresetChange::RemoveColor(*color)));
                 ui.close();
@@ -853,6 +870,9 @@ fn brand_colors(
         crate::icons::Icon::Plus,
         if add.hovered() { p.fg } else { p.secondary },
     );
+    if add.has_focus() {
+        controls::focus_ring(ui.painter(), rect, 4, *p);
+    }
     let add = add.on_hover_text("Add a brand colour");
     egui::Popup::menu(&add)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -927,7 +947,10 @@ impl Tile<'_> {
             Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - NAME_HEIGHT))
         };
         let radius = CornerRadius::same(metrics::CONTROL_RADIUS);
-        ui.painter().rect_filled(picture, radius, BACKDROP);
+        // Titles are mostly light and are made to be seen on pictures: they
+        // sit on the stage's dark in both appearances.
+        library::card_states(ui, p, rect, picture, &response, picked);
+        ui.painter().rect_filled(picture, radius, p.stage());
         let playing = (state.playing)
             .filter(|(id, _)| *id == look.id && response.hovered())
             .map(|(_, since)| {
@@ -944,24 +967,11 @@ impl Tile<'_> {
             titles,
             playing,
         );
-        let outline = if response.has_focus() || picked {
-            Stroke::new(1.5, p.accent)
-        } else if response.hovered() {
-            Stroke::new(1.0, p.secondary)
-        } else if p.dark {
-            Stroke::new(1.0, Color32::from_white_alpha(26))
-        } else {
-            Stroke::new(1.0, Color32::from_black_alpha(26))
-        };
-        ui.painter()
-            .rect_stroke(picture, radius, outline, StrokeKind::Inside);
         let renaming = matches!(&state.renaming, Some((id, ..)) if *id == look.id);
         if renaming {
             self.rename_field(ui, state, actions);
         } else if !self.compact {
-            let label = widgets::truncated(ui, &look.name, theme::medium(11.5), p.fg, rect.width());
-            ui.painter()
-                .galley(pos2(rect.left() + 1.0, picture.bottom() + 4.0), label, p.fg);
+            library::card_name(ui, p, picture, &look.name, None);
         }
 
         if response.clicked() || response.drag_started() {
@@ -986,21 +996,28 @@ impl Tile<'_> {
         if response.drag_started() {
             egui::DragAndDrop::set_payload(ui.ctx(), LookDrag(Arc::clone(look)));
         }
+        // What is being carried follows the pointer: its picture, lifted.
         if response.dragged()
             && let Some(pos) = ui.ctx().pointer_latest_pos()
         {
             let layer = egui::LayerId::new(egui::Order::Tooltip, Id::new("text-carry"));
-            let carry = ui.ctx().layer_painter(layer);
-            let label = carry.layout_no_wrap(look.name.clone(), theme::medium(12.0), p.fg);
-            let chip = Rect::from_min_size(pos + vec2(12.0, 10.0), label.size() + vec2(20.0, 10.0));
-            carry.rect_filled(chip, CornerRadius::same(8), p.elevated);
-            carry.rect_stroke(
-                chip,
-                CornerRadius::same(8),
-                Stroke::new(1.0, p.border),
-                StrokeKind::Inside,
-            );
-            carry.galley(chip.min + vec2(10.0, 5.0), label, p.fg);
+            let mut carry = ui.ctx().layer_painter(layer);
+            let lifted = Rect::from_min_size(pos + vec2(12.0, 10.0), vec2(64.0, 36.0));
+            carry.add(p.popup_shadow().as_shape(lifted, 6));
+            carry.set_opacity(0.85);
+            carry.rect_filled(lifted, 6, p.stage());
+            if let Some((picture, texture)) = titles.picture(look.id) {
+                let covers = covered(picture);
+                let inner = lifted.shrink(4.0);
+                let fit = (inner.width() / covers.width().max(1.0))
+                    .min(inner.height() / covers.height().max(1.0));
+                carry.image(
+                    texture,
+                    Rect::from_center_size(inner.center(), covers.size() * fit),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
         }
         let titled = (selection.clips.iter())
             .filter_map(|id| input.project.clip(*id))
@@ -1039,13 +1056,19 @@ impl Tile<'_> {
                 }
             }
             if look.group == Group::Yours {
-                ui.separator();
+                widgets::menu_separator(ui, p);
                 if widgets::menu_item(ui, p, None, "Rename…", "").clicked() {
                     state.renaming = Some((look.id, look.name.clone(), true));
                     ui.close();
                 }
-                if widgets::menu_item(ui, p, Some(crate::icons::Icon::Trash), "Remove preset", "")
-                    .clicked()
+                if widgets::menu_item_destructive(
+                    ui,
+                    p,
+                    Some(crate::icons::Icon::Trash),
+                    "Remove preset",
+                    "",
+                )
+                .clicked()
                 {
                     actions.push(Action::Presets(PresetChange::Remove(look.id)));
                     ui.close();

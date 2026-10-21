@@ -849,6 +849,17 @@ fn with_no_caption_track_the_tab_says_what_captions_are_and_starts_one() {
     bench.click("Import SRT or VTT…");
     bench.click("Import SRT or VTT");
     assert_eq!(bench.imports, 2, "from the tab and from its header");
+    // §5.2: the header's actions are on the search row, under the tabs.
+    let header = bench.find("Import SRT or VTT").unwrap().rect;
+    let search = (bench.seen.iter())
+        .find(|seen| seen.role == Role::TextInput)
+        .expect("the search field")
+        .rect;
+    assert!(
+        header.top() >= 34.0 && header.left() > search.right(),
+        "{header:?}"
+    );
+    assert!((header.center().y - search.center().y).abs() < 2.0);
 
     bench.click("New caption track");
     assert!(bench.has("English") && bench.has("Language or tag"));
@@ -902,8 +913,9 @@ fn a_caption_is_added_at_the_playhead_and_typed_into_the_list() {
     bench.retype("Two");
     bench.key(Key::Enter, Modifiers::SHIFT);
     bench.frame(vec![Event::Text("lines".into())]);
-    // Clicking elsewhere keeps the words too.
-    let away = pos2(150.0, 860.0);
+    // Clicking elsewhere keeps the words too. (§5.2: the foot of the panel
+    // is the library's footer now, so the click is on the empty list.)
+    let away = pos2(150.0, 700.0);
     bench.click_at(away, PointerButton::Primary);
     assert_eq!(texts(&bench.editor, track), ["Two\nlines"]);
     assert_eq!(bench.steps(), 4);

@@ -1,18 +1,21 @@
-//! The library: what the project has imported, as posters or rows, and what
-//! a clip can be given (effects, transitions and looks), as tiles.
+//! The library: what the project has imported, as cards or rows, and what a
+//! clip can be given (effects, transitions and looks), as cards.
+//!
+//! It is drawn flush on the window's chrome, as Terminal's sidebar is: a
+//! strip of tabs, a search row with the tab's own actions, the tab's body,
+//! which scrolls, and a footer that imports and opens Preferences.
 //!
 //! Only rows in view are laid out and only their posters are asked for. An
-//! item is dragged to the timeline or added with a double click. The tiles
-//! are [`super::browser`]'s.
+//! item is dragged to the timeline or added with a double click. The cards
+//! of effects, transitions and looks are [`super::browser`]'s.
 use super::{
-    Action, Selection,
+    Action, Selection, arrow_choice,
     browser::{self, BrowserInput, BrowserState},
     captions_tab::{self, CaptionsTabInput, CaptionsTabState},
-    icon_of_media, shortcut,
+    controls, icon_of_media, kit, panel, shortcut,
     text_tab::{self, TextTabInput, TextTabState},
     timeline::AssetDrag,
-    tone_of_media,
-    widgets::{self, Kind, icon_button, menu_item, menu_style},
+    widgets::{self, icon_button, menu_item, menu_style},
 };
 use crate::{
     icons::{self, Icon},
@@ -23,19 +26,34 @@ use crate::{
     titles::Titles,
 };
 use editor_core::{
-    Asset, Command, FolderId, MediaFolder, MediaKind, Project, Time, captions::SubtitleFormat,
+    Asset, Command, FolderId, MediaFolder, MediaKind, Project, Time, TrackId,
+    captions::SubtitleFormat,
 };
 use editor_media::{MediaService, ProxyStatus};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, Vec2,
-    epaint::RectShape, pos2, vec2,
+    self, Align, Align2, Color32, CornerRadius, Id, Layout, Painter, Rect, Response, Sense, Stroke,
+    StrokeKind, TextureId, Ui, Vec2, WidgetInfo, WidgetType, epaint::RectShape, pos2, vec2,
 };
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, sync::Arc};
 
-const TILE_MIN: f32 = 112.0;
-const TILE_GAP: f32 = 10.0;
-const NAME_HEIGHT: f32 = 34.0;
+/// How far the library's content stands in from the window's edge, and from
+/// the viewer: the inspector's insets, mirrored.
+pub(super) const LEADING: f32 = 8.0;
+pub(super) const TRAILING: f32 = 6.0;
+/// The search row under the tab strip, and the kinds row under it.
+const SEARCH: f32 = 28.0;
+const KINDS: f32 = 22.0;
+/// A card's least width with the gap after it: two columns of 147 in the
+/// 302 points of a library at its default width, and still two in one of
+/// 300; three from 456.
+const CARD_PITCH: f32 = 144.0;
+pub(super) const CARD_GAP: f32 = 8.0;
+/// Between two rows of cards: the hover of one does not meet the next.
+pub(super) const CARD_ROW_GAP: f32 = 10.0;
+/// What a card of media has under its well: its name, 6 below it, and a
+/// line of what it is.
+const CARD_TEXT: f32 = 40.0;
 const ROW_HEIGHT: f32 = 44.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,14 +153,15 @@ impl Tab {
         }
     }
 
+    /// What stands for the tab where the strip has no room for names.
     fn icon(self) -> Icon {
         match self {
             Self::Media => Icon::Film,
             Self::Text => Icon::Text,
             Self::Captions => Icon::Captions,
-            Self::Effects => Icon::Sparkles,
+            Self::Effects => Icon::Wand,
             Self::Transitions => Icon::Transition,
-            Self::Looks => Icon::Image,
+            Self::Looks => Icon::ColorSwatch,
         }
     }
 
@@ -213,159 +232,92 @@ impl KindFilter {
     }
 }
 
-/// One choice of several on one track, each as wide as its label needs and a
-/// share of what is left over, so that four fit the narrowest panel. Each
-/// option is given with its label and the name it is announced by.
-fn segments<T: Copy + PartialEq + std::hash::Hash + std::fmt::Debug + 'static, const N: usize>(
-    ui: &mut Ui,
-    p: &Palette,
-    rect: Rect,
-    salt: &'static str,
-    options: [(T, &'static str, &'static str); N],
-    chosen: &mut T,
-) {
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(metrics::CONTROL_RADIUS), p.control);
-    let inner = rect.shrink(2.0);
-    let names = |font: egui::FontId| {
-        options.map(|(_, label, _)| {
-            ui.painter()
-                .layout_no_wrap(label.to_owned(), font.clone(), p.fg)
-        })
-    };
-    let mut galleys = names(theme::medium(12.0));
-    let needed = |galleys: &[std::sync::Arc<egui::Galley>; N]| {
-        galleys.iter().map(|galley| galley.size().x).sum::<f32>()
-    };
-    if needed(&galleys) + 16.0 > inner.width() {
-        galleys = names(theme::medium(11.0));
-    }
-    let spare = ((inner.width() - needed(&galleys)) / N as f32).max(0.0);
-    let mut left = inner.left();
-    for ((option, _, name), galley) in options.into_iter().zip(galleys) {
-        let cell = Rect::from_min_size(
-            pos2(left, inner.top()),
-            vec2(galley.size().x + spare, inner.height()),
-        )
-        .intersect(inner);
-        left = cell.right();
-        let response = ui.interact(cell, Id::new((salt, option)), Sense::click());
-        let selected = *chosen == option;
-        response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, selected, name)
-        });
-        if selected {
-            ui.painter().rect_filled(
-                cell,
-                CornerRadius::same(metrics::CONTROL_RADIUS - 2),
-                if p.dark { p.pressed } else { p.elevated },
-            );
-        }
-        if response.has_focus() {
-            ui.painter().rect_stroke(
-                cell,
-                CornerRadius::same(metrics::CONTROL_RADIUS - 2),
-                Stroke::new(1.5, p.accent),
-                StrokeKind::Inside,
-            );
-        }
-        let ink = if selected || response.hovered() {
-            p.fg
-        } else {
-            p.secondary
-        };
-        ui.painter().galley_with_override_text_color(
-            cell.center() - galley.size() * 0.5,
-            galley,
-            ink,
-        );
-        if response.clicked() {
-            *chosen = option;
-        }
+/// The library's parts on Terminal's strip of tabs: names while they fit,
+/// set closer when they nearly do, and icons named on hover when they do
+/// not. Left and Right move the choice while a tab has the keyboard.
+fn tab_strip(ui: &mut Ui, p: &Palette, strip: Rect, tab: &mut Tab) {
+    // The strip's own place, so that its tabs are the same wherever the
+    // library is drawn.
+    let mut ui = ui.new_child(
+        egui::UiBuilder::new()
+            .id(Id::new("library-tab-strip"))
+            .max_rect(strip),
+    );
+    let ui = &mut ui;
+    let tabs = Tab::ALL.map(|tab| panel::Tab {
+        label: tab.label(),
+        icon: tab.icon(),
+        waiting: 0,
+    });
+    let selected = (Tab::ALL.iter())
+        .position(|shown| *shown == *tab)
+        .unwrap_or(0);
+    let cells: Vec<Id> = (tabs.iter())
+        .map(|tab| ui.id().with(("panel-tab", tab.label)))
+        .collect();
+    let arrowed = arrow_choice(ui.ctx(), &cells, selected);
+    let clicked = panel::tabs(
+        ui,
+        strip,
+        *p,
+        &tabs,
+        arrowed.unwrap_or(selected),
+        WidgetType::RadioButton,
+    );
+    if let Some(chosen) = arrowed.or(clicked) {
+        *tab = Tab::ALL[chosen];
     }
 }
 
-/// The library's parts on one track, each as wide as its name needs and a
-/// share of what is left over. When the names do not fit even small, each
-/// part is its icon, named on hover.
-fn tabs(ui: &mut Ui, p: &Palette, rect: Rect, tab: &mut Tab) {
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(metrics::CONTROL_RADIUS), p.control);
-    let inner = rect.shrink(2.0);
-    let names = |font: egui::FontId| {
-        Tab::ALL.map(|tab| {
-            ui.painter()
-                .layout_no_wrap(tab.label().to_owned(), font.clone(), p.fg)
-        })
-    };
-    let needed = |galleys: &[std::sync::Arc<egui::Galley>]| {
-        galleys.iter().map(|galley| galley.size().x).sum::<f32>()
-    };
-    let mut galleys = names(theme::medium(12.0));
-    if needed(&galleys) + 8.0 * Tab::ALL.len() as f32 > inner.width() {
-        galleys = names(theme::medium(11.0));
+/// The kinds of media listed, as one row of flat tabs of equal width.
+/// Left and Right move the choice while one has the keyboard.
+fn kind_filter(ui: &mut Ui, p: &Palette, row: Rect, kind: &mut KindFilter) {
+    let cells = KindFilter::ALL.map(|option| Id::new(("library-kind", option)));
+    let selected = (KindFilter::ALL.iter())
+        .position(|option| *option == *kind)
+        .unwrap_or(0);
+    if let Some(to) = arrow_choice(ui.ctx(), &cells, selected) {
+        *kind = KindFilter::ALL[to];
     }
-    // Names that would touch give way to icons.
-    let iconic = needed(&galleys) + 6.0 * Tab::ALL.len() as f32 > inner.width();
-    let widths = (galleys.each_ref()).map(|galley| if iconic { 0.0 } else { galley.size().x });
-    let spare = ((inner.width() - widths.iter().sum::<f32>()) / Tab::ALL.len() as f32).max(0.0);
-    let mut left = inner.left();
-    for ((option, galley), width) in Tab::ALL.into_iter().zip(galleys).zip(widths) {
-        let cell =
-            Rect::from_min_size(pos2(left, inner.top()), vec2(width + spare, inner.height()))
-                .intersect(inner);
-        left = cell.right();
-        let response = ui.interact(cell, Id::new(("library-tab", option)), Sense::click());
-        let selected = *tab == option;
+    const GAP: f32 = 2.0;
+    let count = KindFilter::ALL.len() as f32;
+    let width = (row.width() - GAP * (count - 1.0)) / count;
+    for (index, option) in KindFilter::ALL.into_iter().enumerate() {
+        let cell = Rect::from_min_size(
+            pos2(row.left() + index as f32 * (width + GAP), row.top()),
+            vec2(width, row.height()),
+        );
+        let response = ui.interact(cell, cells[index], Sense::click());
+        let chosen = *kind == option;
         response.widget_info(|| {
-            egui::WidgetInfo::selected(
-                egui::WidgetType::RadioButton,
-                true,
-                selected,
-                option.label(),
-            )
+            WidgetInfo::selected(WidgetType::RadioButton, true, chosen, option.name())
         });
-        if selected {
-            ui.painter().rect_filled(
-                cell,
-                CornerRadius::same(metrics::CONTROL_RADIUS - 2),
-                if p.dark { p.pressed } else { p.elevated },
-            );
+        let painter = ui.painter();
+        if chosen {
+            painter.rect_filled(cell, 6, theme::tint(p.fg, 0.08));
+        } else if response.hovered() {
+            painter.rect_filled(cell, 6, theme::tint(p.fg, 0.045));
         }
         if response.has_focus() {
-            ui.painter().rect_stroke(
-                cell,
-                CornerRadius::same(metrics::CONTROL_RADIUS - 2),
-                Stroke::new(1.5, p.accent),
-                StrokeKind::Inside,
-            );
+            controls::focus_ring(painter, cell, 6, *p);
         }
-        let ink = if selected || response.hovered() {
-            p.fg
+        let (font, ink) = if chosen {
+            (theme::medium(11.5), p.fg)
         } else {
-            p.secondary
+            (theme::regular(11.5), p.secondary)
         };
-        if iconic {
-            icons::paint(
-                ui.painter(),
-                Rect::from_center_size(cell.center(), Vec2::splat(14.0)),
-                option.icon(),
-                ink,
-            );
-        } else {
-            ui.painter().galley_with_override_text_color(
-                cell.center() - galley.size() * 0.5,
-                galley,
-                ink,
-            );
-        }
-        let response = if iconic {
-            response.on_hover_text(option.label())
-        } else {
-            response
-        };
-        if response.clicked() {
-            *tab = option;
+        painter.text(
+            cell.center(),
+            Align2::CENTER_CENTER,
+            option.label(),
+            font,
+            ink,
+        );
+        if response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
+            *kind = option;
         }
     }
 }
@@ -403,8 +355,8 @@ fn move_to(asset: &Asset, folder: Option<FolderId>) -> Action {
 }
 
 /// The asset being carried, when it is let go over `response`. The target is
-/// tinted while it is held there.
-fn dropped_asset(ui: &Ui, response: &egui::Response, p: &Palette) -> Option<editor_core::AssetId> {
+/// outlined while it is held there.
+fn dropped_asset(ui: &Ui, response: &Response, p: &Palette) -> Option<editor_core::AssetId> {
     if response.dnd_hover_payload::<AssetDrag>().is_some() {
         ui.painter().rect_stroke(
             response.rect,
@@ -443,7 +395,7 @@ enum Item<'a> {
     Asset(&'a Asset),
 }
 
-/// What a video's tile says of its proxy.
+/// What a video's card says of its proxy.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ProxyMark {
     /// The preview can read a smaller copy.
@@ -480,7 +432,7 @@ impl ProxyMark {
     }
 }
 
-/// What the tile of `asset` shows of its proxy, given what the proxy
+/// What the card of `asset` shows of its proxy, given what the proxy
 /// service says of it, whether the preview could not read the one made and
 /// whether the preview reads proxies at all (`read`, Proxies is not Off).
 pub(crate) fn proxy_mark(
@@ -531,22 +483,23 @@ pub(crate) fn proxy_item(
     })
 }
 
-/// Draws the proxy mark of a tile in the top right corner of its picture,
+/// Draws the proxy mark of a card in the top right corner of its picture,
 /// with its name and tooltip, and a thin bar along the picture's foot while
-/// a proxy is made.
-fn proxy_badge(ui: &Ui, p: &Palette, id: Id, picture: Rect, grid: bool, mark: &ProxyMark) {
+/// a proxy is made. The mark is on the picture, so it is drawn in the
+/// stage's inks, `well`.
+fn proxy_badge(ui: &Ui, well: &Palette, id: Id, picture: Rect, grid: bool, mark: &ProxyMark) {
     let side = if grid { 18.0 } else { 14.0 };
     let badge = Rect::from_min_size(
-        pos2(picture.right() - side - 5.0, picture.top() + 5.0),
+        pos2(picture.right() - side - 4.0, picture.top() + 4.0),
         Vec2::splat(side),
     );
     let (name, tip) = mark.describe();
     let response = ui.interact(badge, id.with("proxy"), Sense::hover());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name));
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, name));
     response.on_hover_text(tip);
     let painter = ui.painter();
     let (icon, color, fill) = match mark {
-        ProxyMark::Ready => (Icon::Layers, Color32::WHITE, Color32::from_black_alpha(150)),
+        ProxyMark::Ready => (Icon::Layers, Color32::WHITE, Color32::from_black_alpha(140)),
         // Dimmed: made, but not what the preview reads.
         ProxyMark::Unused => (
             Icon::Layers,
@@ -558,7 +511,11 @@ fn proxy_badge(ui: &Ui, p: &Palette, id: Id, picture: Rect, grid: bool, mark: &P
             Color32::from_white_alpha(150),
             Color32::from_black_alpha(110),
         ),
-        ProxyMark::Failed(_) => (Icon::Warning, p.yellow, Color32::from_black_alpha(150)),
+        ProxyMark::Failed(_) => (
+            Icon::Warning,
+            well.legible(well.yellow),
+            Color32::from_black_alpha(140),
+        ),
     };
     painter.rect_filled(badge, CornerRadius::same(5), fill);
     icons::paint(painter, badge.shrink(side * 0.2), icon, color);
@@ -575,7 +532,7 @@ fn proxy_badge(ui: &Ui, p: &Palette, id: Id, picture: Rect, grid: bool, mark: &P
                 track.bottom(),
             ),
         );
-        painter.rect_filled(fill, CornerRadius::same(1), p.accent);
+        painter.rect_filled(fill, CornerRadius::same(1), well.accent);
     }
 }
 
@@ -587,6 +544,17 @@ fn kind_name(kind: MediaKind) -> &'static str {
         MediaKind::Gif => "GIF",
         MediaKind::Lut => "LUT",
         MediaKind::Font => "Font",
+    }
+}
+
+/// What a card or row says an asset is, under its name.
+fn meta(asset: &Asset) -> String {
+    let kind = kind_name(asset.kind);
+    match asset.kind {
+        MediaKind::Image => format!("{kind} · {}×{}", asset.width, asset.height),
+        MediaKind::Lut => format!("{kind} · {} points", asset.width),
+        MediaKind::Font => kind.to_owned(),
+        _ => format!("{kind} · {}", timefmt::short(asset.duration)),
     }
 }
 
@@ -605,7 +573,6 @@ pub fn show(
     let project = input.project;
     let mut grid = input.grid;
     let mut sort = input.sort;
-    widgets::panel(ui, rect, p);
     // A folder that was undone away is not a place to be.
     if state
         .folder
@@ -613,83 +580,234 @@ pub fn show(
     {
         state.folder = None;
     }
+    let left = rect.left() + LEADING;
+    let right = rect.right() - TRAILING;
 
-    let header = Rect::from_min_size(rect.min, vec2(rect.width(), metrics::legacy::PANEL_HEADER));
-    let mut head = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(header.shrink2(vec2(10.0, 0.0)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    let strip = Rect::from_min_max(
+        pos2(left, rect.top()),
+        pos2(right, rect.top() + panel::TABS),
     );
-    head.add_space(4.0);
-    head.label(
-        egui::RichText::new("Library")
-            .font(theme::medium(13.0))
-            .color(p.fg),
+    tab_strip(ui, p, strip, &mut state.tab);
+    let tab = state.tab;
+
+    // The search, and after it what this tab alone does.
+    let row = Rect::from_min_max(
+        pos2(left, strip.bottom() + 4.0),
+        pos2(right, strip.bottom() + 4.0 + SEARCH),
     );
-    if input.importing > 0 {
-        head.add_space(4.0);
-        head.add(egui::Spinner::new().size(12.0).color(p.muted));
-        head.label(
-            egui::RichText::new("Importing…")
-                .font(theme::regular(11.5))
-                .color(p.muted),
-        );
-    }
-    let media = state.tab == Tab::Media;
-    let text = state.tab == Tab::Text;
-    let captions = state.tab == Tab::Captions;
     let caption_track = captions_tab::in_view(project, state.captions.track, selection);
-    // What imports, sorts and lays out media is the media's.
-    head.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if text {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            if icon_button(ui, p, Icon::Import, "Import fonts").clicked() {
-                actions.push(Action::ImportFonts);
-            }
-            return;
-        }
-        if captions {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            if let Some(track) = caption_track {
-                let export = icon_button(ui, p, Icon::Export, "Export captions");
-                egui::Popup::menu(&export).show(|ui| {
-                    menu_style(ui, 200.0);
-                    for (format, name) in [
-                        (SubtitleFormat::Srt, "SubRip (.srt)…"),
-                        (SubtitleFormat::Vtt, "WebVTT (.vtt)…"),
-                    ] {
-                        if menu_item(ui, p, None, name, "").clicked() {
-                            actions.push(Action::ExportCaptions { track, format });
-                            ui.close();
+    let count = match tab {
+        Tab::Media | Tab::Text => 1,
+        Tab::Captions => 2 + usize::from(caption_track.is_some()),
+        Tab::Effects | Tab::Transitions | Tab::Looks => 0,
+    };
+    let trailing = if count == 0 {
+        0.0
+    } else {
+        count as f32 * metrics::ICON_BUTTON + (count - 1) as f32 * 2.0 + 4.0
+    };
+    let field = Rect::from_min_max(row.min, pos2(row.right() - trailing, row.bottom()));
+    let sought = if tab == Tab::Media {
+        &mut state.search
+    } else {
+        &mut state.browser.search
+    };
+    let _ = controls::place(
+        ui,
+        field,
+        Layout::left_to_right(Align::Center),
+        "library-search-row",
+        |ui| {
+            controls::search_field_sized(
+                ui,
+                *p,
+                Id::new(("library-search", tab)),
+                sought,
+                tab.hint(),
+                tab.hint(),
+                field.size(),
+            )
+        },
+    );
+    if count > 0 {
+        let tools = Rect::from_min_max(pos2(field.right() + 4.0, row.top()), row.max);
+        controls::place(
+            ui,
+            tools,
+            Layout::right_to_left(Align::Center),
+            "library-search-actions",
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                match tab {
+                    Tab::Media => view_options(ui, p, &mut grid, &mut sort),
+                    Tab::Text => {
+                        if icon_button(ui, p, Icon::Import, "Import fonts").clicked() {
+                            actions.push(Action::ImportFonts);
                         }
                     }
-                });
-            }
-            if icon_button(ui, p, Icon::Import, "Import SRT or VTT").clicked() {
-                actions.push(Action::ImportCaptions);
-            }
-            let open = state.captions.speech_open;
-            let speech = widgets::icon_button_tinted(
-                ui,
+                    Tab::Captions => {
+                        caption_actions(ui, p, caption_track, &mut state.captions, actions);
+                    }
+                    Tab::Effects | Tab::Transitions | Tab::Looks => {}
+                }
+            },
+        );
+    }
+
+    let footer = Rect::from_min_max(
+        pos2(rect.left(), rect.bottom() - metrics::PANE_FOOTER),
+        rect.max,
+    );
+    let body = Rect::from_min_max(
+        pos2(rect.left(), row.bottom() + 6.0),
+        pos2(rect.right(), footer.top()),
+    );
+    match tab {
+        Tab::Text => text_tab::show(
+            ui,
+            body,
+            &state.browser.search,
+            &mut state.text,
+            selection,
+            titles,
+            &TextTabInput {
                 p,
-                Icon::Speech,
-                "Captions from speech",
-                open.then_some(p.accent),
+                project,
+                presets: input.presets,
+            },
+            actions,
+        ),
+        Tab::Captions => captions_tab::show(
+            ui,
+            body,
+            &state.browser.search,
+            &mut state.captions,
+            selection,
+            &CaptionsTabInput {
+                p,
+                project,
+                playhead: input.playhead,
+                presets: input.presets,
+                speech: input.speech,
+            },
+            actions,
+        ),
+        Tab::Effects | Tab::Transitions | Tab::Looks => browser::show(
+            ui,
+            body,
+            &mut state.browser,
+            selection,
+            &BrowserInput {
+                p,
+                project,
+                playhead: input.playhead,
+                tab,
+            },
+            actions,
+        ),
+        Tab::Media => {
+            // The kinds listed, over whatever folder and order are in view.
+            let kinds = Rect::from_min_max(pos2(left, body.top()), pos2(right, body.top() + KINDS));
+            kind_filter(ui, p, kinds, &mut state.kind);
+            let body = Rect::from_min_max(pos2(body.left(), kinds.bottom() + 6.0), body.max);
+            media(
+                ui, body, state, selection, textures, input, grid, sort, actions,
             );
-            if speech.clicked() {
-                state.captions.speech_open = !open;
-                if !open {
-                    actions.push(Action::LookAtModels);
+        }
+    }
+    footer_row(ui, p, footer, state, input.importing, actions);
+    (grid, sort)
+}
+
+/// The Media tab's one control on the search row: how media is laid out
+/// and in what order, as one menu.
+fn view_options(ui: &mut Ui, p: &Palette, grid: &mut bool, sort: &mut LibrarySort) {
+    let view = icon_button(ui, p, Icon::Adjustments, "View options");
+    egui::Popup::menu(&view).show(|ui| {
+        menu_style(ui, 200.0);
+        for (as_grid, text) in [(true, "Show as grid"), (false, "Show as list")] {
+            if kit::menu_row(ui, p, None, text, "", false, Some(*grid == as_grid)).clicked() {
+                *grid = as_grid;
+                ui.close();
+            }
+        }
+        widgets::menu_separator(ui, p);
+        kit::menu_heading(ui, p, "Sort media");
+        for (by, text) in SortBy::ALL {
+            if kit::menu_row(ui, p, None, text, "", false, Some(sort.by == by)).clicked() {
+                sort.by = by;
+                ui.close();
+            }
+        }
+        widgets::menu_separator(ui, p);
+        for (descending, text) in [(false, "Ascending"), (true, "Descending")] {
+            let chosen = Some(sort.descending == descending);
+            if kit::menu_row(ui, p, None, text, "", false, chosen).clicked() {
+                sort.descending = descending;
+                ui.close();
+            }
+        }
+    });
+}
+
+/// The Captions tab's controls on the search row, made from the trailing
+/// edge: what exports the track in view, what imports a subtitle file, and
+/// the switch of captions from speech, which stays pressed while its
+/// choices are open.
+fn caption_actions(
+    ui: &mut Ui,
+    p: &Palette,
+    track: Option<TrackId>,
+    state: &mut CaptionsTabState,
+    actions: &mut Vec<Action>,
+) {
+    if let Some(track) = track {
+        let export = icon_button(ui, p, Icon::Export, "Export captions");
+        egui::Popup::menu(&export).show(|ui| {
+            menu_style(ui, 200.0);
+            for (format, name) in [
+                (SubtitleFormat::Srt, "SubRip (.srt)…"),
+                (SubtitleFormat::Vtt, "WebVTT (.vtt)…"),
+            ] {
+                if menu_item(ui, p, None, name, "").clicked() {
+                    actions.push(Action::ExportCaptions { track, format });
+                    ui.close();
                 }
             }
-            return;
+        });
+    }
+    if icon_button(ui, p, Icon::Import, "Import SRT or VTT").clicked() {
+        actions.push(Action::ImportCaptions);
+    }
+    let open = state.speech_open;
+    if widgets::icon_toggle(ui, p, Icon::Speech, open, "Captions from speech").clicked() {
+        state.speech_open = !open;
+        if !open {
+            actions.push(Action::LookAtModels);
         }
-        if !media {
-            return;
-        }
-        ui.spacing_mut().item_spacing.x = 2.0;
-        let import = icon_button(ui, p, Icon::Import, "Import media or add a folder");
-        egui::Popup::menu(&import).show(|ui| {
+    }
+}
+
+/// The footer, under every tab: a hairline, the import button with its
+/// menu and what is being imported, and the way to Preferences.
+fn footer_row(
+    ui: &mut Ui,
+    p: &Palette,
+    footer: Rect,
+    state: &mut LibraryState,
+    importing: usize,
+    actions: &mut Vec<Action>,
+) {
+    let left = footer.left() + LEADING;
+    let right = footer.right() - TRAILING;
+    let line = footer.top() + 0.5;
+    ui.painter()
+        .line_segment([pos2(left, line), pos2(right, line)], p.hairline());
+    let middle = footer.center().y;
+    let import = import_button(ui, p, pos2(left, middle));
+    egui::Popup::menu(&import)
+        .align(egui::RectAlign::TOP_START)
+        .show(|ui| {
             menu_style(ui, 220.0);
             if menu_item(ui, p, Some(Icon::File), "Import files…", &shortcut("Cmd+I")).clicked() {
                 actions.push(Action::ImportFiles);
@@ -707,223 +825,144 @@ pub fn show(
                 actions.push(Action::ImportFolder);
                 ui.close();
             }
-            ui.separator();
+            widgets::menu_separator(ui, p);
             if menu_item(ui, p, Some(Icon::FolderPlus), "New folder", "").clicked() {
+                // A folder is made in the folder of media in view.
+                state.tab = Tab::Media;
                 state.begin_folder();
                 ui.close();
             }
         });
-        let (icon, label) = if grid {
-            (Icon::List, "Show as list")
-        } else {
-            (Icon::Grid, "Show as grid")
-        };
-        if icon_button(ui, p, icon, label).clicked() {
-            grid = !grid;
-        }
-        let order = icon_button(ui, p, Icon::Sort, "Sort media");
-        egui::Popup::menu(&order).show(|ui| {
-            menu_style(ui, 180.0);
-            for (by, text) in SortBy::ALL {
-                let chosen = (sort.by == by).then_some(Icon::Check);
-                if menu_item(ui, p, chosen, text, "").clicked() {
-                    sort.by = by;
-                    ui.close();
-                }
-            }
-            ui.separator();
-            for (descending, text) in [(false, "Ascending"), (true, "Descending")] {
-                let chosen = (sort.descending == descending).then_some(Icon::Check);
-                if menu_item(ui, p, chosen, text, "").clicked() {
-                    sort.descending = descending;
-                    ui.close();
-                }
-            }
-        });
-    });
-
-    let switch = Rect::from_min_size(
-        pos2(rect.left() + 10.0, header.bottom()),
-        vec2(rect.width() - 20.0, metrics::legacy::CONTROL_HEIGHT),
+    let gear = Rect::from_center_size(
+        pos2(right - metrics::ICON_BUTTON * 0.5, middle),
+        Vec2::splat(metrics::ICON_BUTTON),
     );
-    tabs(ui, p, switch, &mut state.tab);
-    let media = state.tab == Tab::Media;
-
-    // Search.
-    let search = Rect::from_min_size(
-        pos2(rect.left() + 10.0, switch.bottom() + 6.0),
-        vec2(rect.width() - 20.0, metrics::legacy::CONTROL_HEIGHT),
-    );
-    ui.painter().rect_filled(
-        search,
-        CornerRadius::same(metrics::CONTROL_RADIUS),
-        p.control,
-    );
-    icons::paint(
-        ui.painter(),
-        Rect::from_center_size(
-            pos2(search.left() + 14.0, search.center().y),
-            Vec2::splat(13.0),
-        ),
-        Icon::Search,
-        p.muted,
-    );
-    let mut field = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(
-        pos2(search.left() + 26.0, search.top() + 4.0),
-        pos2(search.right() - 6.0, search.bottom() - 4.0),
-    )));
-    let sought = if media {
-        &mut state.search
-    } else {
-        &mut state.browser.search
-    };
-    field.add(
-        egui::TextEdit::singleline(sought)
-            .hint_text(state.tab.hint())
-            .frame(egui::Frame::NONE)
-            .desired_width(f32::INFINITY)
-            .font(theme::regular(12.5)),
-    );
-
-    let mut top = search.bottom() + 8.0;
-    if text {
-        text_tab::show(
-            ui,
-            Rect::from_min_max(pos2(rect.left(), top), rect.max),
-            &state.browser.search,
-            &mut state.text,
-            selection,
-            titles,
-            &TextTabInput {
-                p,
-                project,
-                presets: input.presets,
-            },
-            actions,
+    if importing > 0 {
+        let spinner =
+            Rect::from_center_size(pos2(import.rect.right() + 14.0, middle), Vec2::splat(12.0));
+        kit::spinner(ui, spinner, p.secondary);
+        let room = gear.left() - 8.0 - (spinner.right() + 6.0);
+        let words = controls::elided(
+            ui.painter(),
+            "Importing…",
+            theme::regular(11.5),
+            p.secondary,
+            room,
         );
-        return (grid, sort);
+        let said = controls::galley_at(ui.painter(), pos2(spinner.right() + 6.0, middle), words);
+        ui.interact(said, Id::new("library-importing"), Sense::hover())
+            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, "Importing…"));
     }
-    if captions {
-        captions_tab::show(
-            ui,
-            Rect::from_min_max(pos2(rect.left(), top), rect.max),
-            &state.browser.search,
-            &mut state.captions,
-            selection,
-            &CaptionsTabInput {
-                p,
-                project,
-                playhead: input.playhead,
-                presets: input.presets,
-                speech: input.speech,
-            },
-            actions,
-        );
-        return (grid, sort);
-    }
-    if !media {
-        browser::show(
-            ui,
-            Rect::from_min_max(pos2(rect.left(), top), rect.max),
-            &mut state.browser,
-            selection,
-            &BrowserInput {
-                p,
-                project,
-                playhead: input.playhead,
-                tab: state.tab,
-            },
-            actions,
-        );
-        return (grid, sort);
-    }
-    // The kinds listed, over whatever folder and order are in view.
-    let kinds = Rect::from_min_size(
-        pos2(rect.left() + 10.0, top),
-        vec2(rect.width() - 20.0, 22.0),
-    );
-    segments(
+    let name = format!("Preferences ({})", shortcut("Cmd+,"));
+    let preferences = controls::place(
         ui,
-        p,
-        kinds,
-        "library-kind",
-        KindFilter::ALL.map(|kind| (kind, kind.label(), kind.name())),
-        &mut state.kind,
+        gear,
+        Layout::left_to_right(Align::Center),
+        "library-preferences",
+        |ui| icon_button(ui, p, Icon::Settings, &name),
     );
-    top = kinds.bottom() + 8.0;
+    if preferences.clicked() {
+        actions.push(Action::OpenSettings);
+    }
+}
+
+/// Terminal's footer button: a plus and "Import…", quiet until the pointer
+/// comes, its left edge and middle at `left_center`. Its name says all it
+/// opens.
+fn import_button(ui: &mut Ui, p: &Palette, left_center: egui::Pos2) -> Response {
+    let words = ui
+        .painter()
+        .layout_no_wrap("Import…".to_owned(), theme::medium(12.5), p.fg);
+    let rect = Rect::from_min_size(
+        pos2(left_center.x, left_center.y - metrics::CONTROL_HEIGHT * 0.5),
+        vec2(31.0 + words.size().x + 12.0, metrics::CONTROL_HEIGHT),
+    );
+    let response = ui.interact(rect, Id::new("library-import"), Sense::click());
+    response.widget_info(|| {
+        WidgetInfo::labeled(WidgetType::Button, true, "Import media or add a folder")
+    });
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    let hover = kit::hover_amount(ui, &response);
+    let painter = ui.painter();
+    if open || response.is_pointer_button_down_on() {
+        painter.rect_filled(rect, metrics::ROW_RADIUS, p.pressed);
+    } else if hover > 0.0 {
+        painter.rect_filled(rect, metrics::ROW_RADIUS, p.hover.gamma_multiply(hover));
+    }
+    if response.has_focus() {
+        controls::focus_ring(painter, rect, metrics::ROW_RADIUS, *p);
+    }
+    let ink = if open {
+        p.fg
+    } else {
+        theme::mix(p.secondary, p.fg, hover)
+    };
+    icons::paint(
+        painter,
+        Rect::from_center_size(pos2(rect.left() + 15.0, rect.center().y), Vec2::splat(14.0)),
+        Icon::Plus,
+        ink,
+    );
+    painter.galley(
+        pos2(rect.left() + 31.0, rect.center().y - words.size().y * 0.5),
+        words,
+        ink,
+    );
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Import media or add a folder")
+}
+
+/// The Media tab under its kinds, in `body`: where in the folders it is, a
+/// folder being named, and the media of the folder in view.
+#[expect(clippy::too_many_arguments, reason = "the library's one call")]
+fn media(
+    ui: &mut Ui,
+    body: Rect,
+    state: &mut LibraryState,
+    selection: &mut Selection,
+    textures: &mut Textures,
+    input: &LibraryInput,
+    grid: bool,
+    sort: LibrarySort,
+    actions: &mut Vec<Action>,
+) {
+    let p = input.p;
+    let project = input.project;
+    let left = body.left() + LEADING;
+    let right = body.right() - TRAILING;
+    let mut top = body.top();
     // Where we are, when inside a folder.
-    if let Some(folder) = state.folder.and_then(|id| project.folders.get(&id)) {
-        let crumb = Rect::from_min_size(
-            pos2(rect.left() + 10.0, top),
-            vec2(rect.width() - 20.0, 24.0),
-        );
-        let mut crumbs = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(crumb)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        );
-        crumbs.spacing_mut().item_spacing.x = 4.0;
-        let back = crumbs.add(
-            egui::Label::new(
-                egui::RichText::new("All media")
-                    .font(theme::regular(12.0))
-                    .color(p.secondary),
-            )
-            .sense(Sense::click()),
-        );
-        // Media let go on the way back leaves the folder.
-        if let Some(asset_id) = dropped_asset(ui, &back, p) {
-            actions.push(Action::Edit(Command::MoveAssetToFolder {
-                asset_id,
-                folder_id: None,
-            }));
+    if let Some(folder) = state.folder {
+        let row = Rect::from_min_max(pos2(left, top), pos2(right, top + 24.0));
+        if let Some(to) = breadcrumb(ui, p, row, project, folder, actions) {
+            state.folder = to;
         }
-        if back.has_focus() {
-            focus_ring(ui, p, back.rect.expand2(vec2(4.0, 2.0)));
-        }
-        if back
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked()
-        {
-            state.folder = None;
-        }
-        let (chevron, _) = crumbs.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-        icons::paint(crumbs.painter(), chevron, Icon::ChevronRight, p.muted);
-        crumbs.add(
-            egui::Label::new(
-                egui::RichText::new(&folder.name)
-                    .font(theme::medium(12.0))
-                    .color(p.fg),
-            )
-            .truncate(),
-        );
-        top = crumb.bottom() + 6.0;
+        top = row.bottom() + 6.0;
     }
     // The name of a folder that is being made, here in the folder in view.
     if let Some(name) = &mut state.new_folder {
-        let row = Rect::from_min_size(
-            pos2(rect.left() + 10.0, top),
-            vec2(rect.width() - 20.0, metrics::legacy::CONTROL_HEIGHT),
-        );
-        ui.painter()
-            .rect_filled(row, CornerRadius::same(metrics::CONTROL_RADIUS), p.control);
+        let row = Rect::from_min_max(pos2(left, top), pos2(right, top + SEARCH));
+        let id = Id::new("library-new-folder");
+        controls::field_frame(ui, *p, row, id, true);
         icons::paint(
             ui.painter(),
-            Rect::from_center_size(pos2(row.left() + 14.0, row.center().y), Vec2::splat(13.0)),
+            Rect::from_center_size(pos2(row.left() + 16.0, row.center().y), Vec2::splat(13.0)),
             Icon::FolderPlus,
             p.muted,
         );
-        let mut field = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(
-            pos2(row.left() + 26.0, row.top() + 4.0),
-            pos2(row.right() - 6.0, row.bottom() - 4.0),
-        )));
-        let response = field.add(
-            egui::TextEdit::singleline(name)
-                .hint_text("Folder name")
-                .frame(egui::Frame::NONE)
-                .desired_width(f32::INFINITY)
-                .font(theme::regular(12.5)),
+        let inner = Rect::from_min_max(
+            pos2(row.left() + 30.0, row.top()),
+            pos2(row.right() - 10.0, row.bottom()),
         );
+        let response = controls::place(
+            ui,
+            inner,
+            Layout::left_to_right(Align::Center),
+            "library-new-folder-field",
+            |ui| controls::bare_text_edit(ui, id, name, "Folder name", 13.0, inner.width()),
+        );
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "Folder name"));
         if std::mem::take(&mut state.focus_new_folder) {
             response.request_focus();
         }
@@ -943,7 +982,7 @@ pub fn show(
         }
         top = row.bottom() + 8.0;
     }
-    let list = Rect::from_min_max(pos2(rect.left(), top), rect.max);
+    let list = Rect::from_min_max(pos2(body.left(), top), body.max);
 
     // What this view lists.
     let query = state.search.trim().to_lowercase();
@@ -951,64 +990,69 @@ pub fn show(
 
     if items.is_empty() {
         if let Some(problem) = input.problem.filter(|_| project.assets.is_empty()) {
-            widgets::empty_state(ui, p, list, Icon::Warning, "Media is unavailable", problem);
-        } else if project.assets.is_empty() && query.is_empty() {
-            widgets::empty_state(
+            kit::empty_state(
                 ui,
                 p,
                 list,
-                Icon::Import,
+                Icon::Warning,
+                "Media is unavailable",
+                problem,
+                None,
+            );
+        } else if project.assets.is_empty() && query.is_empty() {
+            if kit::empty_state(
+                ui,
+                p,
+                list,
+                Icon::Film,
                 "No media yet",
-                "Drop files or folders here, or import them.",
-            );
-            let button = Rect::from_center_size(list.center() + vec2(0.0, 62.0), vec2(120.0, 28.0));
-            let mut child = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(button)
-                    .layout(egui::Layout::top_down(egui::Align::Center)),
-            );
-            if widgets::button(&mut child, p, Some(Icon::Import), "Import…", Kind::Primary)
-                .clicked()
-            {
+                "Import video, sound and images, or drop them here.",
+                Some("Import…"),
+            ) {
                 actions.push(Action::ImportFiles);
             }
         } else {
             let (icon, title, detail) = nothing_listed(state.kind, &query, state.folder.is_some());
-            widgets::empty_state(ui, p, list, icon, title, detail);
+            kit::empty_state(ui, p, list, icon, title, detail, None);
         }
-        return (grid, sort);
+        return;
     }
 
-    let mut body = ui.new_child(egui::UiBuilder::new().max_rect(list.shrink2(vec2(10.0, 0.0))));
-    body.set_clip_rect(list);
-    let width = body.available_width();
-    let (columns, tile_width, row_height) = if grid {
-        let columns = ((width + TILE_GAP) / (TILE_MIN + TILE_GAP))
-            .floor()
-            .max(1.0) as usize;
-        let tile = (width - TILE_GAP * (columns as f32 - 1.0)) / columns as f32;
-        (columns, tile, tile * 9.0 / 16.0 + NAME_HEIGHT + TILE_GAP)
+    let mut area = ui.new_child(egui::UiBuilder::new().max_rect(list));
+    area.set_clip_rect(list.intersect(ui.clip_rect()));
+    area.spacing_mut().item_spacing = Vec2::ZERO;
+    let width = list.width() - LEADING - TRAILING;
+    let (columns, cell_width) = if grid {
+        card_columns(width)
     } else {
-        (1, width, ROW_HEIGHT)
+        (1, width)
+    };
+    let well = cell_width * 9.0 / 16.0;
+    // A card stands 6 below its row's top, so that its rings are not cut by
+    // the top of the list; a row, 4.
+    let (pitch, cell_height, inset) = if grid {
+        (well + CARD_TEXT + CARD_ROW_GAP, well + CARD_TEXT, 6.0)
+    } else {
+        (ROW_HEIGHT, ROW_HEIGHT - 2.0, 4.0)
     };
     let rows = items.len().div_ceil(columns);
-    body.spacing_mut().item_spacing = Vec2::ZERO;
-    egui::ScrollArea::vertical()
+    let output = egui::ScrollArea::vertical()
         .id_salt("library")
         .auto_shrink([false, false])
-        .show_rows(&mut body, row_height, rows, |ui, range| {
+        .show_rows(&mut area, pitch, rows, |ui, range| {
             for row in range {
-                let (row_rect, _) = ui.allocate_exact_size(vec2(width, row_height), Sense::hover());
+                let (row_rect, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), pitch), Sense::hover());
                 for column in 0..columns {
                     let Some(item) = items.get(row * columns + column) else {
                         break;
                     };
                     let cell = Rect::from_min_size(
                         pos2(
-                            row_rect.left() + column as f32 * (tile_width + TILE_GAP),
-                            row_rect.top(),
+                            row_rect.left() + LEADING + column as f32 * (cell_width + CARD_GAP),
+                            row_rect.top() + inset,
                         ),
-                        vec2(tile_width, row_height - if grid { TILE_GAP } else { 2.0 }),
+                        vec2(cell_width, cell_height),
                     );
                     match item {
                         Item::Folder(folder) => {
@@ -1027,7 +1071,216 @@ pub fn show(
                 }
             }
         });
-    (grid, sort)
+    fade_when_clipped(ui, p, &output);
+}
+
+/// The columns of cards in `width`, and each card's width: as many of at
+/// least 136 as fit with the gaps between them.
+pub(super) fn card_columns(width: f32) -> (usize, f32) {
+    let columns = ((width + CARD_GAP) / CARD_PITCH).floor().max(1.0) as usize;
+    let cell = (width - CARD_GAP * (columns as f32 - 1.0)) / columns as f32;
+    (columns, cell)
+}
+
+/// Says that a list runs on below what is shown: the scroll fade over its
+/// foot, while something is cut off there.
+pub(super) fn fade_when_clipped<R>(
+    ui: &Ui,
+    p: &Palette,
+    output: &egui::scroll_area::ScrollAreaOutput<R>,
+) {
+    let below = output.content_size.y - output.state.offset.y - output.inner_rect.height();
+    if below > 0.5 {
+        kit::scroll_fade(ui.painter(), output.inner_rect, kit::Edge::Bottom, p.chrome);
+    }
+}
+
+/// A heading over a group of cards: the look of a section label, read out
+/// as the text it is.
+pub(super) fn heading(ui: &mut Ui, p: &Palette, text: &str) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    let words = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), theme::medium(11.5), p.secondary);
+    let said = controls::galley_at(
+        ui.painter(),
+        pos2(rect.left() + 4.0, rect.center().y),
+        words,
+    );
+    ui.interact(said, ui.id().with(("heading", text)), Sense::hover())
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+}
+
+/// What a card shows of its state, under its well: `hover` behind it under
+/// the pointer, `pressed` behind it and an accent ring round its well while
+/// it is chosen, and the focus ring round the whole card while it has the
+/// keyboard.
+pub(super) fn card_states(
+    ui: &Ui,
+    p: &Palette,
+    cell: Rect,
+    well: Rect,
+    response: &Response,
+    chosen: bool,
+) {
+    let painter = ui.painter();
+    let back = cell.expand(4.0);
+    // Lit at once, as Terminal's rows are: a list at rest does not repaint.
+    if chosen {
+        painter.rect_filled(back, 10, p.pressed);
+        painter.rect_stroke(
+            well.expand(2.0),
+            10,
+            Stroke::new(2.0, p.accent),
+            StrokeKind::Inside,
+        );
+    } else if response.hovered() {
+        painter.rect_filled(back, 10, p.hover);
+    }
+    if response.has_focus() {
+        controls::focus_ring(painter, back, 10, *p);
+    }
+}
+
+/// A card's name, 6 below its well, and what it is under that.
+pub(super) fn card_name(ui: &Ui, p: &Palette, well: Rect, name: &str, about: Option<&str>) {
+    let painter = ui.painter();
+    let name = controls::elided(painter, name, theme::medium(12.0), p.fg, well.width());
+    let below = well.bottom() + 6.0 + name.size().y;
+    painter.galley(pos2(well.left(), well.bottom() + 6.0), name, p.fg);
+    if let Some(about) = about {
+        let about = controls::elided(
+            painter,
+            about,
+            theme::regular(11.0),
+            p.secondary,
+            well.width(),
+        );
+        painter.galley(pos2(well.left(), below + 2.0), about, p.secondary);
+    }
+}
+
+/// A row's state: `hover` and `pressed` fills, and the focus ring.
+fn row_states(ui: &Ui, p: &Palette, rect: Rect, response: &Response, chosen: bool) {
+    let painter = ui.painter();
+    if chosen {
+        painter.rect_filled(rect, metrics::ROW_RADIUS, p.pressed);
+    } else if response.hovered() {
+        painter.rect_filled(rect, metrics::ROW_RADIUS, p.hover);
+    }
+    if response.has_focus() {
+        controls::focus_ring(painter, rect, metrics::ROW_RADIUS, *p);
+    }
+}
+
+/// A poster filling `well`, cut to its shape rather than letterboxed.
+fn cover(painter: &Painter, well: Rect, radius: u8, texture: TextureId, size: Vec2) {
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return;
+    }
+    let scale = (well.width() / size.x).max(well.height() / size.y);
+    let shown = vec2(
+        well.width() / (size.x * scale),
+        well.height() / (size.y * scale),
+    );
+    let uv = Rect::from_center_size(pos2(0.5, 0.5), shown);
+    painter.add(RectShape::filled(well, radius, Color32::WHITE).with_texture(texture, uv));
+}
+
+/// Where in the folders the Media tab is: "Media", then each folder down
+/// to the one in view, each but the last a quiet button that goes there and
+/// takes media let go on it. Gives the place one asked to go to.
+fn breadcrumb(
+    ui: &mut Ui,
+    p: &Palette,
+    row: Rect,
+    project: &Project,
+    folder: FolderId,
+    actions: &mut Vec<Action>,
+) -> Option<Option<FolderId>> {
+    let mut chain: Vec<&MediaFolder> = Vec::new();
+    let mut at = project.folders.get(&folder);
+    // A folder is never its own parent, but a damaged file is not trusted
+    // to say so.
+    while let Some(found) = at.filter(|_| chain.len() <= project.folders.len()) {
+        chain.push(found);
+        at = found.parent_id.and_then(|id| project.folders.get(&id));
+    }
+    chain.reverse();
+    let segments: Vec<(Option<FolderId>, &str)> = std::iter::once((None, "Media"))
+        .chain(
+            chain
+                .iter()
+                .map(|folder| (Some(folder.id), folder.name.as_str())),
+        )
+        .collect();
+    let last = segments.len() - 1;
+    let mut x = row.left();
+    let mut went = None;
+    for (index, (target, name)) in segments.into_iter().enumerate() {
+        if index > 0 {
+            icons::paint(
+                ui.painter(),
+                Rect::from_center_size(pos2(x + 6.0, row.center().y), Vec2::splat(10.0)),
+                Icon::ChevronRight,
+                p.muted,
+            );
+            x += 12.0;
+        }
+        let room = row.right() - x - 12.0;
+        if room < 12.0 {
+            break;
+        }
+        let here = index == last;
+        let words = controls::elided(ui.painter(), name, theme::regular(12.0), p.fg, room);
+        let cell = Rect::from_min_size(
+            pos2(x, row.top() + 1.0),
+            vec2(words.size().x + 12.0, row.height() - 2.0),
+        );
+        x = cell.right() + 2.0;
+        let sense = if here { Sense::hover() } else { Sense::click() };
+        let response = ui.interact(cell, Id::new(("library-crumb", index)), sense);
+        let role = if here {
+            WidgetType::Label
+        } else {
+            WidgetType::Button
+        };
+        response.widget_info(|| WidgetInfo::labeled(role, true, name));
+        let mut ink = p.fg;
+        if !here {
+            let painter = ui.painter();
+            if response.is_pointer_button_down_on() {
+                painter.rect_filled(cell, 6, p.pressed);
+            } else if response.hovered() {
+                painter.rect_filled(cell, 6, p.hover);
+            }
+            if response.has_focus() {
+                controls::focus_ring(painter, cell, 6, *p);
+            }
+            if !response.hovered() {
+                ink = p.secondary;
+            }
+            // Media let go on the way back goes there.
+            if let Some(asset_id) = dropped_asset(ui, &response, p) {
+                actions.push(Action::Edit(Command::MoveAssetToFolder {
+                    asset_id,
+                    folder_id: target,
+                }));
+            }
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                went = Some(target);
+            }
+        }
+        ui.painter().galley(
+            pos2(cell.left() + 6.0, cell.center().y - words.size().y * 0.5),
+            words,
+            ink,
+        );
+    }
+    went
 }
 
 /// What the Media tab lists: the folders of the folder in view, by name, then
@@ -1098,6 +1351,14 @@ fn nothing_listed(
     (icon, kind.none(), detail)
 }
 
+/// The picture of a row: inset 4 at its leading edge, 16:9.
+fn row_picture(rect: Rect) -> Rect {
+    Rect::from_min_size(
+        pos2(rect.left() + 4.0, rect.top() + 4.0),
+        vec2((rect.height() - 8.0) * 16.0 / 9.0, rect.height() - 8.0),
+    )
+}
+
 fn folder_cell(
     ui: &mut Ui,
     rect: Rect,
@@ -1109,19 +1370,8 @@ fn folder_cell(
 ) -> bool {
     let response = ui.interact(rect, Id::new(("library-folder", folder.id)), Sense::click());
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            true,
-            format!("Folder {}", folder.name),
-        )
+        WidgetInfo::labeled(WidgetType::Button, true, format!("Folder {}", folder.name))
     });
-    // Media let go on a folder moves into it.
-    if let Some(asset_id) = dropped_asset(ui, &response, p) {
-        actions.push(Action::Edit(Command::MoveAssetToFolder {
-            asset_id,
-            folder_id: Some(folder.id),
-        }));
-    }
     let count = project
         .assets
         .values()
@@ -1131,85 +1381,51 @@ fn folder_cell(
         1 => "1 item".to_owned(),
         n => format!("{n} items"),
     };
-    let painter = ui.painter();
     if grid {
-        let picture = Rect::from_min_size(rect.min, vec2(rect.width(), rect.width() * 9.0 / 16.0));
-        painter.rect_filled(
-            picture,
-            CornerRadius::same(metrics::CONTROL_RADIUS),
-            if response.hovered() {
-                p.pressed
-            } else {
-                p.control
-            },
-        );
+        let well = Rect::from_min_size(rect.min, vec2(rect.width(), rect.width() * 9.0 / 16.0));
+        card_states(ui, p, rect, well, &response, false);
+        let painter = ui.painter();
+        painter.rect_filled(well, metrics::CONTROL_RADIUS, p.control);
         icons::paint(
             painter,
-            Rect::from_center_size(picture.center(), Vec2::splat(26.0)),
+            Rect::from_center_size(well.center(), Vec2::splat(26.0)),
             Icon::Folder,
             p.secondary,
         );
-        let name = widgets::truncated(ui, &folder.name, theme::medium(12.0), p.fg, rect.width());
-        ui.painter()
-            .galley(pos2(rect.left() + 1.0, picture.bottom() + 5.0), name, p.fg);
-        ui.painter().text(
-            pos2(rect.left() + 1.0, picture.bottom() + 21.0),
-            Align2::LEFT_TOP,
-            detail,
-            theme::regular(11.0),
-            p.muted,
-        );
+        card_name(ui, p, well, &folder.name, Some(&detail));
     } else {
-        if response.hovered() {
-            painter.rect_filled(rect, CornerRadius::same(metrics::CONTROL_RADIUS), p.hover);
-        }
+        row_states(ui, p, rect, &response, false);
+        let picture = row_picture(rect);
+        let painter = ui.painter();
         icons::paint(
             painter,
-            Rect::from_center_size(pos2(rect.left() + 26.0, rect.center().y), Vec2::splat(18.0)),
+            Rect::from_center_size(picture.center(), Vec2::splat(18.0)),
             Icon::Folder,
             p.secondary,
         );
-        let name = widgets::truncated(
-            ui,
+        let detail = painter.layout_no_wrap(detail, theme::regular(11.0), p.secondary);
+        let name_left = picture.right() + 10.0;
+        let name = controls::elided(
+            painter,
             &folder.name,
-            theme::medium(12.5),
+            theme::medium(13.0),
             p.fg,
-            rect.width() - 130.0,
+            rect.right() - 16.0 - detail.size().x - name_left,
         );
-        ui.painter().galley(
-            pos2(rect.left() + 60.0, rect.center().y - name.size().y * 0.5),
-            name,
-            p.fg,
-        );
-        ui.painter().text(
-            pos2(rect.right() - 8.0, rect.center().y),
-            Align2::RIGHT_CENTER,
-            detail,
-            theme::regular(11.5),
-            p.muted,
-        );
+        controls::galley_at(painter, pos2(name_left, rect.center().y), name);
+        let detail_left = rect.right() - 8.0 - detail.size().x;
+        controls::galley_at(painter, pos2(detail_left, rect.center().y), detail);
     }
-    if response.has_focus() {
-        let shape = if grid {
-            Rect::from_min_size(rect.min, vec2(rect.width(), rect.width() * 9.0 / 16.0))
-        } else {
-            rect
-        };
-        focus_ring(ui, p, shape);
+    // Media let go on a folder moves into it.
+    if let Some(asset_id) = dropped_asset(ui, &response, p) {
+        actions.push(Action::Edit(Command::MoveAssetToFolder {
+            asset_id,
+            folder_id: Some(folder.id),
+        }));
     }
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .clicked()
-}
-
-/// The ring of what has the keyboard, as an effect's tile has it.
-fn focus_ring(ui: &Ui, p: &Palette, rect: Rect) {
-    ui.painter().rect_stroke(
-        rect,
-        CornerRadius::same(metrics::CONTROL_RADIUS),
-        Stroke::new(1.5, p.accent),
-        StrokeKind::Inside,
-    );
 }
 
 #[expect(clippy::too_many_arguments, reason = "one call site per cell")]
@@ -1224,101 +1440,49 @@ fn asset_cell(
     actions: &mut Vec<Action>,
 ) {
     let p = input.p;
+    // What is drawn on a picture is drawn in the stage's inks, which is dark
+    // in either appearance.
+    let well = Palette::stage_palette(Default::default());
     let id = Id::new(("library-asset", asset.id));
     let response = ui.interact(rect, id, Sense::click_and_drag());
     let selected = selection.asset == Some(asset.id);
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, &asset.name)
-    });
-    let tone = p.tone(tone_of_media(asset.kind));
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, &asset.name));
     let picture = if grid {
         Rect::from_min_size(rect.min, vec2(rect.width(), rect.width() * 9.0 / 16.0))
     } else {
-        Rect::from_min_size(
-            pos2(rect.left() + 4.0, rect.top() + 4.0),
-            vec2((rect.height() - 8.0) * 16.0 / 9.0, rect.height() - 8.0),
-        )
+        row_picture(rect)
     };
-    let radius = CornerRadius::same(if grid { metrics::CONTROL_RADIUS } else { 5 });
+    let radius = if grid { metrics::CONTROL_RADIUS } else { 5 };
+    if grid {
+        card_states(ui, p, rect, picture, &response, selected);
+    } else {
+        row_states(ui, p, rect, &response, selected);
+    }
     let painter = ui.painter();
-    if !grid && (selected || response.hovered()) {
-        painter.rect_filled(
-            rect,
-            CornerRadius::same(metrics::CONTROL_RADIUS),
-            if selected {
-                theme::tint(p.accent, 0.2)
-            } else {
-                p.hover
-            },
-        );
-    }
-    painter.rect_filled(picture, radius, p.sunken);
-    match textures.poster(asset.id) {
-        Some(texture) => {
-            // The poster keeps its shape inside the 16:9 frame.
-            let size = texture.size_vec2();
-            let scale = (picture.width() / size.x).min(picture.height() / size.y);
-            let fitted = Rect::from_center_size(picture.center(), size * scale);
-            let full = fitted.width() >= picture.width() - 0.5
-                && fitted.height() >= picture.height() - 0.5;
-            painter.add(
-                RectShape::filled(
-                    fitted,
-                    if full { radius } else { CornerRadius::ZERO },
-                    Color32::WHITE,
-                )
-                .with_texture(
-                    texture.id(),
-                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                ),
-            );
-        }
-        None => {
-            icons::paint(
-                painter,
-                Rect::from_center_size(
-                    picture.center(),
-                    Vec2::splat(if grid { 24.0 } else { 16.0 }),
-                ),
-                icon_of_media(asset.kind),
-                tone,
-            );
-        }
-    }
-    // Pictures get a one-point outline in pure white or black, never a tint.
-    painter.rect_stroke(
-        picture,
-        radius,
-        Stroke::new(
-            1.0,
-            if p.dark {
-                Color32::from_white_alpha(26)
-            } else {
-                Color32::from_black_alpha(26)
-            },
+    painter.rect_filled(picture, radius, p.stage());
+    let poster = textures.poster(asset.id);
+    match poster {
+        Some(texture) => cover(painter, picture, radius, texture.id(), texture.size_vec2()),
+        // Still being looked at, or nothing to show: what it is, quietly.
+        None => icons::paint(
+            painter,
+            Rect::from_center_size(picture.center(), Vec2::splat(16.0)),
+            icon_of_media(asset.kind),
+            well.muted,
         ),
-        StrokeKind::Inside,
-    );
-    if grid && selected {
-        painter.rect_stroke(
-            picture.expand(2.0),
-            CornerRadius::same(metrics::CONTROL_RADIUS + 2),
-            Stroke::new(2.0, p.accent),
-            StrokeKind::Inside,
-        );
-    }
-    // The keyboard's place is shown apart from the selection: a tile can be
-    // walked past without being chosen.
-    if response.has_focus() {
-        focus_ring(ui, p, if grid { picture } else { rect });
     }
 
     // The asset in the source monitor says so on its picture.
     if input.previewing == Some(asset.id) {
         let side = if grid { 18.0 } else { 14.0 };
-        let mark = Rect::from_min_size(picture.min + vec2(5.0, 5.0), Vec2::splat(side));
-        painter.rect_filled(mark, CornerRadius::same(5), p.accent);
-        icons::paint(painter, mark.shrink(side * 0.22), Icon::Play, p.on_accent);
+        let mark = Rect::from_min_size(picture.min + vec2(4.0, 4.0), Vec2::splat(side));
+        painter.rect_filled(mark, CornerRadius::same(5), Color32::from_black_alpha(140));
+        icons::paint(
+            painter,
+            mark.shrink(side * 0.24),
+            Icon::Play,
+            Color32::WHITE,
+        );
     }
     // A video with a proxy, or one on its way, says so on its picture.
     let proxy_status = textures.proxy_status(asset.id);
@@ -1329,12 +1493,28 @@ fn asset_cell(
         textures.proxy_unreadable(asset.id),
         read,
     ) {
-        proxy_badge(ui, p, id, picture, grid, &mark);
+        proxy_badge(ui, &well, id, picture, grid, &mark);
     }
     // A lookup table is neither played nor placed on a track.
     let placeable = crate::rules::placeable(asset);
+    // Its length, over the picture's bottom right corner.
+    if grid && asset.kind != MediaKind::Image && placeable {
+        let length = timefmt::short(asset.duration);
+        let width = (ui.painter())
+            .layout_no_wrap(length.clone(), theme::mono(11.0), Color32::WHITE)
+            .size()
+            .x
+            + 12.0;
+        kit::badge(
+            ui.painter(),
+            p,
+            pos2(picture.right() - 4.0 - width, picture.bottom() - 4.0 - 8.0),
+            &length,
+            kit::BadgeOn::Picture,
+        );
+    }
     // Under the pointer, the picture offers to play its source. A secondary
-    // click on the offer is one on the tile: it opens the tile's menu.
+    // click on the offer is one on the card: it opens the card's menu.
     let mut menu_of = response.clone();
     if placeable && ui.rect_contains_pointer(rect) && !response.dragged() {
         let side = if grid { 30.0 } else { 22.0 };
@@ -1343,8 +1523,7 @@ fn asset_cell(
             .interact(badge, id.with("preview"), Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text("Preview (Enter)");
-        preview
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Preview"));
+        preview.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Preview"));
         let painter = ui.painter();
         painter.circle_filled(
             badge.center(),
@@ -1364,71 +1543,29 @@ fn asset_cell(
             menu_of = response.union(preview);
         }
     }
-    let painter = ui.painter();
 
-    let length = timefmt::short(asset.duration);
+    let about = meta(asset);
     if grid {
-        if asset.kind != MediaKind::Image && placeable {
-            let badge = painter.layout_no_wrap(length, theme::medium(10.5), Color32::WHITE);
-            let pill = Rect::from_min_size(
-                pos2(
-                    picture.right() - badge.size().x - 13.0,
-                    picture.bottom() - badge.size().y - 9.0,
-                ),
-                badge.size() + vec2(8.0, 4.0),
-            );
-            painter.rect_filled(pill, CornerRadius::same(5), Color32::from_black_alpha(150));
-            painter.galley(pill.min + vec2(4.0, 2.0), badge, Color32::WHITE);
-        }
-        let name = widgets::truncated(ui, &asset.name, theme::medium(12.0), p.fg, rect.width());
-        ui.painter()
-            .galley(pos2(rect.left() + 1.0, picture.bottom() + 5.0), name, p.fg);
-        icons::paint(
-            ui.painter(),
-            Rect::from_min_size(
-                pos2(rect.left() + 1.0, picture.bottom() + 22.0),
-                Vec2::splat(11.0),
-            ),
-            icon_of_media(asset.kind),
-            tone,
-        );
-        ui.painter().text(
-            pos2(rect.left() + 16.0, picture.bottom() + 21.0),
-            Align2::LEFT_TOP,
-            kind_name(asset.kind),
-            theme::regular(11.0),
-            p.muted,
-        );
+        card_name(ui, p, picture, &asset.name, Some(&about));
     } else {
         let left = picture.right() + 10.0;
-        let name = widgets::truncated(
-            ui,
+        let painter = ui.painter();
+        let name = controls::elided(
+            painter,
             &asset.name,
-            theme::medium(12.5),
+            theme::medium(13.0),
             p.fg,
             rect.right() - left - 8.0,
         );
-        ui.painter()
-            .galley(pos2(left, rect.top() + 6.0), name, p.fg);
-        let detail = if asset.kind == MediaKind::Image {
-            format!(
-                "{} · {}×{}",
-                kind_name(asset.kind),
-                asset.width,
-                asset.height
-            )
-        } else if asset.kind == MediaKind::Lut {
-            format!("{} · {} points", kind_name(asset.kind), asset.width)
-        } else {
-            format!("{} · {length}", kind_name(asset.kind))
-        };
-        ui.painter().text(
-            pos2(left, rect.top() + 24.0),
-            Align2::LEFT_TOP,
-            detail,
+        painter.galley(pos2(left, rect.top() + 6.0), name, p.fg);
+        let about = controls::elided(
+            painter,
+            &about,
             theme::regular(11.0),
-            p.muted,
+            p.secondary,
+            rect.right() - left - 8.0,
         );
+        painter.galley(pos2(left, rect.top() + 24.0), about, p.secondary);
     }
 
     if response.clicked() || response.drag_started() {
@@ -1444,36 +1581,26 @@ fn asset_cell(
     if placeable && response.drag_started() {
         egui::DragAndDrop::set_payload(ui.ctx(), AssetDrag(asset.id));
     }
-    // What is being carried follows the pointer.
+    // What is being carried follows the pointer: its poster, lifted.
     if placeable
         && response.dragged()
         && let Some(pos) = ui.ctx().pointer_latest_pos()
     {
         let layer = egui::LayerId::new(egui::Order::Tooltip, Id::new("library-carry"));
-        let carry = ui.ctx().layer_painter(layer);
-        let label = carry.layout_no_wrap(asset.name.clone(), theme::medium(12.0), p.fg);
-        let chip = Rect::from_min_size(
-            pos + vec2(12.0, 10.0),
-            vec2(label.size().x.min(180.0) + 34.0, 26.0),
-        );
-        carry.rect_filled(chip, CornerRadius::same(8), p.elevated);
-        carry.rect_stroke(
-            chip,
-            CornerRadius::same(8),
-            Stroke::new(1.0, p.border),
-            StrokeKind::Inside,
-        );
-        icons::paint(
-            &carry,
-            Rect::from_center_size(pos2(chip.left() + 14.0, chip.center().y), Vec2::splat(13.0)),
-            icon_of_media(asset.kind),
-            tone,
-        );
-        carry.with_clip_rect(chip.shrink2(vec2(6.0, 0.0))).galley(
-            pos2(chip.left() + 26.0, chip.center().y - label.size().y * 0.5),
-            label,
-            p.fg,
-        );
+        let mut carry = ui.ctx().layer_painter(layer);
+        let lifted = Rect::from_min_size(pos + vec2(12.0, 10.0), vec2(64.0, 36.0));
+        carry.add(p.popup_shadow().as_shape(lifted, 6));
+        carry.set_opacity(0.85);
+        carry.rect_filled(lifted, 6, p.stage());
+        match poster {
+            Some(texture) => cover(&carry, lifted, 6, texture.id(), texture.size_vec2()),
+            None => icons::paint(
+                &carry,
+                Rect::from_center_size(lifted.center(), Vec2::splat(14.0)),
+                icon_of_media(asset.kind),
+                well.muted,
+            ),
+        }
     }
     menu_of.context_menu(|ui| {
         menu_style(ui, 220.0);
@@ -1532,12 +1659,8 @@ fn asset_cell(
         }
         let project = input.project;
         if asset.folder_id.is_some() || !project.folders.is_empty() {
-            ui.separator();
-            ui.label(
-                egui::RichText::new("Move to")
-                    .font(theme::medium(11.0))
-                    .color(p.muted),
-            );
+            widgets::menu_separator(ui, p);
+            kit::menu_heading(ui, p, "Move to");
             if asset.folder_id.is_some()
                 && menu_item(ui, p, Some(Icon::Layers), "All media", "").clicked()
             {
@@ -1561,8 +1684,10 @@ fn asset_cell(
                     }
                 });
         }
-        ui.separator();
-        if menu_item(ui, p, Some(Icon::Trash), "Remove from project", "").clicked() {
+        widgets::menu_separator(ui, p);
+        if widgets::menu_item_destructive(ui, p, Some(Icon::Trash), "Remove from project", "")
+            .clicked()
+        {
             actions.push(Action::RemoveAsset(asset.id));
             ui.close();
         }
@@ -1594,8 +1719,8 @@ mod tests {
             .collect()
     }
 
-    /// Draws the media tab once and hands back the accent strokes of a
-    /// focus ring that were painted, as the rects they outline.
+    /// Draws the media tab once and hands back the focus rings that were
+    /// painted, as the rects they outline.
     fn rings(ctx: &egui::Context, project: &Project, grid: bool, focus: Option<Id>) -> Vec<Rect> {
         let palette = Palette::new(crate::theme::Appearance::Dark, Default::default());
         let mut state = LibraryState::default();
@@ -1643,8 +1768,11 @@ mod tests {
             output.textures_delta.clear();
             found = (output.shapes.iter())
                 .filter_map(|clipped| match &clipped.shape {
+                    // The ring of `controls::focus_ring` (spec §7.4): 2 points of
+                    // the accent at .55.
                     egui::Shape::Rect(rect)
-                        if rect.stroke.color == palette.accent && rect.stroke.width == 1.5 =>
+                        if rect.stroke.color == theme::tint(palette.accent, 0.55)
+                            && rect.stroke.width == 2.0 =>
                     {
                         Some(rect.rect)
                     }
@@ -1829,7 +1957,11 @@ mod tests {
         state: LibraryState,
         selection: Selection,
         grid: bool,
+        sort: LibrarySort,
+        size: Vec2,
         seen: Vec<(String, Rect)>,
+        /// The words painted in the last frame, where, and at what size.
+        words: Vec<(String, Rect, f32)>,
         actions: Vec<Action>,
     }
 
@@ -1848,7 +1980,10 @@ mod tests {
                 state: LibraryState::default(),
                 selection: Selection::default(),
                 grid,
+                sort: LibrarySort::default(),
+                size: vec2(320.0, 600.0),
                 seen: Vec::new(),
+                words: Vec::new(),
                 actions: Vec::new(),
             }
         }
@@ -1856,14 +1991,14 @@ mod tests {
         fn frame(&mut self, events: Vec<egui::Event>) {
             let palette = Palette::new(crate::theme::Appearance::Dark, Default::default());
             let input = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(320.0, 600.0))),
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), self.size)),
                 events,
                 ..Default::default()
             };
             let ctx = self.ctx.clone();
             let output = ctx.run_ui(input, |ui| {
                 let rect = ui.max_rect();
-                show(
+                (self.grid, self.sort) = show(
                     ui,
                     rect,
                     &mut self.state,
@@ -1875,7 +2010,7 @@ mod tests {
                         project: &self.project,
                         media: None,
                         grid: self.grid,
-                        sort: LibrarySort::default(),
+                        sort: self.sort,
                         importing: 0,
                         problem: None,
                         previewing: None,
@@ -1904,6 +2039,17 @@ mod tests {
                     })
                     .collect();
             }
+            self.words = (output.shapes.iter())
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) => Some((
+                        text.galley.text().to_owned(),
+                        Rect::from_min_size(text.pos, text.galley.size()),
+                        (text.galley.job.sections.first())
+                            .map_or(0.0, |section| section.format.font_id.size),
+                    )),
+                    _ => None,
+                })
+                .collect();
             output.drop_without_applying_deltas();
         }
 
@@ -1911,6 +2057,13 @@ mod tests {
             (self.seen.iter())
                 .find(|(seen, _)| seen == name)
                 .map(|(_, rect)| *rect)
+        }
+
+        /// Where `text` was painted, and at what size.
+        fn painted(&self, text: &str) -> Option<(Rect, f32)> {
+            (self.words.iter())
+                .find(|(painted, ..)| painted == text)
+                .map(|(_, rect, size)| (*rect, *size))
         }
 
         fn click(&mut self, at: egui::Pos2, button: egui::PointerButton) {
@@ -2519,5 +2672,153 @@ mod tests {
         for by in [SortBy::Duration, SortBy::Kind, SortBy::Size] {
             assert_eq!(names(&assets, by, true), ["a.png", "b.png"]);
         }
+    }
+
+    #[test]
+    fn the_six_tabs_are_named_at_the_default_width_and_are_icons_when_narrow() {
+        // §5.2: TIGHT names at the default 316, ROOMY from 383, ICONS at 236.
+        for (width, size) in [(316.0, 11.5), (383.0, 12.0)] {
+            let mut shelf = Shelf::new(Project::new("Library"), true);
+            shelf.size = vec2(width, 600.0);
+            shelf.frame(Vec::new());
+            shelf.frame(Vec::new());
+            for tab in Tab::ALL {
+                let (painted, set) = (shelf.painted(tab.label()))
+                    .unwrap_or_else(|| panic!("{} is named at {width}", tab.label()));
+                assert_eq!(set, size, "{} at {width}", tab.label());
+                assert!(
+                    painted.left() >= LEADING && painted.right() <= width - TRAILING,
+                    "{} at {width}: {painted:?}",
+                    tab.label()
+                );
+                let tab_rect = shelf.find(tab.label()).expect("each tab is named");
+                assert!(tab_rect.contains_rect(painted), "{}", tab.label());
+            }
+        }
+        let mut shelf = Shelf::new(Project::new("Library"), true);
+        shelf.size = vec2(236.0, 600.0);
+        shelf.frame(Vec::new());
+        shelf.frame(Vec::new());
+        let mut cells = Vec::new();
+        for tab in Tab::ALL {
+            assert!(
+                shelf.painted(tab.label()).is_none(),
+                "{} is its icon",
+                tab.label()
+            );
+            let cell = shelf.find(tab.label()).expect("an icon keeps its name");
+            assert!(cell.width() >= 24.0 && cell.right() <= 236.0, "{cell:?}");
+            cells.push(cell);
+        }
+        for pair in cells.windows(2) {
+            assert!(pair[0].right() <= pair[1].left() + 0.5, "{pair:?}");
+        }
+    }
+
+    #[test]
+    fn the_footer_stays_in_place_while_the_media_scrolls() {
+        let mut project = Project::new("Library");
+        for index in 0..40 {
+            let clip = asset(&format!("clip {index:02}.mp4"), MediaKind::Video, 4.0, 10);
+            Arc::make_mut(&mut project.assets).insert(clip.id, clip);
+        }
+        let mut shelf = Shelf::new(project, false);
+        shelf.frame(Vec::new());
+        shelf.frame(Vec::new());
+        let gear_name = format!("Preferences ({})", shortcut("Cmd+,"));
+        let import = shelf
+            .find("Import media or add a folder")
+            .expect("the footer imports");
+        let gear = shelf
+            .find(&gear_name)
+            .expect("the footer opens Preferences");
+        for control in [import, gear] {
+            assert!(
+                control.top() >= 600.0 - metrics::PANE_FOOTER && control.bottom() <= 600.0,
+                "{control:?}"
+            );
+        }
+        let (first, _) = shelf.painted("clip 00.mp4").expect("the first is listed");
+        shelf.frame(vec![egui::Event::PointerMoved(pos2(160.0, 300.0))]);
+        shelf.frame(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -400.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        for _ in 0..20 {
+            shelf.frame(Vec::new());
+        }
+        let moved = shelf
+            .painted("clip 00.mp4")
+            .is_none_or(|(now, _)| now.top() < first.top() - 100.0);
+        assert!(moved, "the list scrolled");
+        assert_eq!(shelf.find("Import media or add a folder"), Some(import));
+        assert_eq!(shelf.find(&gear_name), Some(gear));
+
+        // The gear asks for Preferences; the import button opens its menu.
+        shelf.click(gear.center(), egui::PointerButton::Primary);
+        assert!(
+            matches!(shelf.actions.as_slice(), [Action::OpenSettings]),
+            "{:?}",
+            shelf.actions
+        );
+        shelf.click(import.center(), egui::PointerButton::Primary);
+        for row in ["Import files…", "Import folder…", "New folder"] {
+            assert!(shelf.find(row).is_some(), "the menu offers {row}");
+        }
+        let row = shelf.find("Import files…").unwrap();
+        shelf.click(row.center(), egui::PointerButton::Primary);
+        assert!(matches!(shelf.actions.last(), Some(Action::ImportFiles)));
+    }
+
+    #[test]
+    fn view_options_carry_the_layout_and_the_order() {
+        let mut project = Project::new("Library");
+        for held in [
+            asset("beach.mp4", MediaKind::Video, 30.0, 900),
+            asset("Alarm.wav", MediaKind::Audio, 4.0, 50),
+        ] {
+            Arc::make_mut(&mut project.assets).insert(held.id, held);
+        }
+        let mut shelf = Shelf::new(project, false);
+        shelf.frame(Vec::new());
+        shelf.frame(Vec::new());
+        // One control on the search row, where three were.
+        for gone in ["Sort media", "Show as grid", "Show as list"] {
+            assert!(shelf.find(gone).is_none(), "{gone} is in the menu now");
+        }
+        let view = shelf
+            .find("View options")
+            .expect("the Media tab has its options");
+        let search = shelf.words.iter().any(|(text, ..)| text == "Search media");
+        assert!(search, "the field says what it searches");
+        shelf.click(view.center(), egui::PointerButton::Primary);
+        for row in [
+            "Show as grid",
+            "Show as list",
+            "Name",
+            "Duration",
+            "Kind",
+            "File size",
+            "Ascending",
+            "Descending",
+        ] {
+            assert!(shelf.find(row).is_some(), "the menu offers {row}");
+        }
+        let row = shelf.find("Show as grid").unwrap();
+        shelf.click(row.center(), egui::PointerButton::Primary);
+        assert!(shelf.grid, "the media is laid out as cards");
+        for (row, wanted) in [("Duration", SortBy::Duration), ("File size", SortBy::Size)] {
+            shelf.click(view.center(), egui::PointerButton::Primary);
+            let at = shelf.find(row).unwrap();
+            shelf.click(at.center(), egui::PointerButton::Primary);
+            assert_eq!(shelf.sort.by, wanted);
+        }
+        shelf.click(view.center(), egui::PointerButton::Primary);
+        let at = shelf.find("Descending").unwrap();
+        shelf.click(at.center(), egui::PointerButton::Primary);
+        assert!(shelf.sort.descending);
+        assert!(shelf.actions.is_empty(), "the view edits nothing");
     }
 }
