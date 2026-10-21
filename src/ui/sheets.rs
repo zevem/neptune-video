@@ -1854,15 +1854,21 @@ fn appearance(
             }
             if listed.has(Setting::Accent) {
                 row(ui, rows, "Accent", |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    // Laid out from the trailing edge: Blue leads.
-                    for (accent, name) in Accent::ALL.into_iter().rev() {
-                        if swatch(ui, p, accent, name, settings.accent == accent)
-                            && settings.accent != accent
-                        {
-                            actions.push(Action::SetAccent(accent));
+                    // A strip as wide as the nine discs at the trailing
+                    // edge, laid out leading to trailing so that Tab and a
+                    // screen reader go as the eye does: Blue leads.
+                    let count = Accent::ALL.len() as f32;
+                    let strip = vec2(count * 20.0 + (count - 1.0) * 8.0, 20.0);
+                    ui.allocate_ui_with_layout(strip, Layout::left_to_right(Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        for (accent, name) in Accent::ALL {
+                            if swatch(ui, p, accent, name, settings.accent == accent)
+                                && settings.accent != accent
+                            {
+                                actions.push(Action::SetAccent(accent));
+                            }
                         }
-                    }
+                    });
                 });
             }
             if listed.has(Setting::InterfaceSize) {

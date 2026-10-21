@@ -19,6 +19,11 @@ struct Bench {
     settings: Settings,
     cache: Cache,
     seen: Vec<Seen>,
+    /// The names accessibility gives, in the order a screen reader walks
+    /// them: depth first through the tree.
+    reading: Vec<String>,
+    /// The name of the control that has the keyboard, if one has.
+    focused: Option<String>,
     painted: Vec<String>,
     /// The rectangles painted this frame, filled or outlined.
     rects: Vec<egui::epaint::RectShape>,
@@ -50,6 +55,8 @@ impl Bench {
             settings,
             cache,
             seen: Vec::new(),
+            reading: Vec::new(),
+            focused: None,
             painted: Vec::new(),
             rects: Vec::new(),
             actions: Vec::new(),
@@ -95,6 +102,26 @@ impl Bench {
                     })
                 })
                 .collect();
+            let nodes: std::collections::HashMap<_, _> =
+                update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+            let name = |node: &egui::accesskit::Node| {
+                node.label().or_else(|| node.value()).map(str::to_owned)
+            };
+            self.focused = nodes.get(&update.focus).and_then(|node| name(node));
+            // The root is the one node that is no other's child.
+            let children: std::collections::HashSet<_> = (nodes.values())
+                .flat_map(|node| node.children().iter().copied())
+                .collect();
+            let mut walk: Vec<_> = (nodes.keys())
+                .filter(|id| !children.contains(id))
+                .copied()
+                .collect();
+            self.reading.clear();
+            while let Some(id) = walk.pop() {
+                let Some(node) = nodes.get(&id) else { continue };
+                self.reading.extend(name(node));
+                walk.extend(node.children().iter().rev().copied());
+            }
         }
         self.painted.clear();
         self.rects.clear();
@@ -333,6 +360,31 @@ fn appearance_offers_the_system_s_nine_accents_and_reduce_motion() {
         "Blue leads: {accents:?}"
     );
     assert_eq!(bench.get("Blue").selected, Some(true));
+    // §7.4: a screen reader and Tab both go as the eye does, Blue first.
+    let names: Vec<_> = Accent::ALL.iter().map(|(_, name)| *name).collect();
+    let read: Vec<_> = (bench.reading.iter())
+        .map(String::as_str)
+        .filter(|name| names.contains(name))
+        .collect();
+    assert_eq!(read, names, "read");
+    // Once round, from the search field: Tab comes back to the start.
+    let mut tabbed = Vec::new();
+    for _ in 0..40 {
+        if tabbed.len() == names.len() {
+            break;
+        }
+        bench.frame(vec![Event::Key {
+            key: Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        if let Some(name) = bench.focused.as_deref().filter(|name| names.contains(name)) {
+            tabbed.push(name.to_owned());
+        }
+    }
+    assert_eq!(tabbed, names, "tabbed");
     for (name, wanted) in [
         ("System", "appearance System"),
         ("Yellow", "accent Yellow"),
