@@ -1,10 +1,10 @@
-//! Where notices are shown: over the viewer's top margin, and under an
-//! open sheet rather than over it. Drawn in real egui passes with the
-//! render queue as the sheet.
+//! Where toasts are shown: in the window's top trailing corner, and under an
+//! open sheet rather than over it; how long they stay, and what makes them
+//! go. Drawn in real egui passes, with the render queue as the sheet.
 use super::*;
 use crate::ui::render_queue;
 use editor_core::export::{ExportSettings, RenderJobInfo, RenderState};
-use eframe::egui::{Pos2, Shape};
+use eframe::egui::{Modifiers, PointerButton, Shape};
 use uuid::Uuid;
 
 const NARROW: Vec2 = vec2(760.0, 560.0);
@@ -40,50 +40,158 @@ fn notice(text: &str) -> Notice {
     }
 }
 
-/// Where each notice's words were painted, after a few frames of the
-/// window: the render queue open over it when `jobs` is given.
-fn painted(
-    notices: &[Notice],
-    jobs: Option<&[RenderJobInfo]>,
-    viewer: Rect,
-) -> (Vec<(String, Rect)>, Option<Rect>) {
-    let ctx = egui::Context::default();
-    let palette = Palette::new(Appearance::Dark, Accent::default());
-    theme::install_fonts(&ctx);
-    theme::apply(&ctx, &palette);
-    let mut texts = Vec::new();
-    for frame in 0..4 {
+fn problem(text: &str) -> Notice {
+    Notice {
+        text: text.to_owned(),
+        problem: true,
+        until: f64::INFINITY,
+    }
+}
+
+/// A window of `NARROW` that shows `notices` as the application does: the
+/// clocks first, then the toasts, the render queue open over them when
+/// `jobs` is given, and kept clear of the `cards` of work over the viewer.
+/// A button may stand where a toast can come, as the right panel's tabs do.
+struct Window {
+    ctx: egui::Context,
+    palette: Palette,
+    notices: Vec<Notice>,
+    jobs: Option<Vec<RenderJobInfo>>,
+    cards: Vec<Rect>,
+    beneath: Option<Rect>,
+    time: f64,
+    /// The words painted in the last frame, with where.
+    texts: Vec<(String, Rect)>,
+    /// The names accessibility was told of in the last frame, with where.
+    named: Vec<(String, Rect)>,
+    actions: Vec<Action>,
+    /// What the render queue answered.
+    answers: Vec<render_queue::QueueAnswer>,
+    /// How many times the button under the toasts was clicked.
+    clicked_beneath: usize,
+}
+
+impl Window {
+    fn new(notices: Vec<Notice>, jobs: Option<Vec<RenderJobInfo>>) -> Self {
+        let ctx = egui::Context::default();
+        let palette = Palette::new(Appearance::Dark, Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &palette);
+        ctx.enable_accesskit();
+        let mut window = Self {
+            ctx,
+            palette,
+            notices,
+            jobs,
+            cards: Vec::new(),
+            beneath: None,
+            time: 0.0,
+            texts: Vec::new(),
+            named: Vec::new(),
+            actions: Vec::new(),
+            answers: Vec::new(),
+            clicked_beneath: 0,
+        };
+        for _ in 0..4 {
+            window.frame(0.05, Vec::new());
+        }
+        window
+    }
+
+    /// One frame, `after` seconds after the last.
+    fn frame(&mut self, after: f64, events: Vec<Event>) {
+        self.time += after;
         let raw = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, NARROW)),
-            time: Some(f64::from(frame) * 0.05),
+            time: Some(self.time),
+            events,
             ..Default::default()
         };
+        let ctx = self.ctx.clone();
+        let mut actions = Vec::new();
         let output = ctx.run_ui(raw, |ui| {
-            if let Some(jobs) = jobs {
-                render_queue::show(ui.ctx(), &palette, jobs, &[]);
+            if let Some(beneath) = self.beneath
+                && ui.put(beneath, egui::Button::new("Agent")).clicked()
+            {
+                self.clicked_beneath += 1;
             }
-            super::notices(
+            expire(ui.ctx(), &mut self.notices);
+            if let Some(jobs) = &self.jobs
+                && let Some(answer) = render_queue::show(ui.ctx(), &self.palette, jobs, &[])
+            {
+                self.answers.push(answer);
+            }
+            let over_sheet = self.jobs.is_some();
+            notices(
                 ui.ctx(),
-                &palette,
-                notices,
-                viewer,
-                viewer.top() + 10.0,
-                jobs.is_some(),
+                &self.palette,
+                &mut self.notices,
+                &self.cards,
+                over_sheet,
+                &mut actions,
             );
         });
-        texts.clear();
+        self.actions.extend(actions);
+        self.texts.clear();
         for clipped in &output.shapes {
-            collect(&clipped.shape, &mut texts);
+            collect(&clipped.shape, &mut self.texts);
+        }
+        if let Some(update) = &output.platform_output.accesskit_update {
+            self.named = (update.nodes.iter())
+                .filter_map(|(_, node)| {
+                    let bounds = node.bounds()?;
+                    let name = node.label().or_else(|| node.value())?.to_owned();
+                    let rect = Rect::from_min_max(
+                        pos2(bounds.x0 as f32, bounds.y0 as f32),
+                        pos2(bounds.x1 as f32, bounds.y1 as f32),
+                    );
+                    Some((name, rect))
+                })
+                .collect();
         }
         output.drop_without_applying_deltas();
     }
-    let sheet = ctx.memory(|memory| memory.area_rect(Id::new("render-queue-sheet")));
-    let words = |notice: &Notice| {
-        (texts.iter())
-            .find(|(text, _)| *text == notice.text)
-            .cloned()
-    };
-    (notices.iter().filter_map(words).collect(), sheet)
+
+    /// Where each notice's toast was in the last frame, if it was shown:
+    /// its whole surface, which reaches past its words on every side.
+    fn placed(&self) -> Vec<(String, Rect)> {
+        (self.notices.iter())
+            .filter_map(|notice| {
+                let rect = toast_rect(&self.ctx, notice)?;
+                // FIXTURE: a toast in sight has its words painted.
+                assert!(
+                    (self.texts.iter())
+                        .any(|(text, words)| *text == notice.text && rect.contains_rect(*words)),
+                    "{} is painted on its toast",
+                    notice.text
+                );
+                Some((notice.text.clone(), rect))
+            })
+            .collect()
+    }
+
+    fn sheet(&self) -> Option<Rect> {
+        (self.ctx).memory(|memory| memory.area_rect(Id::new("render-queue-sheet")))
+    }
+
+    fn named(&self, name: &str) -> Vec<Rect> {
+        (self.named.iter())
+            .filter(|(named, _)| named == name)
+            .map(|(_, rect)| *rect)
+            .collect()
+    }
+
+    fn click(&mut self, pos: Pos2) {
+        let button = |pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        self.frame(0.05, vec![Event::PointerMoved(pos)]);
+        self.frame(0.05, vec![button(true)]);
+        self.frame(0.05, vec![button(false)]);
+    }
 }
 
 fn collect(shape: &Shape, into: &mut Vec<(String, Rect)>) {
@@ -103,42 +211,46 @@ fn collect(shape: &Shape, into: &mut Vec<(String, Rect)>) {
     }
 }
 
-fn viewer() -> Rect {
-    Rect::from_min_max(pos2(312.0, 46.0), pos2(752.0, 330.0))
-}
-
 #[test]
-fn notices_sit_at_the_top_of_the_viewer_without_a_sheet() {
-    let shown = [notice("Exported a.mp4"), notice("Exported b.mp4")];
-    let (placed, _) = painted(&shown, None, viewer());
+fn toasts_sit_at_the_window_s_top_trailing_corner() {
+    let window = Window::new(
+        vec![notice("Exported a.mp4"), notice("Exported b.mp4")],
+        None,
+    );
+    let placed = window.placed();
     assert_eq!(placed.len(), 2, "both are shown: {placed:?}");
+    let toolbar = metrics::TOOLBAR_HEIGHT;
     for (text, rect) in &placed {
         assert!(
-            viewer().contains_rect(*rect),
-            "{text} at {rect:?} is over the viewer"
+            rect.right() <= NARROW.x - 14.0 + 0.5 && rect.right() > NARROW.x - 14.0 - 60.0,
+            "{text} at the trailing edge: {rect:?}"
         );
-        assert!(
-            rect.top() < viewer().top() + 40.0 + 44.0,
-            "{text} at the top: {rect:?}"
-        );
+        assert!(rect.top() >= toolbar + 8.0, "{text} under the toolbar");
     }
-    assert!(placed[0].1.top() < placed[1].1.top(), "the newest last");
+    assert!(
+        placed[0].1.top() < toolbar + 8.0 + 30.0,
+        "the first at the top: {placed:?}"
+    );
+    assert!(placed[0].1.bottom() < placed[1].1.top(), "the newest last");
 }
 
 #[test]
 fn notices_go_under_an_open_sheet_rather_than_over_it() {
     // The queue as tall as a 760 x 560 window lets it be.
     let jobs: Vec<RenderJobInfo> = (0..8).map(|at| done(&format!("job-{at}.mp4"))).collect();
-    let shown = [
-        notice("Exported job-6.mp4"),
-        notice("Exported job-7.mp4"),
-        notice("The file manager could not be opened"),
-    ];
-    let (placed, sheet) = painted(&shown, Some(&jobs), viewer());
-    let sheet = sheet.expect("FIXTURE: the queue is open");
+    let window = Window::new(
+        vec![
+            notice("Exported job-6.mp4"),
+            notice("Exported job-7.mp4"),
+            notice("The file manager could not be opened"),
+        ],
+        Some(jobs),
+    );
+    let placed = window.placed();
+    let sheet = window.sheet().expect("FIXTURE: the queue is open");
     assert!(
-        sheet.top() < viewer().top() + 40.0,
-        "FIXTURE: without the fix a notice at the viewer's top is over the sheet: {sheet:?}"
+        sheet.top() < metrics::TOOLBAR_HEIGHT + 8.0 + 40.0,
+        "FIXTURE: without the fix a toast at the window's top is over the sheet: {sheet:?}"
     );
     assert!(
         placed
@@ -152,5 +264,261 @@ fn notices_go_under_an_open_sheet_rather_than_over_it() {
             "{text} at {rect:?} is not over the sheet at {sheet:?}"
         );
         assert!(rect.bottom() <= NARROW.y, "{text} is inside the window");
+        assert!(
+            rect.right() <= NARROW.x - 14.0 + 0.5,
+            "{text} at the trailing edge"
+        );
     }
+}
+
+#[test]
+fn a_problem_stays_until_it_is_dismissed() {
+    let mut window = Window::new(
+        vec![
+            notice("Imported 1 file"),
+            problem("The folder could not be read"),
+        ],
+        None,
+    );
+    // Information goes on its clock; a problem stays.
+    window.notices[0].until = window.time + 4.0;
+    window.frame(60.0, Vec::new());
+    window.frame(0.05, Vec::new());
+    let left: Vec<_> = window
+        .notices
+        .iter()
+        .map(|notice| notice.text.clone())
+        .collect();
+    assert_eq!(left, ["The folder could not be read"]);
+    assert_eq!(window.placed().len(), 1);
+
+    // The toast is not a node; its Dismiss is.
+    assert!(window.named("The folder could not be read").is_empty());
+    let dismiss = window.named("Dismiss");
+    assert_eq!(dismiss.len(), 1, "{:?}", window.named);
+    let id = window.notices[0].id();
+    window.click(dismiss[0].center());
+    assert!(
+        matches!(window.actions.as_slice(), [Action::DismissNotice(said)] if *said == id),
+        "{:?}",
+        window.actions
+    );
+}
+
+#[test]
+fn a_toast_under_the_pointer_keeps_the_time_it_had_left() {
+    let mut window = Window::new(vec![notice("Copied 2 clips")], None);
+    window.notices[0].until = window.time + 1.0;
+    window.frame(0.05, Vec::new());
+    let (_, words) = window.placed()[0].clone();
+    // The pointer comes to rest on it, for longer than it had.
+    window.frame(0.05, vec![Event::PointerMoved(words.center())]);
+    window.frame(10.0, Vec::new());
+    window.frame(0.05, Vec::new());
+    assert_eq!(window.notices.len(), 1, "it waits while it is held");
+    assert_eq!(window.placed().len(), 1);
+    // Let go, it goes on from where it stopped, and then leaves.
+    window.frame(0.05, vec![Event::PointerMoved(pos2(20.0, 500.0))]);
+    window.frame(0.5, Vec::new());
+    assert_eq!(window.notices.len(), 1, "not at once");
+    window.frame(1.0, Vec::new());
+    assert!(window.notices.is_empty());
+}
+
+#[test]
+fn a_dismiss_in_sight_answers_over_a_sheet_that_opened_after_it() {
+    let mut window = Window::new(vec![problem("The folder could not be read")], None);
+    // The sheet opens over a problem already shown: egui puts a new modal
+    // on top of every layer, and its backdrop would take the click.
+    window.jobs = Some(vec![done("a.mp4")]);
+    for _ in 0..4 {
+        window.frame(0.05, Vec::new());
+    }
+    let sheet = window.sheet().expect("FIXTURE: the queue is open");
+    let dismiss = window.named("Dismiss");
+    assert_eq!(dismiss.len(), 1, "{:?}", window.named);
+    assert!(!dismiss[0].intersects(sheet), "FIXTURE: beside the sheet");
+    let id = window.notices[0].id();
+    window.click(dismiss[0].center());
+    assert!(
+        matches!(window.actions.as_slice(), [Action::DismissNotice(said)] if *said == id),
+        "{:?}",
+        window.actions
+    );
+    assert!(
+        window.answers.is_empty(),
+        "the sheet heard nothing: {:?}",
+        window.answers
+    );
+}
+
+#[test]
+fn a_toast_lets_the_pointer_through_to_what_is_under_it() {
+    let mut window = Window::new(vec![notice("Saved")], None);
+    window.frame(0.05, Vec::new());
+    let (_, words) = window.placed()[0].clone();
+    // A tab under the toast, as the right panel's are.
+    window.beneath = Some(Rect::from_center_size(words.center(), vec2(120.0, 28.0)));
+    window.frame(0.05, Vec::new());
+    window.click(words.center());
+    assert_eq!(window.clicked_beneath, 1, "the tab under it is clicked");
+    assert!(window.actions.is_empty(), "{:?}", window.actions);
+    // Resting on it still holds it.
+    window.notices[0].until = window.time + 0.5;
+    window.frame(0.05, Vec::new());
+    window.frame(10.0, Vec::new());
+    assert_eq!(window.notices.len(), 1, "it waits while it is held");
+}
+
+#[test]
+fn toasts_keep_clear_of_the_cards_of_work() {
+    let mut window = Window::new(
+        vec![
+            notice("Exported a file with a name long enough to reach the card.mp4"),
+            problem("The folder could not be read"),
+        ],
+        None,
+    );
+    // A viewer that reaches the window's trailing edge, cards at its top.
+    window.cards = vec![
+        Rect::from_min_size(pos2(380.0, 50.0), vec2(360.0, 60.0)),
+        Rect::from_min_size(pos2(380.0, 118.0), vec2(360.0, 60.0)),
+    ];
+    window.frame(0.05, Vec::new());
+    window.frame(0.05, Vec::new());
+    let placed = window.placed();
+    assert_eq!(placed.len(), 2, "both are shown: {placed:?}");
+    for (text, rect) in &placed {
+        for card in &window.cards {
+            assert!(
+                !rect.intersects(*card),
+                "{text} at {rect:?} is over {card:?}"
+            );
+        }
+    }
+    assert!(placed[0].1.bottom() < placed[1].1.top(), "the newest last");
+    for dismiss in window.named("Dismiss") {
+        for card in &window.cards {
+            assert!(!dismiss.intersects(*card), "Dismiss is over a card");
+        }
+    }
+}
+
+fn told(notices: &[Notice]) -> Vec<(&str, bool)> {
+    (notices.iter())
+        .map(|notice| (notice.text.as_str(), notice.problem))
+        .collect()
+}
+
+#[test]
+fn the_same_words_again_are_one_notice_and_a_problem_stays_one() {
+    let mut notices = vec![problem("The folder could not be read")];
+    // Said again as information, it is still a problem with no end.
+    tell(
+        &mut notices,
+        Notice {
+            until: 10.0,
+            ..notice("The folder could not be read")
+        },
+    );
+    assert_eq!(told(&notices), [("The folder could not be read", true)]);
+    assert!(notices[0].until.is_infinite());
+    // Information said again stays the longer of the two.
+    let mut notices = vec![Notice {
+        until: 20.0,
+        ..notice("Saved")
+    }];
+    tell(
+        &mut notices,
+        Notice {
+            until: 12.0,
+            ..notice("Saved")
+        },
+    );
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].until, 20.0);
+    // Information that turns out a problem becomes one.
+    tell(&mut notices, problem("Saved"));
+    assert_eq!(told(&notices), [("Saved", true)]);
+    assert!(notices[0].until.is_infinite());
+}
+
+#[test]
+fn past_four_information_goes_first_and_never_takes_a_problem_s_place() {
+    let mut notices = vec![
+        problem("One"),
+        notice("Two"),
+        problem("Three"),
+        notice("Four"),
+    ];
+    tell(&mut notices, notice("Five"));
+    assert_eq!(
+        told(&notices),
+        [
+            ("One", true),
+            ("Three", true),
+            ("Four", false),
+            ("Five", false)
+        ]
+    );
+    // §5.8, docs/design.md: persistent failures remain discoverable, and
+    // brief success feedback does not take one away. Among problems only,
+    // information just told is not shown at all.
+    let mut notices = vec![problem("A"), problem("B"), problem("C"), problem("D")];
+    tell(&mut notices, notice("Saved"));
+    assert_eq!(
+        told(&notices),
+        [("A", true), ("B", true), ("C", true), ("D", true)]
+    );
+    // A fifth problem takes the place of the one in sight the longest.
+    tell(&mut notices, problem("E"));
+    assert_eq!(
+        told(&notices),
+        [("B", true), ("C", true), ("D", true), ("E", true)]
+    );
+}
+
+#[test]
+fn toasts_keep_clear_of_a_sheet_a_question_was_asked_over() {
+    // The export sheet, and a question asked over it: the question is the
+    // top modal, and the sheet is still in sight under it.
+    let ctx = egui::Context::default();
+    let palette = Palette::new(Appearance::Dark, Accent::default());
+    theme::install_fonts(&ctx);
+    theme::apply(&ctx, &palette);
+    let mut told = vec![notice("Exported a.mp4")];
+    let mut time = 0.0;
+    for _ in 0..5 {
+        time += 0.05;
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, NARROW)),
+            time: Some(time),
+            ..Default::default()
+        };
+        let output = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
+            egui::Modal::new(Id::new("export-sheet"))
+                .frame(egui::Frame::new().fill(palette.elevated))
+                .show(ctx, |ui| {
+                    ui.allocate_exact_size(vec2(NARROW.x - 24.0, 480.0), Sense::hover());
+                });
+            replace_export(ctx, &palette, "a.mp4", None, "Exports");
+            notices(ctx, &palette, &mut told, &[], true, &mut Vec::new());
+        });
+        output.drop_without_applying_deltas();
+    }
+    let export = (ctx.memory(|memory| memory.area_rect(Id::new("export-sheet"))))
+        .expect("FIXTURE: the export sheet is open");
+    let asked = (ctx.memory(|memory| memory.area_rect(Id::new("replace-export-sheet"))))
+        .expect("FIXTURE: the question is open");
+    let toast = toast_rect(&ctx, &told[0]).expect("there is room under the sheet");
+    assert!(
+        !toast.intersects(asked),
+        "FIXTURE: beside the question at {asked:?}"
+    );
+    assert!(
+        !toast.intersects(export),
+        "the toast at {toast:?} is not over the sheet at {export:?}"
+    );
+    assert!(toast.bottom() <= NARROW.y);
 }
