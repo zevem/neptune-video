@@ -1452,17 +1452,7 @@ fn choice<T: PartialEq + Copy>(
     options: &[(T, &str)],
     width: f32,
 ) -> bool {
-    // The ids `controls::segmented` gives its cells.
-    let id = ui.id().with(("segmented", name));
-    let cells: Vec<Id> = (options.iter()).map(|(_, label)| id.with(*label)).collect();
-    let selected = (options.iter())
-        .position(|(option, _)| option == value)
-        .unwrap_or(0);
-    let arrowed = super::arrow_choice(ui.ctx(), &cells, selected);
-    if let Some(to) = arrowed {
-        *value = options[to].0;
-    }
-    controls::segmented(ui, *p, name, value, options, width) || arrowed.is_some()
+    controls::segmented_choice(ui, *p, name, value, options, width)
 }
 
 /// The proxy cache sizes offered, in GiB.

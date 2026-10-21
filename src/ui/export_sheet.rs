@@ -968,33 +968,6 @@ fn wide<R>(
     )
 }
 
-/// One of a few choices, as a segmented control whose cells Left and Right
-/// move among, choosing as they go (Terminal). Whether the choice changed.
-fn choice<T: PartialEq + Copy>(
-    ui: &mut Ui,
-    p: &Palette,
-    value: &mut T,
-    options: &[(T, &str)],
-    width: f32,
-) -> bool {
-    // The cells' ids, as the segmented control makes them.
-    let name = (options.iter())
-        .map(|(_, label)| *label)
-        .collect::<Vec<_>>()
-        .join("|");
-    let base = ui.id().with(("segmented", name.as_str()));
-    let cells: Vec<Id> = options.iter().map(|(_, label)| base.with(*label)).collect();
-    let selected = (options.iter())
-        .position(|(option, _)| option == value)
-        .unwrap_or(0);
-    let mut changed = false;
-    if let Some(to) = super::arrow_choice(ui.ctx(), &cells, selected) {
-        *value = options[to].0;
-        changed = true;
-    }
-    widgets::segmented(ui, p, value, options, width) || changed
-}
-
 /// A select over `options`, the one equal to `current` checked, each offered
 /// only when its reason is `None` and otherwise disabled with the reason on
 /// hover. Its rows are buttons. The option taken, if one was.
@@ -2313,7 +2286,7 @@ impl Sheet<'_, '_> {
                 }
                 let mut container = state.settings.container;
                 let width = (56.0 * offered.len() as f32).max(TRAIL).min(room);
-                if choice(ui, p, &mut container, &offered, width) {
+                if widgets::segmented(ui, p, &mut container, &offered, width) {
                     state.settings.container = container;
                     settle(&mut state.settings, caps);
                 }
@@ -2349,7 +2322,7 @@ impl Sheet<'_, '_> {
                 group,
                 Some("Resolution"),
                 "resolution",
-                |ui, width| choice(ui, p, &mut size, &sizes, width),
+                |ui, width| widgets::segmented(ui, p, &mut size, &sizes, width),
             );
             if resized {
                 video.resolution = match size {
@@ -2422,7 +2395,7 @@ impl Sheet<'_, '_> {
             let output = video.resolution.size(canvas);
             if !Geometry::new(canvas, output, Fit::Letterbox).is_exact() {
                 row(ui, p, group, "Fit", |ui, room| {
-                    choice(
+                    widgets::segmented(
                         ui,
                         p,
                         &mut video.fit,
@@ -2498,7 +2471,7 @@ impl Sheet<'_, '_> {
                     RateControl::Bitrate { .. } => QualityLevel::Recommended,
                 };
                 let changed = wide(ui, p, group, Some("Profile"), "profile", |ui, width| {
-                    choice(
+                    widgets::segmented(
                         ui,
                         p,
                         &mut level,
@@ -2520,7 +2493,7 @@ impl Sheet<'_, '_> {
                     RateControl::Bitrate { .. } => Target::Bitrate,
                 };
                 row(ui, p, group, "Target", |ui, room| {
-                    choice(
+                    widgets::segmented(
                         ui,
                         p,
                         &mut target,
@@ -2545,7 +2518,7 @@ impl Sheet<'_, '_> {
                             .map(|l| (*l, l.label()))
                             .collect();
                         wide(ui, p, group, None, "quality", |ui, width| {
-                            choice(ui, p, level, &levels, width)
+                            widgets::segmented(ui, p, level, &levels, width)
                         });
                     }
                     RateControl::Bitrate { kbps } => {
@@ -2662,10 +2635,10 @@ impl Sheet<'_, '_> {
             let rates: Vec<(u32, &str)> = rates.iter().map(|(r, l)| (*r, l.as_str())).collect();
             row(ui, p, group, "Sample rate", |ui, room| {
                 let width = (60.0 * rates.len() as f32).max(TRAIL).min(room);
-                choice(ui, p, &mut audio.sample_rate, &rates, width);
+                widgets::segmented(ui, p, &mut audio.sample_rate, &rates, width);
             });
             row(ui, p, group, "Channels", |ui, room| {
-                if choice(
+                if widgets::segmented(
                     ui,
                     p,
                     &mut audio.channels,
@@ -2706,7 +2679,7 @@ impl Sheet<'_, '_> {
                 .on_disabled_hover_text("A sound-only file has no picture");
             });
             row(ui, p, group, "Subtitle file", |ui, room| {
-                choice(
+                widgets::segmented(
                     ui,
                     p,
                     &mut subtitles.sidecar,
@@ -2856,7 +2829,7 @@ fn encoder_rows(
     });
     if codec != VideoCodec::ProRes {
         row(ui, p, group, "Speed", |ui, room| {
-            choice(
+            widgets::segmented(
                 ui,
                 p,
                 &mut video.speed,

@@ -262,6 +262,30 @@ pub fn toggle(ui: &mut Ui, p: Palette, on: &mut bool, label: &str) -> Response {
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
+/// A segmented control whose Left and Right also move the choice while one
+/// of its cells has the keyboard, as a tab strip's do (Terminal). Whether
+/// the choice changed.
+pub fn segmented_choice<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    p: Palette,
+    name: &str,
+    value: &mut T,
+    options: &[(T, &str)],
+    width: f32,
+) -> bool {
+    // The ids `segmented` gives its cells.
+    let id = ui.id().with(("segmented", name));
+    let cells: Vec<Id> = (options.iter()).map(|(_, label)| id.with(*label)).collect();
+    let selected = (options.iter())
+        .position(|(option, _)| option == value)
+        .unwrap_or(usize::MAX);
+    let arrowed = super::arrow_choice(ui.ctx(), &cells, selected);
+    if let Some(to) = arrowed {
+        *value = options[to].0;
+    }
+    segmented(ui, p, name, value, options, width) || arrowed.is_some()
+}
+
 /// Mutually exclusive choices with a thumb that slides to the selection.
 pub fn segmented<T: PartialEq + Copy>(
     ui: &mut Ui,

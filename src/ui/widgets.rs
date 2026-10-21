@@ -164,7 +164,7 @@ pub fn button(ui: &mut Ui, p: &Palette, icon: Option<Icon>, text: &str, kind: Ki
 }
 
 /// A row of mutually exclusive choices with a thumb that slides to the one
-/// chosen.
+/// chosen, and that Left and Right move along. Whether the choice changed.
 pub fn segmented<T: PartialEq + Copy>(
     ui: &mut Ui,
     p: &Palette,
@@ -178,7 +178,7 @@ pub fn segmented<T: PartialEq + Copy>(
         .map(|(_, label)| *label)
         .collect::<Vec<_>>()
         .join("|");
-    controls::segmented(ui, *p, &name, value, options, width)
+    controls::segmented_choice(ui, *p, &name, value, options, width)
 }
 
 /// A gutter between two panels that is also their resize handle. Returns the

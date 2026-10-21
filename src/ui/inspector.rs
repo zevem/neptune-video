@@ -26,7 +26,7 @@ use super::{
     kit::{self, KeyRow, KeyState, RowFit},
     tone_of_media,
     viewer::trim_number,
-    widgets::Kind,
+    widgets::{self, Kind},
 };
 use crate::{
     icons::{self, Icon},
@@ -564,36 +564,8 @@ fn choice<T: PartialEq + Copy>(
 ) -> bool {
     wide_row(ui, p, TALL_ROW, |ui| {
         let width = ui.available_width();
-        segmented(ui, p, value, options, width)
+        widgets::segmented(ui, p, value, options, width)
     })
-}
-
-/// Terminal's segmented control, whose Left and Right move the choice as a
-/// tab strip's do. It is named by its choices, which tell one apart from
-/// another in a card.
-fn segmented<T: PartialEq + Copy>(
-    ui: &mut Ui,
-    p: &Palette,
-    value: &mut T,
-    options: &[(T, &str)],
-    width: f32,
-) -> bool {
-    let name = (options.iter())
-        .map(|(_, label)| *label)
-        .collect::<Vec<_>>()
-        .join("|");
-    // The cells as `controls::segmented` names them.
-    let cells: Vec<egui::Id> = {
-        let id = ui.id().with(("segmented", name.as_str()));
-        options.iter().map(|(_, label)| id.with(*label)).collect()
-    };
-    let selected = options.iter().position(|(option, _)| option == value);
-    let mut changed = false;
-    if let Some(to) = super::arrow_choice(ui.ctx(), &cells, selected.unwrap_or(usize::MAX)) {
-        *value = options[to].0;
-        changed = true;
-    }
-    controls::segmented(ui, *p, &name, value, options, width) || changed
 }
 
 /// A row of buttons at the card's leading edge, wrapped where the card is
