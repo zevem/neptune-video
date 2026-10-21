@@ -3,13 +3,15 @@
 //! The rows of a mask are made from `look::mask_spec`. Every change is the
 //! whole new list, held in the draft and committed as one `SetMasks`. The
 //! mask whose rows are open is the one the viewer outlines.
-use super::{card, clip::Pane};
+use super::{
+    button, button_row, card_head, choice, clip::Pane, fitted_row, head_button, keyed_card, note,
+    section,
+};
 use crate::{
     icons::Icon,
-    theme,
     ui::{
         ClipDraft,
-        widgets::{self, Kind, section},
+        widgets::{self, Kind},
     },
 };
 use editor_core::{AnimTarget, Mask, MaskOp, MaskShape, ParamKey, look};
@@ -65,23 +67,25 @@ impl Pane<'_> {
         section(ui, p, "Masks");
         for (index, mask) in list.iter().enumerate() {
             ui.push_id(mask.id, |ui| {
-                card(ui, p, |ui| {
+                keyed_card(ui, p, |ui| {
                     if let Some(mask) = self.mask_rows(ui, mask, index, &mut change) {
                         edited.push((index, mask));
                     }
                 });
             });
         }
-        ui.add_enabled_ui(list.len() < look::MAX_MASKS, |ui| {
-            let add = widgets::button(ui, p, Some(Icon::Plus), "Add mask", Kind::Plain)
-                .on_disabled_hover_text("A clip holds eight masks at most");
-            egui::Popup::menu(&add).show(|ui| {
-                widgets::menu_style(ui, 160.0);
-                for (shape, name) in SHAPES {
-                    if widgets::menu_item(ui, p, None, name, "").clicked() {
-                        change = Some(Change::Add(shape));
+        button_row(ui, p, |ui| {
+            ui.add_enabled_ui(list.len() < look::MAX_MASKS, |ui| {
+                let add = button(ui, p, Some(Icon::Plus), "Add mask", Kind::Plain)
+                    .on_disabled_hover_text("A clip holds eight masks at most");
+                egui::Popup::menu(&add).show(|ui| {
+                    widgets::menu_style(ui, 160.0);
+                    for (shape, name) in SHAPES {
+                        if widgets::menu_item(ui, p, None, name, "").clicked() {
+                            change = Some(Change::Add(shape));
+                        }
                     }
-                }
+                });
             });
         });
 
@@ -125,39 +129,34 @@ impl Pane<'_> {
             change(edited.get_or_insert_with(|| mask.clone()));
         };
 
-        ui.horizontal(|ui| {
-            ui.set_min_height(widgets::SMALL_BUTTON);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                if widgets::small_icon_button(ui, p, Icon::Trash, &format!("Remove {name}"))
-                    .clicked()
-                {
+        let header = card_head(
+            ui,
+            p,
+            &name,
+            Some(open),
+            false,
+            (1, |ui: &mut Ui| {
+                if head_button(ui, p, Icon::Trash, true, &format!("Remove {name}")) {
                     *change = Some(Change::Remove(index));
                 }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    if widgets::disclosure(ui, p, open, &name, false).clicked() {
-                        self.state.mask = (!open).then_some(mask.id);
-                    }
-                });
-            });
-        });
+            }),
+        );
+        if header.is_some_and(|header| header.clicked()) {
+            self.state.mask = (!open).then_some(mask.id);
+        }
         if !open {
             return edited;
         }
 
-        widgets::hairline(ui, p);
-        ui.add_space(2.0);
-        let width = ui.available_width();
         let mut shape = mask.shape;
-        if widgets::segmented(ui, p, &mut shape, &SHAPES, width) {
+        if choice(ui, p, &mut shape, &SHAPES) {
             edit(&|mask| mask.shape = shape);
         }
-        ui.add_space(2.0);
         let mut op = mask.op;
-        if widgets::segmented(ui, p, &mut op, &OPS, width) {
+        if choice(ui, p, &mut op, &OPS) {
             edit(&|mask| mask.op = op);
         }
-        widgets::fitted_row(ui, p, "Invert", |ui| {
+        fitted_row(ui, p, "Invert", |ui| {
             if widgets::switch(ui, p, mask.invert, &format!("Invert {name}")).clicked() {
                 edit(&|mask| mask.invert = !mask.invert);
             }
@@ -176,11 +175,7 @@ impl Pane<'_> {
             }
         }
         if index == 0 && mask.op != MaskOp::Add {
-            ui.label(
-                egui::RichText::new("The first mask takes from the whole picture.")
-                    .font(theme::regular(11.5))
-                    .color(p.muted),
-            );
+            note(ui, p, "The first mask takes from the whole picture.");
         }
         edited
     }

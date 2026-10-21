@@ -8,18 +8,17 @@
 //! the project would refuse is not held: the last one that it takes stays,
 //! and a line says why.
 use super::{
-    card,
-    clip::{FIELD, Pane},
-    fact,
+    FIELD, button, button_row, card, choice, clip::Pane, controls, fact, number, row, rule,
+    section, select_menu, tall_row,
 };
 use crate::{
     icons::Icon,
     speed::{self, Curve, Easing, Ramp},
-    theme::{self, Palette, metrics},
+    theme::{self, Palette},
     timefmt,
     ui::{
-        Action, shortcut,
-        widgets::{self, Kind, row, section},
+        Action, kit, shortcut,
+        widgets::{self, Kind},
     },
 };
 use editor_core::{
@@ -132,7 +131,7 @@ fn graph(
     plot_response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, enabled, "Speed curve"));
     // Room at the leading edge for the names of the speeds.
     let plot = Rect::from_min_max(
-        rect.min + vec2(RADIUS + 22.0, RADIUS + 5.0),
+        rect.min + vec2(RADIUS + 26.0, RADIUS + 5.0),
         rect.max - vec2(RADIUS + 5.0, RADIUS + 5.0),
     );
     let count = curve.points();
@@ -291,42 +290,48 @@ fn graph(
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter_at(rect);
-        let radius = CornerRadius::same(metrics::CONTROL_RADIUS);
-        painter.rect_filled(rect, radius, p.sunken);
-        let faint = p.hairline();
-        painter.rect_stroke(rect, radius, faint, StrokeKind::Inside);
+        // A well in the card: the timeline's ground, edged by a separator.
+        let radius = CornerRadius::same(6);
+        painter.rect_filled(rect, radius, p.bg);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, p.separator),
+            StrokeKind::Inside,
+        );
+        let grid = Stroke::new(1.0, theme::tint(p.separator, 0.6));
         // The speeds the plot is read against: four even lines to its top,
         // each named, and normal speed, which is the stronger line.
         let level = |speed: f64| plot.bottom() - height(speed, top) * plot.height();
         let name = |speed: f64, ink| {
             painter.text(
-                pos2(rect.left() + 4.0, level(speed)),
+                pos2(rect.left() + 5.0, level(speed)),
                 egui::Align2::LEFT_CENTER,
                 speed::times(speed),
-                theme::regular(9.5),
+                theme::regular(11.0),
                 ink,
             );
         };
-        let lines = plot.left() - RADIUS - 1.0..=rect.right();
+        let lines = plot.left() - RADIUS - 1.0..=rect.right() - 1.0;
         for step in 1..=4 {
             let speed = top * f64::from(step) / 4.0;
-            painter.hline(
-                lines.clone(),
-                level(speed),
-                Stroke::new(1.0, faint.color.gamma_multiply(0.5)),
-            );
+            painter.hline(lines.clone(), level(speed), grid);
             if speed != 1.0 {
                 name(speed, p.muted);
             }
         }
-        painter.hline(lines, level(1.0), faint);
+        painter.hline(lines, level(1.0), Stroke::new(1.0, p.separator));
         name(1.0, p.secondary);
         if let Some(playhead) = playhead {
             let x = to_screen(playhead, 0.0).x;
-            painter.vline(x, rect.y_range(), Stroke::new(1.0, theme::tint(p.fg, 0.28)));
+            painter.vline(
+                x,
+                rect.shrink(1.0).y_range(),
+                Stroke::new(1.0, theme::tint(p.fg, 0.28)),
+            );
         }
 
-        let ink = if enabled { p.accent } else { p.muted };
+        let ink = if enabled { p.fg } else { p.muted };
         let shown = next.as_ref().unwrap_or(curve);
         let (map, _) = shown.retime();
         let place = |at: i64, speed: f64| {
@@ -351,17 +356,26 @@ fn graph(
         }
         painter.add(Shape::line(line, Stroke::new(1.5, ink)));
         // Drawn where they are held now; the targets follow a frame later.
+        let mut capsule = None;
         for index in 0..shown.points() {
             let centre = place(shown.at(index).0, shown.speed(index));
             let response = responses.get(index).filter(|_| shown.points() == count);
             let grabbed = response.is_some_and(|r| r.dragged() || r.is_pointer_button_down_on());
-            let size = if grabbed { RADIUS + 1.0 } else { RADIUS };
+            let hovered = response.is_some_and(Response::hovered);
+            let size = if grabbed || hovered { 5.0 } else { 4.0 };
             let chosen = index == state.point;
-            painter.circle_filled(centre, size, if chosen { ink } else { p.sunken });
+            let fill = if chosen && enabled { p.accent } else { p.bg };
+            painter.circle_filled(centre, size, fill);
             painter.circle_stroke(centre, size, Stroke::new(1.5, ink));
             if response.is_some_and(Response::has_focus) {
                 painter.circle_stroke(centre, RADIUS + 3.5, Stroke::new(1.5, p.accent));
             }
+            if grabbed {
+                capsule = Some((centre, speed::times(shown.speed(index))));
+            }
+        }
+        if let Some((centre, text)) = capsule {
+            value_capsule(&painter, p, rect, centre, &text);
         }
     }
     for (index, response) in responses.into_iter().enumerate() {
@@ -381,6 +395,36 @@ fn graph(
     }
 }
 
+/// The value of a point being dragged, in a capsule over it: the face of
+/// the timecode on the elevated material, kept inside the well.
+pub(super) fn value_capsule(
+    painter: &egui::Painter,
+    p: &Palette,
+    well: Rect,
+    at: Pos2,
+    text: &str,
+) {
+    let galley = painter.layout_no_wrap(text.to_owned(), theme::mono(11.0), p.fg);
+    let size = galley.size() + vec2(12.0, 6.0);
+    let mut capsule = Rect::from_center_size(pos2(at.x, at.y - 10.0 - size.y * 0.5), size);
+    if capsule.top() < well.top() + 2.0 {
+        capsule = capsule.translate(vec2(0.0, at.y + 10.0 + size.y * 0.5 - capsule.center().y));
+    }
+    let shift = (well.left() + 2.0 - capsule.left()).max(0.0)
+        + (well.right() - 2.0 - capsule.right()).min(0.0);
+    let capsule = capsule.translate(vec2(shift, 0.0));
+    let round = (size.y * 0.5) as u8;
+    painter.add(p.popup_shadow().as_shape(capsule, round));
+    painter.rect_filled(capsule, size.y * 0.5, p.elevated);
+    painter.rect_stroke(
+        capsule,
+        size.y * 0.5,
+        Stroke::new(1.0, p.border),
+        StrokeKind::Inside,
+    );
+    painter.galley(capsule.center() - galley.size() * 0.5, galley, p.fg);
+}
+
 /// A ramp's button: the shape of its speed.
 fn ramp_button(ui: &mut Ui, p: &Palette, ramp: Ramp) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(34.0, 26.0), Sense::click());
@@ -388,22 +432,18 @@ fn ramp_button(ui: &mut Ui, p: &Palette, ramp: Ramp) -> Response {
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, ramp.label()));
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        let radius = CornerRadius::same(6);
+        let radius = CornerRadius::same(7);
+        let hover = kit::hover_amount(ui, &response);
+        painter.rect_filled(rect, radius, p.control);
         if response.is_pointer_button_down_on() && enabled {
             painter.rect_filled(rect, radius, p.pressed);
-        } else if response.hovered() && enabled {
-            painter.rect_filled(rect, radius, p.hover);
-        } else {
-            painter.rect_filled(rect, radius, p.control);
+        } else if hover > 0.0 && enabled {
+            painter.rect_filled(rect, radius, p.hover.gamma_multiply(hover));
         }
         if response.has_focus() {
-            painter.rect_stroke(rect, radius, Stroke::new(1.5, p.accent), StrokeKind::Inside);
+            controls::focus_ring(painter, rect, 7, *p);
         }
-        let ink = if enabled {
-            p.secondary
-        } else {
-            p.muted.gamma_multiply(0.5)
-        };
+        let ink = if enabled { p.secondary } else { p.muted };
         let glyph = Rect::from_center_size(rect.center(), vec2(22.0, 13.0));
         // Among a ramp's own speeds, the slowest on the floor.
         let points = ramp.points();
@@ -423,7 +463,24 @@ fn ramp_button(ui: &mut Ui, p: &Palette, ramp: Ramp) -> Response {
             .collect();
         painter.add(Shape::line(line, Stroke::new(1.5, ink)));
     }
-    response.on_hover_text(ramp.label())
+    let response = response.on_hover_text(ramp.label());
+    if enabled {
+        response.on_hover_cursor(CursorIcon::PointingHand)
+    } else {
+        response
+    }
+}
+
+/// A well that `add` fills across the card, 4 in from its edges.
+pub(super) fn well_row<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
+    rule(ui, p);
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::same(4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
+        .inner
 }
 
 impl Pane<'_> {
@@ -513,9 +570,8 @@ impl Pane<'_> {
                         .position(|rate| (rate - speed).abs() < 0.004)
                 })
                 .unwrap_or(NONE);
-            let width = ui.available_width();
             let options = [(0, "0.25×"), (1, "0.5×"), (2, "1×"), (3, "2×"), (4, "4×")];
-            if widgets::segmented(ui, p, &mut chosen, &options, width)
+            if choice(ui, p, &mut chosen, &options)
                 && let Some(named) = speed::RATES.get(chosen)
             {
                 if mapped {
@@ -529,7 +585,6 @@ impl Pane<'_> {
                     self.next.rate = *named;
                 }
             }
-            ui.add_space(2.0);
             let duration = match &self.next.retime {
                 Some((_, duration)) => *duration,
                 None => clip.duration.scaled(clip.playback_rate / self.next.rate),
@@ -554,8 +609,9 @@ impl Pane<'_> {
         section(ui, p, "Freeze frame");
         card(ui, p, |ui| {
             row(ui, p, "Hold for", |ui| {
-                widgets::named_number(
+                number(
                     ui,
+                    p,
                     &mut self.state.hold,
                     0.1..=60.0,
                     0.02,
@@ -566,54 +622,57 @@ impl Pane<'_> {
                 );
             });
             let on_clip = clip.start <= self.playhead && self.playhead <= clip.end();
-            ui.add_enabled_ui(on_clip, |ui| {
-                let hint = format!("Hold the frame at the playhead ({})", shortcut("F"));
-                let freeze = widgets::button(ui, p, None, "Freeze at playhead", Kind::Plain)
-                    .on_hover_text(hint)
-                    .on_disabled_hover_text("The playhead is not on this clip");
-                if freeze.clicked() {
-                    let hold = Time::from_seconds(f64::from(self.state.hold));
-                    let settled = self.settled();
-                    let project = settled.as_deref().unwrap_or(self.project);
-                    match speed::freeze_command(project, clip.id, self.playhead, hold) {
-                        Ok(command) => self.actions.push(Action::Edit(command)),
-                        Err(_) => self.state.speed_refused = Some(clip.id),
+            button_row(ui, p, |ui| {
+                ui.add_enabled_ui(on_clip, |ui| {
+                    let hint = format!("Hold the frame at the playhead ({})", shortcut("F"));
+                    let freeze = button(ui, p, None, "Freeze at playhead", Kind::Plain)
+                        .on_hover_text(hint)
+                        .on_disabled_hover_text("The playhead is not on this clip");
+                    if freeze.clicked() {
+                        let hold = Time::from_seconds(f64::from(self.state.hold));
+                        let settled = self.settled();
+                        let project = settled.as_deref().unwrap_or(self.project);
+                        match speed::freeze_command(project, clip.id, self.playhead, hold) {
+                            Ok(command) => self.actions.push(Action::Edit(command)),
+                            Err(_) => self.state.speed_refused = Some(clip.id),
+                        }
                     }
-                }
+                });
             });
         });
 
-        section(ui, p, "Ramp");
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-            for ramp in Ramp::ALL {
-                if ramp_button(ui, p, ramp).clicked() {
-                    self.change_curve(ramp.label(), |curve| {
-                        *curve = ramp.over(curve);
-                        true
-                    });
-                }
-            }
-        });
+        section(ui, p, "Curve");
         let on_clip = (clip.start <= self.playhead && self.playhead <= clip.end())
             .then_some(self.local)
             .filter(|_| self.next.retime.is_none() && self.next.rate == clip.playback_rate);
-        let edit = graph(ui, p, &curve, &mut self.state.graph, on_clip);
-        if edit.focused {
-            self.state.keys = Some(ui.ctx().cumulative_frame_nr());
-        }
-        if let Some(changed) = &edit.curve {
-            self.take_curve(changed, edit.held, "Change speed curve");
-        }
-
-        let point = self.state.graph.point.min(curve.points() - 1);
-        let count = curve.points();
         card(ui, p, |ui| {
+            button_row(ui, p, |ui| {
+                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                for ramp in Ramp::ALL {
+                    if ramp_button(ui, p, ramp).clicked() {
+                        self.change_curve(ramp.label(), |curve| {
+                            *curve = ramp.over(curve);
+                            true
+                        });
+                    }
+                }
+            });
+            let edit = well_row(ui, p, |ui| {
+                graph(ui, p, &curve, &mut self.state.graph, on_clip)
+            });
+            if edit.focused {
+                self.state.keys = Some(ui.ctx().cumulative_frame_nr());
+            }
+            if let Some(changed) = &edit.curve {
+                self.take_curve(changed, edit.held, "Change speed curve");
+            }
+            let point = self.state.graph.point.min(curve.points() - 1);
+            let count = curve.points();
             let label = format!("Point {} of {count}", point + 1);
             row(ui, p, &label, |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.add_enabled_ui(count < MAX_TIME_KEYS, |ui| {
-                    let add = widgets::small_icon_button(ui, p, Icon::Plus, "Add point")
+                    let add = kit::small_icon_button(ui, p, Icon::Plus, "Add point")
                         .on_hover_text("Add a point at the playhead, or in the longest stretch");
                     if add.clicked() {
                         let local = self.local;
@@ -635,7 +694,7 @@ impl Pane<'_> {
                     }
                 });
                 ui.add_enabled_ui(point > 0 && point + 1 < count, |ui| {
-                    let remove = widgets::small_icon_button(ui, p, Icon::Trash, "Remove point")
+                    let remove = kit::small_icon_button(ui, p, Icon::Trash, "Remove point")
                         .on_disabled_hover_text("The ends of the clip stay");
                     if remove.clicked() {
                         self.change_curve("Remove speed point", |curve| curve.remove(point));
@@ -644,8 +703,9 @@ impl Pane<'_> {
             });
             row(ui, p, "Speed here", |ui| {
                 let mut shown = curve.speed(point) as f32;
-                let field = widgets::named_number(
+                let field = number(
                     ui,
+                    p,
                     &mut shown,
                     0.0..=speed::FASTEST as f32,
                     0.01,
@@ -665,36 +725,38 @@ impl Pane<'_> {
             let easing = piece.and_then(|index| curve.pieces[index].easing());
             let held = piece.is_some_and(|index| curve.pieces[index].frozen());
             let ramps = piece.is_some_and(|index| !held && !curve.pieces[index].flat());
-            widgets::fitted_row(ui, p, "Easing", |ui| {
+            tall_row(ui, p, "Easing", |ui| {
                 let name = match easing {
                     Some(easing) => easing.label(),
                     None if held => "Held frame",
                     None => "Custom",
                 };
                 let mut picked = None;
+                let width = ui.available_width().min(132.0);
                 ui.add_enabled_ui(piece.is_some() && !held, |ui| {
-                    egui::ComboBox::from_id_salt("speed-easing")
-                        .icon(widgets::combo_icon)
-                        .selected_text(name)
-                        .width(104.0)
-                        .show_ui(ui, |ui| {
+                    let (_, chosen) = select_menu(
+                        ui,
+                        p,
+                        ("speed-easing", "Segment easing"),
+                        name,
+                        width,
+                        |ui| {
+                            let mut chosen = None;
                             for option in Easing::ALL {
                                 // A stretch at one speed has nothing to ease.
                                 let offered = option == Easing::Constant || ramps;
-                                let chosen = easing == Some(option);
-                                let item = ui.add_enabled(
-                                    offered,
-                                    egui::Button::selectable(chosen, option.label()),
-                                );
-                                if item.clicked() {
-                                    picked = Some(option);
+                                let on = easing == Some(option);
+                                let row = ui.add_enabled_ui(offered, |ui| {
+                                    kit::menu_row(ui, p, None, option.label(), "", false, Some(on))
+                                });
+                                if row.inner.clicked() {
+                                    chosen = Some(option);
                                 }
                             }
-                        })
-                        .response
-                        .widget_info(|| {
-                            WidgetInfo::labeled(WidgetType::ComboBox, true, "Segment easing")
-                        });
+                            chosen
+                        },
+                    );
+                    picked = chosen.flatten();
                 });
                 if let (Some(option), Some(index)) = (picked, piece)
                     && easing != Some(option)
@@ -733,11 +795,7 @@ impl Pane<'_> {
         let on_audio =
             (self.project.clip(clip.id)).is_some_and(|(track, _)| track.kind == TrackKind::Audio);
         if !on_audio {
-            ui.label(
-                egui::RichText::new(speed::DETACH_TO_KEEP_PITCH)
-                    .font(theme::regular(12.0))
-                    .color(p.muted),
-            );
+            super::note(ui, p, speed::DETACH_TO_KEEP_PITCH);
             return;
         }
         let semitones = sound::pitch(clip);
@@ -792,13 +850,6 @@ impl Pane<'_> {
 
     /// One quiet line under a section's rows.
     fn note(&mut self, ui: &mut Ui, text: &str) {
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(text)
-                    .font(theme::regular(11.5))
-                    .color(self.p.muted),
-            )
-            .wrap(),
-        );
+        super::note(ui, self.p, text);
     }
 }

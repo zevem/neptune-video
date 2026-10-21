@@ -15,17 +15,20 @@
 //! one `SetEffects`, as in the Look section. The rows are made from
 //! `look::spec`.
 use super::{
-    card,
+    button, button_row, card, card_head, choice,
     clip::Pane,
-    curve,
-    look::{KEY_COLOUR, is_default, set_param},
+    curve, fitted_row, head_button, keyed_card, keyed_row,
+    look::{KEY_COLOUR, is_default, percent, set_param, slider_width},
+    note, section, select_menu,
+    speed::well_row,
+    tall_row, well,
 };
 use crate::{
     icons::Icon,
     rules, theme,
     theme::Palette,
     ui::{
-        Action, ClipDraft, ColourPick, icon_of_media,
+        Action, ClipDraft, ColourPick, icon_of_media, kit,
         widgets::{self, Kind},
         with_key,
     },
@@ -77,9 +80,9 @@ impl Channel {
     fn ink(self, p: &Palette) -> Color32 {
         match self {
             Self::Master => p.fg,
-            Self::Red => p.red,
-            Self::Green => p.green,
-            Self::Blue => Color32::from_rgb(86, 148, 255),
+            Self::Red => p.channel(theme::Channel::Red),
+            Self::Green => p.channel(theme::Channel::Green),
+            Self::Blue => p.channel(theme::Channel::Blue),
         }
     }
 }
@@ -212,33 +215,23 @@ fn band_chip(ui: &mut Ui, p: &Palette, hue: f32, on: bool, dim: bool, label: &st
         if on {
             painter.circle_stroke(rect.center(), 9.5, Stroke::new(1.5, p.fg));
         } else if response.hovered() && enabled {
-            painter.circle_stroke(rect.center(), 9.5, Stroke::new(1.0, p.muted));
+            painter.circle_stroke(rect.center(), 9.5, Stroke::new(1.0, p.secondary));
         }
         if response.has_focus() {
-            painter.circle_stroke(rect.center(), 11.5, Stroke::new(1.5, p.accent));
+            // The focus ring, round as the chip is.
+            painter.circle_stroke(
+                rect.center(),
+                12.0,
+                Stroke::new(2.0, theme::tint(p.accent, 0.55)),
+            );
         }
     }
-    response.on_hover_text(label)
-}
-
-fn quiet(ui: &mut Ui, p: &Palette, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .font(theme::regular(11.5))
-            .color(p.muted),
-    );
-}
-
-/// A percentage beside the slider that sets it.
-fn percent(ui: &mut Ui, p: &Palette, value: f32) {
-    ui.add_sized(
-        [38.0, 18.0],
-        egui::Label::new(
-            egui::RichText::new(format!("{:.0} %", value * 100.0))
-                .font(theme::regular(12.0))
-                .color(p.secondary),
-        ),
-    );
+    let response = response.on_hover_text(label);
+    if enabled {
+        response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        response
+    }
 }
 
 impl Pane<'_> {
@@ -363,8 +356,9 @@ impl Pane<'_> {
         self.actions.extend(others);
     }
 
-    /// A group's heading: its name and, for an effect the stack has, whether
-    /// it is shown and the way to take it out, named `remove`.
+    /// A group's heading, the first row of its card: its name and, for an
+    /// effect the stack has, whether it is shown and the way to take it out,
+    /// named `remove`.
     fn heading(
         &mut self,
         ui: &mut Ui,
@@ -375,40 +369,35 @@ impl Pane<'_> {
     ) -> Option<Head> {
         let p = self.p;
         let mut head = None;
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.set_min_height(widgets::SMALL_BUTTON);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                if let Some(effect) = effect {
-                    if let Some((icon, label)) = remove
-                        && widgets::small_icon_button(ui, p, icon, label).clicked()
-                    {
-                        head = Some(Head::Remove);
-                    }
-                    let shown = widgets::small_icon_toggle(
-                        ui,
-                        p,
-                        Icon::Eye,
-                        effect.enabled,
-                        &format!("Show {name}"),
-                    );
-                    if shown.clicked() {
-                        head = Some(Head::Toggle);
-                    }
+        let dim = effect.is_some_and(|effect| !effect.enabled);
+        let count = effect.map_or(0, |_| 1 + usize::from(remove.is_some()));
+        card_head(
+            ui,
+            p,
+            title,
+            None,
+            dim,
+            (count, |ui: &mut Ui| {
+                let Some(effect) = effect else {
+                    return;
+                };
+                let shown = kit::small_icon_toggle(
+                    ui,
+                    p,
+                    Icon::Eye,
+                    effect.enabled,
+                    &format!("Show {name}"),
+                );
+                if shown.clicked() {
+                    head = Some(Head::Toggle);
                 }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(title)
-                                .font(theme::medium(11.5))
-                                .color(p.muted),
-                        )
-                        .truncate(),
-                    );
-                });
-            });
-        });
+                if let Some((icon, label)) = remove
+                    && head_button(ui, p, icon, true, label)
+                {
+                    head = Some(Head::Remove);
+                }
+            }),
+        );
         head
     }
 
@@ -457,16 +446,18 @@ impl Pane<'_> {
         let (id, head, edited) = {
             let effect = self.managed(stack, EffectKind::Grade);
             let made = matches!(effect, Cow::Borrowed(_));
-            let head = self.heading(
-                ui,
-                "Grade",
-                "grade",
-                made.then_some(&*effect),
-                Some((Icon::Rotate, "Reset grade")),
-            );
-            let edited = ui
+            let (head, edited) = ui
                 .push_id(effect.id, |ui| {
-                    card(ui, p, |ui| self.table_rows(ui, &effect, &[]))
+                    keyed_card(ui, p, |ui| {
+                        let head = self.heading(
+                            ui,
+                            "Grade",
+                            "grade",
+                            made.then_some(&*effect),
+                            Some((Icon::Rotate, "Reset grade")),
+                        );
+                        (head, self.table_rows(ui, &effect, &[]))
+                    })
                 })
                 .inner;
             if !made {
@@ -494,15 +485,16 @@ impl Pane<'_> {
         let mut add: Option<f32> = None;
         let mut edited: Option<Effect> = None;
 
-        let head = self.heading(
-            ui,
-            "Hue bands",
-            "hue band",
-            open,
-            Some((Icon::Trash, "Remove hue band")),
-        );
-        card(ui, p, |ui| {
-            ui.horizontal_wrapped(|ui| {
+        let mut head = None;
+        keyed_card(ui, p, |ui| {
+            head = self.heading(
+                ui,
+                "Hue bands",
+                "hue band",
+                open,
+                Some((Icon::Trash, "Remove hue band")),
+            );
+            button_row(ui, p, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
                 for (index, band) in bands().enumerate() {
                     let hue = band.param(ParamKey::Hue).unwrap_or(0.0);
@@ -513,7 +505,7 @@ impl Pane<'_> {
                     }
                 }
                 ui.add_enabled_ui(!full, |ui| {
-                    let plus = widgets::small_icon_button(ui, p, Icon::Plus, "Add hue band")
+                    let plus = kit::small_icon_button(ui, p, Icon::Plus, "Add hue band")
                         .on_disabled_hover_text("A clip holds sixteen effects at most");
                     egui::Popup::menu(&plus).show(|ui| {
                         widgets::menu_style(ui, 150.0);
@@ -527,12 +519,13 @@ impl Pane<'_> {
             });
             match open {
                 Some(band) => {
-                    widgets::hairline(ui, p);
                     edited = ui
                         .push_id(band.id, |ui| self.table_rows(ui, band, &[]))
                         .inner;
                 }
-                None => quiet(ui, p, "Add a band to shift one range of hues."),
+                None => {
+                    note(ui, p, "Add a band to shift one range of hues.");
+                }
             }
         });
 
@@ -561,38 +554,38 @@ impl Pane<'_> {
         let (id, head, points) = {
             let effect = self.managed(stack, channel.kind());
             let made = matches!(effect, Cow::Borrowed(_));
-            let head = self.heading(
-                ui,
-                "Curves",
-                &format!("{} curve", name.to_lowercase()),
-                made.then_some(&*effect),
-                Some((Icon::Rotate, "Reset curve")),
-            );
             let mut points: Option<Vec<[f32; 2]>> = None;
+            let mut head = None;
             card(ui, p, |ui| {
-                let width = ui.available_width();
-                widgets::segmented(ui, p, &mut chosen, &Channel::ALL, width);
-                ui.add_space(4.0);
-                let edit = curve::editor(
+                head = self.heading(
                     ui,
-                    p,
-                    &effect.points,
-                    channel.ink(p),
-                    &mut self.state.point,
-                    name,
+                    "Curves",
+                    &format!("{} curve", name.to_lowercase()),
+                    made.then_some(&*effect),
+                    Some((Icon::Rotate, "Reset curve")),
                 );
+                choice(ui, p, &mut chosen, &Channel::ALL);
+                let edit = well_row(ui, p, |ui| {
+                    curve::editor(
+                        ui,
+                        p,
+                        &effect.points,
+                        channel.ink(p),
+                        &mut self.state.point,
+                        name,
+                    )
+                });
                 if edit.focused {
                     self.state.keys = Some(ui.ctx().cumulative_frame_nr());
                 }
                 points = edit.points;
                 let count = effect.points.len();
                 let label = format!("{count} of {} points", look::MAX_CURVE_POINTS);
-                widgets::fitted_row(ui, p, &label, |ui| {
+                fitted_row(ui, p, &label, |ui| {
                     ui.add_enabled_ui(count < look::MAX_CURVE_POINTS, |ui| {
-                        let add =
-                            widgets::button(ui, p, Some(Icon::Plus), "Add point", Kind::Plain)
-                                .on_hover_text("Add a point in the curve's widest stretch")
-                                .on_disabled_hover_text("A curve holds sixteen points at most");
+                        let add = button(ui, p, Some(Icon::Plus), "Add point", Kind::Plain)
+                            .on_hover_text("Add a point in the curve's widest stretch")
+                            .on_disabled_hover_text("A curve holds sixteen points at most");
                         if add.clicked()
                             && let Some((with, index)) = curve::added_midway(&effect.points)
                         {
@@ -628,39 +621,52 @@ impl Pane<'_> {
         let mut table = stored;
         let mut mix = effect.map(|effect| effect.mix);
         let tables = || (project.assets.values()).filter(|asset| asset.kind == MediaKind::Lut);
-        let head = self.heading(ui, "LUT", "LUT", effect, None);
+        let mut head = None;
         card(ui, p, |ui| {
-            widgets::fitted_row(ui, p, "Table", |ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                let import = widgets::small_icon_button(ui, p, Icon::Import, "Import a LUT file");
-                if import.clicked() {
-                    self.actions.push(Action::ImportFiles);
-                }
+            head = self.heading(ui, "LUT", "LUT", effect, None);
+            tall_row(ui, p, "Table", |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
                 let current = match table {
                     None => "None",
                     Some(id) => (project.assets.get(&id)).map_or("Missing", |a| a.name.as_str()),
                 };
-                egui::ComboBox::from_id_salt("color-lut")
-                    .icon(widgets::combo_icon)
-                    .selected_text(current)
-                    .width(118.0)
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut table, None, "None");
-                        for asset in tables() {
-                            ui.selectable_value(&mut table, Some(asset.id), &asset.name);
+                let width = ui.available_width().min(132.0);
+                let (_, picked) =
+                    select_menu(ui, p, ("color-lut", "LUT table"), current, width, |ui| {
+                        let mut picked = None;
+                        if kit::menu_row(ui, p, None, "None", "", false, Some(table.is_none()))
+                            .clicked()
+                        {
+                            picked = Some(None);
                         }
-                    })
-                    .response
-                    .widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, true, "LUT table"));
+                        for asset in tables() {
+                            let on = table == Some(asset.id);
+                            if kit::menu_row(ui, p, None, &asset.name, "", false, Some(on))
+                                .clicked()
+                            {
+                                picked = Some(Some(asset.id));
+                            }
+                        }
+                        picked
+                    });
+                if let Some(picked) = picked.flatten() {
+                    table = picked;
+                }
+            });
+            button_row(ui, p, |ui| {
+                let import = button(ui, p, Some(Icon::Import), "Import a LUT file", Kind::Plain);
+                if import.clicked() {
+                    self.actions.push(Action::ImportFiles);
+                }
             });
             if let Some(mix) = &mut mix {
-                widgets::fitted_row(ui, p, "Intensity", |ui| {
+                fitted_row(ui, p, "Intensity", |ui| {
                     percent(ui, p, *mix);
-                    widgets::slider(ui, p, mix, 1.0, 112.0, "LUT intensity");
+                    let width = slider_width(ui, 112.0);
+                    widgets::slider(ui, p, mix, 1.0, width, "LUT intensity");
                 });
             } else if tables().next().is_none() {
-                quiet(ui, p, "Import a .cube file to grade with it.");
+                note(ui, p, "Import a .cube file to grade with it.");
             }
         });
 
@@ -719,61 +725,74 @@ impl Pane<'_> {
         let mut plate = stored_plate;
         let mut edited: Option<Effect> = None;
 
-        let head = self.heading(ui, "Remove background", "background removal", keyed, None);
-        let width = ui.available_width();
-        widgets::segmented(
-            ui,
-            p,
-            &mut chosen,
-            &[
-                (Removal::Off, "Off"),
-                (Removal::Key, "Chroma key"),
-                (Removal::Plate, "Clean plate"),
-            ],
-            width,
-        );
-        match (method, keyed) {
-            (Removal::Key, Some(effect)) => {
-                ui.push_id(effect.id, |ui| {
-                    card(ui, p, |ui| {
+        let mut head = None;
+        keyed_card(ui, p, |ui| {
+            head = self.heading(ui, "Remove background", "background removal", keyed, None);
+            choice(
+                ui,
+                p,
+                &mut chosen,
+                &[
+                    (Removal::Off, "Off"),
+                    (Removal::Key, "Chroma key"),
+                    (Removal::Plate, "Clean plate"),
+                ],
+            );
+            match (method, keyed) {
+                (Removal::Key, Some(effect)) => {
+                    ui.push_id(effect.id, |ui| {
                         edited = self.key_colour_row(ui, effect);
                         let rows =
                             self.table_rows(ui, edited.as_ref().unwrap_or(effect), &KEY_COLOUR);
                         edited = rows.or(edited.take());
                     });
-                });
-            }
-            (Removal::Plate, _) => {
-                card(ui, p, |ui| {
-                    widgets::fitted_row(ui, p, "Plate", |ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        let import =
-                            widgets::small_icon_button(ui, p, Icon::Import, "Import a clean plate");
-                        if import.clicked() {
-                            self.actions.push(Action::ImportFiles);
-                        }
+                }
+                (Removal::Plate, _) => {
+                    tall_row(ui, p, "Plate", |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
                         let current = match plate {
                             None => "Choose",
                             Some(id) => {
                                 (project.assets.get(&id)).map_or("Missing", |a| a.name.as_str())
                             }
                         };
-                        egui::ComboBox::from_id_salt("color-plate")
-                            .icon(widgets::combo_icon)
-                            .selected_text(current)
-                            .width(118.0)
-                            .truncate()
-                            .show_ui(ui, |ui| {
+                        let width = ui.available_width().min(132.0);
+                        let (_, picked) = select_menu(
+                            ui,
+                            p,
+                            ("color-plate", "Clean plate"),
+                            current,
+                            width,
+                            |ui| {
+                                let mut picked = None;
                                 let stills = (project.assets.values())
                                     .filter(|asset| asset.kind == MediaKind::Image);
                                 for asset in stills {
-                                    ui.selectable_value(&mut plate, Some(asset.id), &asset.name);
+                                    let on = plate == Some(asset.id);
+                                    if kit::menu_row(ui, p, None, &asset.name, "", false, Some(on))
+                                        .clicked()
+                                    {
+                                        picked = Some(asset.id);
+                                    }
                                 }
-                            })
-                            .response
-                            .widget_info(|| {
-                                WidgetInfo::labeled(WidgetType::ComboBox, true, "Clean plate")
-                            });
+                                picked
+                            },
+                        );
+                        if let Some(picked) = picked.flatten() {
+                            plate = Some(picked);
+                        }
+                    });
+                    button_row(ui, p, |ui| {
+                        let import = button(
+                            ui,
+                            p,
+                            Some(Icon::Import),
+                            "Import a clean plate",
+                            Kind::Plain,
+                        );
+                        if import.clicked() {
+                            self.actions.push(Action::ImportFiles);
+                        }
                     });
                     match keyed {
                         Some(effect) => {
@@ -781,17 +800,19 @@ impl Pane<'_> {
                                 .push_id(effect.id, |ui| self.table_rows(ui, effect, &[]))
                                 .inner;
                         }
-                        None => quiet(ui, p, "Choose a still of the scene without its subject."),
+                        None => {
+                            note(ui, p, "Choose a still of the scene without its subject.");
+                        }
                     }
-                });
+                }
+                _ => {}
             }
-            _ => {}
-        }
-        quiet(
-            ui,
-            p,
-            "No automatic subject cut-out: use a key colour or a clean plate.",
-        );
+            note(
+                ui,
+                p,
+                "No automatic subject cut-out: use a key colour or a clean plate.",
+            );
+        });
 
         // A matte is made, or given another plate, when one is chosen.
         let matte = (plate != stored_plate).then(|| Effect {
@@ -838,21 +859,15 @@ impl Pane<'_> {
         };
         let armed = self.state.pick == Some(pick);
         let (mut picked, mut toggled) = (false, false);
-        let row = widgets::keyed_row_with(
+        let row = keyed_row(
             ui,
             p,
             "Key colour",
             "key colour",
             state,
+            |ui| picked = well::linear_well(ui, p, "Key colour", &mut rgb).changed(),
             |ui| {
-                let swatch = ui.color_edit_button_rgb(&mut rgb);
-                swatch.widget_info(|| {
-                    WidgetInfo::labeled(WidgetType::ColorButton, true, "Key colour")
-                });
-                picked = swatch.changed();
-            },
-            |ui| {
-                toggled = widgets::small_icon_toggle(
+                toggled = kit::small_icon_toggle(
                     ui,
                     p,
                     Icon::Pipette,
@@ -886,10 +901,10 @@ impl Pane<'_> {
         let p = self.p;
         let project = self.project;
         let clip = self.clip;
-        widgets::section(ui, p, "Background");
+        section(ui, p, "Background");
         card(ui, p, |ui| {
-            widgets::fitted_row(ui, p, "Behind this clip", |ui| {
-                let add = widgets::button(ui, p, Some(Icon::Plus), "Add", Kind::Plain)
+            fitted_row(ui, p, "Behind this clip", |ui| {
+                let add = button(ui, p, Some(Icon::Plus), "Add", Kind::Plain)
                     .on_hover_text("Put a picture or a video on a track under this clip");
                 egui::Popup::menu(&add).show(|ui| {
                     widgets::menu_style(ui, 200.0);
@@ -919,26 +934,22 @@ impl Pane<'_> {
                         });
                 });
             });
-            widgets::fitted_row(ui, p, "Canvas colour", |ui| {
+            fitted_row(ui, p, "Canvas colour", |ui| {
                 let settings = (self.canvas.canvas.as_ref()).unwrap_or(&project.settings);
-                let [r, g, b, _] = settings.background;
-                let mut rgb = [r, g, b];
-                let swatch = ui.color_edit_button_srgb(&mut rgb);
-                swatch.widget_info(|| {
-                    WidgetInfo::labeled(WidgetType::ColorButton, true, "Canvas colour")
-                });
-                if swatch.changed() {
+                let mut colour = settings.background;
+                colour[3] = 255;
+                if well::well(ui, p, "Canvas colour", &mut colour, false, &[]).changed() {
                     let mut settings = settings.clone();
-                    settings.background = [rgb[0], rgb[1], rgb[2], 255];
+                    settings.background = [colour[0], colour[1], colour[2], 255];
                     self.canvas.canvas = Some(settings);
                 }
             });
+            note(
+                ui,
+                p,
+                "The canvas colour shows where no track has a picture under the clip.",
+            );
         });
-        quiet(
-            ui,
-            p,
-            "The canvas colour shows where no track has a picture under the clip.",
-        );
     }
 }
 

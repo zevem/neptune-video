@@ -9,7 +9,7 @@
 //! passes its neighbours.
 use crate::{
     compose::pass,
-    theme::{self, Palette, metrics},
+    theme::{self, Palette},
 };
 use editor_core::look;
 use eframe::egui::{
@@ -231,14 +231,20 @@ pub(super) fn editor(
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter_at(rect);
-        let radius = CornerRadius::same(metrics::CONTROL_RADIUS);
-        painter.rect_filled(rect, radius, p.sunken);
-        let faint = p.hairline();
-        painter.rect_stroke(rect, radius, faint, StrokeKind::Inside);
+        // A well in the card: the timeline's ground, edged by a separator.
+        let radius = CornerRadius::same(6);
+        painter.rect_filled(rect, radius, p.bg);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, p.separator),
+            StrokeKind::Inside,
+        );
+        let grid = Stroke::new(1.0, theme::tint(p.separator, 0.6));
         for quarter in 1..4 {
             let at = quarter as f32 * 0.25;
-            painter.line_segment([to_screen([at, 0.0]), to_screen([at, 1.0])], faint);
-            painter.line_segment([to_screen([0.0, at]), to_screen([1.0, at])], faint);
+            painter.line_segment([to_screen([at, 0.0]), to_screen([at, 1.0])], grid);
+            painter.line_segment([to_screen([0.0, at]), to_screen([1.0, at])], grid);
         }
         // The curve that changes nothing, to read the other against.
         painter.line_segment(
@@ -257,24 +263,28 @@ pub(super) fn editor(
             .collect();
         painter.add(Shape::line(line, Stroke::new(1.5, ink)));
         // Drawn where they are held now; the targets follow a frame later.
+        let mut capsule = None;
         for (index, point) in shown.iter().enumerate() {
             let centre = to_screen(*point);
             let response = responses.get(index).filter(|_| shown.len() == count);
             let held = response.is_some_and(|r| r.dragged() || r.is_pointer_button_down_on());
+            let hovered = response.is_some_and(egui::Response::hovered);
+            let size = if held || hovered { 5.0 } else { 4.0 };
             let chosen = index == *selected;
-            painter.circle_filled(
-                centre,
-                if held { RADIUS + 1.0 } else { RADIUS },
-                if chosen { ink } else { p.sunken },
-            );
-            painter.circle_stroke(
-                centre,
-                if held { RADIUS + 1.0 } else { RADIUS },
-                Stroke::new(1.5, ink),
-            );
+            let fill = if chosen && enabled { p.accent } else { p.bg };
+            painter.circle_filled(centre, size, fill);
+            let rim = if enabled { p.fg } else { p.muted };
+            painter.circle_stroke(centre, size, Stroke::new(1.5, rim));
             if response.is_some_and(egui::Response::has_focus) {
                 painter.circle_stroke(centre, RADIUS + 3.5, Stroke::new(1.5, p.accent));
             }
+            if held {
+                let text = format!("{:.0} → {:.0}", point[0] * 100.0, point[1] * 100.0);
+                capsule = Some((centre, text));
+            }
+        }
+        if let Some((centre, text)) = capsule {
+            super::speed::value_capsule(&painter, p, rect, centre, &text);
         }
     }
     for response in responses {

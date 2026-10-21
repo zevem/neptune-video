@@ -1937,8 +1937,7 @@ fn every_control_is_named_and_fits_a_narrow_panel() {
                 }
                 controls += 1;
                 assert!(
-                    seen.rect.left() >= panel.left() + 11.0
-                        && seen.rect.right() <= panel.right() - 11.0,
+                    fits_cards(seen, panel),
                     "{:?} at {width}: \"{}\" is at {:?}",
                     section,
                     seen.name,
@@ -1949,6 +1948,20 @@ fn every_control_is_named_and_fits_a_narrow_panel() {
             assert!(controls > 3, "{section:?} at {width} has controls");
         }
     }
+}
+
+/// Whether a control keeps inside the panel's cards (spec §5.4, §4.3.3): the
+/// section switch spans the panel inside its 2-point thumb inset, a curve
+/// frame's well is 4 in from its card (§5.4.1) with the targets of its edge
+/// points over the well's rim, and every other control ends no further out
+/// than the key column, 8 in from a card's edge.
+fn fits_cards(seen: &Seen, panel: Rect) -> bool {
+    let switch = seen.role == Role::RadioButton && seen.rect.bottom() <= panel.top() + 80.0;
+    let well = seen.name.ends_with(" curve")
+        || seen.name.contains(" curve point ")
+        || seen.name.starts_with("Speed point ");
+    let inset = if switch || well { 1.0 } else { 8.0 };
+    seen.rect.left() >= panel.left() + inset && seen.rect.right() <= panel.right() - inset
 }
 
 fn key_of(at: f64, value: f32) -> Keyframe {
@@ -2183,4 +2196,79 @@ fn the_diamonds_menu_closes_on_a_choice_and_hands_the_keyboard_back() {
         "the menu says why"
     );
     assert!(bench.find("Ease in").expect("listed").disabled);
+}
+
+// ---- The panel's grammar ----------------------------------------------------
+
+#[test]
+fn the_header_is_one_line_under_300_points_of_panel() {
+    // Spec §5.4: the header is 44 tall, and 28 where the panel is shorter
+    // than 300; the section switch is 4 under it.
+    for (height, top) in [(900.0, 48.0), (280.0, 32.0)] {
+        let (mut bench, _) = Bench::new();
+        bench.size = vec2(300.0, height);
+        bench.frame(Vec::new());
+        bench.frame(Vec::new());
+        let switch = (bench.seen.iter())
+            .find(|seen| seen.name == "Video" && seen.role == Role::RadioButton)
+            .expect("the section switch");
+        assert_eq!(switch.rect.top(), top, "at {height} tall");
+        assert_eq!(switch.rect.height(), 28.0);
+    }
+}
+
+#[test]
+fn every_keyed_row_keeps_its_key_column_in_one_place() {
+    // Spec §4.3.3, I5: the key column ‹ ◆ › stands at one place down a card,
+    // whatever the fields of a row are.
+    for width in [300.0, 240.0] {
+        let (mut bench, _) = Bench::new();
+        bench.size = vec2(width, 2400.0);
+        bench.frame(Vec::new());
+        bench.frame(Vec::new());
+        let diamonds: Vec<Rect> = (bench.seen.iter())
+            .filter(|seen| seen.name.starts_with("Animate ") && !Bench::is_text(seen))
+            .map(|seen| seen.rect)
+            .collect();
+        assert!(diamonds.len() >= 8, "{} keyed rows", diamonds.len());
+        for rect in &diamonds {
+            assert!(
+                (rect.center().x - diamonds[0].center().x).abs() < 0.5,
+                "at {width}: {rect:?} is out of the column of {:?}",
+                diamonds[0]
+            );
+            // The column ends 8 in from the card's edge.
+            assert!(rect.right() <= width - 8.0, "at {width}: {rect:?}");
+        }
+    }
+}
+
+#[test]
+fn a_card_heading_s_actions_follow_its_name_by_tab() {
+    // Spec §5.4: an effect card's heading keeps its actions in view, and the
+    // keyboard reaches them from its name, left to right.
+    let (mut bench, _, _) = with_effect(EffectKind::Glow);
+    bench.frame(Vec::new());
+    // A lone effect has nowhere to move: its moves are passed over.
+    let order = ["Glow", "Show Glow", "Remove Glow"];
+    bench.focus(order[0]);
+    for name in &order[1..] {
+        bench.key(Key::Tab, Modifiers::NONE);
+        bench.frame(Vec::new());
+        let focused = bench.ctx.memory(|memory| memory.focused());
+        let node = bench.find(name).expect("named").node;
+        assert_eq!(
+            focused.map(|id| id.value()),
+            Some(node.0),
+            "Tab reaches {name}"
+        );
+    }
+    // They are reached and used from the keyboard, as by the pointer.
+    bench.enter(Modifiers::NONE);
+    assert!(
+        bench
+            .clip(bench.selection.single().unwrap())
+            .effects
+            .is_empty()
+    );
 }
