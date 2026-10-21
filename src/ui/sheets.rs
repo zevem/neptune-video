@@ -239,6 +239,11 @@ pub(super) fn sheet_height(requested: f32, window: f32) -> f32 {
         .max(requested.min(240.0).min(window - 24.0))
 }
 
+/// Where `scaffold` keeps whether a field of the sheet `id` had the keyboard.
+fn typing_key(id: &str) -> Id {
+    Id::new(id).with("typing")
+}
+
 /// Terminal's sheet under its kept id: elevated, rounded, outlined and
 /// shadowed, `width` wide or the window less 12 on each side, with the
 /// window's rounded scrim under it rather than egui's square one. Assistive tools
@@ -256,7 +261,7 @@ fn scaffold<R>(
     let name = id;
     let id = Id::new(id);
     let opening = kit::opening(ctx, id);
-    let typing_id = id.with("typing");
+    let typing_id = typing_key(name);
     // Escape takes the keyboard out of a field before egui shows the frame,
     // so whether one had it is what the last frame said.
     let was_typing = ctx.data(|data| data.get_temp::<bool>(typing_id)) == Some(true);
@@ -1493,7 +1498,10 @@ pub fn settings(
     let screen = ctx.content_rect();
     let query_id = Id::new("preferences-query");
     // A search is left behind when Preferences closes.
+    let focus_id = Id::new("preferences-focus-search");
     let mut query = if kit::opening(ctx, Id::new("settings-sheet")) {
+        // Preferences opens ready to search, as Terminal's does.
+        ctx.data_mut(|data| data.insert_temp(focus_id, true));
         String::new()
     } else {
         ctx.data(|data| data.get_temp::<String>(query_id))
@@ -1588,6 +1596,14 @@ pub fn settings(
                     )
                 },
             );
+            // A sheet measures itself in a hidden first pass, where focus
+            // cannot be held.
+            if ui.is_enabled()
+                && !ui.is_sizing_pass()
+                && ui.data_mut(|data| data.remove_temp::<bool>(focus_id)) == Some(true)
+            {
+                searched.request_focus();
+            }
             let mut found = search(&query);
             // Enter opens the pane of the first setting found.
             if searched.lost_focus()
@@ -1678,6 +1694,10 @@ pub fn settings(
     ctx.data_mut(|data| {
         data.insert_temp(query_id, query);
         data.insert_temp(elsewhere_id, elsewhere);
+        // The search leaves with the sheet: with nothing in it, one Escape
+        // closes Preferences, as in Terminal. Only another field keeps that
+        // Escape for itself.
+        data.insert_temp(typing_key("settings-sheet"), elsewhere);
     });
     close || heard.dismissed
 }
@@ -2724,7 +2744,12 @@ pub fn notices(
                 p.fg,
                 widest - 14.0 - 16.0 - 10.0 - dismiss,
             );
-            job.wrap.max_rows = 3;
+            // One that goes by itself says it in up to three lines. One that
+            // stays is there to be read, so it wraps whole, as Terminal's
+            // notice does: its words are said nowhere else.
+            if !notice.kind.stays() {
+                job.wrap.max_rows = 3;
+            }
             let galley = painter.layout_job(job);
             let least = if notice.kind.stays() { 28.0 } else { 20.0 };
             let size = vec2(
@@ -2807,12 +2832,13 @@ pub fn notices(
                 let painter = ui.painter();
                 toast_surface(painter, rect, p);
                 let text_top = rect.center().y - galley.size().y * 0.5;
-                let first_row = galley.rows.first().map_or(16.0, |row| row.height());
                 let (mark, ink) = notice.kind.mark(p);
+                // The mark and the Dismiss share the toast's centre line, as
+                // in Terminal's notice, however many lines the words take.
                 icons::paint(
                     painter,
                     Rect::from_center_size(
-                        pos2(rect.left() + 14.0 + 8.0, text_top + first_row * 0.5),
+                        pos2(rect.left() + 14.0 + 8.0, rect.center().y),
                         Vec2::splat(16.0),
                     ),
                     mark,
@@ -3393,6 +3419,8 @@ mod tests {
             ],
         );
         assert_eq!(said, [None, None, None, None, Some(Answer::Save)]);
+        let said = answers(unsaved, vec![vec![], vec![], struck(Key::Escape)]);
+        assert_eq!(said, [None, None, Some(Answer::Cancel)]);
 
         // Where every answer but Cancel gives something up, Enter does
         // nothing, and Escape still says what it always did.
@@ -3414,6 +3442,20 @@ mod tests {
             vec![vec![], vec![], struck(Key::Enter), struck(Key::Escape)],
         );
         assert_eq!(said, [None, None, None, Some(false)]);
+        let replacing = |ctx: &egui::Context, p: &Palette| {
+            replace_export(ctx, p, "Film.mp4", Some("Film.srt"), "Exports")
+        };
+        let said = answers(
+            replacing,
+            vec![
+                vec![],
+                vec![],
+                struck(Key::Enter),
+                vec![],
+                struck(Key::Escape),
+            ],
+        );
+        assert_eq!(said, [None, None, None, None, Some(false)]);
 
         // Recovery's default keeps the work; Escape decides nothing.
         let recovering = |ctx: &egui::Context, p: &Palette| recovery(ctx, p, true);
@@ -3432,6 +3474,8 @@ mod tests {
         let conflicted = |ctx: &egui::Context, p: &Palette| conflict(ctx, p, "Film", &changed);
         let said = answers(conflicted, vec![vec![], vec![], struck(Key::Enter)]);
         assert_eq!(said, [None, None, Some(ConflictAnswer::SaveAs)]);
+        let said = answers(conflicted, vec![vec![], vec![], struck(Key::Escape)]);
+        assert_eq!(said, [None, None, Some(ConflictAnswer::Later)]);
     }
 
     /// Draws `ask` until it has settled and hands back where assistive

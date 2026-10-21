@@ -1100,6 +1100,16 @@ fn the_settings_are_in_sight_without_scrolling() {
             .find(|seen| seen.name.starts_with("Encoder: "))
             .expect("the summary names the encoder")
             .rect;
+        // Narrowed, it is centred over the summary rather than left short
+        // of the column's trailing edge.
+        let first = (bench.seen.iter())
+            .find(|seen| seen.name.starts_with("Size: "))
+            .expect("the summary gives the size")
+            .rect;
+        assert!(
+            (poster.center().x - first.center().x).abs() <= 1.0,
+            "the poster {poster:?} is centred over the summary {first:?} at {size:?}"
+        );
         assert!(
             last.bottom() <= bench.band().1,
             "the summary is in sight at {size:?}"

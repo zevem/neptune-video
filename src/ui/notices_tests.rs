@@ -64,6 +64,9 @@ struct Window {
     time: f64,
     /// The words painted in the last frame, with where.
     texts: Vec<(String, Rect)>,
+    /// What each text painted in the last frame shows, row by row, and
+    /// whether its words were cut short.
+    shown: Vec<(Vec<String>, bool)>,
     /// The names accessibility was told of in the last frame, with where.
     named: Vec<(String, Rect)>,
     actions: Vec<Action>,
@@ -94,6 +97,7 @@ impl Window {
             beneath: None,
             time: 0.0,
             texts: Vec::new(),
+            shown: Vec::new(),
             named: Vec::new(),
             actions: Vec::new(),
             answers: Vec::new(),
@@ -140,8 +144,10 @@ impl Window {
         });
         self.actions.extend(actions);
         self.texts.clear();
+        self.shown.clear();
         for clipped in &output.shapes {
             collect(&clipped.shape, &mut self.texts);
+            shown(&clipped.shape, &mut self.shown);
         }
         if let Some(update) = &output.platform_output.accesskit_update {
             self.named = (update.nodes.iter())
@@ -213,6 +219,22 @@ fn collect(shape: &Shape, into: &mut Vec<(String, Rect)>) {
                 text.galley.text().to_owned(),
                 text.galley.rect.translate(text.pos.to_vec2()),
             ));
+        }
+        _ => {}
+    }
+}
+
+/// What `shape` shows of its words, row by row, and whether they were cut.
+fn shown(shape: &Shape, into: &mut Vec<(Vec<String>, bool)>) {
+    match shape {
+        Shape::Vec(shapes) => {
+            for shape in shapes {
+                shown(shape, into);
+            }
+        }
+        Shape::Text(text) => {
+            let rows = (text.galley.rows.iter()).map(|row| row.text()).collect();
+            into.push((rows, text.galley.elided));
         }
         _ => {}
     }
@@ -589,4 +611,50 @@ fn toasts_keep_clear_of_a_sheet_a_question_was_asked_over() {
         "the toast at {toast:?} is not over the sheet at {export:?}"
     );
     assert!(toast.bottom() <= NARROW.y);
+}
+
+#[test]
+fn a_problem_says_every_word_and_its_mark_and_dismiss_share_a_line() {
+    // §5.8: a problem stays to be read, so it is never cut short; here the
+    // words cut would be where the person's take is kept.
+    let words = "The take could not be placed: the clip would overlap another \
+                 on a locked track, and a locked track is never changed by a take. \
+                 It is kept in \
+                 /home/someone/Videos/Neptune Video/Takes/Interview take 3 \
+                 2026-10-21 14-32-07.mkv";
+    let mut window = Window::sized(vec2(1440.0, 900.0), vec![problem(words)], None);
+    window.frame(0.05, Vec::new());
+    let (_, toast) = window.placed()[0].clone();
+    let (rows, cut) = (window.shown.iter())
+        .find(|(rows, _)| rows.len() > 1 && rows.concat().contains("could not be placed"))
+        .expect("FIXTURE: the words are painted on more than one row")
+        .clone();
+    assert!(!cut, "every word is painted: {rows:?}");
+    assert!(rows.len() > 3, "FIXTURE: longer than three rows: {rows:?}");
+    assert!(
+        rows.last().is_some_and(|row| row.ends_with("14-32-07.mkv")),
+        "{rows:?}"
+    );
+    // The mark and the Dismiss are both on the toast's centre line, as in
+    // Terminal's notice.
+    let dismiss = window.named("Dismiss");
+    assert_eq!(dismiss.len(), 1, "{:?}", window.named);
+    assert!((dismiss[0].center().y - toast.center().y).abs() < 0.5);
+    let mark = (window.texts.iter())
+        .filter(|(_, rect)| toast.contains_rect(*rect) && rect.right() < toast.left() + 40.0)
+        .map(|(_, rect)| *rect)
+        .next()
+        .expect("FIXTURE: the mark is painted at the leading edge");
+    assert!(
+        (mark.center().y - toast.center().y).abs() < 2.0,
+        "mark at {mark:?} on the toast's centre line {toast:?}"
+    );
+
+    // Information goes by itself and keeps to three rows.
+    let window = Window::sized(vec2(1440.0, 900.0), vec![notice(words)], None);
+    let (rows, cut) = (window.shown.iter())
+        .find(|(rows, _)| rows.concat().contains("could not be placed"))
+        .expect("FIXTURE: the words are painted")
+        .clone();
+    assert!(cut && rows.len() == 3, "{rows:?}");
 }

@@ -1621,8 +1621,8 @@ impl Sheet<'_, '_> {
 
     /// The picture as it lands in the output, on the stage: in the output's
     /// shape, with the bars or the crop the fit makes, in a 16:9 well at
-    /// most `width` wide and `most` tall, at the leading edge of the
-    /// `width` it has, where the card under it starts.
+    /// most `width` wide and `most` tall. Narrowed in a short sheet, it is
+    /// centred in the `width` it has, over the middle of the card under it.
     fn poster(&self, ui: &mut Ui, state: &ExportSheetState, width: f32, most: f32) {
         let p = self.p;
         let canvas = self.canvas();
@@ -1632,7 +1632,11 @@ impl Sheet<'_, '_> {
         // fit's and not the well's.
         let height = (width * 9.0 / 16.0).min(most).round();
         let (_, room) = ui.allocate_space(vec2(width, height));
-        let well = Rect::from_min_size(room.min, vec2((height * 16.0 / 9.0).round(), height));
+        let across = (height * 16.0 / 9.0).round().min(room.width());
+        let well = Rect::from_min_size(
+            pos2((room.center().x - across * 0.5).round(), room.top()),
+            vec2(across, height),
+        );
         let response = ui.interact(well, ui.id().with("export-poster"), Sense::hover());
         let name = match (video, self.input.poster) {
             (Some(_), Some(_)) => format!(

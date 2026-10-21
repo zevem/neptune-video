@@ -23,10 +23,22 @@ struct Bench {
     /// The rectangles painted this frame, filled or outlined.
     rects: Vec<egui::epaint::RectShape>,
     actions: Vec<Action>,
+    /// Whether the sheet asked to close this frame.
+    closed: bool,
 }
 
 impl Bench {
     fn new(settings: Settings, cache: Cache) -> Self {
+        let mut bench = Self::opened(settings, cache);
+        // §5.9.2: the Preview settings are a pane of their own, chosen from
+        // the source list.
+        let at = bench.get("Preview").rect.center();
+        bench.click(at);
+        bench
+    }
+
+    /// Preferences just opened, as Ctrl+, opens it, with nothing done in it.
+    fn opened(settings: Settings, cache: Cache) -> Self {
         let ctx = egui::Context::default();
         let palette = Palette::new(Appearance::Dark, Accent::default());
         theme::install_fonts(&ctx);
@@ -41,14 +53,11 @@ impl Bench {
             painted: Vec::new(),
             rects: Vec::new(),
             actions: Vec::new(),
+            closed: false,
         };
         for _ in 0..3 {
             bench.frame(Vec::new());
         }
-        // §5.9.2: the Preview settings are a pane of their own, chosen from
-        // the source list.
-        let at = bench.get("Preview").rect.center();
-        bench.click(at);
         bench
     }
 
@@ -61,7 +70,7 @@ impl Bench {
         };
         let ctx = self.ctx.clone();
         let output = ctx.run_ui(raw, |ui| {
-            settings(
+            self.closed = settings(
                 ui.ctx(),
                 &self.palette,
                 &self.settings,
@@ -535,6 +544,36 @@ fn escape_closes_an_open_list_before_it_leaves_a_search() {
     assert!(bench.says("Results"), "the search is still there");
     bench.escape();
     assert!(!bench.says("Results"), "then the search is left");
+}
+
+#[test]
+fn preferences_opens_ready_to_search_and_one_escape_closes_it() {
+    let mut bench = Bench::opened(Settings::default(), cache(0, 0));
+    let search = controls::viewport_id(&bench.ctx, Id::new("preferences-search"));
+    // §5.9.2, as in Terminal: the search has the keyboard as the sheet
+    // appears, so what is typed straight away searches.
+    assert_eq!(bench.ctx.memory(|memory| memory.focused()), Some(search));
+    bench.frame(vec![Event::Text("proxy".to_owned())]);
+    bench.frame(Vec::new());
+    assert!(bench.says("Results"));
+    assert!(!bench.all("Proxy cache size").is_empty());
+    // The first Escape leaves the search and keeps the sheet.
+    bench.escape();
+    assert!(!bench.says("Results"));
+    assert!(!bench.closed);
+
+    let mut bench = Bench::opened(Settings::default(), cache(0, 0));
+    assert_eq!(bench.ctx.memory(|memory| memory.focused()), Some(search));
+    // With nothing searched, leaving the field is not an Escape of its own:
+    // one Escape closes Preferences.
+    bench.frame(vec![Event::Key {
+        key: Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }]);
+    assert!(bench.closed, "one Escape closes the sheet");
 }
 
 #[test]
