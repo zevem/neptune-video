@@ -2212,7 +2212,7 @@ fn agent(
                     let field = controls::text_field(
                         ui,
                         *p,
-                        Id::new("agent-model"),
+                        Id::new("preferences-model"),
                         &mut model,
                         "Provider's default",
                         "Model",

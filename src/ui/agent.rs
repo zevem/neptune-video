@@ -1500,6 +1500,8 @@ mod tests {
         talking: bool,
         current: bool,
         proposal_waits: bool,
+        /// Whether Preferences is open over the panel.
+        preferences: bool,
         /// The panel's body, in a window `NARROW` large.
         body: Rect,
         seen: Vec<Seen>,
@@ -1535,6 +1537,7 @@ mod tests {
                 talking: false,
                 current: true,
                 proposal_waits: false,
+                preferences: false,
                 body: BODY,
                 seen: Vec::new(),
                 focused: None,
@@ -1577,6 +1580,11 @@ mod tests {
             let ctx = self.ctx.clone();
             let output = ctx.run_ui(raw, |ui| {
                 show(ui, self.body, &mut self.state, &input, &mut actions);
+                if self.preferences {
+                    let settings = crate::settings::Settings::default();
+                    let cache = crate::proxies::Cache::default();
+                    crate::ui::sheets::settings(ui.ctx(), &self.p, &settings, cache, &mut actions);
+                }
             });
             if let Some(update) = &output.platform_output.accesskit_update {
                 let name = |node: &egui::accesskit::Node| {
@@ -2031,6 +2039,21 @@ mod tests {
         assert!(model.right() < send.left(), "{model:?} {send:?}");
         assert!(send.right() <= bench.body.right() - INSET + 0.5);
         assert!(model.width() >= 22.0, "who answers is under 22 points");
+    }
+
+    // The composer's model and Preferences' are two controls: with the
+    // sheet open on its Agent pane over the panel, as "Model…" opens it,
+    // neither takes the other's place.
+    #[test]
+    fn preferences_open_over_the_panel_keeps_its_model_apart() {
+        let mut bench = Bench::new();
+        bench.preferences = true;
+        PreferencesPane::Agent.show(&bench.ctx);
+        bench.settle();
+        let named = format!("Model: {}", bench.ai.describe());
+        let pill = bench.get(&named, Role::ComboBox).id;
+        let field = bench.get("Model", Role::TextInput).id;
+        assert_ne!(pill, field);
     }
 
     // §7.3: Left and Right move the choice of Ask or Command.
