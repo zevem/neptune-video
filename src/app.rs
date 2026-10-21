@@ -32,7 +32,7 @@ use crate::{
         agent::{
             AgentInput, AgentState, Entry, PlanCard, PlanState, Step, StepState, WaitingInput,
         },
-        captions_tab, controls,
+        captions_tab,
         inspector::{InspectorInput, InspectorState, ProjectDraft},
         kit,
         library::{LibraryInput, LibraryState},
@@ -5630,29 +5630,8 @@ impl App {
     // ---- Keyboard ---------------------------------------------------------
 
     fn shortcuts(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let command = |key| KeyboardShortcut::new(Modifiers::COMMAND, key);
-        let shifted = |key| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, key);
-        // More specific chords first: a shifted chord is not also its plain one.
-        let chords = [
-            (shifted(Key::Z), 0),
-            (command(Key::Z), 1),
-            (command(Key::Y), 0),
-            (shifted(Key::S), 2),
-            (command(Key::S), 3),
-            (command(Key::O), 4),
-            (command(Key::N), 5),
-            (shifted(Key::I), 6),
-            (command(Key::I), 7),
-            (command(Key::D), 8),
-            (command(Key::A), 9),
-            (shifted(Key::G), 10),
-            (command(Key::G), 11),
-            (command(Key::Comma), 12),
-            (shifted(Key::K), 17),
-            (command(Key::K), 13),
-            (command(Key::L), 14),
-            (command(Key::T), 18),
-        ];
+        // Whether a choice's cell has the keyboard, followed in every frame.
+        let choosing = ui::ChoiceArrows::begin(ctx);
         // Export and the render queue, which open over nothing else.
         if let Some(action) = ctx.input_mut(|i| export_chords(i, &self.overlay)) {
             actions.push(action);
@@ -5662,14 +5641,7 @@ impl App {
         if let Some(action) = ctx.input_mut(|i| panel_chords(i, typing)) {
             actions.push(action);
         }
-        for (chord, index) in chords {
-            // While a field has the keyboard, undo and select-all are its own.
-            if typing && matches!(index, 0 | 1 | 9 | 18) {
-                continue;
-            }
-            if !ctx.input_mut(|i| i.consume_shortcut(&chord)) {
-                continue;
-            }
+        for index in ctx.input_mut(|i| chords_struck(i, typing)) {
             let ids = self.selection.clips.clone();
             actions.push(match index {
                 0 => Action::Redo,
@@ -5758,8 +5730,8 @@ impl App {
         // The arrows and Delete are a curve point's while one has the
         // keyboard: it moves and is removed with them, and nothing else is.
         // So are Left and Right while a choice of cells has the keyboard.
-        let owned = self.inspector.owns_keys(ctx) || keyed || ui::ChoiceArrows::begin(ctx);
-        let free = move |key| key_is_free(owned, key);
+        let owned = self.inspector.owns_keys(ctx) || keyed;
+        let free = move |key| key_is_free(owned, key) && !choice_takes(choosing, key);
         let pressed = |key| free(key) && ctx.input(|i| struck(&i.events, key, Held::Alone));
         let with_shift = |key| free(key) && ctx.input(|i| struck(&i.events, key, Held::Shift));
         // A key that steps the playhead steps it once for every time it went
@@ -6077,27 +6049,18 @@ impl App {
             pos2(full.right(), timeline_rect.top() - gutter),
         );
 
-        // Each side panel slides in from its edge and out past it, at the
-        // width it was drawn at, and the viewer between them follows.
-        let seen_id = egui::Id::new("side-panels-seen");
-        let seen: SidePanels = ctx.data(|data| data.get_temp(seen_id)).unwrap_or_default();
-        let (mut library_width, mut inspector_width) = panel_widths(
+        // Each side panel slides in from its edge and out past it, and the
+        // viewer between them follows. A toggle reversed midway turns
+        // around from where the panel is.
+        let library_reveal = ui::window::slide(&ctx, egui::Id::new("library-reveal"), show_library);
+        let inspector_reveal =
+            ui::window::slide(&ctx, egui::Id::new("inspector-reveal"), show_right);
+        let (library_width, inspector_width) = drawn_widths(
             full.width(),
-            self.settings.library_width,
-            self.settings.inspector_width,
-            (show_library, show_right),
+            (self.settings.library_width, self.settings.inspector_width),
+            full.width() - 2.0 * gutter >= LIBRARY_FITS,
+            (library_reveal, inspector_reveal),
         );
-        if let (false, Some(width)) = (show_library, seen.library) {
-            library_width = width;
-        }
-        if let (false, Some(width)) = (show_right, seen.inspector) {
-            inspector_width = width;
-        }
-        let slide = |id: &str, shown| {
-            controls::animate(&ctx, egui::Id::new(id), shown, theme::motion::PANEL)
-        };
-        let library_reveal = slide("library-reveal", show_library);
-        let inspector_reveal = slide("inspector-reveal", show_right);
         let viewer_at = |library: f32, inspector: f32| {
             Rect::from_x_y_ranges(
                 upper.left() + egui::lerp(gutter..=library_width, library)
@@ -6106,10 +6069,19 @@ impl App {
             )
         };
         let viewer = viewer_at(library_reveal, inspector_reveal);
-        let settled = viewer_at(
-            f32::from(u8::from(show_library)),
-            f32::from(u8::from(show_right)),
-        );
+        let settled = {
+            let (library, inspector) = panel_widths(
+                full.width(),
+                self.settings.library_width,
+                self.settings.inspector_width,
+                (show_library, show_right),
+            );
+            Rect::from_x_y_ranges(
+                upper.left() + if show_library { library } else { gutter }
+                    ..=upper.right() - if show_right { inspector } else { gutter },
+                upper.y_range(),
+            )
+        };
         // The viewer's pictures are decoded for where it comes to rest.
         ui::Placement {
             drawn: viewer,
@@ -6125,32 +6097,31 @@ impl App {
             upper.y_range(),
         );
         // A panel that goes away with the keyboard in it gives the keyboard
-        // to the timeline, rather than keeping it out of sight.
+        // to the timeline, rather than keeping it out of sight. That is
+        // decided once, as the panel sets off, by where it was drawn in the
+        // last frame: the viewer slides into its place after that.
+        let seen_id = egui::Id::new("side-panels-seen");
+        let seen: SidePanels = ctx.data(|data| data.get_temp(seen_id)).unwrap_or_default();
         let focused = ctx
             .memory(|memory| memory.focused())
-            .and_then(|id| ctx.read_response(id))
-            .map(|response| response.rect);
-        let held_in = |shown: bool, width: Option<f32>, edge: f32| {
-            let (Some(width), Some(focused), false) = (width, focused, shown) else {
+            .and_then(|id| ctx.read_response(id));
+        let held_in = |was: Option<Rect>, shown: bool| {
+            let (Some(was), Some(focused), false) = (was, &focused, shown) else {
                 return false;
             };
-            let rect = Rect::from_x_y_ranges(edge - width..=edge, upper.y_range());
-            rect.intersects(focused)
+            // What floats over the window, a menu or a sheet, is not the
+            // panel's.
+            focused.layer_id == ui.layer_id() && was.contains(focused.rect.center())
         };
-        if held_in(
-            show_library,
-            seen.library,
-            upper.left() + seen.library.unwrap_or(0.0),
-        ) || held_in(show_right, seen.inspector, upper.right())
-        {
-            ctx.memory_mut(|memory| memory.request_focus(egui::Id::new("timeline-lanes")));
-        }
+        let hand_off = held_in(seen.library, show_library) || held_in(seen.inspector, show_right);
         ctx.data_mut(|data| {
             data.insert_temp(
                 seen_id,
                 SidePanels {
-                    library: (show_library || library_reveal > 0.0).then_some(library_width),
-                    inspector: (show_right || inspector_reveal > 0.0).then_some(inspector_width),
+                    library: (show_library && library_reveal > 0.0)
+                        .then(|| library_rect.intersect(upper)),
+                    inspector: (show_right && inspector_reveal > 0.0)
+                        .then(|| right_rect.intersect(upper)),
                 },
             );
         });
@@ -6175,6 +6146,7 @@ impl App {
                 library_reveal,
                 inspector: show_right,
                 viewer: viewer.x_range(),
+                settled: settled.x_range(),
                 agent_waiting: self.ai.open().is_some(),
                 project: &project,
                 clips: &self.selection.clips,
@@ -6370,9 +6342,22 @@ impl App {
             },
             actions,
         );
-        // The panes' corners are rounded over what was drawn into them.
-        kit::corner_caps(ui.painter(), viewer, p.chrome);
-        kit::corner_caps(ui.painter(), timeline_rect, p.chrome);
+        // The keyboard a hidden panel gave up goes to the lanes, if this
+        // frame made them; the graph editor in their place has nothing that
+        // takes it.
+        if hand_off && let Some(focused) = ctx.memory(|memory| memory.focused()) {
+            ctx.memory_mut(|memory| {
+                if self.timeline.keys.graph {
+                    memory.surrender_focus(focused);
+                } else {
+                    memory.request_focus(egui::Id::new("timeline-lanes"));
+                }
+            });
+        }
+        // The panes' corners are rounded over what was drawn into them, and
+        // not over their neighbours.
+        kit::corner_caps(&ui.painter_at(viewer), viewer, p.chrome);
+        kit::corner_caps(&ui.painter_at(timeline_rect), timeline_rect, p.chrome);
         self.splitters(ui, viewer, timeline_rect, (library_width, inspector_width));
         // The sound the tiles drawn wanted and did not have is asked for
         // now, in the frame that wanted it.
@@ -6626,6 +6611,8 @@ impl App {
         let window = timeline.width() + 2.0 * gutter;
         let (library_shown, right_shown) = self.side_panels(window - 2.0 * gutter);
         let (library, inspector) = widths;
+        let preferred = (self.settings.library_width, self.settings.inspector_width);
+        let shown = (library_shown, right_shown);
         // A panel dragged wider keeps the viewer at least this wide.
         let other = |width: f32, shown: bool| if shown { width } else { gutter };
         if library_shown {
@@ -6641,10 +6628,8 @@ impl App {
             if reset {
                 self.settings.library_width = settings::LIBRARY_WIDTH;
             } else if delta != 0.0 {
-                self.settings.library_width = (library + delta).min(most).clamp(
-                    *settings::LIBRARY_WIDTHS.start(),
-                    *settings::LIBRARY_WIDTHS.end(),
-                );
+                self.settings.library_width =
+                    dragged_width(window, preferred, shown, true, library + delta, most);
             }
         }
         if right_shown {
@@ -6660,10 +6645,8 @@ impl App {
             if reset {
                 self.settings.inspector_width = settings::INSPECTOR_WIDTH;
             } else if delta != 0.0 {
-                self.settings.inspector_width = (inspector - delta).min(most).clamp(
-                    *settings::INSPECTOR_WIDTHS.start(),
-                    *settings::INSPECTOR_WIDTHS.end(),
-                );
+                self.settings.inspector_width =
+                    dragged_width(window, preferred, shown, false, inspector - delta, most);
             }
         }
         // The timeline's gutter, ten points tall to the pointer.
@@ -6728,20 +6711,12 @@ impl App {
             RightTab::Inspector => 0,
             RightTab::Agent => 1,
         };
-        let cells = tabs.map(|tab| ui.id().with(("panel-tab", tab.label)));
-        let chosen = ui::arrow_choice(ui.ctx(), &cells, selected).or_else(|| {
-            ui::panel::tabs(ui, strip, p, &tabs, selected, egui::WidgetType::RadioButton)
-        });
-        if let Some(chosen) = chosen {
+        if let Some(chosen) = tab_strip(ui, strip, p, &tabs, selected) {
             self.right_tab = if chosen == 0 {
                 RightTab::Inspector
             } else {
                 RightTab::Agent
             };
-            // An arrow's choice is drawn in this frame, not the next.
-            if chosen != selected {
-                ui.ctx().request_repaint();
-            }
         }
         let body = Rect::from_min_max(pos2(inner.left(), strip.bottom()), inner.max);
         self.settings.agent_panel = self.right_tab == RightTab::Agent;
@@ -7294,12 +7269,100 @@ fn panel_widths(window: f32, library: f32, inspector: f32, shown: (bool, bool)) 
     (library - library_gives, inspector - inspector_gives)
 }
 
-/// The widths of the side panels while they were last drawn, which one
-/// keeps as it slides away.
+/// The widths of the side panels as drawn while `reveal`, the library's and
+/// the inspector's, slide them in and out. Where both fit beside the viewer
+/// (`fits`), each moves between its width alone and its width beside the
+/// other as the other slides, so that it gives way and takes its room back
+/// with the other's motion rather than at once. Where they do not, each is
+/// as wide as it is alone.
+fn drawn_widths(window: f32, preferred: (f32, f32), fits: bool, reveal: (f32, f32)) -> (f32, f32) {
+    let alone = panel_widths(window, preferred.0, preferred.1, (true, false));
+    if !fits {
+        return alone;
+    }
+    let both = panel_widths(window, preferred.0, preferred.1, (true, true));
+    (
+        egui::lerp(alone.0..=both.0, reveal.1),
+        egui::lerp(alone.1..=both.1, reveal.0),
+    )
+}
+
+/// The preferred width that draws the dragged side panel, the library if
+/// `library` and else the inspector, `target` wide, of `preferred` and with
+/// `shown` as they are, at most `most`. The widths are drawn from the ones
+/// preferred, so that is the preference that has the panel's edge follow
+/// the pointer: half as much again while the panels shrink alike. Where
+/// the window lets the panel go no further, a preference that already goes
+/// that far is kept.
+fn dragged_width(
+    window: f32,
+    preferred: (f32, f32),
+    shown: (bool, bool),
+    library: bool,
+    target: f32,
+    most: f32,
+) -> f32 {
+    let (range, now) = if library {
+        (settings::LIBRARY_WIDTHS, preferred.0)
+    } else {
+        (settings::INSPECTOR_WIDTHS, preferred.1)
+    };
+    let drawn = |width: f32| {
+        let widths = if library {
+            panel_widths(window, width, preferred.1, shown)
+        } else {
+            panel_widths(window, preferred.0, width, shown)
+        };
+        if library { widths.0 } else { widths.1 }
+    };
+    let (mut low, mut high) = (*range.start(), most.min(*range.end()).max(*range.start()));
+    let target = target.clamp(drawn(low), drawn(high));
+    if (drawn(now) - target).abs() < 0.01 {
+        return now;
+    }
+    // The least preference drawn as wide: wider ones draw no wider once
+    // the window holds the panel back.
+    for _ in 0..40 {
+        let middle = (low + high) * 0.5;
+        if drawn(middle) >= target {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    (high * 100.0).round() / 100.0
+}
+
+/// The right panel's strip of tabs, made in every frame with an arrow's
+/// choice in it: the keyboard the arrow moved is on one of its cells, which
+/// must be there to have it. The tab chosen by an arrow or a click.
+fn tab_strip(
+    ui: &mut egui::Ui,
+    strip: Rect,
+    p: Palette,
+    tabs: &[ui::panel::Tab],
+    selected: usize,
+) -> Option<usize> {
+    let cells: Vec<egui::Id> = (tabs.iter())
+        .map(|tab| ui.id().with(("panel-tab", tab.label)))
+        .collect();
+    let arrowed = ui::arrow_choice(ui.ctx(), &cells, selected);
+    let clicked = ui::panel::tabs(
+        ui,
+        strip,
+        p,
+        tabs,
+        arrowed.unwrap_or(selected),
+        egui::WidgetType::RadioButton,
+    );
+    arrowed.or(clicked)
+}
+
+/// Where the side panels were drawn in the last frame, while shown.
 #[derive(Clone, Copy, Debug, Default)]
 struct SidePanels {
-    library: Option<f32>,
-    inspector: Option<f32>,
+    library: Option<Rect>,
+    inspector: Option<Rect>,
 }
 
 /// The surface a side panel is made on: its rectangle, clipped to the band
@@ -7559,6 +7622,61 @@ fn export_chords(input: &mut egui::InputState, overlay: &Overlay) -> Option<Acti
 #[cfg(test)]
 #[path = "app_export_tests.rs"]
 mod export_tests;
+
+/// The application's chords struck in this frame, by the index the
+/// shortcuts act on, and consumed. While a field has the keyboard, undo and
+/// select-all are its own, and so is Cmd+O with Shift or Option, which is
+/// the inspector's chord left for the field: egui would otherwise take it
+/// for Open, whose chord ignores them.
+fn chords_struck(input: &mut egui::InputState, typing: bool) -> Vec<usize> {
+    let command = |key| KeyboardShortcut::new(Modifiers::COMMAND, key);
+    let shifted = |key| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, key);
+    // More specific chords first: a shifted chord is not also its plain one.
+    let chords = [
+        (shifted(Key::Z), 0),
+        (command(Key::Z), 1),
+        (command(Key::Y), 0),
+        (shifted(Key::S), 2),
+        (command(Key::S), 3),
+        (command(Key::O), 4),
+        (command(Key::N), 5),
+        (shifted(Key::I), 6),
+        (command(Key::I), 7),
+        (command(Key::D), 8),
+        (command(Key::A), 9),
+        (shifted(Key::G), 10),
+        (command(Key::G), 11),
+        (command(Key::Comma), 12),
+        (shifted(Key::K), 17),
+        (command(Key::K), 13),
+        (command(Key::L), 14),
+        (command(Key::T), 18),
+    ];
+    let inspector_chord = (input.events.iter()).any(|event| {
+        matches!(
+            event,
+            egui::Event::Key { key: Key::O, pressed: true, modifiers, .. }
+                if modifiers.shift || modifiers.alt
+        )
+    });
+    let mut struck = Vec::new();
+    for (chord, index) in chords {
+        if typing && (matches!(index, 0 | 1 | 9 | 18) || index == 4 && inspector_chord) {
+            continue;
+        }
+        if input.consume_shortcut(&chord) {
+            struck.push(index);
+        }
+    }
+    struck
+}
+
+/// Whether `key` is a choice's while one of its cells has the keyboard
+/// (`choosing`): Left and Right step among the cells, and Delete, Up and
+/// Down are still the application's.
+fn choice_takes(choosing: bool, key: Key) -> bool {
+    choosing && matches!(key, Key::ArrowLeft | Key::ArrowRight)
+}
 
 /// The chords that show and hide the side panels: Terminal's sidebar chord
 /// for the library, Shift+Ctrl+B or Cmd+B, and Shift+Ctrl+O or Option+Cmd+O
@@ -7913,6 +8031,177 @@ mod tests {
         // A field keeps them, and they are left in the input for it.
         assert!(matches!(chord(Key::B, true), (None, true)));
         assert!(matches!(chord(Key::O, true), (None, true)));
+        // Nor does Open take the inspector's chord from the field, though
+        // its own chord ignores Shift and Option. Cmd+O alone still opens.
+        let struck = |modifiers, typing| {
+            let ctx = egui::Context::default();
+            let raw = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: Key::O,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let mut struck = Vec::new();
+            let output = ctx.run_ui(raw, |ui| {
+                struck = ui.ctx().input_mut(|i| {
+                    let panels = panel_chords(i, typing);
+                    assert!(panels.is_none() || !typing);
+                    chords_struck(i, typing)
+                });
+            });
+            output.drop_without_applying_deltas();
+            struck
+        };
+        let inspector = if cfg!(target_os = "macos") {
+            Modifiers::COMMAND | Modifiers::ALT
+        } else {
+            Modifiers::COMMAND | Modifiers::SHIFT
+        };
+        assert_eq!(struck(inspector, true), Vec::<usize>::new());
+        assert_eq!(struck(inspector, false), Vec::<usize>::new());
+        assert_eq!(struck(Modifiers::COMMAND, true), vec![4]);
+        assert_eq!(struck(Modifiers::COMMAND, false), vec![4]);
+    }
+
+    #[test]
+    fn a_dragged_side_panel_follows_the_pointer() {
+        // §2.4 and §2.5: the library at 316 and the inspector at 300
+        // preferred. Drawn widths are derived from the preferred ones, so a
+        // drag stores the preference that draws the edge where the pointer
+        // took it.
+        let drag = |window: f32, shown, library, steps: &[f32]| {
+            let mut preferred = (316.0, 300.0);
+            let mut drawn = Vec::new();
+            for delta in steps {
+                let widths = panel_widths(window, preferred.0, preferred.1, shown);
+                let most = window - 360.0 - if shown.0 && shown.1 { 240.0 } else { 6.0 };
+                if library {
+                    preferred.0 =
+                        dragged_width(window, preferred, shown, true, widths.0 + delta, most);
+                } else {
+                    preferred.1 =
+                        dragged_width(window, preferred, shown, false, widths.1 - delta, most);
+                }
+                drawn.push(panel_widths(window, preferred.0, preferred.1, shown));
+            }
+            (preferred, drawn)
+        };
+        let near = |a: f32, b: f32| (a - b).abs() < 0.05;
+        // A window of 1000, where both have shrunk to 268 and 252: the
+        // library's edge moves right with the pointer, two at a time, while
+        // the inspector gives the viewer its 480 (§2.4 rule 1), until the
+        // inspector is at its least. Then it holds, and never goes back.
+        let (_, drawn) = drag(1000.0, (true, true), true, &[2.0; 8]);
+        for (step, (library, inspector)) in drawn.iter().enumerate() {
+            let expected = (270.0 + 2.0 * step as f32).min(1000.0 - 480.0 - 240.0);
+            assert!(near(*library, expected), "{drawn:?}");
+            assert!(near(1000.0 - library - inspector, 480.0), "{drawn:?}");
+        }
+        // And left with it, as the inspector takes back its room.
+        let (_, drawn) = drag(1000.0, (true, true), true, &[-10.0; 3]);
+        assert!(near(drawn[2].0, 238.0), "{drawn:?}");
+        // The inspector's edge moves left with the pointer in the same way.
+        let (_, drawn) = drag(1000.0, (true, true), false, &[-10.0; 2]);
+        assert!(near(drawn[1].1, 272.0), "{drawn:?}");
+        // With the room, the edge is the preference.
+        let (preferred, drawn) = drag(1440.0, (true, true), true, &[24.0, -4.0]);
+        assert!(near(drawn[1].0, 336.0) && near(preferred.0, 336.0));
+        assert_eq!(drawn[1].1, 300.0);
+        // A library alone in a window of 760 is held at 274: dragged wider it
+        // goes no further and keeps its 316; dragged narrower it follows.
+        let (preferred, drawn) = drag(760.0, (true, false), true, &[10.0, 10.0]);
+        assert_eq!((preferred.0, drawn[1].0), (316.0, 274.0));
+        let (preferred, drawn) = drag(760.0, (true, false), true, &[-10.0]);
+        assert!(near(drawn[0].0, 264.0) && near(preferred.0, 264.0));
+        // Nor does a drag past the least a panel can be drawn at lose what
+        // was preferred.
+        let (preferred, _) = drag(820.0, (true, true), true, &[-10.0]);
+        assert_eq!(preferred.0, 316.0);
+    }
+
+    #[test]
+    fn an_arrow_on_a_tab_keeps_the_strip_with_the_keyboard_on_it() {
+        // §5.4 and §7.3: Right on the focused "Inspector" chooses "Agent" in
+        // the same frame, and the strip is made in it, so that what has the
+        // keyboard is among the nodes said to assistive technology.
+        let ctx = egui::Context::default();
+        let p = Palette::new(Appearance::Dark, theme::Accent::default());
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, &p);
+        ctx.enable_accesskit();
+        let tabs = [
+            ui::panel::Tab {
+                label: "Inspector",
+                icon: Icon::Adjustments,
+                waiting: 0,
+            },
+            ui::panel::Tab {
+                label: "Agent",
+                icon: Icon::Sparkles,
+                waiting: 0,
+            },
+        ];
+        let mut selected = 0;
+        let mut frame = |events: Vec<egui::Event>, focus: bool| {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(400.0, 300.0))),
+                events,
+                ..Default::default()
+            };
+            let output = ctx.run_ui(raw, |ui| {
+                if focus {
+                    let first = ui.id().with(("panel-tab", "Inspector"));
+                    ui.ctx().memory_mut(|memory| memory.request_focus(first));
+                }
+                let strip = Rect::from_min_size(pos2(6.0, 0.0), vec2(300.0, ui::panel::TABS));
+                if let Some(chosen) = tab_strip(ui, strip, p, &tabs, selected) {
+                    selected = chosen;
+                }
+            });
+            let update = output.platform_output.accesskit_update.clone();
+            output.drop_without_applying_deltas();
+            update
+        };
+        frame(Vec::new(), true);
+        frame(Vec::new(), false);
+        let right = egui::Event::Key {
+            key: Key::ArrowRight,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let update = frame(vec![right], false).expect("accesskit is on");
+        assert_eq!(selected, 1);
+        assert!(
+            (update.nodes.iter()).any(|(id, _)| *id == update.focus),
+            "the keyboard is on a node that is not there"
+        );
+    }
+
+    #[test]
+    fn a_panel_beside_one_that_slides_widens_with_it() {
+        // §2.5: at 1000 both are 268 and 252, and alone 316 and 300. As the
+        // inspector slides away, the library widens with it, not at once.
+        let preferred = (316.0, 300.0);
+        assert_eq!(
+            drawn_widths(1000.0, preferred, true, (1.0, 1.0)),
+            (268.0, 252.0)
+        );
+        assert_eq!(
+            drawn_widths(1000.0, preferred, true, (1.0, 0.5)),
+            (292.0, 252.0)
+        );
+        assert_eq!(drawn_widths(1000.0, preferred, true, (1.0, 0.0)).0, 316.0);
+        // Where only one fits, each is as wide as it is alone.
+        assert_eq!(
+            drawn_widths(760.0, preferred, false, (0.3, 0.7)),
+            (274.0, 274.0)
+        );
     }
 
     #[test]
@@ -8993,6 +9282,13 @@ mod tests {
         }
         assert!(!key_is_free(true, Key::Delete) && !key_is_free(true, Key::Backspace));
         assert!(key_is_free(true, Key::C) && key_is_free(true, Key::Space));
+        // A tab or a segment with the keyboard takes Left and Right only:
+        // the selected clips are still deleted from it.
+        assert!(choice_takes(true, Key::ArrowLeft) && choice_takes(true, Key::ArrowRight));
+        for key in [Key::ArrowUp, Key::ArrowDown, Key::Delete, Key::Backspace] {
+            assert!(!choice_takes(true, key), "{key:?}");
+        }
+        assert!(!choice_takes(false, Key::ArrowLeft));
     }
 
     /// An editor with one ten second video, what tracking a region of it

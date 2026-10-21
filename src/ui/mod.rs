@@ -412,10 +412,11 @@ impl Placement {
     }
 }
 
-/// The arrows are a choice's own while a cell of one has the keyboard: a
-/// tab of a strip, or an option of a segmented control. They move the
+/// Left and Right are a choice's own while a cell of one has the keyboard:
+/// a tab of a strip, or an option of a segmented control. They move the
 /// keyboard among its cells (and, where the strip asks [`arrow_choice`],
-/// the choice with it), and do not also step the playhead.
+/// the choice with it), and do not also step the playhead. Up and Down,
+/// Delete and the rest are still the application's.
 ///
 /// A cell is known to be one as it gains the keyboard from Tab, when it says
 /// what it is. egui says nothing of the cell an arrow moves the keyboard to,
@@ -438,8 +439,8 @@ impl ChoiceArrows {
             .unwrap_or_default()
     }
 
-    /// Called before the frame's widgets are made. Says whether a choice has
-    /// the keyboard, so that its arrows are its own.
+    /// Called before the frame's widgets are made, in every frame. Says
+    /// whether a choice has the keyboard, so that Left and Right are its own.
     pub fn begin(ctx: &eframe::egui::Context) -> bool {
         use eframe::egui::{Event, Key};
         let mut state = Self::read(ctx);
@@ -455,7 +456,8 @@ impl ChoiceArrows {
                 matches!(
                     event,
                     Event::Key {
-                        key: Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown,
+                        // Up and Down take the keyboard out of the choice.
+                        key: Key::ArrowLeft | Key::ArrowRight,
                         pressed: true,
                         ..
                     }

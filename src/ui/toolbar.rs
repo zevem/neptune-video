@@ -40,6 +40,10 @@ pub struct ToolbarInput<'a> {
     /// The viewer's pane, from its leading to its trailing edge: the title
     /// lines up with its timecode and the launcher sits over its middle.
     pub viewer: Rangef,
+    /// The viewer's pane where it comes to rest. What folds, and whether the
+    /// launcher is a field, is chosen for it, so that neither changes
+    /// midway through a panel's slide.
+    pub settled: Rangef,
     /// A proposal of the agent's waits for review.
     pub agent_waiting: bool,
     /// What the menu's clip commands act on, captured when one is chosen:
@@ -217,21 +221,29 @@ struct Trailing {
     redo: Option<Rect>,
     undo: Option<Rect>,
     more: Option<Rect>,
-    import: Option<Rect>,
+    /// Import, and how much of its room it has: it fades in and makes its
+    /// room as the library slides away.
+    import: Option<(Rect, f32)>,
     launcher: Option<Rect>,
 }
 
 impl Trailing {
     fn left(&self) -> f32 {
-        [self.launcher, self.import, self.undo, self.more]
+        let import = self
+            .import
+            .map(|(rect, share)| rect.right() + GROUP - (GROUP + rect.width()) * share);
+        [self.launcher, self.undo, self.more]
             .into_iter()
             .flatten()
             .map(|rect| rect.left())
+            .chain(import)
             .fold(self.export.left(), f32::min)
     }
 }
 
-fn trailing(rect: Rect, input: &ToolbarInput, fold: Fold, export: f32) -> Trailing {
+/// The trailing controls for `fold`, with `import` of Import's room: 0
+/// while the library holds it, 1 while the library is away.
+fn trailing(rect: Rect, input: &ToolbarInput, fold: Fold, export: f32, import: f32) -> Trailing {
     let middle = rect.center().y;
     // A control `width` wide ending at `right`.
     let cell = |right: f32, width: f32| {
@@ -278,10 +290,9 @@ fn trailing(rect: Rect, input: &ToolbarInput, fold: Fold, export: f32) -> Traili
         right = undo.left();
     }
     // The library holds Import; while it is away, Import is here.
-    if !input.library {
-        let import = cell(right - GROUP, metrics::ICON_BUTTON);
-        out.import = Some(import);
-        right = import.left();
+    if import > 0.0 {
+        out.import = Some((cell(right - GROUP, metrics::ICON_BUTTON), import));
+        right -= (GROUP + metrics::ICON_BUTTON) * import;
     }
     if fold.launcher {
         out.launcher = Some(cell(right - GROUP, metrics::ICON_BUTTON));
@@ -335,10 +346,13 @@ pub fn show(ui: &mut Ui, rect: Rect, input: &ToolbarInput, actions: &mut Vec<Act
     // The library's toggle travels with the library's edge, between its
     // place beside the lights and the edge itself.
     let reveal = input.library_reveal.clamp(0.0, 1.0);
-    let toggle = rect.left() + egui::lerp(94.0..=input.library_width - 22.0, reveal);
+    let toggle_at =
+        |reveal: f32| rect.left() + egui::lerp(94.0..=input.library_width - 22.0, reveal);
+    let toggle = toggle_at(reveal);
     // The title's words start where the viewer's timecode does, clear of
     // the toggle.
-    let text_left = (input.viewer.min + 12.0).max(toggle + 14.0 + CLEAR);
+    let text_from = |viewer: Rangef, toggle: f32| (viewer.min + 12.0).max(toggle + 14.0 + CLEAR);
+    let text_left = text_from(input.viewer, toggle);
 
     let name_font = theme::medium(13.0);
     let whole = painter
@@ -361,14 +375,16 @@ pub fn show(ui: &mut Ui, rect: Rect, input: &ToolbarInput, actions: &mut Vec<Act
         .x;
     let export = 10.0 + metrics::ICON + 6.0 + export_label + 12.0;
     let launcher_width = (rect.width() * 0.32).clamp(210.0, 320.0);
-    let launcher = Rect::from_center_size(
-        pos2(input.viewer.center(), middle),
-        vec2(launcher_width, metrics::COMPACT_HEIGHT),
-    );
+    let launcher_over = |viewer: Rangef| {
+        Rect::from_center_size(
+            pos2(viewer.center(), middle),
+            vec2(launcher_width, metrics::COMPACT_HEIGHT),
+        )
+    };
+    let launcher = launcher_over(input.viewer);
 
-    // The first step of the folds at which the name keeps what that step
-    // allows it beside its state.
-    let room = |fold: Fold, cluster: &Trailing| {
+    // The room the name has at a step of the folds, beside its state.
+    let room = |fold: Fold, cluster: &Trailing, text_left: f32, launcher: Rect| {
         let limit = if fold.launcher {
             cluster.left()
         } else {
@@ -381,24 +397,25 @@ pub fn show(ui: &mut Ui, rect: Rect, input: &ToolbarInput, actions: &mut Vec<Act
         };
         limit - text_left - 4.0 - CHEVRON - TITLE_PAD - state
     };
-    let (fold, cluster, name_room) = Fold::LADDER
-        .into_iter()
-        .map(|fold| {
-            let cluster = trailing(rect, input, fold, export);
-            let name_room = room(fold, &cluster);
-            (fold, cluster, name_room)
-        })
-        .find(|(fold, cluster, name_room)| {
-            let launcher_fits = fold.launcher || launcher.right() + CLEAR <= cluster.left();
-            let least = fold.name.map_or(whole, |least| whole.min(least as f32));
-            launcher_fits && *name_room >= least
-        })
-        .unwrap_or_else(|| {
-            let fold = Fold::LADDER[Fold::LADDER.len() - 1];
-            let cluster = trailing(rect, input, fold, export);
-            let name_room = room(fold, &cluster);
-            (fold, cluster, name_room)
-        });
+    // The first step of the folds at which the name keeps what that step
+    // allows it, where the panels come to rest.
+    let fold = {
+        let shown = if input.library { 1.0 } else { 0.0 };
+        let text_left = text_from(input.settled, toggle_at(shown));
+        let launcher = launcher_over(input.settled);
+        Fold::LADDER
+            .into_iter()
+            .find(|fold| {
+                let cluster = trailing(rect, input, *fold, export, 1.0 - shown);
+                let launcher_fits = fold.launcher || launcher.right() + CLEAR <= cluster.left();
+                let least = fold.name.map_or(whole, |least| whole.min(least as f32));
+                launcher_fits && room(*fold, &cluster, text_left, launcher) >= least
+            })
+            .unwrap_or(Fold::LADDER[Fold::LADDER.len() - 1])
+    };
+    // Laid out where the panels are drawn in this frame.
+    let cluster = trailing(rect, input, fold, export, 1.0 - reveal);
+    let name_room = room(fold, &cluster, text_left, launcher);
 
     // The library's toggle. It is never drawn pressed: the library shows
     // whether it is open.
@@ -440,9 +457,10 @@ pub fn show(ui: &mut Ui, rect: Rect, input: &ToolbarInput, actions: &mut Vec<Act
         actions.push(Action::OpenAgent { ask: false });
     }
 
-    if let Some(rect) = cluster.import {
+    if let Some((rect, share)) = cluster.import {
         // As the library's Import, without the folder of the library's own.
         at(ui, rect, "toolbar-import", |ui| {
+            ui.multiply_opacity(share);
             let import = icon_button(
                 ui,
                 p,
@@ -608,12 +626,15 @@ fn title(
     rect.right()
 }
 
+/// What "Changed on disk" means for the person's edits.
+const CONFLICT_TIP: &str = "This file was saved by something else after it was opened here. \
+    Your edits are kept in this window; Save asks what to do with them.";
+
 /// Whether the project holds unsaved work, said beside its title: in words,
 /// or as a dot named by them where they do not fit.
 fn save_state(ui: &mut Ui, p: &Palette, left: f32, middle: f32, state: &State, dot: bool) {
     let tip = if state.warned {
-        "This file was saved by something else after it was opened here. Your edits are \\
-         kept in this window; Save asks what to do with them."
+        CONFLICT_TIP
     } else {
         state.words
     };
@@ -644,7 +665,9 @@ fn save_state(ui: &mut Ui, p: &Palette, left: f32, middle: f32, state: &State, d
     let said = ui
         .painter()
         .layout_no_wrap(state.words.to_owned(), theme::regular(12.0), ink);
-    let words = controls::galley_at(ui.painter(), pos2(x, middle), said);
+    // Regular 12 beside the title's Medium 13, on the title's baseline, as
+    // Terminal sets its subtitle.
+    let words = controls::galley_at(ui.painter(), pos2(x, middle + 0.5), said);
     let rect = Rect::from_min_max(
         pos2(left, middle - 14.0),
         pos2(words.right(), middle + 14.0),
@@ -987,7 +1010,7 @@ mod toolbar_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, ToolbarInput, brief, detach, save_audio};
+    use super::{Action, CONFLICT_TIP, ToolbarInput, brief, detach, save_audio};
     use crate::theme::{Accent, Appearance, Palette};
     use editor_core::{Project, Time};
 
@@ -1012,6 +1035,7 @@ mod tests {
                 library_reveal: 1.0,
                 inspector: true,
                 viewer: eframe::egui::Rangef::new(316.0, 1140.0),
+                settled: eframe::egui::Rangef::new(316.0, 1140.0),
                 agent_waiting: false,
                 project: &project,
                 clips,
@@ -1052,6 +1076,7 @@ mod tests {
                 library_reveal: 1.0,
                 inspector: true,
                 viewer: eframe::egui::Rangef::new(316.0, 1140.0),
+                settled: eframe::egui::Rangef::new(316.0, 1140.0),
                 agent_waiting: false,
                 project: &project,
                 clips,
@@ -1072,6 +1097,16 @@ mod tests {
             };
             assert_eq!(notice, "Select one clip to save its audio.");
         }
+    }
+
+    #[test]
+    fn the_conflict_tooltip_reads_as_one_line() {
+        assert_eq!(
+            CONFLICT_TIP,
+            "This file was saved by something else after it was opened here. Your edits are \
+             kept in this window; Save asks what to do with them."
+        );
+        assert!(!CONFLICT_TIP.contains('\\') && !CONFLICT_TIP.contains("  "));
     }
 
     #[test]

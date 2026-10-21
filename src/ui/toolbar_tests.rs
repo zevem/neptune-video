@@ -130,6 +130,7 @@ impl Bench {
             library_reveal: if library { 1.0 } else { 0.0 },
             inspector: self.size.x >= 572.0,
             viewer,
+            settled: viewer,
             agent_waiting: false,
             project: &project,
             clips: &[],

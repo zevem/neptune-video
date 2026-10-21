@@ -3,7 +3,10 @@
 //! and the edges resize it. Nothing here touches the project; closing goes
 //! through the same request as the system's, so unsaved work is still asked
 //! about.
-use super::controls::{self, Level};
+use super::{
+    controls::{self, Level},
+    kit,
+};
 use crate::{
     icons::{self, Icon},
     theme::{self, Palette, metrics},
@@ -157,12 +160,19 @@ pub fn interface_size(ctx: &egui::Context, p: &Palette) {
     };
     let level = &said.level;
     let now = ctx.input(|input| input.time);
-    let Some(opacity) = level.opacity(now) else {
+    let hold = level.shown + HOLD - now;
+    // Under Reduce motion it holds and is gone, with no frames to fade in.
+    let still = kit::reduced_motion(ctx);
+    let opacity = if still {
+        (hold > 0.0).then_some(1.0)
+    } else {
+        level.opacity(now)
+    };
+    let Some(opacity) = opacity else {
         ctx.data_mut(|data| data.remove::<InterfaceSize>(interface_size_id()));
         return;
     };
     // Sleep through the hold; repaint only for the fade.
-    let hold = level.shown + HOLD - now;
     if hold > 0.0 {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(hold));
     } else {
@@ -214,6 +224,81 @@ pub fn interface_size(ctx: &egui::Context, p: &Palette) {
 
 /// How long the capsule holds before it fades: Terminal's level's.
 const HOLD: f64 = 1.2;
+
+/// A side panel's slide in or out, Terminal's `SidebarSlide`: it starts from
+/// however much of the panel was showing, so a toggle reversed midway turns
+/// around without a jump.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slide {
+    /// The state slid toward.
+    shown: bool,
+    /// How much showed as it set off, and when.
+    from: f32,
+    started: f64,
+}
+
+impl Slide {
+    /// A panel at rest, shown or not.
+    pub fn settled(shown: bool) -> Self {
+        Self {
+            shown,
+            from: f32::from(u8::from(shown)),
+            started: f64::NEG_INFINITY,
+        }
+    }
+
+    /// The slide toward `shown` from `now` on. A change sets off from where
+    /// the panel is; the same state goes on as it was.
+    pub fn toward(self, shown: bool, now: f64) -> Self {
+        if shown == self.shown {
+            return self;
+        }
+        Self {
+            shown,
+            from: self.reveal(now),
+            started: now,
+        }
+    }
+
+    /// How much of the panel shows at `now`: 0 hidden, 1 shown.
+    pub fn reveal(self, now: f64) -> f32 {
+        let to = f32::from(u8::from(self.shown));
+        let progress = ((now - self.started) / f64::from(theme::motion::PANEL)) as f32;
+        if progress >= 1.0 {
+            to
+        } else {
+            egui::lerp(
+                self.from..=to,
+                egui::emath::easing::cubic_out(progress.max(0.0)),
+            )
+        }
+    }
+
+    /// Whether it still moves at `now`.
+    pub fn moving(self, now: f64) -> bool {
+        now - self.started < f64::from(theme::motion::PANEL)
+    }
+}
+
+/// How much of the side panel `id` shows in this frame, slid toward `shown`
+/// over 0.16 s with `cubic_out`. Frames are asked for only while it moves,
+/// and under Reduce motion it is where it is going at once.
+pub fn slide(ctx: &egui::Context, id: Id, shown: bool) -> f32 {
+    let id = controls::viewport_id(ctx, id);
+    let now = ctx.input(|input| input.time);
+    let slide = if kit::reduced_motion(ctx) {
+        Slide::settled(shown)
+    } else {
+        ctx.data(|data| data.get_temp::<Slide>(id))
+            .unwrap_or(Slide::settled(shown))
+            .toward(shown, now)
+    };
+    if slide.moving(now) {
+        ctx.request_repaint();
+    }
+    ctx.data_mut(|data| data.insert_temp(id, slide));
+    slide.reveal(now)
+}
 
 /// The window's outline and its resize edges, over everything else in the
 /// window's layer.
@@ -302,6 +387,25 @@ fn resize_zones(bounds: Rect) -> [(ResizeDirection, Rect, CursorIcon); 8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_slide_reversed_midway_turns_around_without_a_jump() {
+        // Spec §2.5, as Terminal's sidebar: hidden from shown at 10 s.
+        let hide = Slide::settled(true).toward(false, 10.0);
+        assert_eq!(hide.reveal(10.0), 1.0);
+        let midway = hide.reveal(10.08);
+        assert!(0.0 < midway && midway < 1.0, "{midway}");
+        assert_eq!(hide.reveal(10.2), 0.0);
+        // Shown again halfway: it sets off from where it was.
+        let show = hide.toward(true, 10.08);
+        assert_eq!(show.reveal(10.08), midway);
+        assert!(show.reveal(10.12) > midway);
+        assert_eq!(show.reveal(10.3), 1.0);
+        assert!(show.moving(10.2) && !show.moving(10.3));
+        // Asked for the state it is in, it goes on as it was.
+        assert_eq!(show.toward(true, 10.1), show);
+        assert!(!Slide::settled(false).moving(0.0));
+    }
 
     #[test]
     fn a_window_is_rounded_only_where_the_system_does_not_round_it() {
