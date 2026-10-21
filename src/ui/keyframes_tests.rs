@@ -68,6 +68,8 @@ struct Bench {
     clip_chords: usize,
     /// How long the last frame said it could wait before the next.
     wait: Duration,
+    /// What the last frame painted.
+    shapes: Vec<egui::epaint::ClippedShape>,
 }
 
 impl Bench {
@@ -136,6 +138,7 @@ impl Bench {
             clip_deletes: 0,
             clip_chords: 0,
             wait: Duration::ZERO,
+            shapes: Vec::new(),
         }
     }
 
@@ -259,6 +262,7 @@ impl Bench {
             );
         });
         output.textures_delta.clear();
+        self.shapes = std::mem::take(&mut output.shapes);
         self.wait = (output.viewport_output.values())
             .map(|viewport| viewport.repaint_delay)
             .min()
@@ -1339,7 +1343,101 @@ fn the_lane_and_the_graph_fit_a_narrow_windows_timeline() {
             let rect = bench.find(name).expect("named").rect;
             assert!(window.contains_rect(rect) && rect.width() >= 28.0);
         }
+        // Spec §5.5.14: the legend stays in the heads' column and the plot's
+        // two actions stand at its top-trailing corner.
+        let plot = Rect::from_min_max(pos2(156.0, 34.0 + 24.0), size.to_pos2());
+        for name in ["Show Opacity", "Solo Opacity", "Select Opacity keyframes"] {
+            let rect = bench.find(name).expect("named").rect;
+            assert!(rect.right() <= plot.left(), "{name} {rect:?} in {size:?}");
+        }
+        for name in ["Fit values", "Keyframe options"] {
+            let rect = bench.find(name).expect("named").rect;
+            assert!(plot.contains_rect(rect), "{name} {rect:?} in {size:?}");
+            assert!(rect.left() > plot.center().x && rect.top() < plot.top() + 8.0);
+        }
     }
+}
+
+#[test]
+fn the_lane_names_its_rows_in_the_heads_column_and_its_keys_take_the_accent_only_chosen() {
+    let (mut bench, _, _) = lane();
+    bench.frame(Vec::new());
+    // Spec §5.5.13: each row is named in the card of its track's head, and
+    // the lane's menu leads its first row there.
+    for name in [
+        "Select Opacity keyframes",
+        "Select Glow Amount keyframes",
+        "Keyframe options",
+    ] {
+        let rect = bench.find(name).expect("named").rect;
+        assert!(rect.right() <= 156.0, "{name} {rect:?}");
+    }
+    let (options, first) = (
+        bench.find("Keyframe options").expect("named").rect,
+        bench.find("Select Opacity keyframes").expect("named").rect,
+    );
+    assert!(options.right() <= first.left());
+    assert!((options.center().y - first.center().y).abs() < 0.5);
+    // A row is as tall as the lane's rows, and the next follows it.
+    let second = bench
+        .find("Select Glow Amount keyframes")
+        .expect("named")
+        .rect;
+    assert!((second.center().y - first.center().y - ROW).abs() < 0.01);
+    // Selecting a key is what draws it in the accent; nothing else in the
+    // lane is drawn in it.
+    let accent = |bench: &Bench| {
+        (bench.shapes.iter())
+            .filter(|clipped| {
+                matches!(&clipped.shape, Shape::Path(path)
+                    if path.closed
+                        && path.points.len() == 4
+                        && path.fill == bench.palette.accent)
+            })
+            .count()
+    };
+    assert_eq!(accent(&bench), 0, "no key is selected");
+    bench.click(OPACITY_END);
+    bench.frame(Vec::new());
+    assert_eq!(accent(&bench), 1, "the one selected key");
+}
+
+#[test]
+fn the_graph_says_it_has_nothing_to_draw_inside_its_plot_alone() {
+    let (mut bench, clip, glow) = graph();
+    bench.keys(clip, None, ParamKey::Opacity, Vec::new());
+    bench.keys(clip, Some(glow), ParamKey::Amount, Vec::new());
+    bench.frame(Vec::new());
+    // Spec §5.10, TL13: the statement stands in the plot, and the heads'
+    // column, where the legend is, keeps its place.
+    let said = (bench.seen.iter())
+        .find(|seen| seen.name.starts_with("No animated values"))
+        .expect("said");
+    assert_eq!(
+        said.name,
+        "No animated values. Add a keyframe in the inspector."
+    );
+    assert!(said.rect.left() >= 156.0, "{:?}", said.rect);
+}
+
+#[test]
+fn the_value_axis_holds_still_while_a_key_is_held() {
+    let (mut bench, _, _) = graph();
+    let glow = bench.at(GLOW_START);
+    // The first opacity key, raised most of the way to the second: let go,
+    // the values would fit the curves again.
+    let rise = bench.at(OPACITY_START).y - bench.at(OPACITY_END).y;
+    let end = bench.drag(OPACITY_START, vec2(0.0, -rise * 0.9));
+    bench.frame(Vec::new());
+    assert_eq!(
+        bench.at(GLOW_START),
+        glow,
+        "the axis holds while it is held"
+    );
+    bench.release(end);
+    bench.frame(Vec::new());
+    assert_eq!(bench.last(), "Move keyframes");
+    assert_ne!(bench.at(GLOW_START).y, glow.y, "and fits once it is let go");
 }
 
 // ---- Review of wave 3 -------------------------------------------------------
