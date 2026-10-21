@@ -263,11 +263,15 @@ impl HeldPeaks {
     /// Wants the sound of the cards drawn in this frame, of `project` as
     /// they drew it: after the tiles, so that the tiles have the room first.
     pub fn want_cards(&mut self, project: &Project) {
-        for id in std::mem::take(&mut self.cards) {
+        // The list is emptied in place and kept, room and all, for the next
+        // frame's cards.
+        let mut cards = std::mem::take(&mut self.cards);
+        for id in cards.drain(..) {
             if let Some(asset) = project.assets.get(&id) {
                 self.want_as(asset, true);
             }
         }
+        self.cards = cards;
     }
 
     fn want_as(&mut self, asset: &Asset, card: bool) {

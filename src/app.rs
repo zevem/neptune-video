@@ -526,6 +526,9 @@ pub struct App {
     /// The separations the sound lane is running. A replaced project leaves
     /// them running; their stems are then only said.
     separating: stems::Separating,
+    /// The requests of the work cards over the viewer, gathered each frame
+    /// into a list that keeps its room.
+    card_requests: Vec<u64>,
     /// Whether this session's probe for a stem separator was started, and
     /// whether its answer was taken.
     separator_asked: bool,
@@ -1147,6 +1150,7 @@ impl App {
             ducking: Ducking::default(),
             saved_audio: Saving::default(),
             separating: stems::Separating::default(),
+            card_requests: Vec::new(),
             separator_asked: false,
             separator_taken: false,
             recording: Recording::default(),
@@ -6349,6 +6353,9 @@ impl App {
         self.viewer.choose_region(region.filter(|_| masks_shown));
         self.viewer
             .show_paths(masks_shown && self.inspector.shows_paths());
+        self.card_requests.clear();
+        (self.card_requests).extend(self.saved_audio.card_requests());
+        (self.card_requests).extend(self.separating.card_requests());
         // The stage's text keeps its dark weight in the light appearance.
         let stage_shapes = ui::kit::first_shape(ui.painter());
         match &self.source {
@@ -6388,9 +6395,7 @@ impl App {
                     record: self.recording.view(),
                     library: show_library,
                     quality: self.settings.preview.quality,
-                    cards: &(self.saved_audio.card_requests())
-                        .chain(self.separating.card_requests())
-                        .collect::<Vec<_>>(),
+                    cards: &self.card_requests,
                 },
                 actions,
             ),

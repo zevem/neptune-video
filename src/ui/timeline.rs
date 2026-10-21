@@ -978,18 +978,20 @@ pub fn show(
         pos2(ruler.left() - PIN.x * 0.5 - 1.0, ruler.top()),
         lanes.max,
     ));
-    let mut marks = Vec::new();
+    // Both go into the one list the painter keeps for the frame, made at
+    // its size: a guide and the playhead are three shapes each.
+    let mut marks = Vec::with_capacity(6);
     // Each only where the lanes show its time: the painter reaches into the
     // corner for the pin alone.
     if let Some(x) = (state.snap_guide)
         .map(|guide| geometry.x(guide))
         .filter(|x| (lanes.left()..=lanes.right()).contains(x))
     {
-        marks.extend(snap_guide_shapes(&painter, ruler, lanes, x, p));
+        snap_guide_shapes(&painter, ruler, lanes, x, p, &mut marks);
     }
     let x = geometry.x(input.playhead);
     if x >= lanes.left() - 1.0 && x <= lanes.right() + 1.0 {
-        marks.extend(playhead_shapes(&painter, ruler, lanes, x, p));
+        playhead_shapes(&painter, ruler, lanes, x, p, &mut marks);
     }
     match over_tiles {
         Some(slot) => painter.set(slot, egui::Shape::Vec(marks)),
@@ -1049,14 +1051,15 @@ fn haloed_line(x: f32, ys: egui::Rangef, ink: Color32, halo: Color32) -> [egui::
 /// The playhead at `x`: a line from its pin's top down through the lanes,
 /// and the pin wholly in the ruler's lower half with its point on the
 /// ruler's foot. The labels end above the middle, so the two never share a
-/// row of pixels.
+/// row of pixels. Its shapes are put in `shapes`.
 fn playhead_shapes(
     painter: &egui::Painter,
     ruler: Rect,
     lanes: Rect,
     x: f32,
     p: &Palette,
-) -> Vec<egui::Shape> {
+    shapes: &mut Vec<egui::Shape>,
+) {
     let (ink, halo) = (p.playhead(), p.playhead_halo());
     let x = sharp(painter, x);
     let (half, foot) = (PIN.x * 0.5, ruler.bottom());
@@ -1066,7 +1069,7 @@ fn playhead_shapes(
     let top = painter.round_to_pixel_center(foot - PIN.y);
     // The line starts inside the pin, behind it, so none of it, nor its
     // feathered edge, stands above the pin.
-    let mut shapes = Vec::from(haloed_line(
+    shapes.extend(haloed_line(
         x,
         egui::Rangef::new(top + 1.5, lanes.bottom()),
         ink,
@@ -1083,21 +1086,22 @@ fn playhead_shapes(
         ink,
         Stroke::new(1.0, halo),
     ));
-    shapes
 }
 
 /// The guide a held drag rests against at `x`: a line through the ruler and
-/// the lanes, and a small diamond on the ruler's foot at the time.
+/// the lanes, and a small diamond on the ruler's foot at the time, put in
+/// `shapes`.
 fn snap_guide_shapes(
     painter: &egui::Painter,
     ruler: Rect,
     lanes: Rect,
     x: f32,
     p: &Palette,
-) -> Vec<egui::Shape> {
+    shapes: &mut Vec<egui::Shape>,
+) {
     let ink = p.snap();
     let x = sharp(painter, x);
-    let mut shapes = Vec::from(haloed_line(
+    shapes.extend(haloed_line(
         x,
         egui::Rangef::new(ruler.top(), lanes.bottom()),
         ink,
@@ -1114,7 +1118,6 @@ fn snap_guide_shapes(
         ink,
         Stroke::NONE,
     ));
-    shapes
 }
 
 /// The side of a tool strip button, the room between two of one group and
