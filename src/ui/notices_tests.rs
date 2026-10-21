@@ -50,18 +50,25 @@ fn problem(text: &str) -> Notice {
 
 /// A window of `NARROW` that shows `notices` as the application does: the
 /// clocks first, then the toasts, the render queue open over them when
-/// `jobs` is given.
+/// `jobs` is given, and kept clear of the `cards` of work over the viewer.
+/// A button may stand where a toast can come, as the right panel's tabs do.
 struct Window {
     ctx: egui::Context,
     palette: Palette,
     notices: Vec<Notice>,
     jobs: Option<Vec<RenderJobInfo>>,
+    cards: Vec<Rect>,
+    beneath: Option<Rect>,
     time: f64,
     /// The words painted in the last frame, with where.
     texts: Vec<(String, Rect)>,
     /// The names accessibility was told of in the last frame, with where.
     named: Vec<(String, Rect)>,
     actions: Vec<Action>,
+    /// What the render queue answered.
+    answers: Vec<render_queue::QueueAnswer>,
+    /// How many times the button under the toasts was clicked.
+    clicked_beneath: usize,
 }
 
 impl Window {
@@ -76,10 +83,14 @@ impl Window {
             palette,
             notices,
             jobs,
+            cards: Vec::new(),
+            beneath: None,
             time: 0.0,
             texts: Vec::new(),
             named: Vec::new(),
             actions: Vec::new(),
+            answers: Vec::new(),
+            clicked_beneath: 0,
         };
         for _ in 0..4 {
             window.frame(0.05, Vec::new());
@@ -99,15 +110,23 @@ impl Window {
         let ctx = self.ctx.clone();
         let mut actions = Vec::new();
         let output = ctx.run_ui(raw, |ui| {
+            if let Some(beneath) = self.beneath
+                && ui.put(beneath, egui::Button::new("Agent")).clicked()
+            {
+                self.clicked_beneath += 1;
+            }
             expire(ui.ctx(), &mut self.notices);
-            if let Some(jobs) = &self.jobs {
-                render_queue::show(ui.ctx(), &self.palette, jobs, &[]);
+            if let Some(jobs) = &self.jobs
+                && let Some(answer) = render_queue::show(ui.ctx(), &self.palette, jobs, &[])
+            {
+                self.answers.push(answer);
             }
             let over_sheet = self.jobs.is_some();
             notices(
                 ui.ctx(),
                 &self.palette,
                 &mut self.notices,
+                &self.cards,
                 over_sheet,
                 &mut actions,
             );
@@ -296,4 +315,149 @@ fn a_toast_under_the_pointer_keeps_the_time_it_had_left() {
     assert_eq!(window.notices.len(), 1, "not at once");
     window.frame(1.0, Vec::new());
     assert!(window.notices.is_empty());
+}
+
+#[test]
+fn a_dismiss_in_sight_answers_over_a_sheet_that_opened_after_it() {
+    let mut window = Window::new(vec![problem("The folder could not be read")], None);
+    // The sheet opens over a problem already shown: egui puts a new modal
+    // on top of every layer, and its backdrop would take the click.
+    window.jobs = Some(vec![done("a.mp4")]);
+    for _ in 0..4 {
+        window.frame(0.05, Vec::new());
+    }
+    let sheet = window.sheet().expect("FIXTURE: the queue is open");
+    let dismiss = window.named("Dismiss");
+    assert_eq!(dismiss.len(), 1, "{:?}", window.named);
+    assert!(!dismiss[0].intersects(sheet), "FIXTURE: beside the sheet");
+    let id = window.notices[0].id();
+    window.click(dismiss[0].center());
+    assert!(
+        matches!(window.actions.as_slice(), [Action::DismissNotice(said)] if *said == id),
+        "{:?}",
+        window.actions
+    );
+    assert!(
+        window.answers.is_empty(),
+        "the sheet heard nothing: {:?}",
+        window.answers
+    );
+}
+
+#[test]
+fn a_toast_lets_the_pointer_through_to_what_is_under_it() {
+    let mut window = Window::new(vec![notice("Saved")], None);
+    window.frame(0.05, Vec::new());
+    let (_, words) = window.placed()[0].clone();
+    // A tab under the toast, as the right panel's are.
+    window.beneath = Some(Rect::from_center_size(words.center(), vec2(120.0, 28.0)));
+    window.frame(0.05, Vec::new());
+    window.click(words.center());
+    assert_eq!(window.clicked_beneath, 1, "the tab under it is clicked");
+    assert!(window.actions.is_empty(), "{:?}", window.actions);
+    // Resting on it still holds it.
+    window.notices[0].until = window.time + 0.5;
+    window.frame(0.05, Vec::new());
+    window.frame(10.0, Vec::new());
+    assert_eq!(window.notices.len(), 1, "it waits while it is held");
+}
+
+#[test]
+fn toasts_keep_clear_of_the_cards_of_work() {
+    let mut window = Window::new(
+        vec![
+            notice("Exported a file with a name long enough to reach the card.mp4"),
+            problem("The folder could not be read"),
+        ],
+        None,
+    );
+    // A viewer that reaches the window's trailing edge, cards at its top.
+    window.cards = vec![
+        Rect::from_min_size(pos2(380.0, 50.0), vec2(360.0, 60.0)),
+        Rect::from_min_size(pos2(380.0, 118.0), vec2(360.0, 60.0)),
+    ];
+    window.frame(0.05, Vec::new());
+    window.frame(0.05, Vec::new());
+    let placed = window.placed();
+    assert_eq!(placed.len(), 2, "both are shown: {placed:?}");
+    for (text, rect) in &placed {
+        for card in &window.cards {
+            assert!(
+                !rect.intersects(*card),
+                "{text} at {rect:?} is over {card:?}"
+            );
+        }
+    }
+    assert!(placed[0].1.bottom() < placed[1].1.top(), "the newest last");
+    for dismiss in window.named("Dismiss") {
+        for card in &window.cards {
+            assert!(!dismiss.intersects(*card), "Dismiss is over a card");
+        }
+    }
+}
+
+fn told(notices: &[Notice]) -> Vec<(&str, bool)> {
+    (notices.iter())
+        .map(|notice| (notice.text.as_str(), notice.problem))
+        .collect()
+}
+
+#[test]
+fn the_same_words_again_are_one_notice_and_a_problem_stays_one() {
+    let mut notices = vec![problem("The folder could not be read")];
+    // Said again as information, it is still a problem with no end.
+    tell(
+        &mut notices,
+        Notice {
+            until: 10.0,
+            ..notice("The folder could not be read")
+        },
+    );
+    assert_eq!(told(&notices), [("The folder could not be read", true)]);
+    assert!(notices[0].until.is_infinite());
+    // Information said again stays the longer of the two.
+    let mut notices = vec![Notice {
+        until: 20.0,
+        ..notice("Saved")
+    }];
+    tell(
+        &mut notices,
+        Notice {
+            until: 12.0,
+            ..notice("Saved")
+        },
+    );
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].until, 20.0);
+    // Information that turns out a problem becomes one.
+    tell(&mut notices, problem("Saved"));
+    assert_eq!(told(&notices), [("Saved", true)]);
+    assert!(notices[0].until.is_infinite());
+}
+
+#[test]
+fn past_four_the_oldest_information_goes_never_the_newest() {
+    let mut notices = vec![
+        problem("One"),
+        notice("Two"),
+        problem("Three"),
+        notice("Four"),
+    ];
+    tell(&mut notices, notice("Five"));
+    assert_eq!(
+        told(&notices),
+        [
+            ("One", true),
+            ("Three", true),
+            ("Four", false),
+            ("Five", false)
+        ]
+    );
+    // Among problems only, information just told still shows.
+    let mut notices = vec![problem("A"), problem("B"), problem("C"), problem("D")];
+    tell(&mut notices, notice("Saved"));
+    assert_eq!(
+        told(&notices),
+        [("B", true), ("C", true), ("D", true), ("Saved", false)]
+    );
 }

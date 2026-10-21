@@ -1202,7 +1202,6 @@ impl App {
     // ---- Notices ----------------------------------------------------------
 
     fn notify(&mut self, ctx: &egui::Context, text: impl Into<String>, problem: bool) {
-        let text = text.into();
         let now = ctx.input(|i| i.time);
         let until = now
             + if problem {
@@ -1210,25 +1209,14 @@ impl App {
             } else {
                 NOTICE_SECONDS
             };
-        // The same words twice are one notice that stays longer.
-        if let Some(notice) = self.notices.iter_mut().find(|notice| notice.text == text) {
-            notice.until = until;
-            notice.problem |= problem;
-            return;
-        }
-        self.notices.push(Notice {
-            text,
-            problem,
-            until,
-        });
-        // Four at most: the oldest information makes room first, so that a
-        // problem stays to be read for as long as there is any.
-        if self.notices.len() > 4 {
-            let oldest = (self.notices.iter())
-                .position(|notice| !notice.problem)
-                .unwrap_or(0);
-            self.notices.remove(oldest);
-        }
+        sheets::tell(
+            &mut self.notices,
+            Notice {
+                text: text.into(),
+                problem,
+                until,
+            },
+        );
     }
 
     // ---- Document ---------------------------------------------------------
@@ -6506,12 +6494,12 @@ impl App {
             self.recovery_sheet(&ctx, &p, offer);
         }
         let over_sheet = self.overlay != Overlay::None || self.recover_offer.is_some();
-        sheets::scrim(&ctx, &p, over_sheet);
-        // Files being written, and written ones offered, over the viewer.
+        // Files being written, and written ones offered, over the viewer;
+        // the toasts keep clear of them.
         let mut cards = self.saved_audio.cards();
         cards.extend(self.separating.cards());
-        sheets::saves(&ctx, &p, &cards, viewer, actions);
-        sheets::notices(&ctx, &p, &mut self.notices, over_sheet, actions);
+        let shown = sheets::saves(&ctx, &p, &cards, viewer, actions);
+        sheets::notices(&ctx, &p, &mut self.notices, &shown, over_sheet, actions);
         ui::window::interface_size(&ctx, &p);
         if self.files_held {
             sheets::drop_target(&ctx, &p);
