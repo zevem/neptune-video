@@ -152,14 +152,22 @@ impl Window {
         output.drop_without_applying_deltas();
     }
 
-    /// Where each notice's words were painted in the last frame, if they were.
+    /// Where each notice's toast was in the last frame, if it was shown:
+    /// its whole surface, which reaches past its words on every side.
     fn placed(&self) -> Vec<(String, Rect)> {
-        let words = |notice: &Notice| {
-            (self.texts.iter())
-                .find(|(text, _)| *text == notice.text)
-                .cloned()
-        };
-        self.notices.iter().filter_map(words).collect()
+        (self.notices.iter())
+            .filter_map(|notice| {
+                let rect = toast_rect(&self.ctx, notice)?;
+                // FIXTURE: a toast in sight has its words painted.
+                assert!(
+                    (self.texts.iter())
+                        .any(|(text, words)| *text == notice.text && rect.contains_rect(*words)),
+                    "{} is painted on its toast",
+                    notice.text
+                );
+                Some((notice.text.clone(), rect))
+            })
+            .collect()
     }
 
     fn sheet(&self) -> Option<Rect> {
@@ -214,10 +222,10 @@ fn toasts_sit_at_the_window_s_top_trailing_corner() {
     let toolbar = metrics::TOOLBAR_HEIGHT;
     for (text, rect) in &placed {
         assert!(
-            rect.right() <= NARROW.x - 14.0 && rect.right() > NARROW.x - 14.0 - 60.0,
+            rect.right() <= NARROW.x - 14.0 + 0.5 && rect.right() > NARROW.x - 14.0 - 60.0,
             "{text} at the trailing edge: {rect:?}"
         );
-        assert!(rect.top() > toolbar + 8.0, "{text} under the toolbar");
+        assert!(rect.top() >= toolbar + 8.0, "{text} under the toolbar");
     }
     assert!(
         placed[0].1.top() < toolbar + 8.0 + 30.0,
@@ -257,7 +265,7 @@ fn notices_go_under_an_open_sheet_rather_than_over_it() {
         );
         assert!(rect.bottom() <= NARROW.y, "{text} is inside the window");
         assert!(
-            rect.right() <= NARROW.x - 14.0,
+            rect.right() <= NARROW.x - 14.0 + 0.5,
             "{text} at the trailing edge"
         );
     }
@@ -436,7 +444,7 @@ fn the_same_words_again_are_one_notice_and_a_problem_stays_one() {
 }
 
 #[test]
-fn past_four_the_oldest_information_goes_never_the_newest() {
+fn past_four_information_goes_first_and_never_takes_a_problem_s_place() {
     let mut notices = vec![
         problem("One"),
         notice("Two"),
@@ -453,11 +461,64 @@ fn past_four_the_oldest_information_goes_never_the_newest() {
             ("Five", false)
         ]
     );
-    // Among problems only, information just told still shows.
+    // §5.8, docs/design.md: persistent failures remain discoverable, and
+    // brief success feedback does not take one away. Among problems only,
+    // information just told is not shown at all.
     let mut notices = vec![problem("A"), problem("B"), problem("C"), problem("D")];
     tell(&mut notices, notice("Saved"));
     assert_eq!(
         told(&notices),
-        [("B", true), ("C", true), ("D", true), ("Saved", false)]
+        [("A", true), ("B", true), ("C", true), ("D", true)]
     );
+    // A fifth problem takes the place of the one in sight the longest.
+    tell(&mut notices, problem("E"));
+    assert_eq!(
+        told(&notices),
+        [("B", true), ("C", true), ("D", true), ("E", true)]
+    );
+}
+
+#[test]
+fn toasts_keep_clear_of_a_sheet_a_question_was_asked_over() {
+    // The export sheet, and a question asked over it: the question is the
+    // top modal, and the sheet is still in sight under it.
+    let ctx = egui::Context::default();
+    let palette = Palette::new(Appearance::Dark, Accent::default());
+    theme::install_fonts(&ctx);
+    theme::apply(&ctx, &palette);
+    let mut told = vec![notice("Exported a.mp4")];
+    let mut time = 0.0;
+    for _ in 0..5 {
+        time += 0.05;
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, NARROW)),
+            time: Some(time),
+            ..Default::default()
+        };
+        let output = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
+            egui::Modal::new(Id::new("export-sheet"))
+                .frame(egui::Frame::new().fill(palette.elevated))
+                .show(ctx, |ui| {
+                    ui.allocate_exact_size(vec2(NARROW.x - 24.0, 480.0), Sense::hover());
+                });
+            replace_export(ctx, &palette, "a.mp4", None, "Exports");
+            notices(ctx, &palette, &mut told, &[], true, &mut Vec::new());
+        });
+        output.drop_without_applying_deltas();
+    }
+    let export = (ctx.memory(|memory| memory.area_rect(Id::new("export-sheet"))))
+        .expect("FIXTURE: the export sheet is open");
+    let asked = (ctx.memory(|memory| memory.area_rect(Id::new("replace-export-sheet"))))
+        .expect("FIXTURE: the question is open");
+    let toast = toast_rect(&ctx, &told[0]).expect("there is room under the sheet");
+    assert!(
+        !toast.intersects(asked),
+        "FIXTURE: beside the question at {asked:?}"
+    );
+    assert!(
+        !toast.intersects(export),
+        "the toast at {toast:?} is not over the sheet at {export:?}"
+    );
+    assert!(toast.bottom() <= NARROW.y);
 }

@@ -199,9 +199,10 @@ pub(crate) fn group(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
 
 // ---- The scaffold ----------------------------------------------------------
 
-/// The sheets asked over another sheet, which already dims the window: one
-/// scrim is enough, so they bring none of their own.
-const ASKED_OVER_A_SHEET: [&str; 1] = ["replace-export-sheet"];
+/// The sheets asked over another sheet, each with the one it is asked over.
+/// That one already dims the window: one scrim is enough, so they bring
+/// none of their own. It is still open, and toasts keep clear of both.
+const ASKED_OVER_A_SHEET: [(&str, &str); 1] = [("replace-export-sheet", "export-sheet")];
 
 /// Dims the window under the sheet `id`, in the window's own rounded shape,
 /// painted first into the sheet's own layer: under the sheet, and over
@@ -266,6 +267,17 @@ struct Heard<R> {
     carried: bool,
 }
 
+/// How tall a sheet that asks for `requested` is in a window this tall.
+/// Centred, it keeps clear of the title bar, as Preferences does, and is
+/// short only where the window is: in a window under about 600 tall it
+/// gives up height before it covers the toolbar, down to 240.
+fn sheet_height(requested: f32, window: f32) -> f32 {
+    let clear = window - 2.0 * (metrics::TOOLBAR_HEIGHT + 4.0);
+    requested
+        .min(clear)
+        .max(requested.min(240.0).min(window - 24.0))
+}
+
 /// Terminal's sheet under its kept id: elevated, rounded, outlined and
 /// shadowed, `width` wide or the window less 12 on each side, with the
 /// window's rounded scrim under it rather than egui's square one. Assistive tools
@@ -311,7 +323,7 @@ fn scaffold<R>(
         .corner_radius(metrics::SHEET_RADIUS)
         .stroke(Stroke::new(1.0, p.border))
         .shadow(p.sheet_shadow());
-    if !ASKED_OVER_A_SHEET.contains(&name) {
+    if !ASKED_OVER_A_SHEET.iter().any(|(asked, _)| *asked == name) {
         scrim(ctx, p, id);
     }
     let modal = egui::Modal::new(id)
@@ -795,7 +807,7 @@ pub fn checkpoints(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
     let screen = ctx.content_rect();
-    let height = 520.0f32.min(screen.height() - 24.0);
+    let height = sheet_height(520.0, screen.height());
     let mut create = false;
     let heard = scaffold(
         ctx,
@@ -1419,26 +1431,25 @@ fn card(
     if listed.cards.replace(listed.cards.get() + 1) > 0 {
         ui.add_space(14.0);
     }
-    // The first card of a pane is not titled again under the pane's own
-    // title; a search says whose each card is.
+    // Every card is titled, as Terminal's are, and never with its pane's
+    // own name, which the header already says; a search says whose each
+    // card is.
     let label = match listed.found {
-        Some(_) => Some(format!("{} · {title}", pane.name())),
-        None => (title != pane.name()).then(|| title.to_owned()),
+        Some(_) => format!("{} · {title}", pane.name()),
+        None => title.to_owned(),
     };
-    if let Some(label) = label {
-        let at = ui.cursor().min;
-        controls::section_label(ui, *p, &label);
-        said(
+    let at = ui.cursor().min;
+    controls::section_label(ui, *p, &label);
+    said(
+        ui,
+        painted(
             ui,
-            painted(
-                ui,
-                pos2(at.x + 4.0, at.y + 12.0),
-                &label,
-                theme::medium(11.5),
-            ),
+            pos2(at.x + 4.0, at.y + 12.0),
             &label,
-        );
-    }
+            theme::medium(11.5),
+        ),
+        &label,
+    );
     controls::group(ui, *p, add_rows);
 }
 
@@ -1459,15 +1470,26 @@ fn said(ui: &Ui, rect: Rect, words: &str) {
 
 /// A row of a card as `Group::row` draws it, its label said too.
 fn row<R>(ui: &mut Ui, rows: &mut Group, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    row_of(ui, rows, label, 42.0, add)
+}
+
+/// A row as `row` draws it, `height` tall.
+fn row_of<R>(
+    ui: &mut Ui,
+    rows: &mut Group,
+    label: &str,
+    height: f32,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
     let at = ui.cursor().min;
     let words = painted(
         ui,
-        pos2(at.x + 14.0, at.y + 21.0),
+        pos2(at.x + 14.0, at.y + height * 0.5),
         label,
         theme::regular(13.0),
     );
     said(ui, words, label);
-    rows.row(ui, label, add)
+    rows.row_with_height(ui, label, height, add)
 }
 
 /// A note of a card as `Group::note` draws it, its words said too.
@@ -1512,6 +1534,17 @@ fn choice<T: PartialEq + Copy>(
 
 /// The proxy cache sizes offered, in GiB.
 const PROXY_BUDGETS: [u32; 7] = [5, 10, 20, 50, 100, 200, 500];
+
+/// What the note under a System appearance says: that the system's light or
+/// dark mode chooses, or that the system has not said, so the window is
+/// dark (`Appearance::resolve`).
+fn system_note(reported: bool) -> &'static str {
+    if reported {
+        "Your system's light or dark mode chooses the appearance of the window."
+    } else {
+        "Your system has not reported light or dark mode, so Neptune Video is dark."
+    }
+}
 
 /// What a note under a control says of each quality.
 fn quality_note(quality: PreviewQuality) -> &'static str {
@@ -1559,8 +1592,14 @@ pub fn settings(
         ctx.data(|data| data.get_temp::<String>(query_id))
             .unwrap_or_default()
     };
-    // Escape leaves a search before it leaves the sheet.
-    let escape_taken = !query.is_empty() && ctx.input(|input| input.key_pressed(Key::Escape));
+    // Escape leaves a search before it leaves the sheet, but only once what
+    // is inside it is closed: an open list, or a field other than the
+    // search that had the keyboard, takes that Escape for itself.
+    let elsewhere_id = Id::new("preferences-typing-elsewhere");
+    let inner_open = egui::Popup::is_any_open(ctx)
+        || ctx.data(|data| data.get_temp::<bool>(elsewhere_id)) == Some(true);
+    let escape_taken =
+        !query.is_empty() && !inner_open && ctx.input(|input| input.key_pressed(Key::Escape));
     if escape_taken {
         query.clear();
     }
@@ -1721,7 +1760,18 @@ pub fn settings(
         },
     );
     pane.show(ctx);
-    ctx.data_mut(|data| data.insert_temp(query_id, query));
+    // Escape takes the keyboard out of a field before the next frame shows,
+    // so whether one other than the search had it is kept from this one.
+    let elsewhere = ctx
+        .memory(|memory| memory.focused())
+        .is_some_and(|focused| {
+            focused != controls::viewport_id(ctx, Id::new("preferences-search"))
+                && egui::text_edit::TextEditState::load(ctx, focused).is_some()
+        });
+    ctx.data_mut(|data| {
+        data.insert_temp(query_id, query);
+        data.insert_temp(elsewhere_id, elsewhere);
+    });
     close || heard.dismissed
 }
 
@@ -1847,7 +1897,7 @@ fn appearance(
         p,
         listed,
         pane,
-        "Appearance",
+        "Window",
         &[Setting::Appearance, Setting::Accent, Setting::InterfaceSize],
         |ui, rows| {
             if listed.has(Setting::Appearance) {
@@ -1868,6 +1918,12 @@ fn appearance(
                         actions.push(Action::SetAppearance(appearance));
                     }
                 });
+                // Which the system chose, or that it said nothing, as
+                // Terminal tells it.
+                if settings.appearance == Appearance::System {
+                    let reported = ui.ctx().system_theme().is_some();
+                    note(ui, rows, system_note(reported));
+                }
             }
             if listed.has(Setting::Accent) {
                 row(ui, rows, "Accent", |ui| {
@@ -2057,7 +2113,7 @@ fn editing(
         p,
         listed,
         PreferencesPane::Editing,
-        "Editing",
+        "While editing",
         &[Setting::Snapping, Setting::RecoveryCopy],
         |ui, rows| {
             if listed.has(Setting::Snapping) {
@@ -2096,7 +2152,7 @@ fn preview(
         p,
         listed,
         pane,
-        "Preview",
+        "Quality",
         &[Setting::Quality],
         |ui, rows| {
             row(ui, rows, "Preview quality", |ui| {
@@ -2114,7 +2170,7 @@ fn preview(
         p,
         listed,
         pane,
-        "Proxies",
+        "Proxy media",
         &[Setting::Proxies, Setting::ProxyCache],
         |ui, rows| {
             if listed.has(Setting::Proxies) {
@@ -2200,7 +2256,7 @@ fn agent(
         p,
         listed,
         pane,
-        "Agent",
+        "Requests",
         &[
             Setting::Provider,
             Setting::Model,
@@ -2303,11 +2359,14 @@ fn agent(
                     |name| name.to_string_lossy().into_owned(),
                 );
                 row(ui, rows, &name, |ui| {
-                    let remove = controls::button(ui, *p, "Remove", ButtonKind::Quiet)
-                        .on_hover_text(folder.display().to_string());
-                    if remove.clicked() {
-                        actions.push(Action::RemoveAgentFolder(index));
-                    }
+                    // Two folders may share a name; each Remove is its own.
+                    ui.push_id(("agent-folder", index), |ui| {
+                        let remove = controls::button(ui, *p, "Remove", ButtonKind::Quiet)
+                            .on_hover_text(folder.display().to_string());
+                        if remove.clicked() {
+                            actions.push(Action::RemoveAgentFolder(index));
+                        }
+                    });
                 });
             }
             row(ui, rows, "Let the agent use a folder", |ui| {
@@ -2347,26 +2406,23 @@ fn keyboard(ui: &mut Ui, p: &Palette, listed: &Listed) {
                         continue;
                     }
                     let chord = &SHORTCUTS[index];
-                    rows.row_with_height(ui, chord.what, 32.0, |ui| {
+                    row_of(ui, rows, chord.what, 32.0, |ui| {
                         let room = ui.max_rect();
                         // The keys are what the row says, so they are ink
                         // to read rather than a hint beside a command.
-                        keys(
-                            ui.painter(),
-                            pos2(room.right(), room.center().y),
-                            chord.keys(),
-                            p.secondary,
+                        let center = pos2(room.right(), room.center().y);
+                        let width = keys(ui.painter(), center, chord.keys(), p.secondary);
+                        // Said as the menus write them, apart from what
+                        // they do, as they always were.
+                        let written = shortcut(chord.keys());
+                        let caps = Rect::from_x_y_ranges(
+                            (center.x - width)..=center.x,
+                            (center.y - 9.0)..=(center.y + 9.0),
                         );
-                        // Said as the row reads, for those who do not see it.
                         let response =
-                            ui.interact(room, ui.id().with(("chord", index)), Sense::hover());
-                        response.widget_info(|| {
-                            WidgetInfo::labeled(
-                                WidgetType::Label,
-                                true,
-                                format!("{}: {}", chord.what, shortcut(chord.keys())),
-                            )
-                        });
+                            ui.interact(caps, ui.id().with(("chord", index)), Sense::hover());
+                        response
+                            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &written));
                     });
                 }
             },
@@ -2379,7 +2435,8 @@ fn keyboard(ui: &mut Ui, p: &Palette, listed: &Listed) {
 /// alternatives, written after a comma, set apart by a slash. The command
 /// key is "Ctrl" here and ⌘ on macOS, where Shift and Alt are ⇧ and ⌥, and
 /// a minus is the sign rather than a hyphen, which a cap shows as a dash.
-fn keys(painter: &egui::Painter, right_center: Pos2, keys: &str, ink: Color32) {
+/// Returns how wide the keys are.
+fn keys(painter: &egui::Painter, right_center: Pos2, keys: &str, ink: Color32) -> f32 {
     let mac = cfg!(target_os = "macos");
     let cap = |key: &str| -> String {
         match key {
@@ -2400,18 +2457,40 @@ fn keys(painter: &egui::Painter, right_center: Pos2, keys: &str, ink: Color32) {
             controls::galley_at(painter, pos2(right, right_center.y), slash);
             right -= 6.0;
         }
-        for (step, chord) in chords.rsplit(' ').enumerate() {
+        for (step, chord) in held_over(chords).iter().rev().enumerate() {
             if step > 0 {
                 right -= 8.0;
             }
-            let joined = controls::chord_keys(chord)
-                .into_iter()
+            let joined = (chord.iter().copied())
                 .map(cap)
                 .collect::<Vec<_>>()
                 .join("+");
             right -= controls::keycaps(painter, pos2(right, right_center.y), &joined, ink);
         }
     }
+    right_center.x - right
+}
+
+/// The keys of each chord of one alternative, written apart by spaces. A
+/// key written alone after a chord with modifiers is held with the same
+/// ones, as the shorthand means it: "Shift+← →" is Shift+← and Shift+→,
+/// and "Cmd+X C V" is Cmd+X, Cmd+C and Cmd+V. A bare → or C is another
+/// shortcut, so a cap never stands without the keys held for it.
+fn held_over(chords: &str) -> Vec<Vec<&str>> {
+    let mut held: Vec<&str> = Vec::new();
+    chords
+        .split(' ')
+        .filter(|chord| !chord.is_empty())
+        .map(|chord| {
+            let mut keys = controls::chord_keys(chord);
+            if keys.len() > 1 {
+                held = keys[..keys.len() - 1].to_vec();
+            } else {
+                keys.splice(0..0, held.iter().copied());
+            }
+            keys
+        })
+        .collect()
 }
 
 // ---- Work cards and toasts --------------------------------------------------
@@ -2574,8 +2653,9 @@ const MOST_NOTICES: usize = 4;
 /// that stays the longer of the two, and a problem said again as
 /// information is still a problem, which stays until it is dismissed. Past
 /// four, the oldest information makes room first, never the notice just
-/// told; with only problems left, the oldest of them goes, since it has
-/// been in sight the longest.
+/// told. Information never makes room by taking a problem away: with four
+/// problems in sight, information is not shown at all, and a fifth problem
+/// takes the place of the oldest, which has been in sight the longest.
 pub fn tell(notices: &mut Vec<Notice>, notice: Notice) {
     if let Some(told) = (notices.iter_mut()).find(|told| told.text == notice.text) {
         told.problem |= notice.problem;
@@ -2588,11 +2668,15 @@ pub fn tell(notices: &mut Vec<Notice>, notice: Notice) {
     }
     notices.push(notice);
     if notices.len() > MOST_NOTICES {
-        let older = &notices[..notices.len() - 1];
-        let oldest = (older.iter())
-            .position(|notice| !notice.problem)
-            .unwrap_or(0);
-        notices.remove(oldest);
+        let told = notices.len() - 1;
+        let oldest = (notices[..told].iter()).position(|notice| !notice.problem);
+        let gone = match oldest {
+            Some(oldest) => oldest,
+            // Brief news does not compete with a failure still to be seen.
+            None if !notices[told].problem => told,
+            None => 0,
+        };
+        notices.remove(gone);
     }
 }
 
@@ -2633,6 +2717,37 @@ pub fn expire(ctx: &egui::Context, notices: &mut Vec<Notice>) -> Option<f64> {
         .min_by(f64::total_cmp)
 }
 
+/// Where the open sheets are: the one on top, and the one a question
+/// asked over it lies on, which the toasts keep clear of as well.
+fn open_sheets(ctx: &egui::Context) -> Vec<Rect> {
+    ctx.memory(|memory| {
+        let Some(top) = memory.top_modal_layer() else {
+            return Vec::new();
+        };
+        let beneath = (ASKED_OVER_A_SHEET.iter())
+            .filter(|(asked, _)| top.id == Id::new(*asked))
+            .map(|(_, over)| egui::LayerId::new(egui::Order::Foreground, Id::new(*over)))
+            .filter(|layer| memory.areas().is_visible(layer));
+        std::iter::once(top)
+            .chain(beneath)
+            .filter_map(|layer| memory.area_rect(layer.id))
+            .collect()
+    })
+}
+
+/// Where the toast of `notice` was in the last frame, surface and all, if
+/// it was shown.
+#[cfg(test)]
+fn toast_rect(ctx: &egui::Context, notice: &Notice) -> Option<Rect> {
+    let id = Id::new(("notice", notice.id()));
+    let layer = egui::LayerId::new(egui::Order::Foreground, id);
+    ctx.memory(|memory| {
+        (memory.areas().visible_last_frame(&layer))
+            .then(|| memory.area_rect(id))
+            .flatten()
+    })
+}
+
 /// One toast, laid out: its words and its size.
 struct Toast {
     galley: Arc<Galley>,
@@ -2666,9 +2781,9 @@ pub fn notices(
     }
     let now = ctx.input(|input| input.time);
     let screen = ctx.content_rect();
-    let sheet = ctx
-        .memory(|memory| (memory.top_modal_layer()).and_then(|layer| memory.area_rect(layer.id)));
-    let under = over_sheet || sheet.is_some();
+    let sheets = open_sheets(ctx);
+    let covers = |rect: Rect| sheets.iter().any(|sheet| sheet.intersects(rect));
+    let under = over_sheet || !sheets.is_empty();
     let widest = (screen.width() - 96.0).clamp(160.0, 440.0);
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
@@ -2714,14 +2829,13 @@ pub fn notices(
             let mut rect = at(bottom);
             // Beside a sheet that comes near the window's foot, the first
             // goes into the room left under it.
-            if placed.is_empty()
-                && let Some(sheet) = sheet
-                && rect.intersects(sheet)
-            {
-                let gap = screen.bottom() - sheet.bottom() - toast.size.y;
+            if placed.is_empty() && covers(rect) {
+                let lowest =
+                    (sheets.iter()).fold(screen.top(), |lowest, sheet| lowest.max(sheet.bottom()));
+                let gap = screen.bottom() - lowest - toast.size.y;
                 rect = at(screen.bottom() - (gap * 0.5).clamp(0.0, 14.0));
             }
-            if sheet.is_some_and(|sheet| rect.intersects(sheet)) || rect.top() < screen.top() {
+            if covers(rect) || rect.top() < screen.top() {
                 break;
             }
             bottom = rect.top() - 8.0;
@@ -3011,7 +3125,7 @@ mod tests {
         viewer: Rect,
         seen: Vec<(String, Option<f64>, Rect)>,
         actions: Vec<Action>,
-        /// Where the cards were drawn, and the notice's words, last frame.
+        /// Where the cards were drawn, and the notice's toast, last frame.
         drawn: Vec<Rect>,
         notice: Option<Rect>,
     }
@@ -3057,12 +3171,9 @@ mod tests {
             });
             self.actions.extend(actions);
             self.drawn = drawn;
-            self.notice = (output.shapes.iter()).find_map(|clipped| match &clipped.shape {
-                egui::Shape::Text(text) if text.galley.text() == "Imported 1 file" => {
-                    Some(text.galley.rect.translate(text.pos.to_vec2()))
-                }
-                _ => None,
-            });
+            // The whole toast, not only its words: its surface reaches past
+            // its mark and above and below them.
+            self.notice = toast_rect(&self.ctx, &shown[0]);
             output.textures_delta.clear();
             if let Some(update) = &output.platform_output.accesskit_update {
                 self.seen = (update.nodes.iter())
@@ -3350,6 +3461,53 @@ mod tests {
         let conflicted = |ctx: &egui::Context, p: &Palette| conflict(ctx, p, "Film", &changed);
         let said = answers(conflicted, vec![vec![], vec![], struck(Key::Enter)]);
         assert_eq!(said, [None, None, Some(ConflictAnswer::SaveAs)]);
+    }
+
+    #[test]
+    fn a_key_written_alone_after_a_chord_is_held_with_its_modifiers() {
+        // §5.9.2, §7.3: every chord as it is, and a bare → or C is another
+        // shortcut, so the shorthand's modifiers carry over.
+        let caps = |chords| held_over(chords);
+        assert_eq!(caps("Shift+← →"), [vec!["Shift", "←"], vec!["Shift", "→"]]);
+        assert_eq!(caps("Alt+↑ ↓"), [vec!["Alt", "↑"], vec!["Alt", "↓"]]);
+        assert_eq!(
+            caps("Cmd+X C V"),
+            [vec!["Cmd", "X"], vec!["Cmd", "C"], vec!["Cmd", "V"]]
+        );
+        assert_eq!(caps("Shift+Cmd+Z"), [vec!["Shift", "Cmd", "Z"]]);
+        // With nothing held first, each key is its own shortcut.
+        assert_eq!(caps("Home End"), [vec!["Home"], vec!["End"]]);
+        assert_eq!(caps("J K L"), [vec!["J"], vec!["K"], vec!["L"]]);
+        assert_eq!(caps("= -"), [vec!["="], vec!["-"]]);
+        assert_eq!(
+            caps("Cmd+= Cmd+- Cmd+0"),
+            [vec!["Cmd", "="], vec!["Cmd", "-"], vec!["Cmd", "0"]]
+        );
+        // Every row of the pane comes apart into keys.
+        for chord in &SHORTCUTS {
+            for alternative in chord.keys().split(", ") {
+                assert!(
+                    held_over(alternative).iter().all(|keys| !keys.is_empty()),
+                    "{}",
+                    chord.what
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_short_window_keeps_a_sheet_clear_of_the_title_bar() {
+        // §5.9.1 in a window under about 600 tall: centred, the sheet's top
+        // is under the toolbar, as Preferences' is.
+        for window in [560.0, 600.0, 900.0] {
+            let height = sheet_height(520.0, window);
+            let top = (window - height) * 0.5;
+            assert!(top >= metrics::TOOLBAR_HEIGHT + 3.0, "{window}: {top}");
+        }
+        assert_eq!(sheet_height(520.0, 900.0), 520.0);
+        assert_eq!(sheet_height(520.0, 560.0), 464.0);
+        // Too short for both, it is still a sheet to use.
+        assert_eq!(sheet_height(520.0, 300.0), 240.0);
     }
 
     #[test]
