@@ -8,17 +8,25 @@
 //! `FIXTURE:` is a precondition of the test itself and proves nothing about
 //! the transport. `ISSUE14:` is the behavior the issue describes.
 use super::{
-    GROUP_GAP, PLAY, SPEED, SourceInput, ViewerInput, ViewerState, show, show_source, stage_palette,
+    GROUP_GAP, PICK_PROMPT, PLAY, SPEED, SourceInput, TRANSPORT, ViewerInput, ViewerState, show,
+    show_source, stage_palette,
 };
 use crate::{
     record::RecordView,
     textures::Textures,
     theme::{self, Accent, Appearance, Palette},
-    ui::{Action, ClipDraft, Selection, Transport},
+    ui::{Action, ClipDraft, ColourPick, Selection, Transport},
 };
 use editor_core::{Asset, Clip, FrameRate, MediaKind, Project, Time};
-use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
-use std::{path::PathBuf, sync::Arc};
+use editor_media::{MediaEvent, MediaService};
+use eframe::egui::{
+    self, Color32, CornerRadius, Pos2, Rect, Shape, Stroke, Vec2, accesskit, pos2, vec2,
+};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 /// The viewer's pane in an 800×600 window with the library and the inspector
 /// both shown and the library at its widest, as in the capture the issue
@@ -41,6 +49,12 @@ struct Painted {
     rings: Vec<(Pos2, f32, Stroke)>,
     /// Rectangles: where, their corners, fill and stroke.
     rects: Vec<(Rect, CornerRadius, Color32, Stroke)>,
+    /// The place in the paint order of each of `rects`, and of each closed
+    /// four-point path: the frames drawn round layers.
+    rects_at: Vec<usize>,
+    frames_at: Vec<usize>,
+    /// How many shapes were painted.
+    shapes: usize,
     /// Laid-out text and where it is.
     texts: Vec<(String, Rect)>,
     /// What accessibility is told: each name, where it is, and whether it
@@ -48,6 +62,8 @@ struct Painted {
     names: Vec<(String, Rect, bool)>,
     /// The name of what has the keyboard.
     focused: Option<String>,
+    /// The rows of a choice: each name, and whether it is the one chosen.
+    choices: Vec<(String, bool)>,
 }
 
 impl Painted {
@@ -57,6 +73,7 @@ impl Painted {
                 for shape in shapes {
                     self.collect(shape);
                 }
+                return;
             }
             Shape::Circle(circle) => {
                 if circle.fill != Color32::TRANSPARENT {
@@ -69,7 +86,11 @@ impl Painted {
             }
             Shape::Rect(rect) => {
                 self.rects
-                    .push((rect.rect, rect.corner_radius, rect.fill, rect.stroke))
+                    .push((rect.rect, rect.corner_radius, rect.fill, rect.stroke));
+                self.rects_at.push(self.shapes);
+            }
+            Shape::Path(path) if path.closed && path.points.len() == 4 => {
+                self.frames_at.push(self.shapes);
             }
             Shape::Text(text) => self.texts.push((
                 text.galley.text().to_owned(),
@@ -77,6 +98,7 @@ impl Painted {
             )),
             _ => {}
         }
+        self.shapes += 1;
     }
 
     fn text(&self, wanted: &str) -> Option<Rect> {
@@ -118,6 +140,10 @@ struct Pane {
     record: RecordView,
     /// Whether the library is shown beside the viewer.
     library: bool,
+    /// The media workers, when the test starts them, and how many failures
+    /// for the layers drawn they have published.
+    service: Option<MediaService>,
+    failures: usize,
 }
 
 impl Pane {
@@ -157,11 +183,30 @@ impl Pane {
             playing: false,
             record: RecordView::Idle,
             library: true,
+            service: None,
+            failures: 0,
         }
     }
 
     /// One pass with `events`. Returns what it asked for and what it painted.
     fn pass(&mut self, events: Vec<egui::Event>) -> (Vec<Action>, Painted) {
+        // What the workers published is handed over as the window does: a
+        // frame that could not be decoded is given up by its layer.
+        while let Some(event) = self.service.as_ref().and_then(MediaService::poll) {
+            match event {
+                MediaEvent::Error {
+                    asset_id: Some(asset),
+                    consumer,
+                    size,
+                    ..
+                } => {
+                    if self.textures.failed(consumer, asset, size) {
+                        self.failures += 1;
+                    }
+                }
+                other => panic!("FIXTURE: the worker published {other:?}"),
+            }
+        }
         self.textures.begin_frame();
         let ctx = self.ctx.clone();
         let input = egui::RawInput {
@@ -188,7 +233,7 @@ impl Pane {
                         playing: self.playing,
                         speed: 1.0,
                         looping: false,
-                        media: None,
+                        media: self.service.as_ref(),
                         record: self.record,
                         library: self.library,
                         quality: Default::default(),
@@ -237,6 +282,13 @@ impl Pane {
                 .find(|(id, _)| *id == update.focus)
                 .and_then(|(_, node)| node.label())
                 .map(str::to_owned);
+            painted.choices = (update.nodes.iter())
+                .filter(|(_, node)| node.role() == accesskit::Role::RadioButton)
+                .filter_map(|(_, node)| {
+                    let chosen = node.toggled() == Some(accesskit::Toggled::True);
+                    Some((node.label()?.to_owned(), chosen))
+                })
+                .collect();
         }
         // No renderer takes this pass's texture changes, the font atlas among
         // them, and epaint refuses to drop them unless told it is meant.
@@ -463,10 +515,13 @@ fn play_reads_as_pause_while_playing_and_still_asks_to_toggle() {
 }
 
 /// Where the record control's disc was painted, if it was: the one
-/// `Icon::Disc` (Tabler's filled `circle` glyph) in the pane, which took the
-/// microphone's place (spec §4.4.3).
-fn record_disc(_pane: &Pane, painted: &Painted) -> Option<Pos2> {
-    let mut found = (painted.texts.iter()).filter(|(text, _)| text == "\u{f671}");
+/// `Icon::Disc` (Tabler's filled `circle` glyph) in the transport, which took
+/// the microphone's place (spec §4.4.3). The stage's status dots are the
+/// same glyph (§3.8), and are not looked at.
+fn record_disc(pane: &Pane, painted: &Painted) -> Option<Pos2> {
+    let transport = Rect::from_min_max(pos2(0.0, pane.size.y - TRANSPORT), pane.size.to_pos2());
+    let mut found = (painted.texts.iter())
+        .filter(|(text, rect)| text == "\u{f671}" && transport.contains(rect.center()));
     let first = found.next().map(|(_, rect)| rect.center());
     assert!(found.next().is_none(), "FIXTURE: more than one record disc");
     first
@@ -857,4 +912,116 @@ fn without_a_media_service_the_stage_never_says_it_waits() {
     assert!(painted.text("Waiting for frames…").is_none());
     let repaint = pane.ctx.has_requested_repaint();
     assert!(!repaint, "the stage keeps the window awake for no frame");
+}
+
+#[test]
+fn a_missing_file_is_never_said_to_be_waited_for() {
+    // Spec §5.3 and §8.1 #9: waiting and failed are not the same. A frame
+    // the worker gave up is not on its way, so the stage does not say it
+    // waits for it, however long it is looked at.
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    pane.service = Some(MediaService::new(|| {}).expect("FIXTURE: the media workers start"));
+    pane.asset.path = std::env::temp_dir().join(format!(
+        "neptune-video-missing-{}.mp4",
+        uuid::Uuid::new_v4()
+    ));
+    let clip = Clip::from_asset(&pane.asset, Time::ZERO);
+    Arc::make_mut(&mut pane.project.assets).insert(pane.asset.id, pane.asset.clone());
+    Arc::make_mut(&mut pane.project.tracks[0]).clips.push(clip);
+    let until = Instant::now() + Duration::from_secs(10);
+    while pane.failures == 0 {
+        assert!(
+            Instant::now() < until,
+            "FIXTURE: the worker never said the file is missing"
+        );
+        pane.pass(Vec::new());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    for _ in 0..90 {
+        pane.pass(Vec::new());
+    }
+    let painted = pane.rest();
+    assert!(
+        painted.text("Waiting for frames…").is_none(),
+        "the stage says it waits for a frame the worker gave up"
+    );
+}
+
+#[test]
+fn the_speeds_are_a_choice_that_tells_the_one_playing() {
+    // Spec §5.7.1: a menu's choice rows are radio buttons, the one chosen
+    // selected, with the check in the icon's place.
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    let painted = pane.rest();
+    let (_, painted) = pane.click(pane.speed(&painted).center());
+    let choices = painted.choices;
+    // The nodes come in no particular order.
+    let mut names: Vec<&str> = choices.iter().map(|(name, _)| name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["0.25×", "0.5×", "1.5×", "1×", "2×", "4×"]);
+    let chosen: Vec<&str> = (choices.iter())
+        .filter(|(_, chosen)| *chosen)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(chosen, ["1×"], "the speed playing is not the one chosen");
+}
+
+#[test]
+fn the_source_header_is_reached_by_the_keyboard_as_it_reads() {
+    // Spec §7.4: Tab follows reading order, so Add to timeline, left of
+    // Close, comes first.
+    for size in [PANES[1], PANES[2]] {
+        let mut pane = Pane::new(Deck::Source, size);
+        let painted = pane.rest();
+        let (add, _) = painted
+            .named("Add to timeline")
+            .unwrap_or_else(|| panic!("FIXTURE: no Add to timeline at {size:?}"));
+        let (close, _) = painted.named("Close preview (Esc)").unwrap();
+        assert!(add.right() <= close.left(), "FIXTURE: Add reads first");
+        let painted = pane.focus("Add to timeline");
+        assert_eq!(painted.focused.as_deref(), Some("Add to timeline"));
+        let tab = egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        pane.pass(vec![tab]);
+        let (_, painted) = pane.pass(Vec::new());
+        assert_eq!(
+            painted.focused.as_deref(),
+            Some("Close preview (Esc)"),
+            "at {size:?}: Tab from Add to timeline does not go on to Close"
+        );
+    }
+}
+
+#[test]
+fn a_canvas_modes_prompt_is_painted_over_the_frame_it_draws() {
+    // Spec §5.3: the prompt is the canvas's top layer, over the picked
+    // layer's frame.
+    let mut pane = Pane::new(Deck::Timeline, PANES[2]);
+    let clip = Clip::from_asset(&pane.asset, Time::ZERO);
+    let id = clip.id;
+    Arc::make_mut(&mut pane.project.assets).insert(pane.asset.id, pane.asset.clone());
+    Arc::make_mut(&mut pane.project.tracks[0]).clips.push(clip);
+    pane.viewer.pick_colour(Some(ColourPick {
+        clip: id,
+        effect: uuid::Uuid::new_v4(),
+    }));
+    let painted = pane.rest();
+    let words = painted
+        .text(PICK_PROMPT)
+        .unwrap_or_else(|| panic!("no prompt among {:?}", painted.texts));
+    let elevated = pane.stage().elevated;
+    let capsule = (painted.rects.iter().zip(&painted.rects_at))
+        .find(|((rect, _, fill, _), _)| *fill == elevated && rect.contains_rect(words))
+        .map(|(_, at)| *at)
+        .expect("the prompt has no capsule");
+    let frame = *painted.frames_at.last().expect("FIXTURE: no frame drawn");
+    assert!(
+        capsule > frame,
+        "the prompt (shape {capsule}) is under the frame (shape {frame})"
+    );
 }

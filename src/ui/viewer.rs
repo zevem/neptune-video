@@ -784,8 +784,12 @@ impl Capsule {
     fn paint(self, painter: &egui::Painter, p: &Palette) {
         let rect = self.rect;
         controls::capsule(painter, rect, *p);
+        // The status dot is the disc glyph in its 8.4-point cell, as a
+        // Terminal pane's status capsule draws it.
         if let Some(dot) = self.dot {
-            painter.circle_filled(pos2(rect.left() + 12.0, rect.center().y), 4.2, dot);
+            let cell =
+                Rect::from_center_size(pos2(rect.left() + 12.0, rect.center().y), Vec2::splat(8.4));
+            icons::paint(painter, cell, Icon::Disc, dot);
         }
         let at = pos2(rect.left() + Self::lead(self.dot), rect.center().y);
         controls::galley_at(painter, at, self.text);
@@ -793,7 +797,8 @@ impl Capsule {
 }
 
 /// What a canvas mode asks of the pointer, in a capsule at the top of the
-/// stage from `head` down, laid out to be painted over all the canvas shows.
+/// picture from `head` down (see [`capsules_head`]), laid out to be painted
+/// over all the canvas shows.
 fn prompt(painter: &egui::Painter, stage: Rect, head: f32, p: &Palette, words: &str) -> Capsule {
     Capsule::lay(painter, p, words, None, stage, |size| {
         Rect::from_min_size(pos2(stage.center().x - size.x * 0.5, head), size)
@@ -805,18 +810,109 @@ const PICK_PROMPT: &str = "Click the picture to pick its key colour";
 /// A canvas mode whose clip the playhead is not on.
 const OFF_SCREEN: &str = "The clip is not on screen at the playhead";
 
-/// Where the capsules at the stage's top start: inset from it, or under the
-/// work cards over the viewer, which [`crate::ui::sheets::saves`] draws
-/// later in the frame as areas of their own. Where they were last laid out
-/// is what is known of them; a card not yet laid out is not waited for.
-fn capsules_head(ctx: &egui::Context, stage: Rect, cards: &[u64]) -> f32 {
+/// Where the capsules at the picture's top start: inset in it, so
+/// they sit on it and not across its edge, or under the work cards over the
+/// viewer, which [`crate::ui::sheets::saves`] draws later in the frame as
+/// areas of their own. Where they were last laid out is what is known of
+/// them; a card not yet laid out is not waited for.
+fn capsules_head(ctx: &egui::Context, canvas: Rect, cards: &[u64]) -> f32 {
     let below = ctx.memory(|memory| {
         (cards.iter())
             .filter_map(|request| memory.area_rect(Id::new(("save-audio", *request))))
             .map(|card| card.bottom() + 8.0)
             .fold(f32::NEG_INFINITY, f32::max)
     });
-    (stage.top() + CAPSULE_INSET).max(below)
+    (canvas.top() + CAPSULE_INSET).max(below)
+}
+
+/// What the stage's foot says, and in how many seconds it is to be looked
+/// at again: that layers wait for frames, once they have gone without one
+/// for a moment, or that `Auto` stepped the preview down. `since` is when
+/// the waiting began, kept from frame to frame. The window is woken once,
+/// when the moment is up, and draws nothing that moves meanwhile.
+fn stage_status(
+    since: &mut Option<f64>,
+    now: f64,
+    waiting: bool,
+    quality: PreviewQuality,
+    detail: u32,
+) -> (Option<&'static str>, Option<f64>) {
+    let waited = if waiting {
+        now - *since.get_or_insert(now)
+    } else {
+        *since = None;
+        0.0
+    };
+    if waiting && waited < WAITING_AFTER {
+        return (None, Some(WAITING_AFTER - waited));
+    }
+    let words = if waiting {
+        Some("Waiting for frames…")
+    } else if quality == PreviewQuality::Auto && detail > 1 {
+        Some("Half quality")
+    } else {
+        None
+    };
+    (words, None)
+}
+
+/// Whether a frame is on its way to the layer kept for `viewing`. The
+/// textures do not say yet: a layer whose frame could not be decoded, whose
+/// file is gone or whose worker stopped asks for nothing more, and from here
+/// looks like one whose frame is coming. Until they say, no layer is taken to
+/// wait, and the stage says nothing of it rather than that it waits for a
+/// frame given up.
+fn awaits(_textures: &Textures, _viewing: Viewing) -> bool {
+    false
+}
+
+/// The points a press takes hold of the selected layer by: its corners and
+/// its rotate knob, unless it is locked and has none.
+fn grips(layer: Option<&Placed>, stage: Rect) -> Vec<Pos2> {
+    match layer {
+        Some(layer) if !layer.locked => {
+            let mut grips = layer.corners().to_vec();
+            grips.push(layer.rotate_handle(stage).1);
+            grips
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether the segment from `a` to `b` passes through `rect`: it is in it at
+/// an end, or it spans it and the rect's corners are on both sides of it.
+fn crosses(rect: Rect, [a, b]: [Pos2; 2]) -> bool {
+    if rect.contains(a) || rect.contains(b) {
+        return true;
+    }
+    if !Rect::from_two_pos(a, b).intersects(rect) {
+        return false;
+    }
+    let along = b - a;
+    let side = |corner: Pos2| along.x * (corner - a).y - along.y * (corner - a).x;
+    let sides = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+    ]
+    .map(side);
+    sides.iter().any(|side| *side >= 0.0) && sides.iter().any(|side| *side <= 0.0)
+}
+
+/// Whether a capsule at `rect` is in the way of the selected layer: its
+/// frame runs through it, or a grip a press reaches is on it.
+fn in_the_way(rect: Rect, layer: Option<&Placed>, stage: Rect) -> bool {
+    let Some(layer) = layer else {
+        return false;
+    };
+    let [a, b, c, d] = layer.corners();
+    let framed = [[a, b], [b, c], [c, d], [d, a]]
+        .into_iter()
+        .any(|edge| crosses(rect.expand(1.0), edge));
+    framed
+        || (grips(Some(layer), stage).iter())
+            .any(|grip| rect.distance_to_pos(*grip) <= HANDLE + 3.0)
 }
 
 #[expect(clippy::too_many_arguments, reason = "one call site in the frame")]
@@ -941,18 +1037,7 @@ pub fn show(
     if keeps {
         textures.keep_frames(true);
     }
-    let composed = textures.compose(input.media, input.playing, &wanted);
-    // The pictures there was no room to keep at all, which are asked for
-    // nothing and wait for nothing: the last drawn, in the order they are
-    // painted. The window says how many of them there are.
-    let unplaced: Vec<Viewing> = {
-        let mut seen = std::collections::HashSet::with_capacity(wanted.len());
-        let painted: Vec<Viewing> = (wanted.iter())
-            .map(|want| want.viewing)
-            .filter(|viewing| seen.insert(*viewing))
-            .collect();
-        painted[painted.len().saturating_sub(composed.unplaced)..].to_vec()
-    };
+    textures.compose(input.media, input.playing, &wanted);
 
     // The camera's path through the video of each stabilized layer is
     // wanted before any is drawn with. Until it is held, and while it is of
@@ -1176,8 +1261,7 @@ pub fn show(
     // Whether a layer that is not plain was drawn as if it were.
     let mut effects_hidden = false;
     // Whether a media layer on screen has no picture yet to be drawn with,
-    // and one is on its way: without a media service none is, and a layer
-    // left without room is asked for none.
+    // and one is on its way.
     let mut waiting = false;
     for ((run, given), canvas_texture) in runs.iter().zip(given).zip(canvas_of) {
         match run {
@@ -1233,8 +1317,7 @@ pub fn show(
                     let picture = textures.picture(Viewing::Clip(layer.clip));
                     waiting |= canvas_texture.is_none()
                         && picture.is_none()
-                        && input.media.is_some()
-                        && !unplaced.contains(&Viewing::Clip(layer.clip));
+                        && awaits(textures, Viewing::Clip(layer.clip));
                     if canvas_texture.is_none()
                         && let Some(texture) = picture
                     {
@@ -1266,11 +1349,17 @@ pub fn show(
         placed: &placed,
         steadied: &steadied_on,
     };
-    // What is said at the stage's top: what a canvas mode asks of the
+    // What is said at the picture's top: what a canvas mode asks of the
     // pointer, and that effects are not shown. Both go under the work cards
     // over the viewer. The prompt is painted over everything drawn on the
-    // canvas, and the statement under the selection's frame and handles.
-    let head = capsules_head(ui.ctx(), stage, input.cards);
+    // canvas, and the statement under the selection's frame and handles,
+    // which it keeps clear of.
+    let head = capsules_head(ui.ctx(), canvas, input.cards);
+    let modal = state.pick.is_some() || state.region.is_some();
+    let selected = (selection.single())
+        .filter(|_| !modal)
+        .and_then(|clip| placed.iter().find(|place| place.clip == clip))
+        .copied();
     let asks = if let Some(pick) = state.pick {
         let shown = placed.iter().any(|place| place.clip == pick.clip);
         Some(if shown { PICK_PROMPT } else { OFF_SCREEN })
@@ -1295,9 +1384,11 @@ pub fn show(
         effects_not_shown(
             &painter,
             stage,
+            canvas,
             head,
             p,
             prompt.as_ref().map(|said| said.rect),
+            selected.as_ref(),
         )
     });
     if let Some(pick) = state.pick {
@@ -1346,41 +1437,29 @@ pub fn show(
         prompt.paint(&painter, p);
     }
     if let (Some(rect), Some((what, why))) = (said, &left_out) {
-        name_effects_not_shown(ui, rect, *what, why.as_deref());
+        let grips = grips(selected.as_ref(), stage);
+        name_effects_not_shown(ui, rect, *what, why.as_deref(), &grips);
     }
 
-    // What the preview is waiting for or has given up, at the stage's foot.
-    // Layers are said to wait only once they have gone without a picture for
-    // a moment: the window is woken once for that, and draws nothing in the
-    // meantime that moves.
+    // What the preview is waiting for, or how it is drawn, at the foot of
+    // the picture, inside it and not across its edge.
     let now = ui.input(|input| input.time);
-    let waited = if waiting {
-        now - *state.waiting_since.get_or_insert(now)
-    } else {
-        state.waiting_since = None;
-        0.0
-    };
-    if waiting && waited < WAITING_AFTER {
+    let (status, look_again) = stage_status(
+        &mut state.waiting_since,
+        now,
+        waiting,
+        input.quality,
+        textures.detail(),
+    );
+    if let Some(after) = look_again {
         ui.ctx()
-            .request_repaint_after(Duration::from_secs_f64(WAITING_AFTER - waited));
+            .request_repaint_after(Duration::from_secs_f64(after));
     }
-    let status = if waiting && waited >= WAITING_AFTER {
-        Some("Waiting for frames…")
-    } else if input.quality == PreviewQuality::Auto && textures.detail() > 1 {
-        Some("Half quality")
-    } else {
-        None
-    };
     if let Some(words) = status {
         let painter = ui.painter_at(stage);
+        let bottom = (stage.bottom()).min(canvas.bottom()) - STATUS_INSET;
         capsule(&painter, p, words, Some(p.muted), stage, |size| {
-            Rect::from_min_size(
-                pos2(
-                    stage.center().x - size.x * 0.5,
-                    stage.bottom() - STATUS_INSET - size.y,
-                ),
-                size,
-            )
+            Rect::from_min_size(pos2(stage.center().x - size.x * 0.5, bottom - size.y), size)
         });
     }
     if empty {
@@ -1487,23 +1566,33 @@ pub fn show_source(
     let tone = p.tone(tone_of_media(asset.kind));
 
     // ---- Header: what this is, and the ways out of it ----------------------
+    // Inside the well's outline, which carries the edge.
     ui.painter()
-        .hline(rect.x_range(), header.bottom(), p.hairline());
-    let mut trailing = ui.new_child(
+        .hline(rect.x_range().shrink(1.0), header.bottom(), p.hairline());
+    // Close at the trailing edge and Add before it, each in a place of its
+    // own, Add made first so the keyboard reaches the two as they read.
+    let inner = header.shrink2(vec2(8.0, 0.0));
+    let closing = Rect::from_center_size(
+        pos2(
+            inner.right() - metrics::ICON_BUTTON * 0.5,
+            header.center().y,
+        ),
+        Vec2::splat(metrics::ICON_BUTTON),
+    );
+    let mut adding = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(header.shrink2(vec2(8.0, 0.0)))
+            .max_rect(Rect::from_min_max(
+                inner.min,
+                pos2(closing.left() - 4.0, inner.bottom()),
+            ))
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
-    trailing.spacing_mut().item_spacing.x = 4.0;
-    if widgets::icon_button(&mut trailing, p, Icon::Close, "Close preview (Esc)").clicked() {
-        actions.push(Action::CloseSource);
-    }
     let compact = header.width() < 420.0;
     let add = if compact {
-        widgets::icon_button(&mut trailing, p, Icon::Plus, "Add to timeline")
+        widgets::icon_button(&mut adding, p, Icon::Plus, "Add to timeline")
     } else {
         widgets::button(
-            &mut trailing,
+            &mut adding,
             p,
             Some(Icon::Plus),
             "Add to timeline",
@@ -1516,8 +1605,12 @@ pub fn show_source(
             place: None,
         });
     }
+    let mut close = ui.new_child(egui::UiBuilder::new().max_rect(closing));
+    if widgets::icon_button(&mut close, p, Icon::Close, "Close preview (Esc)").clicked() {
+        actions.push(Action::CloseSource);
+    }
     // The asset's kind in its tone, its name, and what this view of it is.
-    let free = trailing.min_rect().left() - 8.0;
+    let free = adding.min_rect().left() - 8.0;
     let painter = ui.painter_at(header);
     let glyph = Rect::from_center_size(
         pos2(header.left() + 12.0 + 7.0, header.center().y),
@@ -1647,7 +1740,7 @@ pub fn show_source(
     if !timed {
         // A still has nothing to play: its facts take the transport's place.
         ui.painter()
-            .hline(rect.x_range(), transport.top(), p.hairline());
+            .hline(rect.x_range().shrink(1.0), transport.top(), p.hairline());
         let mut detail = "Still image".to_owned();
         if asset.width > 0 && asset.height > 0 {
             detail.push_str(&format!(" · {} × {}", asset.width, asset.height));
@@ -1660,7 +1753,7 @@ pub fn show_source(
             Align2::CENTER_CENTER,
             detail,
             theme::regular(11.5),
-            p.secondary,
+            p.muted,
         );
         return;
     }
@@ -1823,25 +1916,36 @@ impl<'a> Staged<'a> {
 
 /// Says, quietly and for as long as it is so, that layers are drawn without
 /// their blend modes, masks, effects and transitions: in a capsule at the
-/// stage's top leading corner, from `head` down, over the margin round the
-/// canvas, where a narrow window still has room for it. It is painted
-/// before the selection's frame and handles, which stay over it. A canvas
-/// mode's prompt keeps the top where the two would meet, and this goes
-/// under it. Returns where it is, which [`name_effects_not_shown`] names.
+/// picture's top leading corner, inset in it from `head` down, clear of the
+/// frame and the handles of a layer that fills it. A canvas mode's prompt
+/// keeps the top where the two would meet, and this goes under it. Where
+/// the `selected` layer's frame or grips would still meet it, it goes to the
+/// picture's bottom leading corner, unless they meet it there too. It is
+/// painted before the selection's frame and handles, which stay over it.
+/// Returns where it is, which [`name_effects_not_shown`] names.
 fn effects_not_shown(
     painter: &egui::Painter,
     stage: Rect,
+    canvas: Rect,
     head: f32,
     p: &Palette,
     prompt: Option<Rect>,
+    selected: Option<&Placed>,
 ) -> Rect {
     capsule(painter, p, EFFECTS_NOT_SHOWN, None, stage, |size| {
-        let rect = Rect::from_min_size(pos2(stage.left() + CAPSULE_INSET, head), size);
-        match prompt {
+        let left = canvas.left() + CAPSULE_INSET;
+        let rect = Rect::from_min_size(pos2(left, head), size);
+        let rect = match prompt {
             Some(prompt) if prompt.expand(4.0).intersects(rect) => {
                 rect.translate(vec2(0.0, prompt.bottom() + 6.0 - rect.top()))
             }
             _ => rect,
+        };
+        let foot = Rect::from_min_size(pos2(left, canvas.bottom() - CAPSULE_INSET - size.y), size);
+        if in_the_way(rect, selected, stage) && !in_the_way(foot, selected, stage) {
+            foot
+        } else {
+            rect
         }
     })
 }
@@ -1850,18 +1954,30 @@ const EFFECTS_NOT_SHOWN: &str = "Effects not shown";
 
 /// The label and the reason of "Effects not shown", painted at `rect`. Made
 /// after the stage's own controls, so it is over them and its reason shows
-/// on hover. `what` narrows that to the one thing left out, when the rest
-/// is drawn.
-fn name_effects_not_shown(ui: &mut Ui, rect: Rect, what: Option<&str>, why: Option<&str>) {
+/// on hover, but not while the pointer is on one of the `grips` a press on
+/// the selected layer takes hold of: what is reached for there is the
+/// handle. `what` narrows the reason to the one thing left out, when the
+/// rest is drawn.
+fn name_effects_not_shown(
+    ui: &mut Ui,
+    rect: Rect,
+    what: Option<&str>,
+    why: Option<&str>,
+    grips: &[Pos2],
+) {
     let response = ui.interact(rect, Id::new("viewer-effects-not-shown"), Sense::hover());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Label, true, EFFECTS_NOT_SHOWN)
     });
-    response.on_hover_text(format!(
-        "{} left out of this preview. {}",
-        what.unwrap_or("Blend modes, masks, effects and transitions are"),
-        why.unwrap_or("This frame asks more of the compositor than its limits allow.")
-    ));
+    let on_grip = (response.hover_pos())
+        .is_some_and(|pos| grips.iter().any(|grip| grip.distance(pos) <= HANDLE + 3.0));
+    if !on_grip {
+        response.on_hover_text(format!(
+            "{} left out of this preview. {}",
+            what.unwrap_or("Blend modes, masks, effects and transitions are"),
+            why.unwrap_or("This frame asks more of the compositor than its limits allow.")
+        ));
+    }
 }
 
 /// The colour of the picture a layer shows under `pos`, gamma-encoded, from
@@ -2477,7 +2593,9 @@ fn draw_transport(ui: &mut Ui, rect: Rect, input: &Deck, actions: &mut Vec<Actio
     let emit = input.emit;
     // Nothing plays on a deck with nothing in it.
     let playable = input.duration > Time::ZERO;
-    ui.painter().hline(rect.x_range(), rect.top(), p.hairline());
+    // The separator stops at the well's outline, which carries the edge.
+    ui.painter()
+        .hline(rect.x_range().shrink(1.0), rect.top(), p.hairline());
 
     let painter = ui.painter_at(rect);
     let now_text = timefmt::timecode(input.playhead, rate);
@@ -2605,6 +2723,26 @@ fn draw_transport(ui: &mut Ui, rect: Rect, input: &Deck, actions: &mut Vec<Actio
 /// The cell a frame step's caret is drawn in, larger than an icon's.
 const CARET: f32 = 20.0;
 
+/// An icon button's surface round a glyph drawn by its caller, at another
+/// size than an icon button's: the fill that lights on hover and darkens
+/// while pressed, which a disabled one has not, and the ring the keyboard
+/// puts on it. As [`kit::paint_icon_button`] paints them.
+fn icon_surface(ui: &Ui, p: &Palette, response: &egui::Response) {
+    let surface = response.rect.shrink(1.0);
+    let painter = ui.painter();
+    if ui.is_enabled() {
+        let hover = kit::hover_amount(ui, response);
+        if response.is_pointer_button_down_on() {
+            painter.rect_filled(surface, 7, p.pressed);
+        } else if hover > 0.0 {
+            painter.rect_filled(surface, 7, p.hover.gamma_multiply(hover));
+        }
+    }
+    if response.has_focus() {
+        painter.rect_stroke(surface, 7, Stroke::new(1.5, p.accent), StrokeKind::Inside);
+    }
+}
+
 /// A transport button: an icon button whose glyph is drawn in a cell
 /// `glyph` points wide, with the surface, ring and inks of every other.
 fn step_button(ui: &mut Ui, p: &Palette, icon: Icon, glyph: f32, label: &str) -> egui::Response {
@@ -2612,8 +2750,7 @@ fn step_button(ui: &mut Ui, p: &Palette, icon: Icon, glyph: f32, label: &str) ->
         ui.allocate_exact_size(Vec2::splat(metrics::ICON_BUTTON), Sense::click());
     let enabled = ui.is_enabled();
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
-    // The surface and the ring as an icon button has them, round no glyph.
-    kit::paint_icon_button(ui, p, &response, icon, false, Some(Color32::TRANSPARENT));
+    icon_surface(ui, p, &response);
     let down = enabled && response.is_pointer_button_down_on();
     let hover = kit::hover_amount(ui, &response);
     let ink = if !enabled {
@@ -2747,10 +2884,12 @@ fn speed_control(ui: &mut Ui, input: &Deck, place: Rect, actions: &mut Vec<Actio
     let app = input.app;
     egui::Popup::menu(&response).show(|ui| {
         widgets::menu_style(ui, 160.0);
+        // The speeds are a choice: the one playing is checked, and is
+        // told as the one chosen.
         for value in [0.25, 0.5, 1.0, 1.5, 2.0, 4.0] {
-            let icon = (value == input.speed).then_some(Icon::Check);
-            if widgets::menu_item(ui, app, icon, &format!("{}×", trim_number(value)), "").clicked()
-            {
+            let text = format!("{}×", trim_number(value));
+            let chosen = Some(value == input.speed);
+            if kit::menu_row(ui, app, None, &text, "", false, chosen).clicked() {
                 actions.push(emit(Transport::SetSpeed(value)));
                 ui.close();
             }
@@ -2783,21 +2922,9 @@ fn draw_record(ui: &mut Ui, p: &Palette, place: Rect, view: RecordView, actions:
         });
         // An icon button's surface, round a smaller glyph: the disc is a
         // solid shape, and at 16 points it would outweigh play.
-        let surface = rect.shrink(1.0);
-        let painter = ui.painter();
-        if ui.is_enabled() {
-            let hover = kit::hover_amount(ui, &response);
-            if response.is_pointer_button_down_on() {
-                painter.rect_filled(surface, 7, p.pressed);
-            } else if hover > 0.0 {
-                painter.rect_filled(surface, 7, p.hover.gamma_multiply(hover));
-            }
-        }
-        if response.has_focus() {
-            painter.rect_stroke(surface, 7, Stroke::new(1.5, p.accent), StrokeKind::Inside);
-        }
+        icon_surface(ui, p, &response);
         icons::paint(
-            painter,
+            ui.painter(),
             Rect::from_center_size(rect.center(), Vec2::splat(12.0)),
             Icon::Disc,
             tint,
@@ -3683,34 +3810,164 @@ mod tests {
         assert!(knob.distance(short.center) > HANDLE + 3.0 + short.half.y);
     }
 
-    #[test]
-    fn effects_not_shown_goes_under_a_prompt_it_would_meet() {
+    /// Lays out "Effects not shown" on a stage at `size`, with a prompt when
+    /// `asks`, and the layer `selected` as `place` puts it on the canvas.
+    /// Returns the canvas, the prompt and the statement.
+    fn said_on(
+        size: Vec2,
+        asks: bool,
+        place: impl Fn(Rect) -> Option<Placed>,
+    ) -> (Rect, Option<Rect>, Rect) {
         let ctx = egui::Context::default();
         theme::install_fonts(&ctx);
         let p = &stage_palette(&Palette::new(
             crate::theme::Appearance::Dark,
             crate::theme::Accent::Blue,
         ));
-        let mut rects = Vec::new();
+        let mut laid = None;
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let head = 10.0 + CAPSULE_INSET;
-            for width in [900.0, 300.0] {
-                let stage = Rect::from_min_size(pos2(0.0, 10.0), vec2(width, 300.0));
-                let painter = ui.painter_at(stage);
-                let said = prompt(&painter, stage, head, p, PICK_PROMPT).rect;
-                let shown = effects_not_shown(&painter, stage, head, p, Some(said));
-                rects.push((said, shown));
-            }
+            let stage = Rect::from_min_size(pos2(0.0, 10.0), size);
+            let (canvas, _) = fitted_canvas(stage, vec2(1920.0, 1080.0));
+            let head = capsules_head(ui.ctx(), canvas, &[]);
+            let painter = ui.painter_at(stage);
+            let said = asks.then(|| prompt(&painter, stage, head, p, PICK_PROMPT).rect);
+            let selected = place(canvas);
+            let shown =
+                effects_not_shown(&painter, stage, canvas, head, p, said, selected.as_ref());
+            laid = Some((canvas, said, shown));
         });
         // No renderer takes the font atlas this pass made.
         output.drop_without_applying_deltas();
-        // Wide, the two share the top; narrow, the prompt keeps it.
-        let (said, shown) = rects[0];
+        laid.unwrap()
+    }
+
+    #[test]
+    fn effects_not_shown_goes_under_a_prompt_it_would_meet() {
+        // Wide, the two share the top of the picture; narrow, the prompt
+        // keeps it.
+        let (canvas, said, shown) = said_on(vec2(1400.0, 600.0), true, |_| None);
+        let said = said.unwrap();
         assert!(!said.intersects(shown));
         assert_eq!(shown.top(), said.top());
-        assert_eq!(shown.left(), CAPSULE_INSET);
-        let (said, shown) = rects[1];
-        assert_eq!(shown.top(), said.bottom() + 6.0);
+        assert_eq!(shown.min, canvas.min + Vec2::splat(CAPSULE_INSET));
+        let (_, said, shown) = said_on(vec2(300.0, 300.0), true, |_| None);
+        assert_eq!(shown.top(), said.unwrap().bottom() + 6.0);
         assert_eq!(shown.height(), CAPSULE);
+    }
+
+    #[test]
+    fn effects_not_shown_keeps_clear_of_the_selected_layers_frame_and_grips() {
+        // Spec §5.3: the canvas overlays are one system, and the handles
+        // are not covered. At both acceptance sizes' stages.
+        for size in [vec2(824.0, 443.0), vec2(498.0, 254.0)] {
+            // A layer that fills the picture: its frame and grips are clear of
+            // the statement in its place in the picture's top leading corner.
+            let full = |canvas: Rect| Some(placed(canvas.center(), canvas.size() * 0.5));
+            let (canvas, _, shown) = said_on(size, false, full);
+            let stage = Rect::from_min_size(pos2(0.0, 10.0), size);
+            let layer = full(canvas).unwrap();
+            assert_eq!(shown.min, canvas.min + Vec2::splat(CAPSULE_INSET));
+            assert!(!in_the_way(shown, Some(&layer), stage));
+            for grip in grips(Some(&layer), stage) {
+                assert!(
+                    shown.distance_to_pos(grip) > HANDLE + 3.0,
+                    "at {size:?} the grip at {grip:?} is under {shown:?}"
+                );
+            }
+            // A small layer in that corner: the statement goes to the foot of
+            // the picture.
+            let small =
+                |canvas: Rect| Some(placed(canvas.min + vec2(60.0, 30.0), vec2(40.0, 20.0)));
+            let (canvas, _, shown) = said_on(size, false, small);
+            assert_eq!(shown.left(), canvas.left() + CAPSULE_INSET);
+            assert_eq!(shown.bottom(), canvas.bottom() - CAPSULE_INSET);
+            assert!(!in_the_way(shown, small(canvas).as_ref(), stage));
+        }
+    }
+
+    #[test]
+    fn a_frame_crosses_a_capsule_only_where_it_runs_through_it() {
+        let capsule = Rect::from_min_size(pos2(10.0, 10.0), vec2(100.0, 24.0));
+        // Through it, end to end outside.
+        assert!(crosses(capsule, [pos2(0.0, 20.0), pos2(200.0, 20.0)]));
+        assert!(crosses(capsule, [pos2(0.0, 0.0), pos2(120.0, 44.0)]));
+        // Ending in it.
+        assert!(crosses(capsule, [pos2(50.0, 0.0), pos2(50.0, 15.0)]));
+        // Past it, though their spans meet.
+        assert!(!crosses(capsule, [pos2(0.0, 30.0), pos2(30.0, 60.0)]));
+        assert!(!crosses(capsule, [pos2(0.0, 40.0), pos2(200.0, 40.0)]));
+    }
+
+    #[test]
+    fn the_capsules_at_the_top_go_under_the_work_cards() {
+        // Spec §5.3 and §9.12: the prompt and "Effects not shown" start 8
+        // under the lowest work card the window lays over the viewer.
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let p = &Palette::new(crate::theme::Appearance::Dark, crate::theme::Accent::Blue);
+        let viewer = Rect::from_min_size(pos2(300.0, 40.0), vec2(824.0, 443.0));
+        let (canvas, _) = fitted_canvas(stage_of(viewer), vec2(1920.0, 1080.0));
+        let mut under = 0.0;
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let card = crate::extract::Card {
+                request: 7,
+                text: "Saving the audio".to_owned(),
+                shown: crate::extract::Shown::Writing(0.5),
+            };
+            under = crate::ui::sheets::saves(ui.ctx(), p, &[card], viewer, &mut Vec::new());
+        });
+        output.drop_without_applying_deltas();
+        assert!(
+            under > canvas.top() + CAPSULE_INSET,
+            "FIXTURE: the card is low"
+        );
+        assert_eq!(capsules_head(&ctx, canvas, &[7]), under);
+        // Without it, or with only a card of another request, the capsules
+        // start in the picture.
+        assert_eq!(
+            capsules_head(&ctx, canvas, &[]),
+            canvas.top() + CAPSULE_INSET
+        );
+        assert_eq!(
+            capsules_head(&ctx, canvas, &[8]),
+            canvas.top() + CAPSULE_INSET
+        );
+    }
+
+    #[test]
+    fn the_stage_says_it_waits_only_after_a_moment_and_wakes_once_for_it() {
+        // Spec §5.3: "Waiting for frames…" only after 0.5 s, with no
+        // ambient animation: one look again, then none.
+        use PreviewQuality::{Auto, Full, Half, Quarter};
+        let mut since = None;
+        let (said, again) = stage_status(&mut since, 10.0, true, Full, 1);
+        assert_eq!((said, again), (None, Some(WAITING_AFTER)));
+        let (said, again) = stage_status(&mut since, 10.3, true, Full, 1);
+        assert!(said.is_none() && again.is_some_and(|after| (after - 0.2).abs() < 1e-9));
+        for now in [10.5, 12.0] {
+            assert_eq!(
+                stage_status(&mut since, now, true, Full, 1),
+                (Some("Waiting for frames…"), None)
+            );
+        }
+        // Done waiting, it starts over.
+        assert_eq!(stage_status(&mut since, 12.1, false, Full, 1), (None, None));
+        assert_eq!(since, None);
+        // "Half quality" only where Auto stepped down.
+        for (quality, detail, half) in [
+            (Auto, 2, true),
+            (Auto, 1, false),
+            (Full, 1, false),
+            (Half, 2, false),
+            (Quarter, 4, false),
+        ] {
+            let (said, again) = stage_status(&mut None, 0.0, false, quality, detail);
+            assert_eq!(
+                said == Some("Half quality"),
+                half,
+                "{quality:?} at {detail}"
+            );
+            assert_eq!(again, None);
+        }
     }
 }
