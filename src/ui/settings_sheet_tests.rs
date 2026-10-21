@@ -1,6 +1,6 @@
-//! The settings sheet's Preview section, driven as a person drives it: a
-//! control is found by the name accessibility is given for it and pressed
-//! with the pointer.
+//! Preferences' Preview pane, driven as a person drives it: a control is
+//! found by the name accessibility is given for it and pressed with the
+//! pointer.
 use super::*;
 use crate::theme::{Accent, Appearance};
 use eframe::egui::{Event, Modifiers, PointerButton, Pos2, accesskit::Role};
@@ -10,6 +10,7 @@ struct Seen {
     rect: Rect,
     role: Role,
     disabled: bool,
+    selected: Option<bool>,
 }
 
 struct Bench {
@@ -41,6 +42,10 @@ impl Bench {
         for _ in 0..3 {
             bench.frame(Vec::new());
         }
+        // §5.9.2: the Preview settings are a pane of their own, chosen from
+        // the source list.
+        let at = bench.get("Preview").rect.center();
+        bench.click(at);
         bench
     }
 
@@ -73,6 +78,8 @@ impl Bench {
                         ),
                         role: node.role(),
                         disabled: node.is_disabled(),
+                        selected: (node.toggled())
+                            .map(|toggled| toggled == egui::accesskit::Toggled::True),
                     })
                 })
                 .collect();
@@ -254,4 +261,85 @@ fn cache_usage_reads_in_the_budget_s_gigabytes() {
     assert_eq!(cache_usage(50 << 20, 20), "50 MB of 20 GB");
     assert_eq!(cache_usage(3_435_973_837, 20), "3.2 GB of 20 GB");
     assert_eq!(cache_usage(20 << 30, 20), "20.0 GB of 20 GB");
+}
+
+#[test]
+fn preferences_opens_on_the_pane_it_is_asked_for() {
+    let mut bench = Bench::new(Settings::default(), cache(0, 0));
+    assert_eq!(bench.get("Preview").selected, Some(true));
+    assert_eq!(bench.get("Appearance").selected, Some(false));
+    // As Ctrl+, and the agent's "Model…" leave it for the sheet.
+    PreferencesPane::Keyboard.show(&bench.ctx);
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    assert_eq!(bench.get("Keyboard").selected, Some(true));
+    assert!(bench.says("Play or pause"), "{:?}", bench.painted);
+    assert!(bench.says("Show or hide the library"));
+    assert!(bench.all("Auto").is_empty(), "one pane at a time");
+    // Choosing a pane is kept for the next time the sheet is shown.
+    let at = bench.get("Agent").rect.center();
+    bench.click(at);
+    assert_eq!(PreferencesPane::shown(&bench.ctx), PreferencesPane::Agent);
+    assert_eq!(bench.get("Claude").role, Role::RadioButton);
+}
+
+#[test]
+fn a_search_finds_settings_across_panes_and_says_when_nothing_is() {
+    let mut bench = Bench::new(Settings::default(), cache(0, 0));
+    let at = bench.get("Search settings").rect.center();
+    bench.click(at);
+    bench.frame(vec![Event::Text("proxy".to_owned())]);
+    bench.frame(Vec::new());
+    assert!(bench.says("Results"));
+    assert!(bench.says("Preview · Proxies"), "{:?}", bench.painted);
+    assert!(!bench.all("Proxy cache size").is_empty());
+    // A pane with nothing found says so in its ink, not by going away.
+    assert!(!bench.all("Keyboard").is_empty());
+
+    bench.frame(vec![Event::Text("zzqx".to_owned())]);
+    bench.frame(Vec::new());
+    assert!(bench.says("No settings found"));
+    assert!(bench.says("Try another word for it."));
+}
+
+#[test]
+fn appearance_offers_the_system_s_nine_accents_and_reduce_motion() {
+    let mut bench = Bench::new(Settings::default(), cache(0, 0));
+    let at = bench.get("Appearance").rect.center();
+    bench.click(at);
+    for name in ["Light", "Dark", "System"] {
+        assert_eq!(bench.get(name).role, Role::RadioButton, "{name}");
+    }
+    let accents: Vec<_> = Accent::ALL
+        .iter()
+        .map(|(_, name)| bench.get(name).rect.left())
+        .collect();
+    assert!(
+        accents.windows(2).all(|pair| pair[0] < pair[1]),
+        "Blue leads: {accents:?}"
+    );
+    assert_eq!(bench.get("Blue").selected, Some(true));
+    for (name, wanted) in [
+        ("System", "appearance System"),
+        ("Yellow", "accent Yellow"),
+        ("Reduce motion", "reduce motion true"),
+        ("Reset layout", "reset layout"),
+    ] {
+        let at = bench.get(name).rect.center();
+        bench.actions.clear();
+        bench.click(at);
+        let got = match bench.actions.as_slice() {
+            [Action::SetAppearance(appearance)] => format!("appearance {appearance:?}"),
+            [Action::SetAccent(accent)] => format!("accent {accent:?}"),
+            [Action::SetReduceMotion(on)] => format!("reduce motion {on}"),
+            [Action::ResetLayout] => "reset layout".to_owned(),
+            other => panic!("{name}: {other:?}"),
+        };
+        assert_eq!(got, wanted);
+    }
+    // At 100% the size goes nowhere by its own cell, and each step is named
+    // with its keys.
+    assert!(bench.get("100%").disabled);
+    assert!(!bench.all(&shortcut("Larger (Cmd+=)")).is_empty());
+    assert!(!bench.all(&shortcut("Smaller (Cmd+-)")).is_empty());
 }

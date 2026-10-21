@@ -76,8 +76,10 @@ const RECOVERY_INTERVAL: Duration = Duration::from_secs(15);
 const EXIT_WAIT: Duration = Duration::from_secs(2);
 /// How long it waits for a recovery lease a worker was asked for.
 const LEASE_WAIT: Duration = Duration::from_secs(1);
-const NOTICE_SECONDS: f64 = 3.2;
-const PROBLEM_SECONDS: f64 = 7.0;
+/// How long information stays in its toast, unless the pointer holds it.
+const NOTICE_SECONDS: f64 = 4.0;
+/// A problem stays until it is dismissed.
+const PROBLEM_SECONDS: f64 = f64::INFINITY;
 const PROJECT_EXTENSION: &str = "nvp";
 /// The narrowest content the library is shown beside the right panel in:
 /// a window of 820, Terminal's narrowest window with its sidebar.
@@ -1211,6 +1213,7 @@ impl App {
         // The same words twice are one notice that stays longer.
         if let Some(notice) = self.notices.iter_mut().find(|notice| notice.text == text) {
             notice.until = until;
+            notice.problem |= problem;
             return;
         }
         self.notices.push(Notice {
@@ -1218,8 +1221,13 @@ impl App {
             problem,
             until,
         });
+        // Four at most: the oldest information makes room first, so that a
+        // problem stays to be read for as long as there is any.
         if self.notices.len() > 4 {
-            self.notices.remove(0);
+            let oldest = (self.notices.iter())
+                .position(|notice| !notice.problem)
+                .unwrap_or(0);
+            self.notices.remove(oldest);
         }
     }
 
@@ -4571,9 +4579,7 @@ impl App {
                 kit::set_reduced_motion(ctx, on);
                 self.restyle(ctx);
             }
-            // Notices are dismissed by their own package; until then they
-            // leave on their clock.
-            Action::DismissNotice(_) => {}
+            Action::DismissNotice(id) => self.notices.retain(|notice| notice.id() != id),
             Action::OpenExport => self.open_export(ctx),
             // The export sheet's state is kept for it to be opened again.
             Action::OpenRenderQueue => {
@@ -6500,11 +6506,12 @@ impl App {
             self.recovery_sheet(&ctx, &p, offer);
         }
         let over_sheet = self.overlay != Overlay::None || self.recover_offer.is_some();
-        // Files being written, and written ones offered, above the notices.
+        sheets::scrim(&ctx, &p, over_sheet);
+        // Files being written, and written ones offered, over the viewer.
         let mut cards = self.saved_audio.cards();
         cards.extend(self.separating.cards());
-        let top = sheets::saves(&ctx, &p, &cards, viewer, actions);
-        sheets::notices(&ctx, &p, &self.notices, viewer, top, over_sheet);
+        sheets::saves(&ctx, &p, &cards, viewer, actions);
+        sheets::notices(&ctx, &p, &mut self.notices, over_sheet, actions);
         ui::window::interface_size(&ctx, &p);
         if self.files_held {
             sheets::drop_target(&ctx, &p);
@@ -6512,54 +6519,15 @@ impl App {
     }
 
     fn recovery_sheet(&mut self, ctx: &egui::Context, p: &Palette, offer: Offer) {
-        use widgets::Kind;
-        let mut restore = None;
-        let response = egui::Modal::new(egui::Id::new("recovery-sheet"))
-            .backdrop_color(p.scrim)
-            .frame(
-                egui::Frame::NONE
-                    .fill(p.elevated)
-                    .stroke(egui::Stroke::new(1.0, p.border))
-                    .corner_radius(egui::CornerRadius::same(metrics::SHEET_RADIUS))
-                    .shadow(p.sheet_shadow())
-                    .inner_margin(egui::Margin::same(18)),
-            )
-            .show(ctx, |ui| {
-                ui.set_width(360.0f32.min(ui.ctx().content_rect().width() - 64.0));
-                ui.label(
-                    egui::RichText::new("Restore unsaved changes?")
-                        .font(theme::semibold(15.0))
-                        .color(p.fg),
-                );
-                ui.label(
-                    egui::RichText::new(if offer.project.is_some() {
-                        "This project was closed with changes that were not saved. \
-                         A recovery copy of them was kept."
-                    } else {
-                        "A project that was never saved was open when Neptune Video last \
-                         closed. A recovery copy of it was kept."
-                    })
-                    .font(theme::regular(12.5))
-                    .color(p.secondary),
-                );
-                ui.add_space(12.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::button(ui, p, None, "Restore", Kind::Primary).clicked() {
-                        restore = Some(true);
-                    }
-                    if widgets::button(ui, p, None, "Discard", Kind::Plain).clicked() {
-                        restore = Some(false);
-                    }
-                });
-            });
+        let Some(answer) = sheets::recovery(ctx, p, offer.project.is_some()) else {
+            return;
+        };
+        self.recover_offer = None;
         // Leaving the sheet decides nothing: the copy stays for next time.
-        if restore.is_none() && response.should_close() {
-            self.recover_offer = None;
+        if answer == sheets::Recovery::Later {
             return;
         }
-        let Some(restore) = restore else { return };
-        self.recover_offer = None;
-        if restore {
+        if answer == sheets::Recovery::Restore {
             let epoch = self.epoch;
             let revision = self.editor.revision();
             self.spawn(ctx, "neptune-video-recover", move || Job::Recovered {
@@ -6927,18 +6895,20 @@ impl eframe::App for App {
         if let Some(next) = self.saved_audio.expire(now) {
             ctx.request_repaint_after(Duration::from_secs_f64((next - now).max(0.0)));
         }
-        self.notices.retain(|notice| notice.until > now);
-        if let Some(next) = self
-            .notices
-            .iter()
-            .map(|notice| notice.until)
-            .min_by(f64::total_cmp)
-        {
-            let fading = next - now < 0.25;
-            ctx.request_repaint_after(Duration::from_secs_f64(if fading {
+        if let Some(next) = sheets::expire(ctx, &mut self.notices) {
+            // The last moments fade the toast out, unless motion is reduced.
+            let fade = if kit::reduced_motion(ctx) {
+                0.0
+            } else {
+                f64::from(theme::motion::TOAST)
+            };
+            let wait = next - now - fade;
+            ctx.request_repaint_after(Duration::from_secs_f64(if wait > 0.0 {
+                wait
+            } else if fade > 0.0 {
                 1.0 / 60.0
             } else {
-                next - now - 0.2
+                (next - now).max(0.0)
             }));
         }
 
