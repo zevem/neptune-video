@@ -62,6 +62,7 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Response, Sense, Stroke,
     StrokeKind, Ui, Vec2, pos2, vec2,
 };
+use std::sync::Arc;
 
 const STRIP: f32 = metrics::PANE_HEADER;
 const RULER: f32 = 24.0;
@@ -228,6 +229,9 @@ pub struct TimelineState {
     /// The beats the tiles of this frame show, by clip, where they fall on
     /// the timeline: what snapping takes besides edges and markers.
     beats: Vec<(ClipId, Time)>,
+    /// The tracks edits go to, found again only when the selection or a
+    /// track changes.
+    targets: Targets,
 }
 
 /// The clip a key asks for, from the one selected and the playhead.
@@ -349,6 +353,7 @@ impl Default for TimelineState {
             keyboard: None,
             reveal: None,
             beats: Vec::new(),
+            targets: Targets::default(),
         }
     }
 }
@@ -947,13 +952,14 @@ pub fn show(
     if state.keys.graph {
         (state.keys).show_graph(ui, heads, lanes, &geometry, selection, input, actions);
     } else {
+        let mut targets = std::mem::take(&mut state.targets);
+        let found = targets.of(project, selection);
         let keys = &mut state.keys;
-        let targets = targets(project, selection);
-        track_heads(ui, heads, &rows, &geometry, keys, &targets, input, actions);
+        track_heads(ui, heads, &rows, &geometry, keys, found, input, actions);
         over_tiles = Some(draw_lanes(
-            ui, lanes, &rows, &geometry, state, selection, &targets, textures, peaks, input,
-            actions,
+            ui, lanes, &rows, &geometry, state, selection, found, textures, peaks, input, actions,
         ));
+        state.targets = targets;
     }
 
     // The playhead runs through the ruler and the lanes, in ink and not the
@@ -1597,12 +1603,15 @@ fn head_toggle(
     if response.has_focus() {
         controls::focus_ring(painter, rect, 6, *p);
     }
+    // Off, its glyph is in the secondary ink, as a small icon toggle's and
+    // the kind's glyph beside it are: a control, legible on the pressed
+    // card of a track edits go to.
     let color = if on {
         ink.unwrap_or(p.fg)
     } else if hover > 0.0 {
-        theme::mix(p.muted, p.fg, hover)
+        theme::mix(p.secondary, p.fg, hover)
     } else {
-        ink.unwrap_or(p.muted)
+        ink.unwrap_or(p.secondary)
     };
     icons::paint(
         painter,
@@ -2074,8 +2083,32 @@ fn track_heads(
     }
 }
 
-/// The tracks edits go to: those that hold a selected clip. One pass over
-/// the clips however many are selected, and none with nothing selected.
+/// The tracks edits go to: those that hold a selected clip. They are found
+/// in one pass over the clips, and only when the selection or a revision of
+/// a track differs from the frame before, so a frame while the playhead runs
+/// walks no clips and allocates nothing.
+#[derive(Default)]
+struct Targets {
+    /// The selection and the tracks, as shared, they were found for.
+    clips: Vec<ClipId>,
+    tracks: Vec<Arc<Track>>,
+    found: Vec<TrackId>,
+}
+
+impl Targets {
+    fn of(&mut self, project: &Project, selection: &Selection) -> &[TrackId] {
+        let same = self.clips == selection.clips
+            && self.tracks.len() == project.tracks.len()
+            && (self.tracks.iter().zip(&project.tracks)).all(|(held, now)| Arc::ptr_eq(held, now));
+        if !same {
+            self.clips.clone_from(&selection.clips);
+            self.tracks.clone_from(&project.tracks);
+            self.found = targets(project, selection);
+        }
+        &self.found
+    }
+}
+
 fn targets(project: &Project, selection: &Selection) -> Vec<TrackId> {
     if selection.clips.is_empty() {
         return Vec::new();
@@ -2242,6 +2275,25 @@ fn lane_toggle(tile: Rect) -> Rect {
         tile.center().y
     };
     Rect::from_center_size(pos2(tile.left() + 15.0, y), Vec2::splat(15.0))
+}
+
+/// Where a press takes the chevron: a small button wide, from the end of
+/// the grip that trims the tile, so the grip keeps all of its reach. On a
+/// tile with a name's row it is as tall as the row, so a transition marked
+/// under the row keeps its own.
+fn lane_toggle_hit(tile: Rect) -> Rect {
+    let center = lane_toggle(tile).center();
+    let tall = if carries_poster(tile.height()) {
+        NAME_ROW
+    } else {
+        metrics::SMALL_BUTTON
+    };
+    let left = tile.left() + EDGE_GRIP;
+    Rect::from_min_max(
+        pos2(left, center.y - tall * 0.5),
+        pos2(left + metrics::SMALL_BUTTON, center.y + tall * 0.5),
+    )
+    .intersect(tile)
 }
 
 /// What is under a point in the lanes.
@@ -3016,7 +3068,7 @@ fn draw_lanes(
     let open = (state.keys.lane_rows(project)).and_then(|_| state.keys.lane_clip());
     // Each with the ink of the name it stands before, as its tile is drawn
     // in this frame.
-    let mut toggles: Vec<(ClipId, Rect, Color32)> = Vec::new();
+    let mut toggles: Vec<(ClipId, [Rect; 2], Color32)> = Vec::new();
     for (row, clip) in clips_drawn(rows, geometry) {
         let selected = selection.contains(clip.id);
         let animated = !clip.animation.is_empty() && selected;
@@ -3026,7 +3078,8 @@ fn draw_lanes(
         let tile = clip_rect(geometry, row, clip.start, clip.end());
         if tile.width() >= LANE_TOGGLE_TILE {
             let ink = name_ink(p, selected, banded(row.track, tile));
-            toggles.push((clip.id, lane_toggle(tile), ink));
+            let chevron = [lane_toggle_hit(tile), lane_toggle(tile)];
+            toggles.push((clip.id, chevron, ink));
         }
     }
     let band = rows.iter().find(|row| row.lane > 0.0).map(|row| {
@@ -3122,7 +3175,7 @@ fn draw_lanes(
     // `offer` below.
     let claimed = |pos: Pos2| {
         band.is_some_and(|band| band.contains(pos))
-            || toggles.iter().any(|(_, rect, _)| rect.contains(pos))
+            || toggles.iter().any(|(_, [hit, _], _)| hit.contains(pos))
             || handles.iter().any(|(.., rect)| rect.contains(pos))
             || faders.iter().any(|(.., rect)| rect.contains(pos))
     };
@@ -3708,10 +3761,10 @@ fn draw_lanes(
     {
         let mut over_lanes = ui.new_child(egui::UiBuilder::new().max_rect(lanes));
         over_lanes.set_clip_rect(lanes);
-        for (id, rect, ink) in &toggles {
+        for (id, [hit, rect], ink) in &toggles {
             let is_open = open == Some(*id);
             if let Some((_, clip)) = project.clip(*id)
-                && keyframes::disclosure(&mut over_lanes, p, *rect, clip, is_open, *ink)
+                && keyframes::disclosure(&mut over_lanes, p, [*hit, *rect], clip, is_open, *ink)
             {
                 state.keys.set_lane((!is_open).then_some(*id));
             }
@@ -4765,8 +4818,27 @@ fn paint_clip(
             TransitionEdge::In => ([mark.left_bottom(), mark.right_top()], mark.right() - 0.5),
             TransitionEdge::Out => ([mark.right_bottom(), mark.left_top()], mark.left() + 0.5),
         };
-        clipped.line_segment(rising, Stroke::new(3.0, halo));
-        clipped.line_segment(rising, Stroke::new(1.0, ink));
+        // The line runs through the marking's centre, where its glyph
+        // stands when there is room for one: it breaks there, two points
+        // clear of the glyph's square, so the glyph is never struck through.
+        let glyph = mark.width() >= 24.0 && mark.height() >= 14.0;
+        let (parts, count) = if glyph {
+            let along = (rising[1] - rising[0]).normalized();
+            let gap = (6.0 + 2.0) / along.x.abs().max(along.y.abs());
+            let center = mark.center();
+            let parts = [
+                [rising[0], center - along * gap],
+                [center + along * gap, rising[1]],
+            ];
+            (parts, 2)
+        } else {
+            ([rising, rising], 1)
+        };
+        for stroke in [Stroke::new(3.0, halo), Stroke::new(1.0, ink)] {
+            for part in &parts[..count] {
+                clipped.line_segment(*part, stroke);
+            }
+        }
         if mark.width() >= 6.0 {
             clipped.vline(
                 clipped.round_to_pixel_center(end),
@@ -4774,7 +4846,7 @@ fn paint_clip(
                 Stroke::new(1.0, ink),
             );
         }
-        if mark.width() >= 24.0 && mark.height() >= 14.0 {
+        if glyph {
             let at = Rect::from_center_size(mark.center(), Vec2::splat(12.0));
             icons::paint(
                 &clipped,
@@ -5072,6 +5144,28 @@ mod tests {
         sound.clips = vec![e];
         project.tracks = vec![Arc::new(under), Arc::new(sound), Arc::new(over)];
         (project, ids)
+    }
+
+    #[test]
+    fn the_tracks_edits_go_to_are_found_again_when_the_selection_or_a_track_changes() {
+        let (mut project, [a, b, _, _, e]) = stacked();
+        let ids: Vec<TrackId> = project.tracks.iter().map(|track| track.id).collect();
+        let [under, sound, over] = [ids[0], ids[1], ids[2]];
+        let mut targets = Targets::default();
+        let mut selection = Selection::default();
+        assert!(targets.of(&project, &selection).is_empty());
+        selection.only(a);
+        assert_eq!(targets.of(&project, &selection), [under]);
+        selection.clips.push(e);
+        assert_eq!(targets.of(&project, &selection), [under, sound]);
+        // Held while nothing changes, and found again for a new revision of
+        // a track: the clip moved to another.
+        assert_eq!(targets.of(&project, &selection), [under, sound]);
+        let moved = Arc::make_mut(&mut project.tracks[1]).clips.remove(0);
+        Arc::make_mut(&mut project.tracks[2]).clips.push(moved);
+        assert_eq!(targets.of(&project, &selection), [under, over]);
+        selection.only(b);
+        assert_eq!(targets.of(&project, &selection), [over]);
     }
 
     #[test]

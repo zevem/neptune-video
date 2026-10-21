@@ -16,7 +16,7 @@ use super::{
 use crate::{
     icons::{self, Icon},
     rules,
-    theme::{self, Palette},
+    theme::{self, Palette, metrics},
     timefmt,
 };
 use editor_core::{
@@ -1712,13 +1712,14 @@ impl KeyframesState {
         }
         // The leading end of the first row is the lane's menu, under the
         // glyph of the track's kind, and first of the rows to the keyboard.
-        // It is a little smaller than a small button, so its light stops
-        // short of the hairline above and of the card's foot under a lone
-        // row, as the names' does.
-        let more = Rect::from_center_size(
-            pos2(rect.left() + HEAD_GLYPH, rect.top() + PAD + ROW * 0.5),
-            Vec2::splat(ROW + 2.0),
-        );
+        // It is pressed over a small button's square, but its light is a
+        // little smaller, so it stops short of the hairline above and of the
+        // card's foot under a lone row, as the names' does.
+        let center = pos2(rect.left() + HEAD_GLYPH, rect.top() + PAD + ROW * 0.5);
+        let more = [
+            Rect::from_center_size(center, Vec2::splat(metrics::SMALL_BUTTON)),
+            Rect::from_center_size(center, Vec2::splat(ROW + 2.0)),
+        ];
         let options = options_button(
             ui,
             p,
@@ -1959,18 +1960,23 @@ impl KeyframesState {
             if area.height() >= GRAPH_LABELLED {
                 for (y, text) in &cache.ticks {
                     let y = painter.round_to_pixel_center(*y);
-                    let galley = painter.layout_no_wrap(text.clone(), theme::mono(11.0), p.muted);
-                    let at = pos2(area.left() + 6.0, y - 2.0 - galley.size().y);
+                    let galley =
+                        painter.layout_no_wrap(text.clone(), theme::mono(11.0), p.secondary);
+                    let Some(patch) = value_patch(area, y, galley.size()) else {
+                        // Too near the plot's top to be said whole: its line
+                        // alone is drawn.
+                        continue;
+                    };
+                    let at = patch.min + vec2(2.0, 1.0);
                     // Square and on whole pixels, so the two coats meet
                     // edge to edge and no rim of either shows.
-                    let patch = (Rect::from_min_size(at, galley.size()).expand2(vec2(2.0, 1.0)))
-                        .round_to_pixels(painter.pixels_per_point());
+                    let patch = patch.round_to_pixels(painter.pixels_per_point());
                     painter.rect_filled(patch, CornerRadius::ZERO, p.bg);
                     let tinted = patch.intersect(span);
                     if tinted.is_positive() {
                         painter.rect_filled(tinted, CornerRadius::ZERO, p.lane());
                     }
-                    painter.galley(at, galley, p.muted);
+                    painter.galley(at, galley, p.secondary);
                 }
             }
         }
@@ -2574,18 +2580,31 @@ fn keys_clip(view: Rect) -> Rect {
     view.with_min_x(view.min.x - (DIAMOND_HOVER + 3.0 + 1.0))
 }
 
+/// The patch a value of the graph is said on, for its line at `y`: the
+/// label stands on the line at the plot's leading edge, and the patch
+/// reaches round it above and to the sides but not under it, so it never
+/// shaves a curve that runs along the line. None where it would not be whole
+/// inside `area`.
+fn value_patch(area: Rect, y: f32, label: Vec2) -> Option<Rect> {
+    let at = pos2(area.left() + 6.0, y - 2.0 - label.y);
+    let patch = Rect::from_min_max(at - vec2(2.0, 1.0), at + label + vec2(2.0, 0.0));
+    (patch.top() >= area.top()).then_some(patch)
+}
+
 /// The chevron on a clip's tile that opens and closes its lane, in `ink`,
-/// the ink of the name it stands before as the tile is drawn.
+/// the ink of the name it stands before as the tile is drawn. It is pressed
+/// anywhere in `hit`, a small button's width, and lit only in `rect`, the
+/// cell of its glyph.
 pub(super) fn disclosure(
     ui: &mut Ui,
     p: &Palette,
-    rect: Rect,
+    [hit, rect]: [Rect; 2],
     clip: &Clip,
     open: bool,
     ink: Color32,
 ) -> bool {
     let response = ui.interact(
-        rect,
+        hit,
         Id::new(("keyframe-lane-toggle", clip.id)),
         Sense::click(),
     );
@@ -2624,12 +2643,22 @@ pub(super) fn disclosure(
 
 /// The lane's menu, at the head of its first row: a small icon button with
 /// the graph's own "more" glyph, lit under the pointer and pressed while its
-/// menu is open.
-fn options_button(ui: &mut Ui, p: &Palette, rect: Rect, id: Id, label: &str) -> Response {
-    let response = ui.interact(rect, id, Sense::click());
+/// menu is open. It is pressed anywhere in `hit` and lit in `rect`.
+fn options_button(
+    ui: &mut Ui,
+    p: &Palette,
+    [hit, rect]: [Rect; 2],
+    id: Id,
+    label: &str,
+) -> Response {
+    let response = ui.interact(hit, id, Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
-    kit::paint_small_icon_button(ui, p, &response, Icon::Dots, open);
+    let lit = Response {
+        rect,
+        ..response.clone()
+    };
+    kit::paint_small_icon_button(ui, p, &lit, Icon::Dots, open);
     icons::hint(
         response.on_hover_cursor(CursorIcon::PointingHand),
         label,

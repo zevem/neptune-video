@@ -901,7 +901,7 @@ fn a_head_says_under_its_name_a_volume_that_is_not_the_one_it_starts_with() {
 
 // §4.4.5, with the owner's decision on Solo: a soloed head's Solo cell is
 // pressed and its Headphones glyph is in the accent, not yellow. Off, the
-// cell is bare and its glyph muted.
+// cell is bare and its glyph in the secondary ink.
 #[test]
 fn a_soloed_head_shows_its_solo_cell_pressed_with_its_glyph_in_the_accent() {
     let mut bench = Bench::new();
@@ -918,7 +918,7 @@ fn a_soloed_head_shows_its_solo_cell_pressed_with_its_glyph_in_the_accent() {
     let pressed = |bench: &Bench| {
         (bench.filled.iter()).any(|(rect, fill)| cell.contains_rect(*rect) && *fill == p.pressed)
     };
-    assert_eq!(glyphs(&bench), [p.muted]);
+    assert_eq!(glyphs(&bench), [p.secondary]);
     assert!(!pressed(&bench));
     bench.switch("Audio 1", "Solo track");
     assert!(bench.track("Audio 1").solo, "{:?}", bench.refused);

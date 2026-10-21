@@ -2036,3 +2036,64 @@ fn a_chevron_takes_the_ink_of_its_tiles_name_in_the_frame_it_is_drawn() {
     bench.frame(Vec::new());
     assert_eq!(ink(&bench), bench.palette.fg.gamma_multiply(0.8));
 }
+
+#[test]
+fn every_value_the_graph_says_is_whole_inside_its_plot_and_clear_of_its_line() {
+    // §9.1 and §5.5.14: however tall the plot, no value is cut by its top,
+    // and the patch a value stands on keeps off the line it names, so a
+    // curve along the line is drawn whole. Each value is in the secondary
+    // ink, as the ruler's times over the same plot.
+    let mut said = 0;
+    for height in (200..=420).step_by(3) {
+        let (mut bench, _, _) = graph();
+        bench.size = vec2(1000.0, height as f32);
+        bench.frame(Vec::new());
+        bench.frame(Vec::new());
+        for clipped in &bench.shapes {
+            let Shape::Text(text) = &clipped.shape else {
+                continue;
+            };
+            let Some(section) = text.galley.job.sections.first() else {
+                continue;
+            };
+            if section.format.font_id != theme::mono(11.0) {
+                continue;
+            }
+            said += 1;
+            let label = text.visual_bounding_rect();
+            assert!(
+                clipped.clip_rect.contains_rect(label),
+                "{:?} at {height} cut by {:?}",
+                text.galley.text(),
+                clipped.clip_rect
+            );
+            assert_eq!(text.fallback_color, bench.palette.secondary);
+        }
+    }
+    assert!(said > 0, "FIXTURE: the graph said its values");
+
+    // A curve of 2 points along a value's line keeps both of its rows.
+    let area = Rect::from_min_size(pos2(0.0, 100.0), vec2(600.0, 300.0));
+    let label = vec2(18.0, 13.0);
+    let patch = value_patch(area, 250.5, label).expect("room for it");
+    assert!(patch.bottom() <= 250.5 - 1.0 - 1.0, "{patch:?}");
+    assert!(patch.contains_rect(Rect::from_min_size(pos2(6.0, 250.5 - 2.0 - label.y), label)));
+    // One whose label would reach above the plot is not said.
+    assert!(value_patch(area, 100.0 + label.y + 2.0, label).is_none());
+    assert!(value_patch(area, 100.0 + label.y + 3.0, label).is_some());
+}
+
+#[test]
+fn the_lanes_menu_and_the_chevron_are_pressed_over_a_small_buttons_width() {
+    // §9.10: no control under 22 points. The lane's menu is pressed over a
+    // small button's square and lit a little smaller; the chevron is a small
+    // button wide and as tall as the name's row it stands in.
+    let (mut bench, _, _) = lane();
+    let more = bench.find("Keyframe options").expect("named").rect;
+    assert_eq!(more.size(), Vec2::splat(metrics::SMALL_BUTTON), "{more:?}");
+    let chevron = bench.find("Keyframes of shot.mp4").expect("named").rect;
+    assert_eq!(chevron.width(), metrics::SMALL_BUTTON, "{chevron:?}");
+    // Pressed at its far end, it still closes the lane.
+    bench.click_at(pos2(chevron.right() - 1.0, chevron.center().y));
+    assert_eq!(bench.state.keys.lane_clip(), None);
+}
