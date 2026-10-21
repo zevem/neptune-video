@@ -437,6 +437,7 @@ fn a_job_says_how_far_it_has_got_and_why_it_failed() {
         "the count is a label"
     );
     assert!(label("h264_nvenc"), "the encoder is a label");
+    assert!(label("Render queue"), "the title is a label");
     // Spec §3.1: where a job goes is read, not disabled, ink.
     assert_eq!(
         bench.painted_in("/home/someone/Exports"),
@@ -650,6 +651,35 @@ fn a_folder_is_shown_by_its_last_folders_from_home() {
     assert!(
         (folder - status).abs() <= 1.0,
         "the folder at {folder} lines up with the status at {status}"
+    );
+}
+
+#[test]
+fn a_long_failure_is_cut_to_two_lines_and_said_whole() {
+    // A raw FFmpeg error runs to many lines; the row shows two of them and
+    // the rest of the queue stays in sight.
+    let long = (0..10)
+        .map(|at| format!("[out#0/mp4 @ 0x5581] line {at} of what FFmpeg said on stopping"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut failed = job("failed.mp4", RenderState::Failed);
+    failed.message = Some(long.clone());
+    let bench = Bench::new(NARROW, vec![failed, job("next.mp4", RenderState::Queued)]);
+    let message = (bench.seen.iter())
+        .find(|seen| seen.role == Role::Label && seen.name == long)
+        .expect("the whole message is said");
+    assert!(
+        message.rect.height() <= 2.0 * 16.0,
+        "the message is two lines at most: {:?}",
+        message.rect
+    );
+    assert_eq!(
+        bench.painted_in("line 0 of what FFmpeg said"),
+        Some(bench.palette.red)
+    );
+    assert!(
+        in_sight(&bench, "Cancel “next.mp4”"),
+        "the next job is in sight"
     );
 }
 

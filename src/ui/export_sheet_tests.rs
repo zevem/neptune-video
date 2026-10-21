@@ -916,6 +916,18 @@ fn escape_gives_up_a_preset_name_then_closes() {
     let mut bench = Bench::new(WIDE);
     bench.click("Save preset…");
     assert!(bench.find("Preset name").is_some());
+    // The name is typed at the footer's leading edge, away from Cancel,
+    // which closes the whole sheet and stays beside Add to queue.
+    let (cancel, add) = (bench.get("Cancel").rect, bench.get("Add to queue").rect);
+    assert!(
+        (add.left() - cancel.right() - 8.0).abs() < 0.5,
+        "Cancel {cancel:?} is beside Add to queue {add:?}"
+    );
+    let stop = bench.get("Stop naming the preset").rect;
+    assert!(
+        stop.right() + 40.0 < cancel.left(),
+        "the naming {stop:?} keeps away from Cancel {cancel:?}"
+    );
     bench.key(Key::Escape);
     assert!(bench.find("Preset name").is_none());
     assert!(bench.take().is_empty());
@@ -1059,6 +1071,12 @@ fn the_settings_are_in_sight_without_scrolling() {
         ] {
             assert!(bench.in_sight(name), "{name} is in sight at {size:?}");
         }
+        let (top, bottom) = bench.band();
+        let chip = bench.chip("Recommended").rect;
+        assert!(
+            chip.top() >= top && chip.bottom() <= bottom,
+            "the Recommended chip is in sight at {size:?}"
+        );
         let facts = " · 0:10 · 1920 × 1080";
         assert!(
             bench.says("≈ ") && bench.says(facts),
@@ -1097,6 +1115,42 @@ fn the_settings_are_in_sight_without_scrolling() {
         poster.rect.height() <= 100.0,
         "a narrow sheet's poster is short"
     );
+}
+
+#[test]
+fn the_painted_words_are_said_as_the_labels_they_were() {
+    // Spec §7.1: the title, the cards' labels, their rows' labels and the
+    // extension inside the file field are painted, and still said.
+    let bench = Bench::new(WIDE);
+    for text in ["Export", "Summary", "Range", "Video", "Format", ".mp4"] {
+        assert!(
+            (bench.seen.iter()).any(|seen| seen.role == Role::Label && seen.name == text),
+            "\"{text}\" is a label"
+        );
+    }
+}
+
+#[test]
+fn the_sheet_opens_again_at_its_first_card() {
+    let mut bench = Bench::new(NARROW);
+    bench.reveal("Audio codec");
+    assert!(
+        !bench.in_sight("File name"),
+        "FIXTURE: scrolled past the file"
+    );
+    // Closed for a while, then shown again.
+    for _ in 0..2 {
+        bench.time += 0.05;
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, bench.size)),
+            time: Some(bench.time),
+            ..Default::default()
+        };
+        let _ = bench.ctx.run_ui(raw, |_| {});
+    }
+    bench.frame(Vec::new());
+    bench.frame(Vec::new());
+    assert!(bench.in_sight("File name"), "the sheet opens at its top");
 }
 
 #[test]

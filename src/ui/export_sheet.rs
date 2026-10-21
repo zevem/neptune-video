@@ -651,15 +651,20 @@ const PAD: f32 = 20.0;
 const ROW: f32 = 40.0;
 /// A line of the summary.
 const FACT: f32 = 32.0;
-/// The width of the control at the trailing end of a row, a select's as in
-/// Terminal's settings, so that a card's controls start together.
-const TRAIL: f32 = 180.0;
+/// The width of the control at the trailing end of a row, so that a card's
+/// controls start together: 20 more than a select in Terminal's settings,
+/// which the longest of today's values, "Auto (Apple VideoToolbox)", needs
+/// to be shown whole.
+const TRAIL: f32 = 200.0;
 /// From one card to the label of the next.
 const GAP: f32 = 14.0;
-/// A section's label over its card.
-const LABEL: f32 = 28.0;
-/// A label with the switch that turns its card on: the 22-point switch 6
-/// clear of the card, as a control is of the edge of its row.
+/// The tallest a select's list is before it scrolls (spec §4.3.4).
+const LIST: f32 = 260.0;
+/// A section's label over its card, Terminal's: its words 12 over the card.
+const LABEL: f32 = 24.0;
+/// A label with the switch that turns its card on: the words as far over
+/// the card as any label's, and the 22-point switch 6 clear of the card, as
+/// a control is of the edge of its row.
 const SWITCHED: f32 = 34.0;
 
 /// Terminal's sheet (`controls::sheet`) under the id the editor has always
@@ -732,12 +737,15 @@ fn scrim_opacity(ctx: &egui::Context) -> f32 {
 /// A part of a sheet's body that scrolls: `width` of content at the leading
 /// edge of `rect`, whose scroll bar floats in the room beside it, clear of
 /// what it holds. An edge that content runs on past fades into `ground`.
+/// When `afresh`, as the sheet opens, it shows its top again, wherever it
+/// was left.
 pub(super) fn scrolled(
     ui: &mut Ui,
     ground: Color32,
     rect: Rect,
     width: f32,
     salt: &str,
+    afresh: bool,
     add: impl FnOnce(&mut Ui),
 ) {
     let mut part = ui.new_child(
@@ -747,17 +755,27 @@ pub(super) fn scrolled(
             .layout(Layout::top_down(Align::Min)),
     );
     part.spacing_mut().scroll.floating_allocated_width = 0.0;
-    let output = egui::ScrollArea::vertical()
+    let mut area = egui::ScrollArea::vertical()
         .id_salt(salt)
         .auto_shrink([false, false])
-        .max_height(rect.height())
-        .show(&mut part, |ui| {
-            super::sheets::column(ui, width, |ui| {
-                ui.add_space(4.0);
-                add(ui);
-                ui.add_space(PAD);
-            });
+        .max_height(rect.height());
+    if afresh {
+        area = area.vertical_scroll_offset(0.0);
+    }
+    let output = area.show(&mut part, |ui| {
+        super::sheets::column(ui, width, |ui| {
+            ui.add_space(4.0);
+            add(ui);
+            ui.add_space(PAD);
         });
+    });
+    faded(ui, &output, ground);
+}
+
+/// Fades into `ground` each edge of what a scroll area shows that its
+/// content runs on past, so that a line cut there fades out rather than
+/// being sliced.
+fn faded<R>(ui: &Ui, output: &egui::scroll_area::ScrollAreaOutput<R>, ground: Color32) {
     let shown = output.inner_rect;
     let above = output.state.offset.y;
     let below = output.content_size.y - above - shown.height();
@@ -781,13 +799,14 @@ pub(super) fn header(
     more: impl FnOnce(&mut Ui),
 ) -> bool {
     let (_, rect) = ui.allocate_space(vec2(ui.available_width(), HEADER));
-    ui.painter().text(
+    let words = ui.painter().text(
         pos2(rect.left() + PAD, rect.center().y),
         Align2::LEFT_CENTER,
         title,
         theme::semibold(15.0),
         p.fg,
     );
+    said(ui, words, title);
     // The close control's centre is 26 in from the edge, as in Terminal.
     let controls = Rect::from_min_max(
         pos2(rect.left() + PAD, rect.top()),
@@ -833,11 +852,12 @@ fn section(ui: &mut Ui, p: &Palette, text: &str) -> Rect {
     section_of(ui, p, text, LABEL)
 }
 
-/// The label over a card in a row `height` tall.
+/// The label over a card in a row `height` tall, as far over the card
+/// whatever room the row has over it.
 fn section_of(ui: &mut Ui, p: &Palette, text: &str, height: f32) -> Rect {
     let (_, rect) = ui.allocate_space(vec2(ui.available_width(), height));
     let words = ui.painter().text(
-        pos2(rect.left() + 4.0, rect.center().y),
+        pos2(rect.left() + 4.0, rect.bottom() - LABEL * 0.5),
         Align2::LEFT_CENTER,
         text,
         theme::medium(11.5),
@@ -858,7 +878,7 @@ fn section_switch(
     enabled: bool,
 ) -> egui::Response {
     let at = Rect::from_min_size(
-        pos2(label.right() - 12.0 - 38.0, label.center().y - 11.0),
+        pos2(label.right() - 12.0 - 38.0, label.bottom() - 6.0 - 22.0),
         vec2(38.0, 22.0),
     );
     controls::place(
@@ -1240,6 +1260,7 @@ pub fn show(
             plan: plan.as_ref(),
             range_problem: range_problem.as_deref(),
             answer: &mut answer,
+            opening,
         };
         sheet.body(ui, body, state);
         let facts = (plan.as_ref())
@@ -1416,9 +1437,9 @@ fn blocker(
     None
 }
 
-/// The fixed bar under the body: what will be made at the leading edge, and
-/// at the trailing one Cancel, the other actions, then Export, the sheet's
-/// one accent.
+/// The fixed bar under the body: what will be made, or the name of a preset
+/// being kept, at the leading edge, and at the trailing one Cancel, the
+/// other actions, then Export, the sheet's one accent.
 fn footer(
     ui: &mut Ui,
     p: &Palette,
@@ -1461,9 +1482,9 @@ fn footer(
             if add.clicked() && ok {
                 *answer = Some(queued(state, false));
             }
-            if state.naming.is_some() {
-                naming(ui, p, state, answer);
-            } else {
+            // While a preset is being named, its name has the leading edge
+            // to itself, away from Cancel, which closes the whole sheet.
+            if state.naming.is_none() {
                 let own = matched(&state.settings, state.preset.as_deref(), input.presets)
                     .filter(|preset| preset.destination == Destination::Custom);
                 if let Some(preset) = own
@@ -1498,7 +1519,14 @@ fn footer(
                 bar.left_top(),
                 pos2(bar.left() + ui.available_width() - 8.0, bar.bottom()),
             );
-            if matches!(input.caps, CapabilityView::Probing) {
+            if state.naming.is_some() {
+                let mut lead = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(room)
+                        .layout(Layout::left_to_right(Align::Center)),
+                );
+                naming(&mut lead, p, state, answer);
+            } else if matches!(input.caps, CapabilityView::Probing) {
                 let glyph = Rect::from_center_size(
                     pos2(room.left() + 7.0, room.center().y),
                     Vec2::splat(14.0),
@@ -1515,9 +1543,7 @@ fn footer(
                     words,
                 );
                 said(ui, shown, "Checking encoders…");
-            } else if let Some(facts) = facts
-                && state.naming.is_none()
-            {
+            } else if let Some(facts) = facts {
                 let words = (ui.painter()).layout_job(figures(facts, p.secondary, room.width()));
                 let shown = controls::galley_at(ui.painter(), room.left_center(), words);
                 said(ui, shown, facts);
@@ -1599,6 +1625,8 @@ struct Sheet<'s, 'a> {
     plan: Option<&'s Result<ExportPlan, ExportError>>,
     range_problem: Option<&'s str>,
     answer: &'s mut Option<ExportAnswer>,
+    /// The sheet shows in this frame for the first time since it was away.
+    opening: bool,
 }
 
 impl Sheet<'_, '_> {
@@ -1616,6 +1644,8 @@ impl Sheet<'_, '_> {
     /// choices; narrower, one over the other. What does not fit scrolls.
     fn body(&mut self, ui: &mut Ui, body: Rect, state: &mut ExportSheetState) {
         let ground = self.p.elevated;
+        // A sheet opens at its first card, however far down it was left.
+        let afresh = self.opening;
         // A scrolled part reaches 6 points short of the edge beside it, so
         // that its bar floats in the margin, clear of what it holds.
         if body.width() >= TWO_COLUMNS {
@@ -1624,7 +1654,7 @@ impl Sheet<'_, '_> {
                 pos2(body.left() + PAD, body.top()),
                 pos2(split + PAD - 6.0, body.bottom()),
             );
-            scrolled(ui, ground, left, LEFT, "export-summary", |ui| {
+            scrolled(ui, ground, left, LEFT, "export-summary", afresh, |ui| {
                 self.left(ui, body.height(), state);
             });
             let right = Rect::from_min_max(
@@ -1632,7 +1662,7 @@ impl Sheet<'_, '_> {
                 pos2(body.right() - 6.0, body.bottom()),
             );
             let width = body.right() - PAD - right.left();
-            scrolled(ui, ground, right, width, "export-options", |ui| {
+            scrolled(ui, ground, right, width, "export-options", afresh, |ui| {
                 self.right(ui, state);
             });
         } else {
@@ -1641,7 +1671,7 @@ impl Sheet<'_, '_> {
                 pos2(body.right() - 6.0, body.bottom()),
             );
             let width = body.width() - PAD * 2.0;
-            scrolled(ui, ground, all, width, "export-stacked", |ui| {
+            scrolled(ui, ground, all, width, "export-stacked", afresh, |ui| {
                 self.top(ui, state);
                 ui.add_space(GAP);
                 self.right(ui, state);
@@ -1653,9 +1683,10 @@ impl Sheet<'_, '_> {
     /// in a body `height` tall.
     fn left(&mut self, ui: &mut Ui, height: f32, state: &ExportSheetState) {
         // Shorter in a short sheet, so that the six lines of the summary
-        // under it, with their label 14 under it, are seen.
+        // under it, with their label 14 under it, are seen with the room
+        // the column leaves over and under what it holds.
         let under = GAP + LABEL + 6.0 * FACT;
-        let most = (height - 4.0 - under - 4.0).clamp(72.0, 170.0);
+        let most = (height - 4.0 - under - PAD).clamp(72.0, 170.0);
         let width = ui.available_width();
         self.poster(ui, state, width, most);
         ui.add_space(GAP);
@@ -1679,7 +1710,8 @@ impl Sheet<'_, '_> {
 
     /// The picture as it lands in the output, on the stage: in the output's
     /// shape, with the bars or the crop the fit makes, in a 16:9 well at
-    /// most `width` wide and `most` tall, centred in the `width` it has.
+    /// most `width` wide and `most` tall, at the leading edge of the
+    /// `width` it has, where the card under it starts.
     fn poster(&self, ui: &mut Ui, state: &ExportSheetState, width: f32, most: f32) {
         let p = self.p;
         let canvas = self.canvas();
@@ -1689,8 +1721,7 @@ impl Sheet<'_, '_> {
         // fit's and not the well's.
         let height = (width * 9.0 / 16.0).min(most).round();
         let (_, room) = ui.allocate_space(vec2(width, height));
-        let well =
-            Rect::from_center_size(room.center(), vec2((height * 16.0 / 9.0).round(), height));
+        let well = Rect::from_min_size(room.min, vec2((height * 16.0 / 9.0).round(), height));
         let response = ui.interact(well, ui.id().with("export-poster"), Sense::hover());
         let name = match (video, self.input.poster) {
             (Some(_), Some(_)) => format!(
@@ -2045,12 +2076,20 @@ impl Sheet<'_, '_> {
             }
             if state.range == RangeChoice::Custom {
                 let playhead = self.input.playhead;
-                for (label, which, hint, name, button) in [
+                let rows = [
                     ("Start", 0, "Start", "Range start", "Start at playhead"),
                     ("End", 1, "End", "Range end", "End at playhead"),
-                ] {
-                    row(ui, p, group, label, |ui, room| {
-                        let button_width = button_width(ui, button);
+                ];
+                // Both fields and both buttons start together: after the
+                // longer label, and as wide as the longer button needs.
+                let lead = (rows.iter())
+                    .map(|(label, ..)| label_width(ui, p, label))
+                    .fold(0.0, f32::max);
+                let button_width = (rows.iter())
+                    .map(|(.., button)| button_width(ui, button))
+                    .fold(0.0, f32::max);
+                for (label, which, hint, name, button) in rows {
+                    row_after(ui, p, group, label, lead, |ui, room| {
                         let width = (room - 8.0 - button_width).clamp(48.0, 132.0);
                         ui.allocate_ui_with_layout(
                             vec2(width + 8.0 + button_width, metrics::CONTROL_HEIGHT),
@@ -2121,7 +2160,6 @@ impl Sheet<'_, '_> {
         }
         let mut chosen = None;
         let reason = |preset: &ExportPreset| preset_problem(preset, caps);
-        let tall = (ui.ctx().content_rect().height() - 160.0).clamp(160.0, 440.0);
         controls::group(ui, *p, |ui, group| {
             row(ui, p, group, "Preset", |ui, room| {
                 let width = room.min(240.0);
@@ -2135,8 +2173,10 @@ impl Sheet<'_, '_> {
                 );
                 egui::Popup::menu(&select).show(|ui| {
                     widgets::menu_style(ui, width.max(240.0));
-                    egui::ScrollArea::vertical()
-                        .max_height(tall)
+                    // A select's long list (spec §4.3.4), which opens under
+                    // the select in any window the sheet fits.
+                    let output = egui::ScrollArea::vertical()
+                        .max_height(LIST)
                         .show(ui, |ui| {
                             for (at, destination) in destinations.iter().enumerate() {
                                 if at > 0 {
@@ -2160,6 +2200,7 @@ impl Sheet<'_, '_> {
                                 }
                             }
                         });
+                    faded(ui, &output, p.elevated);
                 });
             });
             // The most used, as many as one row holds.
@@ -2316,15 +2357,17 @@ impl Sheet<'_, '_> {
                 };
             }
             if let Resolution::Custom { width, height } = &mut video.resolution {
-                row(ui, p, group, "Size", |ui, _| {
+                row(ui, p, group, "Size", |ui, room| {
                     // Laid out in reading order, which is the order Tab
-                    // walks: width, then height.
+                    // walks: width, then height. The pair is as wide as the
+                    // card's other controls, so that it starts with them.
                     let unit = (ui.painter())
                         .layout_no_wrap("×".to_owned(), theme::regular(13.0), p.muted)
                         .size()
                         .x;
+                    let each = ((room.min(TRAIL) - unit - 12.0) * 0.5).max(56.0).floor();
                     ui.allocate_ui_with_layout(
-                        vec2(72.0 * 2.0 + unit + 12.0, metrics::CONTROL_HEIGHT),
+                        vec2(each * 2.0 + unit + 12.0, metrics::CONTROL_HEIGHT),
                         Layout::left_to_right(Align::Center),
                         |ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
@@ -2334,7 +2377,7 @@ impl Sheet<'_, '_> {
                                 p,
                                 Id::new("export-width"),
                                 &mut state.width_text,
-                                72.0,
+                                each,
                                 "Width",
                                 "Width in pixels",
                                 None,
@@ -2351,7 +2394,7 @@ impl Sheet<'_, '_> {
                                 p,
                                 Id::new("export-height"),
                                 &mut state.height_text,
-                                72.0,
+                                each,
                                 "Height",
                                 "Height in pixels",
                                 Some("px"),

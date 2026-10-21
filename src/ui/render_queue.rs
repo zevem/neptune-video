@@ -169,7 +169,9 @@ pub fn show(
             pos2(list.left() + PAD, list.top()),
             pos2(list.right() - 6.0, list.bottom()),
         );
-        scrolled(ui, p.elevated, area, card, "render-queue-jobs", |ui| {
+        // The list stays where it was left: a job under way is scrolled to.
+        let salt = "render-queue-jobs";
+        scrolled(ui, p.elevated, area, card, salt, false, |ui| {
             controls::group(ui, *p, |ui, group| {
                 for (job, height) in rows.iter().zip(&heights) {
                     let place = waiting
@@ -471,7 +473,9 @@ fn message_of(job: &RenderJobInfo) -> Option<&str> {
     job.message.as_deref().filter(|m| !m.trim().is_empty())
 }
 
-/// The message laid out for a row whose card is `card` wide.
+/// The message laid out for a row whose card is `card` wide: two lines at
+/// most, cut short where it runs on, so that a long FFmpeg error does not
+/// push the other jobs out of sight. The whole of it is on hover.
 fn message_galley(
     ui: &Ui,
     p: &Palette,
@@ -484,12 +488,15 @@ fn message_galley(
     } else {
         p.secondary
     };
-    Some(ui.painter().layout(
-        message.to_owned(),
-        theme::regular(12.0),
-        color,
-        (card - TEXT - 12.0).max(40.0),
-    ))
+    let mut layout =
+        egui::text::LayoutJob::simple(message.to_owned(), theme::regular(12.0), color, 0.0);
+    layout.wrap = egui::text::TextWrapping {
+        max_width: (card - TEXT - 12.0).max(40.0),
+        max_rows: 2,
+        break_anywhere: false,
+        overflow_character: Some('…'),
+    };
+    Some(ui.painter().layout_job(layout))
 }
 
 /// How tall the row of `job` is in a card `card` wide: its name and status,
@@ -725,9 +732,13 @@ fn job_row(
         } else {
             p.secondary
         };
+        let cut = galley.elided;
         painter.galley(at, galley, color);
-        ui.interact(shown, ui.id().with(("job-message", job.id)), Sense::hover())
-            .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &message));
+        let response = ui.interact(shown, ui.id().with(("job-message", job.id)), Sense::hover());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &message));
+        if cut {
+            response.on_hover_text(message);
+        }
     }
     answer
 }
