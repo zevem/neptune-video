@@ -2915,16 +2915,22 @@ impl App {
             return;
         }
         if let Err(error) = self.start_sound(ctx) {
-            // Said once, and not tried again for the media that asked.
-            for (id, _) in self.peaks.take_wants() {
+            // Said once, and not tried again for the media that asked. Only
+            // library cards asking is not said: a tile asks again.
+            let wants = self.peaks.take_wants();
+            let said = self.peaks.beats.wanting()
+                || (wants.iter()).any(|(id, _)| !self.peaks.only_cards(*id));
+            for (id, _) in wants {
                 self.peaks.refuse(id);
             }
             self.peaks.beats.give_up_wanted();
-            self.notify(
-                ctx,
-                format!("Waveforms are unavailable: {error}"),
-                NoticeKind::Problem,
-            );
+            if said {
+                self.notify(
+                    ctx,
+                    format!("Waveforms are unavailable: {error}"),
+                    NoticeKind::Problem,
+                );
+            }
             return;
         }
         let Some(sound) = &self.sound else {
@@ -6468,7 +6474,8 @@ impl App {
         kit::corner_caps(&ui.painter_at(timeline_rect), timeline_rect, p.chrome);
         self.splitters(ui, viewer, timeline_rect, (library_width, inspector_width));
         // The sound the tiles drawn wanted and did not have is asked for
-        // now, in the frame that wanted it.
+        // now, in the frame that wanted it, and then the library cards'.
+        self.peaks.want_cards(&project);
         self.ask_peaks(&ctx);
         // Peaks or beat grids turned away while a tile of the last frame
         // still held their room are asked for again in a frame of their own.

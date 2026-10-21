@@ -1090,8 +1090,10 @@ fn media(
                             if let Some(media) = input.media {
                                 textures.want_poster(media, asset);
                             }
+                            // After the timeline's tiles, which have the room
+                            // first: see `HeldPeaks::want_card`.
                             if asset.kind == MediaKind::Audio {
-                                peaks.want(asset);
+                                peaks.want_card(asset);
                             }
                             let cells = (&mut *selection, &*textures, peaks.held(asset));
                             asset_cell(ui, cell, asset, cells, grid, input, actions);
@@ -1927,6 +1929,9 @@ mod tests {
             );
         });
         output.textures_delta.clear();
+        // Nothing is wanted until the tiles have wanted theirs.
+        assert!(!peaks.wanting(), "a card waits for the timeline's tiles");
+        peaks.want_cards(&project);
         let wanted: Vec<_> = (peaks.take_wants().into_iter()).map(|(id, _)| id).collect();
         assert_eq!(wanted, [song.id], "the sound's, and not the video's");
     }
@@ -2314,6 +2319,8 @@ mod tests {
                     &mut self.actions,
                 );
             });
+            // As the window does, once the timeline's tiles have wanted theirs.
+            self.peaks.want_cards(&self.project);
             if let Some(update) = &output.platform_output.accesskit_update {
                 self.seen = (update.nodes.iter())
                     .filter_map(|(_, node)| {
