@@ -704,7 +704,8 @@ const LOOK_BLEED: f32 = 4.0;
 
 /// The looks as the library's cards show them (§4.4.7), as many to a row as
 /// fit, at most four: the sample frame toned by the look, its name 6 under
-/// it in Medium 12. The swatches start and end where the card's rows do; a
+/// it in Medium 12, or a little smaller where a name would not fit whole
+/// (`name_font`). The swatches start and end where the card's rows do; a
 /// card's fills bleed 4 past them into the margin. The look the clip has is
 /// pressed, with a check on its swatch. Each is a button named by its look,
 /// said to be chosen or not, and `hint` is its tooltip. Hands back the look
@@ -728,6 +729,7 @@ fn look_cards(
     let height = 2.0 * pad + rows as f32 * cell_height + (rows - 1) as f32 * LOOK_GAP;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     let enabled = ui.is_enabled();
+    let font = name_font(ui, width);
     let mut picked = None;
     for (index, (preset, name)) in PRESETS.into_iter().enumerate() {
         let (row, column) = (index / columns, index % columns);
@@ -776,7 +778,7 @@ fn look_cards(
                 egui::StrokeKind::Inside,
             );
             let ink = if enabled { p.fg } else { p.muted };
-            let galley = super::controls::elided(painter, name, theme::medium(12.0), ink, width);
+            let galley = super::controls::elided(painter, name, font.clone(), ink, width);
             painter.galley(pos2(tile.left(), tile.bottom() + 6.0), galley, ink);
         }
         let response = response
@@ -787,6 +789,24 @@ fn look_cards(
         }
     }
     picked
+}
+
+/// The one size every look's name is written in under swatches `width`
+/// wide, as the section switch fits its names: Medium 12 where all seven
+/// fit, then 11.5, then 11, past which the longest are elided.
+pub(super) fn name_font(ui: &Ui, width: f32) -> egui::FontId {
+    let fits = |size: f32| {
+        PRESETS.iter().all(|(_, name)| {
+            let galley = ui.painter().layout_no_wrap(
+                (*name).to_owned(),
+                theme::medium(size),
+                egui::Color32::PLACEHOLDER,
+            );
+            galley.size().x <= width
+        })
+    };
+    let size = [12.0, 11.5].into_iter().find(|size| fits(*size));
+    theme::medium(size.unwrap_or(11.0))
 }
 
 /// A part of a whole in hundredths, read beside the slider that sets it.

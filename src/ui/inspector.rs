@@ -1427,7 +1427,7 @@ fn panes(
             scrolled(
                 ui,
                 p,
-                below(head.bottom() + 4.0),
+                below(head.bottom() + 6.0),
                 ("inspector-transition", edge),
                 |ui| {
                     transition::pane(ui, input, track, clip, edge, state, draft, actions);

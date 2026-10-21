@@ -10,7 +10,7 @@
 use super::{
     InspectorInput, InspectorState, ProjectDraft, Section,
     clip::{Layout, sections},
-    look::{addable, effect_name, family, presented},
+    look::{addable, effect_name, family, name_font, presented},
     show,
 };
 use crate::{
@@ -837,6 +837,21 @@ fn the_look_a_clip_has_is_read_from_its_effects_whoever_gave_it() {
     bench.frame(Vec::new());
     assert_eq!(chosen(&bench, "Noir"), Some(false));
     assert!(!bench.has("Remove look"));
+}
+
+#[test]
+fn the_look_names_shrink_together_before_any_is_cut() {
+    let bench = Bench::empty();
+    let mut sizes = Vec::new();
+    let mut output = bench.ctx.run_ui(egui::RawInput::default(), |ui| {
+        // The swatches of the default inspector, of the narrow window's
+        // three across and of a panel too narrow for 11.
+        for width in [82.0, 73.3, 40.0] {
+            sizes.push(name_font(ui, width).size);
+        }
+    });
+    output.textures_delta.clear();
+    assert_eq!(sizes, [12.0, 11.5, 11.0]);
 }
 
 #[test]
