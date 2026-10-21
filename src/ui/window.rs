@@ -260,10 +260,16 @@ impl Slide {
         }
     }
 
+    /// How far through the slide it is at `now`, from 0; 1 and on once it
+    /// has settled.
+    fn progress(self, now: f64) -> f32 {
+        ((now - self.started) / f64::from(theme::motion::PANEL)) as f32
+    }
+
     /// How much of the panel shows at `now`: 0 hidden, 1 shown.
     pub fn reveal(self, now: f64) -> f32 {
         let to = f32::from(u8::from(self.shown));
-        let progress = ((now - self.started) / f64::from(theme::motion::PANEL)) as f32;
+        let progress = self.progress(now);
         if progress >= 1.0 {
             to
         } else {
@@ -274,9 +280,9 @@ impl Slide {
         }
     }
 
-    /// Whether it still moves at `now`.
+    /// Whether it still moves at `now`: until the frame it settles in.
     pub fn moving(self, now: f64) -> bool {
-        now - self.started < f64::from(theme::motion::PANEL)
+        self.progress(now) < 1.0
     }
 }
 
@@ -405,6 +411,70 @@ mod tests {
         // Asked for the state it is in, it goes on as it was.
         assert_eq!(show.toward(true, 10.1), show);
         assert!(!Slide::settled(false).moving(0.0));
+    }
+
+    /// How much of the panel `slide` shows in the frame at `time`, asked
+    /// toward `shown`, and how long the window may sleep after.
+    fn slid_at(
+        ctx: &egui::Context,
+        time: f64,
+        shown: bool,
+        reduced: bool,
+    ) -> (f32, std::time::Duration) {
+        let mut reveal = f32::NAN;
+        let output = ctx.run_ui(
+            egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            },
+            |ui| {
+                kit::set_reduced_motion(ui.ctx(), reduced);
+                reveal = slide(ui.ctx(), Id::new("panel"), shown);
+            },
+        );
+        let delay = (output.viewport_output.values())
+            .map(|viewport| viewport.repaint_delay)
+            .min()
+            .unwrap_or(std::time::Duration::MAX);
+        output.drop_without_applying_deltas();
+        (reveal, delay)
+    }
+
+    #[test]
+    fn a_panel_settles_in_its_slide_and_at_once_under_reduce_motion() {
+        // §2.5 and §9.12: a panel shown at rest asks for nothing.
+        let ctx = egui::Context::default();
+        // A fresh context asks for its own first frames.
+        slid_at(&ctx, 0.9, true, false);
+        slid_at(&ctx, 0.95, true, false);
+        assert_eq!(
+            slid_at(&ctx, 1.0, true, false),
+            (1.0, std::time::Duration::MAX)
+        );
+        // Hidden at 2 s, it slides away in frames asked for as it goes, and
+        // has settled by 0.16 s later. egui draws one frame more after the
+        // last that was asked for; after that the window sleeps.
+        let (reveal, delay) = slid_at(&ctx, 2.0, false, false);
+        assert_eq!((reveal, delay), (1.0, std::time::Duration::ZERO));
+        let (reveal, delay) = slid_at(&ctx, 2.08, false, false);
+        assert!(0.0 < reveal && reveal < 1.0, "{reveal}");
+        assert_eq!(delay, std::time::Duration::ZERO);
+        let settled = 2.0 + f64::from(theme::motion::PANEL);
+        assert_eq!(slid_at(&ctx, settled, false, false).0, 0.0);
+        assert_eq!(
+            slid_at(&ctx, settled + 0.02, false, false),
+            (0.0, std::time::Duration::MAX)
+        );
+        // Under Reduce motion it is where it is going in the first frame,
+        // and asks for no other.
+        assert_eq!(
+            slid_at(&ctx, 4.0, true, true),
+            (1.0, std::time::Duration::MAX)
+        );
+        assert_eq!(
+            slid_at(&ctx, 4.05, false, true),
+            (0.0, std::time::Duration::MAX)
+        );
     }
 
     #[test]

@@ -229,6 +229,7 @@ struct Trailing {
 
 impl Trailing {
     fn left(&self) -> f32 {
+        // Where Import's room begins, beside Undo.
         let import = self
             .import
             .map(|(rect, share)| rect.right() + GROUP - (GROUP + rect.width()) * share);
@@ -239,6 +240,15 @@ impl Trailing {
             .chain(import)
             .fold(self.export.left(), f32::min)
     }
+}
+
+/// What shows of Import, at `rect` in its place beside Undo, with `share`
+/// of its room opened: none until the room is wider than the gap before
+/// Undo. It stays where it rests and is uncovered as the room opens, so
+/// what moves into the room never crosses it.
+fn opened(rect: Rect, share: f32) -> Rect {
+    let room = rect.right() + GROUP - (GROUP + rect.width()) * share;
+    rect.with_min_x(room.min(rect.right()))
 }
 
 /// The trailing controls for `fold`, with `import` of Import's room: 0
@@ -339,6 +349,15 @@ impl State {
 /// and the inspector's toggle. Laid out first and then made in reading
 /// order, so Tab walks it from the leading edge.
 pub fn show(ui: &mut Ui, rect: Rect, input: &ToolbarInput, actions: &mut Vec<Action>) {
+    // The bar is made under a name of its own. What it holds changes with
+    // the queue, the library and the folds, and must not change the names
+    // of what the window makes after it: the keyboard would leave them.
+    let mut bar = ui.new_child(
+        egui::UiBuilder::new()
+            .id(egui::Id::new("toolbar"))
+            .max_rect(rect),
+    );
+    let ui = &mut bar;
     let p = input.p;
     let middle = rect.center().y;
     let painter = ui.painter().clone();
@@ -460,6 +479,7 @@ pub fn show(ui: &mut Ui, rect: Rect, input: &ToolbarInput, actions: &mut Vec<Act
     if let Some((rect, share)) = cluster.import {
         // As the library's Import, without the folder of the library's own.
         at(ui, rect, "toolbar-import", |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(opened(rect, share)));
             ui.multiply_opacity(share);
             let import = icon_button(
                 ui,
@@ -533,15 +553,17 @@ fn launcher_name() -> String {
     format!("Ask or type a command ({})", shortcut("Cmd+K"))
 }
 
-/// Makes a control in `rect`, whatever the toolbar's layout.
+/// Makes a control in `rect`, whatever the toolbar's layout, under the
+/// bar's name and `salt`: a control that comes and goes does not rename the
+/// ones after it.
 fn at<R>(ui: &mut Ui, rect: Rect, salt: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
-    controls::place(
-        ui,
-        rect,
-        egui::Layout::left_to_right(egui::Align::Center),
-        salt,
-        add,
-    )
+    let mut control = ui.new_child(
+        egui::UiBuilder::new()
+            .id(ui.id().with(salt))
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    add(&mut control)
 }
 
 /// An icon button placed by its centre, as Terminal's toolbar places them.
@@ -687,21 +709,21 @@ fn launch(ui: &mut Ui, p: &Palette, field: Rect) -> bool {
     let name = launcher_name();
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
     let painter = ui.painter();
-    painter.rect_filled(
-        field,
-        metrics::CONTROL_RADIUS,
-        if response.is_pointer_button_down_on() {
-            p.pressed
-        } else if response.hovered() {
-            p.hover
-        } else {
-            p.control
-        },
-    );
+    let radius = metrics::CONTROL_RADIUS;
+    // The field's fill, with the hover easing in over it, or pressed.
+    painter.rect_filled(field, radius, p.control);
+    if response.is_pointer_button_down_on() {
+        painter.rect_filled(field, radius, p.pressed);
+    } else {
+        let hover = kit::hover_amount(ui, &response);
+        if hover > 0.0 {
+            painter.rect_filled(field, radius, p.hover.gamma_multiply(hover));
+        }
+    }
     if response.has_focus() {
         painter.rect_stroke(
             field,
-            metrics::CONTROL_RADIUS,
+            radius,
             egui::Stroke::new(1.5, p.accent),
             egui::StrokeKind::Inside,
         );

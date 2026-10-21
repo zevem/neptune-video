@@ -50,6 +50,7 @@ const BUSY: QueueSummary = QueueSummary {
 };
 
 struct Seen {
+    node: egui::accesskit::NodeId,
     name: String,
     rect: Rect,
     role: Role,
@@ -64,6 +65,12 @@ struct Bench {
     name: &'static str,
     /// The save state: (dirty, saving, conflict).
     state: (bool, bool, bool),
+    /// A field made after the bar, as the window makes its regions after
+    /// it, and where in it the window's next control would be named.
+    field: Option<egui::Id>,
+    after: egui::Id,
+    /// How long the window may sleep after this frame.
+    repaint: std::time::Duration,
     seen: Vec<Seen>,
     /// Text painted this frame, with where it was painted.
     painted: Vec<(String, Rect)>,
@@ -87,6 +94,9 @@ impl Bench {
             renders: QueueSummary::default(),
             name: NAME,
             state: (true, false, false),
+            field: None,
+            after: egui::Id::NULL,
+            repaint: std::time::Duration::ZERO,
             seen: Vec::new(),
             painted: Vec::new(),
             inks: Vec::new(),
@@ -139,16 +149,28 @@ impl Bench {
             renders: self.renders,
         };
         let mut actions = Vec::new();
+        let mut field = None;
+        let mut after = egui::Id::NULL;
+        let mut text = String::from("abc");
         let output = ctx.run_ui(raw, |ui| {
             let full = ui.max_rect();
             let bar = Rect::from_min_size(full.min, vec2(full.width(), metrics::TOOLBAR_HEIGHT));
             show(ui, bar, &input, &mut actions);
+            let below = Rect::from_min_size(pos2(8.0, bar.bottom() + 40.0), vec2(200.0, 24.0));
+            field = Some(ui.put(below, egui::TextEdit::singleline(&mut text)).id);
+            after = ui.next_auto_id();
         });
+        (self.field, self.after) = (field, after);
+        self.repaint = (output.viewport_output.values())
+            .map(|viewport| viewport.repaint_delay)
+            .min()
+            .unwrap_or(std::time::Duration::MAX);
         if let Some(update) = &output.platform_output.accesskit_update {
             self.seen = (update.nodes.iter())
-                .filter_map(|(_, node)| {
+                .filter_map(|(id, node)| {
                     let bounds = node.bounds()?;
                     Some(Seen {
+                        node: *id,
                         name: node.label().or_else(|| node.value())?.to_owned(),
                         rect: Rect::from_min_max(
                             pos2(bounds.x0 as f32, bounds.y0 as f32),
@@ -575,4 +597,168 @@ fn nothing_on_the_bar_is_accent_at_rest() {
             "{size:?}: the accent is painted at rest"
         );
     }
+}
+
+// §9.12: a bar at rest asks for no frames.
+#[test]
+fn the_bar_lets_the_window_sleep_at_rest() {
+    for size in [NARROWEST, WIDE] {
+        let mut bench = Bench::new(size);
+        bench.frame(Vec::new());
+        assert_eq!(bench.repaint, std::time::Duration::MAX, "{size:?}");
+    }
+}
+
+// §5.1 and §7.4: the queue's ring comes and goes with the queue's jobs, and
+// Import with the library. Neither renames the bar's other controls or what
+// the window makes after the bar, so the keyboard stays where it was.
+#[test]
+fn what_comes_and_goes_on_the_bar_keeps_the_keyboard_where_it_is() {
+    for size in [vec2(760.0, 560.0), WIDE] {
+        let mut bench = Bench::new(size);
+        let field = bench.field.expect("FIXTURE: the field is made");
+        bench.ctx.memory_mut(|memory| memory.request_focus(field));
+        bench.frame(Vec::new());
+        let (after, export) = (bench.after, bench.get("Export", false).node);
+        for renders in [BUSY, QueueSummary::default(), BUSY] {
+            bench.renders = renders;
+            bench.frame(Vec::new());
+            bench.frame(Vec::new());
+            assert_eq!((bench.field, bench.after), (Some(field), after), "{size:?}");
+            assert_eq!(
+                bench.ctx.memory(|memory| memory.focused()),
+                Some(field),
+                "{size:?}: the field keeps the keyboard"
+            );
+            assert_eq!(bench.get("Export", false).node, export, "{size:?}");
+        }
+    }
+}
+
+/// The launcher's name, and history's buttons' as the bench names them.
+fn launcher() -> String {
+    format!("Ask or type a command ({})", shortcut("Cmd+K"))
+}
+
+fn undo() -> String {
+    format!("Undo Move clip ({})", shortcut("Cmd+Z"))
+}
+
+fn redo() -> String {
+    format!("Redo Trim clip ({})", shortcut("Shift+Cmd+Z"))
+}
+
+fn has(bench: &Bench, name: &str) -> bool {
+    (bench.seen.iter()).any(|seen| seen.name == name && seen.rect.top() < metrics::TOOLBAR_HEIGHT)
+}
+
+// §5.1 fold ladder: a short name at 1440 folds nothing; the fixture's long
+// name at 760 folds the launcher to its glyph and cuts the name, and keeps
+// undo and redo apart.
+#[test]
+fn the_toolbar_folds_step_by_step() {
+    let mut bench = Bench::new(WIDE);
+    bench.name = "Bench";
+    bench.frame(Vec::new());
+    assert!(bench.get(&launcher(), false).rect.width() > 200.0);
+    assert!(has(&bench, &undo()) && has(&bench, &redo()) && !has(&bench, "More"));
+    assert!(bench.get("Export", false).rect.width() > metrics::ICON_BUTTON);
+
+    let bench = Bench::new(vec2(760.0, 560.0));
+    let icon = bench.get(&launcher(), false).rect;
+    assert!(
+        (icon.width() - metrics::ICON_BUTTON).abs() < 0.5,
+        "the launcher is its glyph: {icon:?}"
+    );
+    assert!(has(&bench, &undo()) && has(&bench, &redo()) && !has(&bench, "More"));
+    assert!(bench.get("Export", false).rect.width() > metrics::ICON_BUTTON);
+    assert!(bench.name_rect().width() >= NAME_ROOMY - 0.5);
+}
+
+// §5.1: the name keeps 120 before undo and redo fold into More, however
+// long it is.
+#[test]
+fn a_long_name_keeps_its_room_before_history_folds() {
+    const LONG: &str = "The documentary about the long walk home, second edit, with the \
+        interviews from the coast and the night shoot, picture locked";
+    let mut bench = Bench::new(WIDE);
+    bench.name = LONG;
+    bench.frame(Vec::new());
+    assert!(!has(&bench, "More"), "nothing folds into More at 1440");
+    let name = bench.name_rect();
+    assert!(name.width() >= NAME_ROOMY - 0.5, "{name:?}");
+    assert!(name.right() + 4.0 <= bench.leftmost_after_title());
+}
+
+// §5.1: where undo and redo do not fit, More holds them, with their names,
+// shortcuts and whether they can be done; Export folds to its glyph and is
+// still named Export.
+#[test]
+fn more_holds_undo_and_redo_where_they_do_not_fit() {
+    let mut bench = Bench::new(vec2(560.0, 520.0));
+    assert!(!has(&bench, &undo()) && !has(&bench, &redo()));
+    let export = bench.get("Export", false).rect;
+    assert!(
+        (export.width() - metrics::ICON_BUTTON).abs() < 0.5,
+        "{export:?}"
+    );
+    assert!(bench.name_rect().width() >= NAME_LEAST - 0.5);
+    bench.click("More", false);
+    bench.get("Redo Trim clip", true);
+    bench.click("Undo Move clip", true);
+    assert!(matches!(bench.take().as_slice(), [Action::Undo]));
+    bench.click("More", false);
+    bench.click("Redo Trim clip", true);
+    assert!(matches!(bench.take().as_slice(), [Action::Redo]));
+}
+
+// §5.1 Import row and §3.7: Import fades in with the library's slide, in
+// its own place, and the launcher folded beside it never crosses it.
+#[test]
+fn import_and_the_launcher_never_meet_as_the_library_slides() {
+    let p = Palette::new(Appearance::Dark, Accent::default());
+    let project = editor_core::Project::new("Bench");
+    let input = |reveal: f32| ToolbarInput {
+        p: &p,
+        name: NAME,
+        dirty: true,
+        saved_once: true,
+        saving: false,
+        conflict: false,
+        undo: Some("Move clip"),
+        redo: None,
+        recent: &[],
+        library: false,
+        library_width: 274.0,
+        library_reveal: reveal,
+        inspector: true,
+        viewer: Rangef::new(6.0, 486.0),
+        settled: Rangef::new(6.0, 486.0),
+        agent_waiting: false,
+        project: &project,
+        clips: &[],
+        playhead: Time::ZERO,
+        freeze_hold: Time::ZERO,
+        renders: QueueSummary::default(),
+    };
+    let rect = Rect::from_min_size(Pos2::ZERO, vec2(760.0, metrics::TOOLBAR_HEIGHT));
+    let fold = Fold::LADDER[2];
+    let rest = trailing(rect, &input(0.0), fold, 80.0, 1.0);
+    let (place, _) = rest
+        .import
+        .expect("Import is on the bar while the library is away");
+    for step in 1..=20 {
+        let share = step as f32 / 20.0;
+        let cluster = trailing(rect, &input(1.0 - share), fold, 80.0, share);
+        let (at, held) = cluster.import.expect("Import is coming in");
+        assert_eq!((at, held), (place, share), "Import keeps its place");
+        let shows = opened(at, share);
+        let launcher = cluster.launcher.expect("the launcher is folded");
+        assert!(
+            shows.width() <= 0.0 || launcher.right() + GROUP <= shows.left() + 0.01,
+            "{share}: the launcher {launcher:?} reaches Import's {shows:?}"
+        );
+        assert!(at.expand(0.01).contains_rect(shows), "{share}: {shows:?}");
+    }
+    assert!((opened(place, 1.0).left() - place.left()).abs() < 0.01);
 }

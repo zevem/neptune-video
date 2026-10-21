@@ -1126,3 +1126,24 @@ impl DraftHold {
         *self = Self::default();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PreferencesPane;
+    use eframe::egui;
+
+    #[test]
+    fn preferences_open_at_the_pane_they_were_asked_for() {
+        // §5.9.2: an entry point names the pane, kept for the window's
+        // session under "preferences-pane"; a fresh window opens at
+        // Appearance.
+        let ctx = egui::Context::default();
+        assert_eq!(PreferencesPane::shown(&ctx), PreferencesPane::Appearance);
+        PreferencesPane::Agent.show(&ctx);
+        assert_eq!(PreferencesPane::shown(&ctx), PreferencesPane::Agent);
+        assert_eq!(
+            ctx.data(|data| data.get_temp(egui::Id::new("preferences-pane"))),
+            Some(PreferencesPane::Agent)
+        );
+    }
+}

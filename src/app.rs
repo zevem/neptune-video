@@ -81,10 +81,11 @@ const PROBLEM_SECONDS: f64 = 7.0;
 const PROJECT_EXTENSION: &str = "nvp";
 /// The narrowest content the library is shown beside the right panel in:
 /// a window of 820, Terminal's narrowest window with its sidebar.
-const LIBRARY_FITS: f32 = 808.0;
-/// The narrowest a side panel is drawn, however little room the window has.
-const LIBRARY_LEAST: f32 = 220.0;
-const INSPECTOR_LEAST: f32 = 240.0;
+const LIBRARY_FITS: f32 = metrics::SIDEBAR_MIN_WINDOW - 2.0 * metrics::GUTTER;
+/// The narrowest a side panel is drawn, however little room the window has:
+/// the least it may be preferred at.
+const LIBRARY_LEAST: f32 = *settings::LIBRARY_WIDTHS.start();
+const INSPECTOR_LEAST: f32 = *settings::INSPECTOR_WIDTHS.start();
 /// The viewer the side panels shrink to keep, and the least it is left with
 /// once they are as narrow as they go.
 const VIEWER_COMFORT: f32 = 480.0;
@@ -4564,14 +4565,7 @@ impl App {
                 self.right_tab = RightTab::Agent;
                 self.agent.focus = true;
             }
-            Action::ResetLayout => {
-                let defaults = Settings::default();
-                self.settings.library_width = defaults.library_width;
-                self.settings.inspector_width = defaults.inspector_width;
-                self.settings.timeline_share = defaults.timeline_share;
-                self.settings.show_library = true;
-                self.settings.show_inspector = true;
-            }
+            Action::ResetLayout => reset_layout(&mut self.settings),
             Action::SetReduceMotion(on) => {
                 self.settings.reduce_motion = on;
                 kit::set_reduced_motion(ctx, on);
@@ -6113,7 +6107,9 @@ impl App {
             // panel's.
             focused.layer_id == ui.layer_id() && was.contains(focused.rect.center())
         };
-        let hand_off = held_in(seen.library, show_library) || held_in(seen.inspector, show_right);
+        let handed = (held_in(seen.library, show_library) || held_in(seen.inspector, show_right))
+            .then(|| focused.as_ref().map(|focused| focused.id))
+            .flatten();
         ctx.data_mut(|data| {
             data.insert_temp(
                 seen_id,
@@ -6157,13 +6153,14 @@ impl App {
             actions,
         );
 
-        if library_reveal > 0.0 {
-            let mut pane = side_pane(ui, "library-pane", library_rect, upper, library_reveal);
+        if let Some(mut pane) = side_pane(ui, "library-pane", library_rect, upper, library_reveal) {
+            // The library is made on its pane, which slides and fades.
+            let (ui, rect) = (&mut pane, library_rect);
             let speech_view = self.speech_view();
             let speech_settings = self.settings.speech.clone();
             (self.settings.library_grid, self.settings.library_sort) = ui::library::show(
-                &mut pane,
-                library_rect,
+                ui,
+                rect,
                 &mut self.library,
                 &mut self.selection,
                 &mut self.textures,
@@ -6203,7 +6200,9 @@ impl App {
         }
 
         // The viewer is made before the inspector, as Tab reaches them, and
-        // reads what the inspector left it in the last frame.
+        // reads what the inspector left it in the last frame. Only the
+        // inspector changes that, and only while it is drawn, so only then
+        // is it held to compare.
         let for_viewer = |app: &Self| {
             (
                 app.draft.clone(),
@@ -6214,7 +6213,9 @@ impl App {
                 app.inspector.shows_paths(),
             )
         };
-        let before = for_viewer(self);
+        let watched = inspector_reveal > 0.0 && self.right_tab == RightTab::Inspector;
+        let before = watched.then(|| for_viewer(self));
+        let tab = self.right_tab;
         // Keyframes held in the timeline are drawn as they would be left.
         self.viewer
             .preview_keys(self.timeline.keys.overriding(&project));
@@ -6313,13 +6314,12 @@ impl App {
             }
         }
 
-        if inspector_reveal > 0.0 {
-            let mut pane = side_pane(ui, "right-pane", right_rect, upper, inspector_reveal);
+        if let Some(mut pane) = side_pane(ui, "right-pane", right_rect, upper, inspector_reveal) {
             self.right_panel(&mut pane, right_rect, &project, actions);
         }
-        // What the inspector changed of what the viewer draws is drawn in a
-        // frame of its own.
-        if for_viewer(self) != before {
+        // What the inspector changed of what the viewer draws, or the tab
+        // chosen in its strip, is drawn in a frame of its own.
+        if self.right_tab != tab || before.is_some_and(|before| for_viewer(self) != before) {
             ctx.request_repaint();
         }
 
@@ -6343,17 +6343,8 @@ impl App {
             actions,
         );
         // The keyboard a hidden panel gave up goes to the lanes, if this
-        // frame made them; the graph editor in their place has nothing that
-        // takes it.
-        if hand_off && let Some(focused) = ctx.memory(|memory| memory.focused()) {
-            ctx.memory_mut(|memory| {
-                if self.timeline.keys.graph {
-                    memory.surrender_focus(focused);
-                } else {
-                    memory.request_focus(egui::Id::new("timeline-lanes"));
-                }
-            });
-        }
+        // frame made them.
+        hand_off_keyboard(&ctx, handed, self.timeline.keys.graph);
         // The panes' corners are rounded over what was drawn into them, and
         // not over their neighbours.
         kit::corner_caps(&ui.painter_at(viewer), viewer, p.chrome);
@@ -7365,19 +7356,63 @@ struct SidePanels {
     inspector: Option<Rect>,
 }
 
-/// The surface a side panel is made on: its rectangle, clipped to the band
-/// above the timeline as it slides past the window's edge, and fading with
-/// it.
-fn side_pane(ui: &mut egui::Ui, salt: &str, rect: Rect, band: Rect, reveal: f32) -> egui::Ui {
+/// The surface a side panel is made on, while any of it shows: its
+/// rectangle, clipped to the band above the timeline as it slides past the
+/// window's edge, and fading with it. The pane is named `name` whatever was
+/// made before it, and takes the same one name from the window whether it
+/// is made or not, so that what is made in it and after it keeps its names,
+/// and the keyboard, as panels come and go.
+fn side_pane(
+    ui: &mut egui::Ui,
+    name: &str,
+    rect: Rect,
+    band: Rect,
+    reveal: f32,
+) -> Option<egui::Ui> {
+    if reveal <= 0.0 {
+        ui.skip_ahead_auto_ids(1);
+        return None;
+    }
     let mut pane = ui.new_child(
         egui::UiBuilder::new()
-            .id_salt(salt)
+            .id(egui::Id::new(name))
             .max_rect(rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     pane.set_clip_rect(rect.intersect(band).intersect(ui.clip_rect()));
     pane.multiply_opacity(reveal);
-    pane
+    Some(pane)
+}
+
+/// Gives the keyboard a hidden panel had, `handed`, to the timeline's lanes,
+/// or gives it up while the graph editor (`graph`) has their place and
+/// nothing there takes it. Only if it is still where it was: a panel shown
+/// in the same frame may have asked for it, and keeps it.
+fn hand_off_keyboard(ctx: &egui::Context, handed: Option<egui::Id>, graph: bool) {
+    let Some(handed) = handed else {
+        return;
+    };
+    ctx.memory_mut(|memory| {
+        if memory.focused() == Some(handed) {
+            if graph {
+                memory.surrender_focus(handed);
+            } else {
+                memory.request_focus(egui::Id::new("timeline-lanes"));
+            }
+        }
+    });
+}
+
+/// The window laid out as it is for a fresh one (§2.5): both side panels
+/// shown at their widths, and the timeline at its share. Nothing in the
+/// project changes, so nothing is added to its history.
+fn reset_layout(settings: &mut Settings) {
+    let defaults = Settings::default();
+    settings.library_width = defaults.library_width;
+    settings.inspector_width = defaults.inspector_width;
+    settings.timeline_share = defaults.timeline_share;
+    settings.show_library = true;
+    settings.show_inspector = true;
 }
 
 /// The modifiers a key went down with.
@@ -8201,6 +8236,110 @@ mod tests {
         assert_eq!(
             drawn_widths(760.0, preferred, false, (0.3, 0.7)),
             (274.0, 274.0)
+        );
+    }
+
+    #[test]
+    fn what_is_made_in_and_after_the_side_panels_keeps_its_names_as_they_come_and_go() {
+        // §2.4 and §7.4: in a narrow window Ctrl+K slides the library out as
+        // the right panel slides in, and the command line asks for the
+        // keyboard in the first frame of the slide. It keeps it when the
+        // library is no longer drawn, as does what is made after the panels.
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, vec2(760.0, 560.0));
+        let band = Rect::from_min_max(pos2(0.0, 44.0), pos2(760.0, 300.0));
+        let library = Rect::from_min_max(pos2(0.0, 44.0), pos2(274.0, 300.0));
+        let right = Rect::from_min_max(pos2(486.0, 44.0), pos2(760.0, 300.0));
+        let mut text = String::new();
+        let mut frame = |reveal: f32, ask: bool| {
+            let mut seen = (None, None);
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ui| {
+                    if let Some(mut pane) = side_pane(ui, "library-pane", library, band, reveal) {
+                        let _ = pane.button("Media");
+                    }
+                    if let Some(mut pane) = side_pane(ui, "right-pane", right, band, 1.0) {
+                        let field = pane.text_edit_singleline(&mut text);
+                        if ask {
+                            field.request_focus();
+                        }
+                        seen.0 = Some(field.id);
+                    }
+                    seen.1 = Some(ui.next_auto_id());
+                },
+            );
+            output.drop_without_applying_deltas();
+            let focused = ctx.memory(|memory| memory.focused());
+            (seen, focused)
+        };
+        let ((field, after), focused) = frame(1.0, true);
+        assert_eq!(focused, field);
+        for reveal in [0.5, 0.0, 0.0] {
+            let (seen, focused) = frame(reveal, false);
+            assert_eq!(seen, (field, after), "at {reveal}");
+            assert_eq!(focused, field, "at {reveal}: the field keeps the keyboard");
+        }
+    }
+
+    #[test]
+    fn a_hidden_panel_hands_its_keyboard_to_the_lanes_unless_a_panel_took_it() {
+        // §2.4 rule 6: the keyboard a hidden panel had goes to the lanes, or
+        // is given up while the graph editor has their place.
+        let ctx = egui::Context::default();
+        let (library, field) = (
+            egui::Id::new("a library tab"),
+            egui::Id::new("the command line"),
+        );
+        let lanes = egui::Id::new("timeline-lanes");
+        let handed = |asked: &[egui::Id], handed: Option<egui::Id>, graph: bool| {
+            let mut focused = None;
+            ctx.run_ui(egui::RawInput::default(), |ui| {
+                for id in asked {
+                    ui.memory_mut(|memory| memory.request_focus(*id));
+                }
+                hand_off_keyboard(ui.ctx(), handed, graph);
+                focused = ui.memory(|memory| memory.focused());
+            })
+            .drop_without_applying_deltas();
+            focused
+        };
+        assert_eq!(handed(&[library], Some(library), false), Some(lanes));
+        assert_eq!(handed(&[library], Some(library), true), None);
+        // The panel shown in its place asked for it in the same frame, as
+        // Ctrl+K's command line does under Reduce motion, and keeps it.
+        assert_eq!(handed(&[library, field], Some(library), false), Some(field));
+        assert_eq!(handed(&[library, field], Some(library), true), Some(field));
+        // Nothing hidden held it.
+        assert_eq!(handed(&[field], None, false), Some(field));
+    }
+
+    #[test]
+    fn reset_layout_brings_back_the_fresh_window() {
+        // §2.5: library 316, inspector 300, the timeline at 0.42, and both
+        // panels shown. It reads and writes the settings alone, so the
+        // project and its history are as they were.
+        let mut settings = Settings {
+            library_width: 480.0,
+            inspector_width: 250.0,
+            timeline_share: 0.6,
+            show_library: false,
+            show_inspector: false,
+            ..Settings::default()
+        };
+        reset_layout(&mut settings);
+        assert_eq!(
+            (
+                settings.library_width,
+                settings.inspector_width,
+                settings.timeline_share,
+                settings.show_library,
+                settings.show_inspector,
+            ),
+            (316.0, 300.0, 0.42, true, true)
         );
     }
 
