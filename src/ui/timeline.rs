@@ -118,6 +118,10 @@ const ADD_TILE: f32 = 36.0;
 const ADD_BADGE: f32 = 16.0;
 /// The height of the row a tall tile writes its clip's name in.
 const NAME_ROW: f32 = 18.0;
+/// How much further than eight points in a tile's name starts with no
+/// chevron before it: clear of the trim bar at the tile's start, with room
+/// between them for a selected name's capsule.
+const NAME_STEP: f32 = 4.0;
 /// How far the pointer travels before a press on the badge is a drag of the
 /// clip under it.
 const OFFER_TRAVEL: f32 = 3.0;
@@ -1031,8 +1035,8 @@ fn haloed_line(x: f32, ys: egui::Rangef, ink: Color32, halo: Color32) -> [egui::
     ]
 }
 
-/// The playhead at `x`: a line from the ruler's middle down through the
-/// lanes, and its pin wholly in the ruler's lower half with its point on the
+/// The playhead at `x`: a line from its pin's top down through the lanes,
+/// and the pin wholly in the ruler's lower half with its point on the
 /// ruler's foot. The labels end above the middle, so the two never share a
 /// row of pixels.
 fn playhead_shapes(
@@ -1044,17 +1048,19 @@ fn playhead_shapes(
 ) -> Vec<egui::Shape> {
     let (ink, halo) = (p.playhead(), p.playhead_halo());
     let x = sharp(painter, x);
-    let mut shapes = Vec::from(haloed_line(
-        x,
-        egui::Rangef::new(ruler.center().y, lanes.bottom()),
-        ink,
-        halo,
-    ));
     let (half, foot) = (PIN.x * 0.5, ruler.bottom());
     // Its top and shoulders on a pixel's middle, as its sides are, so the
     // halo round it is one sharp pixel and not two faint ones.
     let shoulder = painter.round_to_pixel_center(foot - PIN_POINT);
     let top = painter.round_to_pixel_center(foot - PIN.y);
+    // The line starts inside the pin, behind it, so none of it, nor its
+    // feathered edge, stands above the pin.
+    let mut shapes = Vec::from(haloed_line(
+        x,
+        egui::Rangef::new(top + 1.5, lanes.bottom()),
+        ink,
+        halo,
+    ));
     shapes.push(egui::Shape::convex_polygon(
         vec![
             pos2(x - half, top),
@@ -3559,12 +3565,11 @@ fn draw_lanes(
         _ => None,
     };
     let held_keys = state.keys.overriding(project);
-    // Whether a sound is heard is asked of the tiles of sound lanes alone,
-    // so the links it reads are gathered only once one of those is drawn.
-    let audible = std::cell::OnceCell::new();
+    // Whether a sound is heard is asked of the tiles of sound lanes alone. A
+    // clip there is never silenced by a link, so no link is read for it: the
+    // answer costs a look at the tracks and nothing is gathered.
     let heard = |track: &Track, clip: &Clip| {
-        track.kind == TrackKind::Audio
-            && (audible.get_or_init(|| sound::Sounding::of(project))).sounds(project, track, clip)
+        track.kind == TrackKind::Audio && sound::sounds(project, track, clip)
     };
     // The tile under the pointer while nothing is held, and the grip of it
     // the pointer is on.
@@ -3671,9 +3676,14 @@ fn draw_lanes(
         }
     }
     // The keyboard's ring goes round its tile after every tile is drawn, so
-    // no neighbour covers it.
+    // no neighbour covers it: round the body the selection's ring is drawn
+    // in, so the two nest, and on a painter wide enough that a tile at the
+    // lanes' left edge keeps the ring's left side.
     if let Some(rect) = focused {
-        controls::focus_ring(&painter, rect, metrics::CLIP_RADIUS, *p);
+        let body = rect.shrink2(vec2(0.5, 0.0));
+        let round = metrics::CLIP_RADIUS.min((rect.width() * 0.5) as u8);
+        let ringed = ui.painter_at(lanes.expand2(vec2(3.0, 0.0)));
+        controls::focus_ring(&ringed, body, round, *p);
     }
     if response.has_focus() {
         controls::focus_ring(&painter, lanes.shrink(3.0), 4, *p);
@@ -3715,6 +3725,11 @@ fn draw_lanes(
                     marking_name(clip, *edge, transition),
                 )
             });
+            // Under the pointer, the part of the marking that takes hold of
+            // it is lit.
+            if handle.hovered() && !handle.dragged() {
+                (over_lanes.painter()).rect_filled(rect.shrink2(vec2(2.0, 3.0)), 3, p.hover);
+            }
             if handle.has_focus() {
                 controls::focus_ring(over_lanes.painter(), rect.shrink2(vec2(2.0, 3.0)), 3, *p);
             }
@@ -3748,9 +3763,17 @@ fn draw_lanes(
             });
             let held = held_fade.filter(|held| (held.0, held.1) == (*id, *edge));
             let painter = over_lanes.painter();
+            // Its keyline inside it, so the handle keeps its footprint and
+            // the trim bar beside it stays whole. Under the pointer it stands
+            // a point taller each way; held, it takes the accent.
+            let shape = if handle.hovered() && held.is_none() {
+                rect.expand2(vec2(0.0, 1.0))
+            } else {
+                *rect
+            };
             let fill = if held.is_some() { p.accent } else { p.fg };
-            painter.rect_filled(*rect, 3, fill);
-            painter.rect_stroke(*rect, 3, Stroke::new(1.0, p.bg), StrokeKind::Outside);
+            painter.rect_filled(shape, 3, fill);
+            painter.rect_stroke(shape, 3, Stroke::new(1.0, p.bg), StrokeKind::Inside);
             if handle.has_focus() {
                 controls::focus_ring(painter, *rect, 3, *p);
             }
@@ -4283,18 +4306,11 @@ fn draw_lanes(
             let unlink = Action::Edit(Command::UnlinkClips {
                 clip_ids: ids.clone(),
             });
-            item(ui, actions, Some(Icon::Link), "Unlink", "", unlink);
+            item(ui, actions, None, "Unlink", "", unlink);
         }
         if grouped {
             let ungroup = Action::Edit(Command::UngroupClips { clip_ids: ids });
-            item(
-                ui,
-                actions,
-                Some(Icon::Layers),
-                "Ungroup",
-                "Shift+Cmd+G",
-                ungroup,
-            );
+            item(ui, actions, None, "Ungroup", "Shift+Cmd+G", ungroup);
         }
         if several || linked || grouped {
             widgets::menu_separator(ui, p);
@@ -4324,14 +4340,16 @@ fn draw_lanes(
             });
             widgets::menu_separator(ui, p);
         }
-        let delete = |ui: &mut Ui, actions: &mut Vec<Action>, text: &str, keys: &str, ripple| {
-            let row =
-                widgets::menu_item_destructive(ui, p, Some(Icon::Trash), text, &shortcut(keys));
-            if row.clicked() {
-                actions.push(Action::Delete { ripple });
-                ui.close();
-            }
-        };
+        // Each row its own glyph or none: the bin is the plain delete's.
+        let delete =
+            |ui: &mut Ui, actions: &mut Vec<Action>, text: &str, keys: &str, ripple: bool| {
+                let icon = (!ripple).then_some(Icon::Trash);
+                let row = widgets::menu_item_destructive(ui, p, icon, text, &shortcut(keys));
+                if row.clicked() {
+                    actions.push(Action::Delete { ripple });
+                    ui.close();
+                }
+            };
         delete(ui, actions, "Delete", "Delete", false);
         delete(ui, actions, "Ripple delete", "Shift+Delete", true);
     });
@@ -4407,15 +4425,11 @@ fn audio_rows(
     for (label, asked) in fades::MENU {
         let made = fades::command(project, &selection.clips, asked);
         ui.add_enabled_ui(made.is_ok(), |ui| {
-            let icon = match asked {
-                fades::Asked::Set(..) => None,
-                fades::Asked::Remove => Some(Icon::Close),
-            };
             let action = match made {
                 Ok(command) => Action::Edit(command),
                 Err(reason) => Action::Notify(reason),
             };
-            item(ui, actions, icon, label, action);
+            item(ui, actions, None, label, action);
         });
     }
     // A key of the clip's volume at the playhead, at the volume it has
@@ -4509,7 +4523,7 @@ fn audio_rows(
     let refused = (input.separator.refusal().map(str::to_owned))
         .or_else(|| crate::stems::refusal(project, clip));
     ui.add_enabled_ui(refused.is_none(), |ui| {
-        let row = menu_item(ui, p, Some(Icon::Music), crate::stems::LABEL, "");
+        let row = menu_item(ui, p, None, crate::stems::LABEL, "");
         if row.clicked() {
             *separated = Some(clip);
             ui.close();
@@ -4693,7 +4707,9 @@ fn paint_clip(
     // A transition: a shade over the part of the clip it lasts, with a line
     // rising from the cut it is at and an edge where it ends. It lies over a
     // picture as often as over the body, so it is drawn in the stage's
-    // inks, light on a dark shade, in either appearance.
+    // inks, light on a dark shade, in either appearance. A chosen one is
+    // washed with the accent, and its ring waits for the clip's own.
+    let mut chosen = None;
     for edge in transitions::EDGES {
         let Some(transition) = transitions::of(clip, edge) else {
             continue;
@@ -4708,6 +4724,10 @@ fn paint_clip(
             Color32::from_black_alpha(80).gamma_multiply(opacity),
         );
         clipped.rect_filled(mark, 4, shade);
+        if marks.selected == Some(edge) {
+            clipped.rect_filled(mark, 4, p.accent.gamma_multiply(0.45 * opacity));
+            chosen = Some(mark);
+        }
         let (rising, end) = match edge {
             TransitionEdge::In => ([mark.left_bottom(), mark.right_top()], mark.right() - 0.5),
             TransitionEdge::Out => ([mark.right_bottom(), mark.left_top()], mark.left() + 0.5),
@@ -4735,9 +4755,6 @@ fn paint_clip(
                 Icon::Transition,
                 Color32::WHITE.gamma_multiply(opacity),
             );
-        }
-        if marks.selected == Some(edge) {
-            clipped.rect_stroke(mark, 4, Stroke::new(2.0, p.accent), StrokeKind::Inside);
         }
     }
 
@@ -4793,10 +4810,10 @@ fn paint_clip(
         icons::paint(&clipped, at, Icon::Link, ink.gamma_multiply(0.8));
         right -= 16.0;
     }
-    // A selected name on its capsule steps in by a bar's width, so the
-    // capsule stands clear of the bars a selected tile shows at its ends.
-    let step_in = if selected && !banded { 4.5 } else { 0.0 };
-    let start = rect.left() + 8.0 + indent + step_in;
+    // The name starts clear of the bar at the tile's start, selected or
+    // not, so choosing a tile never moves its name and a selected name's
+    // capsule stands clear of the bar too. A chevron before it is wider.
+    let start = rect.left() + 8.0 + indent.max(NAME_STEP);
     if row.width() > 96.0
         && let Some(badge) = speed::badge(clip)
     {
@@ -4823,15 +4840,17 @@ fn paint_clip(
             said_in_row = true;
         }
     }
-    let named = right - 3.0 - step_in - start;
+    let named = right - 4.0 - start;
     if inner.width() > 22.0 {
         let galley = widgets::truncated(ui, &clip.name, theme::medium(11.5), ink, named);
         let at = pos2(start, middle - galley.size().y * 0.5);
         if !(said_in_row && galley.size().x > named) {
             // Without a band, a selected tile's name sits on a capsule of
-            // the accent.
+            // the accent: a point short of its line at the top and the
+            // foot, so a point of the body shows between it and the
+            // selection's keyline.
             if selected && !banded {
-                let capsule = Rect::from_min_size(at, galley.size()).expand2(vec2(4.0, 1.0));
+                let capsule = Rect::from_min_size(at, galley.size()).expand2(vec2(4.0, -1.0));
                 let round = (capsule.height() * 0.5).round() as u8;
                 clipped.rect_filled(capsule, round, p.accent.gamma_multiply(opacity));
             }
@@ -4897,6 +4916,18 @@ fn paint_clip(
                 vec2(3.0, (rect.height() - 10.0).max(4.0)),
             );
             painter.rect_filled(bar, 2, shade.gamma_multiply(opacity.max(0.6)));
+        }
+    }
+    // The chosen transition's ring, over the clip's: a selected clip is
+    // ringed and barred at its edges too, so this one stands clear of them,
+    // inside the bars and the keyline and a little under the name's band.
+    if let Some(mark) = chosen {
+        let ring = Rect::from_x_y_ranges(
+            mark.left().max(rect.left() + 7.5)..=mark.right().min(rect.right() - 7.5),
+            (mark.top() + 2.0)..=(mark.bottom() - 3.0),
+        );
+        if ring.width() >= 6.0 && ring.height() >= 6.0 {
+            clipped.rect_stroke(ring, 3, Stroke::new(2.0, p.accent), StrokeKind::Inside);
         }
     }
 }
