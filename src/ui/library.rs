@@ -2246,6 +2246,9 @@ mod tests {
         words: Vec<(String, Rect, f32, Color32)>,
         /// The rectangles filled in the last frame, and with what.
         filled: Vec<(Rect, Color32)>,
+        /// The rectangles outlined in the last frame, their corners and the
+        /// line.
+        stroked: Vec<(Rect, CornerRadius, Stroke)>,
         /// How soon the last frame asked to be drawn again.
         wait: std::time::Duration,
         /// The peaks the sounds' cards draw, as the window holds them.
@@ -2274,6 +2277,7 @@ mod tests {
                 focused: None,
                 words: Vec::new(),
                 filled: Vec::new(),
+                stroked: Vec::new(),
                 wait: std::time::Duration::ZERO,
                 peaks: crate::peaks::HeldPeaks::default(),
                 actions: Vec::new(),
@@ -2358,6 +2362,14 @@ mod tests {
             self.filled = (output.shapes.iter())
                 .filter_map(|clipped| match &clipped.shape {
                     egui::Shape::Rect(rect) => Some((rect.rect, rect.fill)),
+                    _ => None,
+                })
+                .collect();
+            self.stroked = (output.shapes.iter())
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(rect) if rect.stroke.width > 0.0 => {
+                        Some((rect.rect, rect.corner_radius, rect.stroke))
+                    }
                     _ => None,
                 })
                 .collect();
@@ -3246,6 +3258,18 @@ mod tests {
             assert_eq!(shelf.selection.asset, Some(clip.id), "grid {grid}");
             assert!(behind(&shelf, p.pressed), "grid {grid}: chosen");
             assert!(!behind(&shelf, p.hover), "grid {grid}");
+            // Spec §4.4.7 Selected: a card's well also takes a 2-point ring
+            // of the accent, 2 out from it with corners of 10.
+            let ring = |shelf: &Shelf| {
+                (shelf.stroked.iter()).any(|(rect, radius, stroke)| {
+                    *stroke == Stroke::new(2.0, p.accent)
+                        && *radius == CornerRadius::same(10)
+                        && rect.min.distance(card.min - vec2(2.0, 2.0)) < 0.01
+                        && (rect.width() - (card.width() + 4.0)).abs() < 0.01
+                        && (rect.height() - (card.width() * 9.0 / 16.0 + 4.0)).abs() < 0.01
+                })
+            };
+            assert_eq!(ring(&shelf), grid, "grid {grid}: the ring is a card's");
         }
     }
 
