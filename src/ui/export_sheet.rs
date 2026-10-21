@@ -2982,15 +2982,6 @@ fn folder_button(
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-// The export sheet and the render queue were the last to call these
-// adapters of the old controls, which are another package's to remove
-// (packages.md, P10). Named here so that the build stays free of warnings
-// until they go; delete this with them.
-const _: () = {
-    let _ = widgets::chip;
-    let _ = widgets::progress;
-};
-
 #[cfg(test)]
 #[path = "export_sheet_tests.rs"]
 mod tests;

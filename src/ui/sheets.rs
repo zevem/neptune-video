@@ -1443,9 +1443,9 @@ fn said(ui: &Ui, rect: Rect, words: &str) {
         .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, words));
 }
 
-/// A row of a card as `Group::row` draws it, its label said too.
+/// A row of a Preferences card, as tall as Terminal's, its label said too.
 fn row<R>(ui: &mut Ui, rows: &mut Group, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
-    row_of(ui, rows, label, 42.0, add)
+    row_of(ui, rows, label, metrics::PREFERENCES_ROW, add)
 }
 
 /// A row as `row` draws it, `height` tall.

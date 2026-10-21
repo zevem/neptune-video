@@ -5,7 +5,6 @@
 //! the same tokens and primitives as [`super::controls`], so it reads as one
 //! of them. Terminal's spinner and rich tooltip, which it keeps among its
 //! helpers rather than its controls, are ported here too.
-#![allow(dead_code)] // The areas move onto these as they are laid out again.
 
 use super::controls::{self, ButtonKind, elided, focus_ring, galley_at};
 use crate::{
@@ -76,8 +75,6 @@ pub fn corner_caps(painter: &Painter, rect: Rect, ground: Color32) {
 pub enum Edge {
     Top,
     Bottom,
-    Left,
-    Right,
 }
 
 /// Says that content runs on past `edge` of `rect`: two flat 6-point bands of
@@ -93,14 +90,6 @@ pub fn scroll_fade(painter: &Painter, rect: Rect, edge: Edge, ground: Color32) {
             Edge::Bottom => Rect::from_min_size(
                 pos2(rect.left(), rect.bottom() - offset - 6.0),
                 vec2(rect.width(), 6.0),
-            ),
-            Edge::Left => Rect::from_min_size(
-                pos2(rect.left() + offset, rect.top()),
-                vec2(6.0, rect.height()),
-            ),
-            Edge::Right => Rect::from_min_size(
-                pos2(rect.right() - offset - 6.0, rect.top()),
-                vec2(6.0, rect.height()),
             ),
         };
         painter.rect_filled(band, 0, theme::tint(ground, alpha));
@@ -306,13 +295,6 @@ impl RowFit {
         lead: 12.0,
         trail: 8.0 + metrics::KEY_COLUMN + 8.0,
     };
-    /// A row as rows were before cards: as tall as a control was, and from
-    /// edge to edge.
-    pub const LEGACY: Self = Self {
-        height: metrics::legacy::CONTROL_HEIGHT,
-        lead: 0.0,
-        trail: 0.0,
-    };
 }
 
 fn row_label(text: &str, p: &Palette) -> egui::RichText {
@@ -405,21 +387,6 @@ pub fn number_field(
     size: Vec2,
     label: Option<&str>,
 ) -> Response {
-    number_field_in(ui, p, value, number, size, size.y, label)
-}
-
-/// As [`number_field`], `height` tall in the room `size` asks for. egui
-/// grows a field taller than its room past the room's foot, which is how
-/// the fields the adapters make took their place before.
-pub fn number_field_in(
-    ui: &mut Ui,
-    p: &Palette,
-    value: &mut f32,
-    number: Number,
-    size: Vec2,
-    height: f32,
-    label: Option<&str>,
-) -> Response {
     let surface = ui.painter().add(Shape::Noop);
     let unit_font = theme::regular(12.5);
     let unit = ui
@@ -436,7 +403,7 @@ pub fn number_field_in(
                 .insert(style.drag_value_text_style.clone(), theme::regular(12.5));
             // The field is as large as it is asked to be, and the value
             // ends 8 points in from the unit.
-            style.spacing.interact_size = vec2(size.x, height);
+            style.spacing.interact_size = size;
             style.spacing.button_padding = vec2(8.0, 0.0);
             let visuals = &mut style.visuals;
             if !enabled {
@@ -718,17 +685,7 @@ pub fn keyed_row(
     // where the label and the key column are.
     let known: Option<(Vec2, f32)> = ui.data(|data| data.get_temp(id));
     let controls = known.map_or(86.0, |(known, _)| known.x);
-    // A legacy row reserves the height the old row reached: its field had
-    // a 24-point room in the middle of the line and grew past the room's
-    // foot, so what follows the row stays where it was.
-    let tall = known.map_or(fit.height, |(known, _)| {
-        let reached = if fit == RowFit::LEGACY {
-            0.5 * fit.height - 12.0 + known.y
-        } else {
-            known.y
-        };
-        reached.max(fit.height)
-    });
+    let tall = known.map_or(fit.height, |(known, _)| known.y.max(fit.height));
     let lift = known.map_or(0.0, |(_, below)| below);
     let width = ui.available_width();
     let text = row_label(label, p);
@@ -1002,60 +959,6 @@ pub fn menu_heading(ui: &mut Ui, p: &Palette, text: &str) {
     );
 }
 
-/// A quiet pop-up: words and a chevron that open a list, resting without a
-/// fill, as Terminal's composer pills do. The caller shows the list with
-/// `egui::Popup::menu` on the returned response.
-pub fn quiet_popup(ui: &mut Ui, p: &Palette, id: Id, words: &str, label: &str) -> Response {
-    let id = controls::viewport_id(ui.ctx(), id);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(words.to_owned(), theme::medium(12.0), p.fg);
-    let size = vec2(8.0 + galley.size().x + 4.0 + 10.0 + 8.0, 26.0);
-    let (_, rect) = ui.allocate_space(size);
-    let response = ui.interact(rect, id, Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, ui.is_enabled(), label));
-    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
-    let live = ui.is_enabled();
-    let lit = live && (response.hovered() || response.has_focus() || open);
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter();
-        if live && (open || response.is_pointer_button_down_on()) {
-            painter.rect_filled(rect, 6, p.pressed);
-        } else if live && response.hovered() {
-            painter.rect_filled(rect, 6, p.hover);
-        }
-        if response.has_focus() {
-            focus_ring(painter, rect, 6, *p);
-        }
-        let ink = if lit { p.fg } else { p.secondary };
-        let shown = galley_at(
-            painter,
-            Pos2::new(rect.left() + 8.0, rect.center().y),
-            elided(
-                painter,
-                words,
-                theme::medium(12.0),
-                ink,
-                rect.width() - 8.0 - 18.0 - 8.0,
-            ),
-        );
-        icons::paint(
-            painter,
-            Rect::from_center_size(
-                Pos2::new(shown.right() + 4.0 + 5.0, rect.center().y + 0.5),
-                Vec2::splat(10.0),
-            ),
-            Icon::ChevronDown,
-            if lit { p.fg } else { p.muted },
-        );
-    }
-    if live {
-        response.on_hover_cursor(CursorIcon::PointingHand)
-    } else {
-        response
-    }
-}
-
 // ---- Chips, badges and progress -----------------------------------------
 
 /// A pill that picks one of several named choices, such as a preset. The one
@@ -1067,20 +970,18 @@ pub fn chip(ui: &mut Ui, p: &Palette, text: &str, selected: bool) -> Response {
     let check = if selected { 16.0 } else { 0.0 };
     let size = vec2(10.0 + check + galley.size().x + 10.0, 26.0);
     let (_, response) = ui.allocate_exact_size(size, Sense::click());
-    paint_chip(ui, p, &response, galley, selected, true);
+    paint_chip(ui, p, &response, galley, selected);
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// Paints a chip over `response`, with the check before the name when
-/// `check` leaves it room. A chosen chip without that room is ringed
-/// instead, so it is told from the others by more than its fill.
-pub fn paint_chip(
+/// Paints a chip over `response`, the chosen one with the check before its
+/// name, so it is told from the others by more than its fill.
+fn paint_chip(
     ui: &Ui,
     p: &Palette,
     response: &Response,
     galley: std::sync::Arc<egui::Galley>,
     selected: bool,
-    check: bool,
 ) {
     let rect = response.rect;
     let enabled = ui.is_enabled();
@@ -1099,16 +1000,11 @@ pub fn paint_chip(
     } else if hover > 0.0 {
         painter.rect_filled(rect, 13, p.hover.gamma_multiply(hover));
     }
-    if selected && !check {
-        // The ring carries the choice on its own, so it is drawn in an ink
-        // that stands about 3:1 from the chip, not in a hairline's.
-        painter.rect_stroke(rect, 13, Stroke::new(1.5, p.secondary), StrokeKind::Inside);
-    }
     if response.has_focus() {
         focus_ring(painter, rect, 13, *p);
     }
     let ink = if enabled { p.fg } else { p.muted };
-    if selected && check {
+    if selected {
         icons::paint(
             painter,
             Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(12.0)),
@@ -1125,19 +1021,10 @@ pub fn paint_chip(
     }
 }
 
-/// Where a badge sits, which decides its material.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BadgeOn {
-    /// Over a picture: a dark band with white ink.
-    Picture,
-    /// Over a body or a lane: a capsule.
-    Surface,
-}
-
-/// A small label over content, such as a speed or a count: 16 tall, its
-/// left edge at `left_center`. Numbers are set in the monospace face.
-/// Returns the badge's rect.
-pub fn badge(painter: &Painter, p: &Palette, left_center: Pos2, text: &str, on: BadgeOn) -> Rect {
+/// A small label over a picture, such as a duration: a dark band 16 tall
+/// with white ink, its left edge at `left_center`. Numbers are set in the
+/// monospace face. Returns the badge's rect.
+pub fn badge(painter: &Painter, left_center: Pos2, text: &str) -> Rect {
     let numeric = text
         .chars()
         .all(|c| c.is_ascii_digit() || " .,:%×+-−".contains(c));
@@ -1146,21 +1033,13 @@ pub fn badge(painter: &Painter, p: &Palette, left_center: Pos2, text: &str, on: 
     } else {
         theme::medium(11.0)
     };
-    let ink = match on {
-        BadgeOn::Picture => Color32::WHITE,
-        BadgeOn::Surface => p.fg,
-    };
+    let ink = Color32::WHITE;
     let galley = painter.layout_no_wrap(text.to_owned(), font, ink);
     let rect = Rect::from_min_size(
         pos2(left_center.x, left_center.y - 8.0),
         vec2(galley.size().x + 12.0, 16.0),
     );
-    match on {
-        BadgeOn::Picture => {
-            painter.rect_filled(rect, 8, Color32::from_black_alpha(140));
-        }
-        BadgeOn::Surface => controls::capsule(painter, rect, *p),
-    }
+    painter.rect_filled(rect, 8, Color32::from_black_alpha(140));
     painter.galley(rect.center() - galley.size() * 0.5, galley, ink);
     rect
 }
@@ -1305,22 +1184,6 @@ pub fn empty_state(
     statement(ui, p, rect, words, action, |block| {
         rect.top() + rect.height() * 0.4 - block * 0.5
     })
-}
-
-/// As [`empty_state`] without an action, with the glyph where an empty
-/// panel had it before its area was laid out again: 30 points above the
-/// middle. Its callers set their own action at a fixed place under it.
-pub fn empty_state_as_before(
-    ui: &mut Ui,
-    p: &Palette,
-    rect: Rect,
-    icon: Icon,
-    title: &str,
-    hint: &str,
-) {
-    statement(ui, p, rect, (icon, title, hint), None, |_| {
-        rect.center().y - 30.0 - 14.0
-    });
 }
 
 /// An empty state whose block starts where `top` puts it, given its height.

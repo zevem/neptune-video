@@ -85,7 +85,6 @@ pub enum Action {
     /// Show Preferences at the pane it was last left on.
     OpenSettings,
     /// Show Preferences at this pane.
-    #[allow(dead_code)] // Asked for by Preferences and the notices as they come to.
     OpenPreferences(PreferencesPane),
     /// Open the export sheet, starting from the settings last used.
     OpenExport,
@@ -218,7 +217,6 @@ pub enum Action {
     /// Put the panels back as a fresh window has them: both shown, at their
     /// first widths, over a timeline of its first height. Not an edit, so
     /// not undone.
-    #[allow(dead_code)] // Asked for by Preferences and the notices as they come to.
     ResetLayout,
     /// Show the library with this part of it in view.
     ShowLibrary(library::Tab),
@@ -228,7 +226,6 @@ pub enum Action {
     SetAppearance(Appearance),
     SetAccent(Accent),
     /// Eased changes land at once.
-    #[allow(dead_code)] // Asked for by Preferences and the notices as they come to.
     SetReduceMotion(bool),
     SetAutosave(bool),
     /// How much of the pictures the preview decodes and composites.
@@ -267,7 +264,6 @@ pub enum Action {
     SetAiModel(String),
     Notify(String),
     /// Put away the notice with this id.
-    #[allow(dead_code)] // Asked for by Preferences and the notices as they come to.
     DismissNotice(u64),
     /// Follow a region of a clip's picture through its source, on the
     /// analysis worker. Nothing is edited until the path comes back.
@@ -337,7 +333,6 @@ impl Transport {
 
 /// The parts of Preferences, in the order its source list gives them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(dead_code)] // Its panes are Preferences' to show.
 pub enum PreferencesPane {
     #[default]
     Appearance,
@@ -347,7 +342,6 @@ pub enum PreferencesPane {
     Keyboard,
 }
 
-#[allow(dead_code)] // Read by Preferences as it is drawn.
 impl PreferencesPane {
     pub const ALL: [Self; 5] = [
         Self::Appearance,
@@ -401,7 +395,6 @@ impl Placement {
     }
 
     /// Where the viewer is in this frame, as the window laid it out.
-    #[allow(dead_code)] // Read by the viewer as it sizes its decoding.
     pub fn of_viewer(ctx: &eframe::egui::Context) -> Option<Self> {
         ctx.data(|data| data.get_temp(Self::viewer_id()))
     }

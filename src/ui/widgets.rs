@@ -1,13 +1,8 @@
 //! Shared controls. Use these before adding a new visual pattern.
 //!
 //! Each is drawn by Neptune's shared vocabulary ([`super::controls`],
-//! [`super::panel`] and [`super::kit`]) and takes as much room as it did
-//! before, so an area keeps its layout until it is laid out again; it then
-//! calls the primitive itself at its final size.
-use super::{
-    controls,
-    kit::{self, RowFit},
-};
+//! [`super::panel`] and [`super::kit`]) under the name the areas call it by.
+use super::{controls, kit};
 use crate::{
     icons::{self, Icon},
     theme::{self, Palette, metrics},
@@ -23,28 +18,9 @@ pub use super::kit::{KeyRow, KeyState};
 /// The side of a control that sits inside a row beside a field.
 pub const SMALL_BUTTON: f32 = metrics::SMALL_BUTTON;
 
-/// A pane's well: the content surface, rounded, with a hairline inside its
-/// edge.
-#[allow(dead_code, reason = "only the adapters' test calls it now")]
-pub fn panel(ui: &Ui, rect: Rect, p: &Palette) {
-    kit::pane_well(ui.painter(), rect, p.bg, p);
-}
-
 /// One line of text cut to `width` with an ellipsis.
 pub fn truncated(ui: &Ui, text: &str, font: FontId, color: Color32, width: f32) -> Arc<Galley> {
     controls::elided(ui.painter(), text, font, color, width)
-}
-
-/// The same dropdown chevron as a select's, in egui's existing icon slot.
-#[allow(dead_code, reason = "only the adapters' test calls it now")]
-pub fn combo_icon(ui: &Ui, rect: Rect, visuals: &egui::style::WidgetVisuals, _is_open: bool) {
-    let side = rect.width().min(rect.height()).min(12.0);
-    icons::paint(
-        ui.painter(),
-        Rect::from_center_size(rect.center(), Vec2::splat(side)),
-        Icon::ChevronDown,
-        visuals.fg_stroke.color,
-    );
 }
 
 fn name(response: &Response, enabled: bool, label: &str) {
@@ -70,12 +46,11 @@ pub fn icon_button_tinted(
     label: &str,
     tint: Option<Color32>,
 ) -> Response {
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::splat(metrics::ICON_BUTTON), Sense::click());
+    let (_, response) = ui.allocate_exact_size(Vec2::splat(metrics::ICON_BUTTON), Sense::click());
     // Red is a state of its own, record, even where it is also the accent.
     let on = tint == Some(p.accent) && tint != Some(p.red);
     let tint = tint.filter(|_| !on);
-    paint_icon_button(ui, p, rect, &response, icon, tint, on);
+    kit::paint_icon_button(ui, p, &response, icon, on, tint);
     name(&response, ui.is_enabled(), label);
     let (shown, keys) = kit::name_and_keys(label);
     icons::hint(
@@ -87,9 +62,8 @@ pub fn icon_button_tinted(
 
 /// A toggle that stays pressed while it is on.
 pub fn icon_toggle(ui: &mut Ui, p: &Palette, icon: Icon, on: bool, label: &str) -> Response {
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::splat(metrics::ICON_BUTTON), Sense::click());
-    paint_icon_button(ui, p, rect, &response, icon, None, on);
+    let (_, response) = ui.allocate_exact_size(Vec2::splat(metrics::ICON_BUTTON), Sense::click());
+    kit::paint_icon_button(ui, p, &response, icon, on, None);
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), on, label));
     let (shown, keys) = kit::name_and_keys(label);
     icons::hint(
@@ -97,22 +71,6 @@ pub fn icon_toggle(ui: &mut Ui, p: &Palette, icon: Icon, on: bool, label: &str) 
         shown,
         keys,
     )
-}
-
-/// Paints an icon control into a rect the caller already allocated: the
-/// glyph in `tint` for a state, and the surface pressed while `held`.
-pub fn paint_icon_button(
-    ui: &Ui,
-    p: &Palette,
-    rect: Rect,
-    response: &Response,
-    icon: Icon,
-    tint: Option<Color32>,
-    held: bool,
-) {
-    let mut response = response.clone();
-    response.rect = rect;
-    kit::paint_icon_button(ui, p, &response, icon, held, tint);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -124,7 +82,6 @@ pub enum Kind {
     /// Ends processes or discards work.
     Destructive,
     /// Text only, for tertiary actions.
-    #[allow(dead_code, reason = "offered to the areas as they are laid out again")]
     Quiet,
 }
 
@@ -143,7 +100,7 @@ pub fn button(ui: &mut Ui, p: &Palette, icon: Option<Icon>, text: &str, kind: Ki
     let icon_width = if icon.is_some() { 14.0 + 6.0 } else { 0.0 };
     let size = vec2(
         lead + icon_width + galley.size().x + trail,
-        metrics::legacy::CONTROL_HEIGHT,
+        metrics::CONTROL_HEIGHT,
     );
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     name(&response, ui.is_enabled(), text);
@@ -224,96 +181,10 @@ pub fn segmented<T: PartialEq + Copy>(
     controls::segmented(ui, *p, &name, value, options, width)
 }
 
-/// A small heading over a group of rows.
-#[allow(dead_code, reason = "only the adapters' test calls it now")]
-pub fn section(ui: &mut Ui, p: &Palette, text: &str) {
-    ui.add_space(2.0);
-    ui.label(
-        egui::RichText::new(text)
-            .font(theme::medium(11.5))
-            .color(p.secondary),
-    );
-}
-
-/// A label at the leading edge and a control at the trailing edge of one row.
-#[allow(dead_code, reason = "only the adapters' test calls it now")]
-pub fn row<R>(ui: &mut Ui, p: &Palette, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
-    kit::row(ui, p, label, RowFit::LEGACY, add)
-}
-
-/// A hairline that spans the available width, set in from the leading edge
-/// as the rows it separates are.
-pub fn hairline(ui: &mut Ui, p: &Palette) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-    let left = (rect.left() + 12.0).min(rect.right());
-    ui.painter()
-        .hline(left..=rect.right(), rect.center().y, p.hairline());
-}
-
 /// A gutter between two panels that is also their resize handle. Returns the
 /// drag along its axis; a double click asks for the default size.
 pub fn splitter(ui: &mut Ui, p: &Palette, rect: Rect, id: Id, vertical: bool) -> (f32, bool) {
     kit::splitter(ui, p, rect, id, vertical)
-}
-
-/// The quiet statement an empty panel makes: an icon, a line and a hint. It
-/// stands where it stood, since a caller may set an action under it.
-#[allow(dead_code, reason = "only the adapters' test calls it now")]
-pub fn empty_state(ui: &mut Ui, p: &Palette, rect: Rect, icon: Icon, title: &str, hint: &str) {
-    kit::empty_state_as_before(ui, p, rect, icon, title, hint);
-}
-
-/// A number that is dragged or typed, styled as a field.
-pub fn number(
-    ui: &mut Ui,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
-    speed: f64,
-    suffix: &str,
-    decimals: usize,
-) -> Response {
-    let p = palette(ui);
-    let number = kit::Number {
-        range: &range,
-        speed,
-        prefix: None,
-        suffix,
-        decimals,
-    };
-    let height = field_height(ui);
-    kit::number_field_in(ui, &p, value, number, vec2(78.0, 24.0), height, None)
-}
-
-/// The height a number field took before: egui's, which is its 13-point
-/// text and padding, or a control's height where that is more.
-fn field_height(ui: &Ui) -> f32 {
-    let spacing = ui.spacing();
-    let text = ui
-        .painter()
-        .layout_no_wrap(
-            "0".to_owned(),
-            FontId::proportional(13.0),
-            Color32::PLACEHOLDER,
-        )
-        .size()
-        .y;
-    (text + 2.0 * spacing.button_padding.y).max(spacing.interact_size.y)
-}
-
-/// The palette a control without one is drawn from, read back from the
-/// interface's style.
-fn palette(ui: &Ui) -> Palette {
-    let visuals = ui.visuals();
-    let mut p = Palette::new(
-        if visuals.dark_mode {
-            theme::Appearance::Dark
-        } else {
-            theme::Appearance::Light
-        },
-        theme::Accent::default(),
-    );
-    p.accent = visuals.selection.stroke.color;
-    p
 }
 
 /// Styles the rows of a menu being built: a fixed width, rows set close.
@@ -327,7 +198,6 @@ pub fn menu_style(ui: &mut Ui, width: f32) {
 
 /// The break between two groups of a menu: Terminal's, a 9-point band with
 /// a hairline set in 8 from either side.
-#[allow(dead_code, reason = "offered to the menus as they are laid out again")]
 pub fn menu_separator(ui: &mut Ui, p: &Palette) {
     controls::menu_separator(ui, *p);
 }
@@ -339,7 +209,6 @@ pub fn menu_item(ui: &mut Ui, p: &Palette, icon: Option<Icon>, text: &str, keys:
 
 /// A menu row for an action that discards something: red, and red where
 /// it is highlighted.
-#[allow(dead_code, reason = "offered to the menus as they are laid out again")]
 pub fn menu_item_destructive(
     ui: &mut Ui,
     p: &Palette,
@@ -354,74 +223,6 @@ pub fn menu_item_destructive(
 /// 14-point glyph, named by its tooltip.
 pub fn small_icon_button(ui: &mut Ui, p: &Palette, icon: Icon, label: &str) -> Response {
     kit::small_icon_button(ui, p, icon, label)
-}
-
-/// A row whose value can be keyframed: the label at the leading edge, the
-/// fields `add` makes at the trailing edge, and after them the steps to the
-/// keyframes on either side of the playhead and the diamond, which stand at
-/// the same place on every row. `what` names the value for the diamond's
-/// accessible name.
-pub fn keyed_row(
-    ui: &mut Ui,
-    p: &Palette,
-    label: &str,
-    what: &str,
-    state: KeyState,
-    add: impl FnOnce(&mut Ui),
-) -> KeyRow {
-    keyed_row_with(ui, p, label, what, state, add, |_| {})
-}
-
-/// As [`keyed_row`], with what `lead` makes before the fields.
-pub fn keyed_row_with(
-    ui: &mut Ui,
-    p: &Palette,
-    label: &str,
-    what: &str,
-    state: KeyState,
-    add: impl FnOnce(&mut Ui),
-    lead: impl FnOnce(&mut Ui),
-) -> KeyRow {
-    kit::keyed_row(ui, p, label, what, state, RowFit::LEGACY, add, lead)
-}
-
-/// As [`row`], with a label that is cut with an ellipsis rather than pushed
-/// under its controls when the panel is narrow.
-pub fn fitted_row<R>(ui: &mut Ui, p: &Palette, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
-    kit::fitted_row(ui, p, label, RowFit::LEGACY, add)
-}
-
-/// As [`number`], named for accessibility: a field beside a label is
-/// otherwise only its value.
-#[expect(clippy::too_many_arguments, reason = "a field is all of these")]
-pub fn named_number(
-    ui: &mut Ui,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
-    speed: f64,
-    suffix: &str,
-    decimals: usize,
-    width: f32,
-    label: &str,
-) -> Response {
-    let p = palette(ui);
-    let number = kit::Number {
-        range: &range,
-        speed,
-        prefix: None,
-        suffix,
-        decimals,
-    };
-    let height = field_height(ui);
-    kit::number_field_in(
-        ui,
-        &p,
-        value,
-        number,
-        vec2(width, 24.0),
-        height,
-        Some(label),
-    )
 }
 
 /// A value from nought to one on a track, dragged or stepped with the up and
@@ -509,12 +310,6 @@ pub fn slider(
     }
 }
 
-/// As [`small_icon_button`], for a state: pressed while it is on.
-#[allow(dead_code, reason = "only the adapters' test calls it now")]
-pub fn small_icon_toggle(ui: &mut Ui, p: &Palette, icon: Icon, on: bool, label: &str) -> Response {
-    kit::small_icon_toggle(ui, p, icon, on, label)
-}
-
 /// A switch for a setting that is on or off.
 pub fn switch(ui: &mut Ui, p: &Palette, on: bool, label: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(32.0, SMALL_BUTTON), Sense::click());
@@ -539,80 +334,6 @@ pub fn switch(ui: &mut Ui, p: &Palette, on: bool, label: &str) -> Response {
         painter.circle_filled(knob + vec2(0.0, 1.0), 9.0, Color32::from_black_alpha(40));
         painter.circle_filled(knob, 9.0, Color32::WHITE);
     }
-    if ui.is_enabled() {
-        response.on_hover_cursor(CursorIcon::PointingHand)
-    } else {
-        response
-    }
-}
-
-/// The heading of a group of rows that opens and closes: a chevron and a
-/// name, cut with an ellipsis, over the width that is left.
-#[allow(dead_code, reason = "only the adapters' test calls it now")]
-pub fn disclosure(ui: &mut Ui, p: &Palette, open: bool, text: &str, dim: bool) -> Response {
-    let size = vec2(ui.available_width().max(24.0), SMALL_BUTTON);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let enabled = ui.is_enabled();
-    response.widget_info(|| {
-        let mut info = WidgetInfo::labeled(WidgetType::CollapsingHeader, enabled, text);
-        info.selected = Some(open);
-        info
-    });
-    ui.ctx().accesskit_node_builder(response.id, |node| {
-        node.set_expanded(open);
-    });
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter();
-        if enabled && response.is_pointer_button_down_on() {
-            painter.rect_filled(rect, 6, p.pressed);
-        } else if enabled && response.hovered() {
-            painter.rect_filled(rect, 6, p.hover);
-        }
-        if response.has_focus() {
-            controls::focus_ring(painter, rect, 6, *p);
-        }
-        // Terminal sets the chevron 20 points in from a card's edge; here
-        // the row is already inside the card's padding, so it stands under
-        // the labels of the rows beside it.
-        icons::paint(
-            painter,
-            Rect::from_center_size(pos2(rect.left() + 8.0, rect.center().y), Vec2::splat(14.0)),
-            if open {
-                Icon::ChevronDown
-            } else {
-                Icon::ChevronRight
-            },
-            p.secondary,
-        );
-        let ink = if dim { p.muted } else { p.fg };
-        let galley = truncated(ui, text, theme::medium(12.5), ink, rect.width() - 28.0);
-        controls::galley_at(painter, pos2(rect.left() + 24.0, rect.center().y), galley);
-    }
-    if enabled {
-        response.on_hover_cursor(CursorIcon::PointingHand)
-    } else {
-        response
-    }
-}
-
-/// How far a piece of background work has got: a 4-point bar over the width
-/// available, filled in `fill`, named `name` with its value for those who do
-/// not see it.
-pub fn progress(ui: &mut Ui, p: &Palette, done: f32, fill: Color32, name: &str) -> Response {
-    kit::progress_bar(ui, p, Some(done), fill, name)
-}
-
-/// A pill that picks one of several named choices, such as a preset. It is
-/// pressed while it is the one chosen.
-pub fn chip(ui: &mut Ui, p: &Palette, text: &str, selected: bool) -> Response {
-    let galley =
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), theme::medium(12.0), Color32::PLACEHOLDER);
-    let size = vec2(galley.size().x + 22.0, 26.0);
-    let (_, response) = ui.allocate_exact_size(size, Sense::click());
-    // The chip keeps the width it had, so the one chosen is ringed; the
-    // check comes with the area's final layout, which leaves room for it.
-    kit::paint_chip(ui, p, &response, galley, selected, false);
     if ui.is_enabled() {
         response.on_hover_cursor(CursorIcon::PointingHand)
     } else {
@@ -664,6 +385,19 @@ mod tests {
         shapes
     }
 
+    /// A number field, as the inspector's rows hold.
+    fn field(ui: &mut Ui, p: &Palette) -> Response {
+        let number = kit::Number {
+            range: &(0.0..=10.0),
+            speed: 0.1,
+            prefix: None,
+            suffix: " %",
+            decimals: 0,
+        };
+        let size = vec2(78.0, metrics::INSPECTOR_CONTROL);
+        kit::number_field(ui, p, &mut 1.0, number, size, None)
+    }
+
     fn rects(shapes: &[Shape]) -> impl Iterator<Item = &RectShape> {
         shapes.iter().filter_map(|shape| match shape {
             Shape::Rect(rect) => Some(rect),
@@ -683,37 +417,20 @@ mod tests {
                 .layout_no_wrap("Export".into(), theme::medium(12.5), Color32::WHITE)
                 .size()
                 .x;
-            let chip_text = ui
-                .painter()
-                .layout_no_wrap("1080p".into(), theme::medium(12.0), Color32::WHITE)
-                .size()
-                .x;
             let mut on = 0.5;
-            let mut value = 3.0;
-            // A number field was egui's drag value, sized as asked.
-            let bare = |ui: &mut Ui, width: f32| {
-                ui.add_sized(
-                    [width, 24.0],
-                    egui::DragValue::new(&mut 3.0_f32)
-                        .range(0.0..=10.0)
-                        .suffix(" s")
-                        .fixed_decimals(1),
-                )
-                .rect
-                .size()
-            };
-            let (pair, single) = (bare(ui, 64.0), bare(ui, 78.0));
             let mut choice = 0;
             sizes = vec![
+                // Spec §3.4: a button is a control's final height, 30, now
+                // that the 28-point legacy height is gone.
                 (
                     button(ui, &p, None, "Export", Kind::Primary).rect.size(),
-                    vec2(text + 24.0, 28.0),
+                    vec2(text + 24.0, metrics::CONTROL_HEIGHT),
                 ),
                 (
                     button(ui, &p, Some(Icon::Plus), "Export", Kind::Plain)
                         .rect
                         .size(),
-                    vec2(text + 42.0, 28.0),
+                    vec2(text + 42.0, metrics::CONTROL_HEIGHT),
                 ),
                 (
                     icon_button(ui, &p, Icon::Undo, "Undo (Ctrl+Z)").rect.size(),
@@ -727,34 +444,10 @@ mod tests {
                     small_icon_button(ui, &p, Icon::Rotate, "Reset").rect.size(),
                     vec2(22.0, 22.0),
                 ),
-                (
-                    small_icon_toggle(ui, &p, Icon::Eye, true, "Show")
-                        .rect
-                        .size(),
-                    vec2(22.0, 22.0),
-                ),
                 (switch(ui, &p, true, "Snap").rect.size(), vec2(32.0, 22.0)),
                 (
                     slider(ui, &p, &mut on, 1.0, 112.0, "Mix").rect.size(),
                     vec2(112.0, 22.0),
-                ),
-                (
-                    chip(ui, &p, "1080p", true).rect.size(),
-                    vec2(chip_text + 22.0, 26.0),
-                ),
-                (
-                    named_number(ui, &mut value, 0.0..=10.0, 0.1, " s", 1, 64.0, "Length")
-                        .rect
-                        .size(),
-                    pair,
-                ),
-                (
-                    number(ui, &mut value, 0.0..=10.0, 0.1, " s", 1).rect.size(),
-                    single,
-                ),
-                (
-                    disclosure(ui, &p, true, "Encoder", false).rect.size(),
-                    vec2(ui.available_width(), 22.0),
                 ),
             ];
             let before = ui.cursor().top();
@@ -766,57 +459,6 @@ mod tests {
                 ),
                 vec2(150.0, 28.0),
             ));
-            // What the rest took is read from where the next thing starts.
-            let gap = ui.spacing().item_spacing.y;
-            let width = ui.available_width();
-            let mut took = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui), was: Vec2| {
-                let before = ui.cursor().top();
-                add(ui);
-                sizes.push((vec2(width, ui.cursor().top() - before - gap), was));
-            };
-            // A row was a label and egui's drag value, grown past the 24
-            // points it was given, in a line at least a control tall.
-            let before = ui.cursor().top();
-            ui.horizontal(|ui| {
-                ui.set_min_height(28.0);
-                ui.label(egui::RichText::new("Scale").font(theme::regular(12.5)));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    bare(ui, 78.0);
-                });
-            });
-            let field = ui.cursor().top() - before - gap;
-            took(
-                ui,
-                &mut |ui| {
-                    row(ui, &p, "Scale", |ui| {
-                        number(ui, &mut 1.0, 0.0..=10.0, 0.1, " s", 1)
-                    });
-                },
-                vec2(width, field),
-            );
-            took(
-                ui,
-                &mut |ui| {
-                    fitted_row(ui, &p, "Scale", |ui| {
-                        number(ui, &mut 1.0, 0.0..=10.0, 0.1, " s", 1)
-                    });
-                },
-                vec2(width, field),
-            );
-            let heading = ui.fonts_mut(|fonts| fonts.row_height(&theme::medium(11.5)));
-            took(
-                ui,
-                &mut |ui| section(ui, &p, "Video"),
-                vec2(width, 2.0 + heading),
-            );
-            took(ui, &mut |ui| hairline(ui, &p), vec2(width, 1.0));
-            took(
-                ui,
-                &mut |ui| {
-                    progress(ui, &p, 0.5, p.accent, "Export");
-                },
-                vec2(width, 4.0),
-            );
         });
         for (index, (size, before)) in sizes.into_iter().enumerate() {
             assert!(
@@ -998,14 +640,21 @@ mod tests {
         let mut add = |ui: &mut Ui| {
             let gap = ui.spacing().item_spacing.y;
             let before = ui.cursor().top();
-            row(ui, &p, "Scale", |ui| {
-                number(ui, &mut 1.0, 0.0..=10.0, 0.1, " %", 0)
-            });
+            kit::row(ui, &p, "Scale", kit::RowFit::INSPECTOR, |ui| field(ui, &p));
             let plain = ui.cursor().top() - before - gap;
             let before = ui.cursor().top();
-            keyed_row(ui, &p, "Scale", "scale", KeyState::Off, |ui| {
-                number(ui, &mut 1.0, 0.0..=10.0, 0.1, " %", 0);
-            });
+            kit::keyed_row(
+                ui,
+                &p,
+                "Scale",
+                "scale",
+                KeyState::Off,
+                kit::RowFit::INSPECTOR,
+                |ui| {
+                    field(ui, &p);
+                },
+                |_| {},
+            );
             heights.set((plain, ui.cursor().top() - before - gap));
         };
         for _ in 0..3 {
@@ -1168,7 +817,21 @@ mod tests {
         let p = palette();
         let mut value = 2.0;
         let mut add = |ui: &mut Ui| {
-            named_number(ui, &mut value, 0.0..=10.0, 0.1, " s", 1, 78.0, "Fade in");
+            let number = kit::Number {
+                range: &(0.0..=10.0),
+                speed: 0.1,
+                prefix: None,
+                suffix: " s",
+                decimals: 1,
+            };
+            kit::number_field(
+                ui,
+                &p,
+                &mut value,
+                number,
+                vec2(78.0, metrics::INSPECTOR_CONTROL),
+                Some("Fade in"),
+            );
         };
         nodes(&ctx, Vec::new(), &mut add);
         let seen = nodes(&ctx, Vec::new(), &mut add);
@@ -1233,9 +896,18 @@ mod tests {
         ] {
             let after = std::cell::Cell::new(None);
             frame(&ctx, Vec::new(), &mut |ui| {
-                keyed_row(ui, &p, "Scale", "scale", state, |ui| {
-                    number(ui, &mut 1.0, 0.0..=10.0, 0.1, " %", 0);
-                });
+                kit::keyed_row(
+                    ui,
+                    &p,
+                    "Scale",
+                    "scale",
+                    state,
+                    kit::RowFit::INSPECTOR,
+                    |ui| {
+                        field(ui, &p);
+                    },
+                    |_| {},
+                );
                 after.set(Some(ui.next_auto_id()));
             });
             ids.push(after.get());

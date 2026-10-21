@@ -5,7 +5,6 @@
 //!
 //! Keep these as Terminal has them. Where Neptune Video departs, the code
 //! says so with a `Neptune Video:` comment.
-#![allow(dead_code)] // Preserve the full shared Neptune component vocabulary.
 
 use super::kit;
 use crate::{
@@ -344,6 +343,10 @@ pub fn segmented<T: PartialEq + Copy>(
 }
 
 /// A continuous value with a filled track. Arrow keys nudge by one step.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Terminal's vocabulary, which its test exercises")
+)]
 pub fn slider(
     ui: &mut Ui,
     p: Palette,
@@ -415,6 +418,10 @@ pub fn slider(
 }
 
 /// A bounded number adjusted in fixed steps. Returns whether it changed.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Terminal's vocabulary, which its test exercises")
+)]
 pub fn stepper(
     ui: &mut Ui,
     p: Palette,
@@ -632,49 +639,6 @@ pub fn search_field_sized(
     response
 }
 
-/// A field showing the current choice that opens a list of the others. The
-/// caller shows the list with `egui::Popup::menu` on the returned response.
-pub fn select(ui: &mut Ui, p: Palette, id: Id, value: &str, label: &str, width: f32) -> Response {
-    let id = viewport_id(ui.ctx(), id);
-    let (_, rect) = ui.allocate_space(vec2(width, metrics::CONTROL_HEIGHT));
-    let response = ui.interact(rect, id, Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, ui.is_enabled(), label));
-    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
-    let radius = metrics::CONTROL_RADIUS;
-    let painter = ui.painter();
-    if response.hovered() || open {
-        painter.rect_filled(rect, radius, p.pressed);
-    }
-    painter.rect_stroke(rect, radius, p.hairline(), StrokeKind::Inside);
-    if response.has_focus() {
-        focus_ring(painter, rect, radius, p);
-    }
-    icons::paint(
-        painter,
-        Rect::from_center_size(
-            Pos2::new(rect.right() - 16.0, rect.center().y),
-            Vec2::splat(12.0),
-        ),
-        Icon::ChevronDown,
-        p.secondary,
-    );
-    galley_at(
-        painter,
-        Pos2::new(rect.left() + 10.0, rect.center().y),
-        elided(
-            painter,
-            value,
-            theme::regular(13.0),
-            p.fg,
-            rect.width() - 38.0,
-        ),
-    );
-    if response.gained_focus() {
-        response.scroll_to_me(None);
-    }
-    response.on_hover_cursor(CursorIcon::PointingHand)
-}
-
 /// A frameless single-line editor for surfaces that draw their own field.
 pub fn bare_text_edit(
     ui: &mut Ui,
@@ -704,78 +668,9 @@ pub fn scrim(painter: &Painter, bounds: Rect, radius: u8, p: Palette, opacity: f
     }
 }
 
-#[derive(Clone, Copy)]
-pub enum SheetPlacement {
-    Center,
-    /// Hangs from the top of the window, for command-style surfaces.
-    Top(f32),
-}
-
-pub struct SheetOutput<R> {
-    pub inner: R,
-    /// The dimmed area outside the sheet was clicked.
-    pub backdrop_clicked: bool,
-}
-
-/// A modal surface. Keyboard focus stays inside it, and it is exposed to
-/// assistive tools as a window named `title`.
-pub fn sheet<R>(
-    ctx: &egui::Context,
-    p: Palette,
-    title: &str,
-    width: f32,
-    placement: SheetPlacement,
-    add_contents: impl FnOnce(&mut Ui) -> R,
-) -> SheetOutput<R> {
-    let id = viewport_id(ctx, Id::new(("sheet", title)));
-    let screen = ctx.content_rect();
-    let width = width.min(screen.width() - 24.0).max(120.0);
-    let area = egui::Modal::default_area(id);
-    let area = match placement {
-        SheetPlacement::Center => area,
-        SheetPlacement::Top(offset) => area
-            .anchor(Align2::CENTER_TOP, vec2(0.0, offset))
-            .fade_in(false),
-    };
-    let frame = Frame::new()
-        .fill(p.elevated)
-        .corner_radius(metrics::SHEET_RADIUS)
-        .stroke(Stroke::new(1.0, p.border))
-        .shadow(p.sheet_shadow());
-    let modal = egui::Modal::new(id)
-        .area(area)
-        .frame(frame)
-        // The window paints its own rounded scrim.
-        .backdrop_color(Color32::TRANSPARENT)
-        .show(ctx, |ui| {
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing = Vec2::ZERO;
-            add_contents(ui)
-        });
-    modal
-        .response
-        .widget_info(|| WidgetInfo::labeled(WidgetType::Window, true, title));
-    SheetOutput {
-        inner: modal.inner,
-        backdrop_clicked: modal.backdrop_response.clicked(),
-    }
-}
-
 /// The title row of a sheet. Returns true when its close control is activated.
 pub fn sheet_header(ui: &mut Ui, p: Palette, title: &str, close_label: Option<&str>) -> bool {
     header(ui, p, title, None, close_label).1
-}
-
-/// The title row of a screen reached from another inside the same sheet: a
-/// back control leads the title. Returns whether back and close were activated.
-pub fn sheet_back_header(
-    ui: &mut Ui,
-    p: Palette,
-    title: &str,
-    back_label: &str,
-    close_label: &str,
-) -> (bool, bool) {
-    header(ui, p, title, Some(back_label), Some(close_label))
 }
 
 fn header(
@@ -846,19 +741,6 @@ pub fn section_label(ui: &mut Ui, p: Palette, text: &str) {
         theme::medium(11.5),
         p.secondary,
     );
-}
-
-/// Supporting text beneath a group.
-pub fn caption(ui: &mut Ui, p: Palette, text: &str) {
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.add_space(4.0);
-        ui.add(
-            egui::Label::new(egui::RichText::new(text).size(11.5).color(p.muted))
-                .wrap()
-                .selectable(false),
-        );
-    });
 }
 
 /// An inset card of setting rows separated by hairlines.
@@ -958,16 +840,6 @@ impl Group {
         response.on_hover_cursor(CursorIcon::PointingHand)
     }
 
-    /// A labelled row whose control is aligned to the trailing edge.
-    pub fn row<R>(
-        &mut self,
-        ui: &mut Ui,
-        label: &str,
-        add_control: impl FnOnce(&mut Ui) -> R,
-    ) -> R {
-        self.row_with_height(ui, label, 42.0, add_control)
-    }
-
     pub fn row_with_height<R>(
         &mut self,
         ui: &mut Ui,
@@ -1018,18 +890,6 @@ impl Group {
             Color32::PLACEHOLDER,
         );
     }
-}
-
-/// A row in a pop-up menu. The hovered row takes the accent, as native menus do.
-pub fn menu_item(
-    ui: &mut Ui,
-    p: Palette,
-    icon: Icon,
-    label: &str,
-    shortcut: &str,
-    destructive: bool,
-) -> bool {
-    menu_row(ui, p, icon, label, shortcut, destructive).clicked()
 }
 
 fn menu_row(
@@ -1147,58 +1007,6 @@ pub fn capsule(painter: &Painter, rect: Rect, p: Palette) {
     painter.rect_stroke(rect, radius, Stroke::new(1.0, p.border), StrokeKind::Inside);
 }
 
-/// A non-blocking message in the window's top trailing corner, clear of pane
-/// status and the active prompt. Returns true when dismissed.
-pub fn toast(ctx: &egui::Context, p: Palette, message: &str) -> bool {
-    notice(ctx, p, message, (Icon::Warning, p.red))
-}
-
-/// A toast under another mark: something done, rather than something wrong.
-pub fn notice(ctx: &egui::Context, p: Palette, message: &str, mark: (Icon, Color32)) -> bool {
-    let screen = ctx.content_rect();
-    let mut dismissed = false;
-    egui::Area::new(viewport_id(ctx, Id::new("neptune-toast")))
-        // Above sheets, so a failure reported during a dialog stays reachable.
-        .order(egui::Order::Tooltip)
-        .anchor(
-            Align2::RIGHT_TOP,
-            vec2(-14.0, metrics::TOOLBAR_HEIGHT + 8.0),
-        )
-        .show(ctx, |ui| {
-            Frame::new()
-                .fill(p.elevated)
-                .corner_radius(12)
-                .stroke(Stroke::new(1.0, p.border))
-                .shadow(p.popup_shadow())
-                .inner_margin(Margin {
-                    left: 14,
-                    right: 8,
-                    top: 8,
-                    bottom: 8,
-                })
-                .show(ui, |ui| {
-                    ui.set_max_width((screen.width() - 96.0).clamp(160.0, 440.0));
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        let (_, icon) = ui.allocate_space(Vec2::splat(16.0));
-                        icons::paint(ui.painter(), icon, mark.0, mark.1);
-                        let close = ui.available_width() - 38.0;
-                        ui.scope(|ui| {
-                            ui.set_max_width(close.max(80.0));
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(message).size(12.5).color(p.fg),
-                                )
-                                .wrap(),
-                            );
-                        });
-                        dismissed = icons::button(ui, Icon::Close, "Dismiss").clicked();
-                    });
-                });
-        });
-    dismissed
-}
-
 /// A setting stepped from the keyboard or the command palette, named with its
 /// new value for a moment at the top of the window.
 #[derive(Clone, Debug, PartialEq)]
@@ -1222,55 +1030,6 @@ impl Level {
             1.0 - egui::emath::easing::cubic_out(fading as f32)
         })
     }
-}
-
-/// Shows a stepped setting's chip under the toolbar, where it covers neither
-/// the prompt nor a message. It takes no input. Returns false once it has gone.
-pub fn level(ctx: &egui::Context, p: Palette, level: &Level) -> bool {
-    let now = ctx.input(|input| input.time);
-    let Some(opacity) = level.opacity(now) else {
-        return false;
-    };
-    // Sleep through the hold; repaint only for the fade.
-    let hold = level.shown + Level::HOLD - now;
-    if hold > 0.0 {
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(hold));
-    } else {
-        ctx.request_repaint();
-    }
-    egui::Area::new(viewport_id(ctx, Id::new("neptune-level")))
-        .order(egui::Order::Tooltip)
-        .interactable(false)
-        .anchor(Align2::CENTER_TOP, vec2(0.0, metrics::TOOLBAR_HEIGHT + 8.0))
-        .show(ctx, |ui| {
-            ui.set_opacity(opacity);
-            let painter = ui.painter().clone();
-            let name = painter.layout_no_wrap(level.name.into(), theme::medium(12.0), p.secondary);
-            let value = painter.layout_no_wrap(level.value.clone(), theme::medium(12.0), p.fg);
-            let (rect, response) = ui.allocate_exact_size(
-                vec2(name.size().x + value.size().x + 36.0, 28.0),
-                Sense::hover(),
-            );
-            response.widget_info(|| {
-                WidgetInfo::labeled(
-                    WidgetType::Label,
-                    true,
-                    format!("{} {}", level.name, level.value),
-                )
-            });
-            capsule(&painter, rect, p);
-            let name = galley_at(
-                &painter,
-                Pos2::new(rect.left() + 14.0, rect.center().y),
-                name,
-            );
-            galley_at(
-                &painter,
-                Pos2::new(name.right() + 8.0, rect.center().y),
-                value,
-            );
-        });
-    true
 }
 
 #[cfg(test)]

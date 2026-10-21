@@ -1368,8 +1368,8 @@ fn model(ui: &mut Ui, room: Rect, input: &AgentInput, described: &str, actions: 
 /// resting in the secondary ink and lit under the pointer and while its list
 /// is open. `name` is its accessible name.
 // Neptune Video: Terminal's composer `pill` (`T:src/ui/project/composer.rs`)
-// without a CLI's mark. `kit::quiet_popup` sizes itself to its words; the
-// composer's row gives it a rect, which it is elided in.
+// without a CLI's mark. The composer's row gives it a rect, which its words
+// are elided in.
 fn pill(ui: &mut Ui, p: &Palette, rect: Rect, id: Id, words: Option<&str>, name: &str) -> Response {
     let id = viewport_id(ui.ctx(), id);
     let live = ui.is_enabled();

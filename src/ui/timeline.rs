@@ -1367,8 +1367,8 @@ fn open_surface(ui: &Ui, p: &Palette, surface: egui::layers::ShapeIdx, button: &
 /// The snapping toggle: pressed while snapping is on, named the same either
 /// way, with its state said by its role and its tooltip.
 fn snapping_toggle(ui: &mut Ui, p: &Palette, on: bool) -> Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(TOOL), Sense::click());
-    widgets::paint_icon_button(ui, p, rect, &response, Icon::Magnet, None, on);
+    let (_, response) = ui.allocate_exact_size(Vec2::splat(TOOL), Sense::click());
+    kit::paint_icon_button(ui, p, &response, Icon::Magnet, on, None);
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, SNAPPING)
     });

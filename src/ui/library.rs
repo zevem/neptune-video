@@ -1612,10 +1612,8 @@ fn asset_cell(
             + 12.0;
         kit::badge(
             ui.painter(),
-            p,
             pos2(picture.right() - 4.0 - width, picture.bottom() - 4.0 - 8.0),
             &length,
-            kit::BadgeOn::Picture,
         );
     }
     // Under the pointer, the picture offers to play its source. A secondary

@@ -26,7 +26,7 @@ use super::{
     kit::{self, KeyRow, KeyState, RowFit},
     tone_of_media,
     viewer::trim_number,
-    widgets::{self, Kind},
+    widgets::Kind,
 };
 use crate::{
     icons::{self, Icon},
@@ -357,29 +357,6 @@ impl InspectorState {
         self.mask.filter(|_| self.section == Section::Video)
     }
 }
-
-// The legacy row and field adapters of `widgets.rs` were the inspector's
-// alone, and it no longer calls them. The foundation is frozen until P10,
-// which removes them; until then they are named here so that the build
-// stays free of dead-code warnings.
-#[expect(clippy::type_complexity, reason = "the adapters' own signatures")]
-const _: () = {
-    let _: fn(&mut Ui, &Palette) = widgets::hairline;
-    let _: fn(&mut Ui, &mut f32, std::ops::RangeInclusive<f32>, f64, &str, usize) -> Response =
-        widgets::number;
-    let _: fn(&mut Ui, &Palette, &str, &str, KeyState, fn(&mut Ui)) -> KeyRow = widgets::keyed_row;
-    let _: fn(&mut Ui, &Palette, &str, fn(&mut Ui)) = widgets::fitted_row;
-    let _: fn(
-        &mut Ui,
-        &mut f32,
-        std::ops::RangeInclusive<f32>,
-        f64,
-        &str,
-        usize,
-        f32,
-        &str,
-    ) -> Response = widgets::named_number;
-};
 
 const RATES: [(u32, u32, &str); 8] = [
     (24000, 1001, "23.976"),

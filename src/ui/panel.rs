@@ -5,7 +5,6 @@
 //! Ported from Terminal's `ui/panel.rs`, where these serve one panel's own
 //! tabs; here a strip is given its tabs, so the library and the inspector can
 //! share it. Where Neptune Video departs, the code says so.
-#![allow(dead_code)] // Preserve the full shared Neptune component vocabulary.
 
 use super::controls::{animate, elided, focus_ring, galley_at};
 use crate::{
@@ -211,6 +210,10 @@ fn tab(
 
 /// The fit the names of `tabs` take in a strip `width` wide: the roomiest
 /// whose names all fit, or icons where none does.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Terminal's vocabulary, which its test exercises")
+)]
 pub fn fit(ui: &Ui, p: Palette, tabs: &[Tab], width: f32) -> Fit {
     widths(ui, p, tabs, width).0
 }

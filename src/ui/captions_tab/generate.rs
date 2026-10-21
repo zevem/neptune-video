@@ -103,7 +103,7 @@ const UNKNOWN_LANGUAGE: &str =
 /// A chooser as wide as the panel, named `name`, showing `shown`.
 fn wide_chooser(ui: &mut Ui, p: &Palette, id: &str, name: &str, shown: &str) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(
-        vec2(ui.available_width(), metrics::legacy::CONTROL_HEIGHT),
+        vec2(ui.available_width(), metrics::CONTROL_HEIGHT),
         Sense::hover(),
     );
     chooser(ui, p, rect, Id::new(id), name, shown)

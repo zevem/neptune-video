@@ -6,9 +6,6 @@
 //! a picture is always judged against a neutral surround. Depth comes from
 //! elevation and hairlines, and the accent is kept for focus, selection and
 //! the one primary action in view.
-// The tokens are written in full; the areas take them up as they are laid
-// out again.
-#![allow(dead_code)]
 
 use eframe::egui::{self, Color32, FontFamily, FontId, Shadow, Stroke};
 use serde::{Deserialize, Serialize};
@@ -83,14 +80,6 @@ pub mod metrics {
     pub const CLIP_RADIUS: u8 = 6;
     /// Room the picture keeps inside the stage on every side.
     pub const STAGE_INSET: f32 = 18.0;
-
-    /// The sizes the interface had before it took Terminal's. Each area
-    /// moves its own uses to the names above as it is laid out again.
-    pub mod legacy {
-        pub const CONTROL_HEIGHT: f32 = 28.0;
-        pub const PANEL_RADIUS: u8 = 12;
-        pub const PANEL_HEADER: f32 = 36.0;
-    }
 }
 
 /// How long eased state changes take, in seconds. Editing feedback (the
@@ -227,10 +216,6 @@ pub struct Palette {
     pub scrim: Color32,
     pub shadow: Color32,
     pub dark: bool,
-    /// Migration alias of `bg`, until every area has moved off it.
-    pub surface: Color32,
-    /// Migration alias of `bg`, until every area has moved off it.
-    pub sunken: Color32,
     /// The accent chosen, for the tokens that step aside from it.
     accent_choice: Accent,
 }
@@ -334,8 +319,6 @@ impl Palette {
             scrim: black(120),
             shadow: black(110),
             dark,
-            surface: Color32::TRANSPARENT,
-            sunken: Color32::TRANSPARENT,
             accent_choice,
         };
         if !dark {
@@ -357,8 +340,6 @@ impl Palette {
             p.scrim = black(70);
             p.shadow = black(46);
         }
-        p.surface = p.bg;
-        p.sunken = p.bg;
         p
     }
 
@@ -506,11 +487,6 @@ impl Palette {
 
     pub fn ruler(&self) -> Color32 {
         tint(self.fg, if self.dark { 0.03 } else { 0.04 })
-    }
-
-    /// The marked range on the ruler.
-    pub fn range(&self) -> Color32 {
-        tint(self.fg, 0.10)
     }
 
     /// The playhead is ink, not the accent: it is where, not what is chosen.
@@ -857,10 +833,5 @@ mod tests {
         let dark = Palette::new(Appearance::Dark, Accent::Blue);
         assert_eq!(light.canvas_edge(), stage.separator);
         assert_eq!(dark.canvas_edge(), stage.separator);
-        // The aliases a migrating area still reads are the content surface.
-        for p in [light, stage] {
-            assert_eq!(p.surface, p.bg);
-            assert_eq!(p.sunken, p.bg);
-        }
     }
 }
