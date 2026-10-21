@@ -877,7 +877,7 @@ fn stage_status<'a>(
     };
     if let Some(name) = undecodable {
         // Waiting goes on being timed beneath it.
-        let again = (waiting && waited < WAITING_AFTER).then(|| WAITING_AFTER - waited);
+        let again = (waiting && waited < WAITING_AFTER).then_some(WAITING_AFTER - waited);
         return (Some(Status::CantDecode(name)), again);
     }
     if waiting && waited < WAITING_AFTER {
