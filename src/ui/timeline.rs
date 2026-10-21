@@ -947,7 +947,8 @@ pub fn show(
         let targets = targets(project, selection);
         track_heads(ui, heads, &rows, &geometry, keys, &targets, input, actions);
         over_tiles = Some(draw_lanes(
-            ui, lanes, &rows, &geometry, state, selection, textures, peaks, input, actions,
+            ui, lanes, &rows, &geometry, state, selection, &targets, textures, peaks, input,
+            actions,
         ));
     }
 
@@ -963,14 +964,13 @@ pub fn show(
         lanes.max,
     ));
     let mut marks = Vec::new();
-    if let Some(guide) = state.snap_guide {
-        marks.extend(snap_guide_shapes(
-            &painter,
-            ruler,
-            lanes,
-            geometry.x(guide),
-            p,
-        ));
+    // Each only where the lanes show its time: the painter reaches into the
+    // corner for the pin alone.
+    if let Some(x) = (state.snap_guide)
+        .map(|guide| geometry.x(guide))
+        .filter(|x| (lanes.left()..=lanes.right()).contains(x))
+    {
+        marks.extend(snap_guide_shapes(&painter, ruler, lanes, x, p));
     }
     let x = geometry.x(input.playhead);
     if x >= lanes.left() - 1.0 && x <= lanes.right() + 1.0 {
@@ -1010,9 +1010,10 @@ pub fn show(
     }
 }
 
-/// The playhead's pin: a 12 by 8 head over a 6-point point.
-const PIN: Vec2 = vec2(12.0, 14.0);
-const PIN_POINT: f32 = 6.0;
+/// The playhead's pin: a 12 by 6 head over a 5-point point, which is as
+/// tall as the ruler's lower half leaves room for.
+const PIN: Vec2 = vec2(12.0, 11.0);
+const PIN_POINT: f32 = 5.0;
 
 /// The x of a vertical line one point wide at `x`, set on a pixel's middle so
 /// it is drawn sharp.
@@ -1031,8 +1032,9 @@ fn haloed_line(x: f32, ys: egui::Rangef, ink: Color32, halo: Color32) -> [egui::
 }
 
 /// The playhead at `x`: a line from the ruler's middle down through the
-/// lanes, and its pin seated in the ruler's lower half with its point on the
-/// ruler's foot, under the labels, which sit in the upper half.
+/// lanes, and its pin wholly in the ruler's lower half with its point on the
+/// ruler's foot. The labels end above the middle, so the two never share a
+/// row of pixels.
 fn playhead_shapes(
     painter: &egui::Painter,
     ruler: Rect,
@@ -1049,8 +1051,10 @@ fn playhead_shapes(
         halo,
     ));
     let (half, foot) = (PIN.x * 0.5, ruler.bottom());
-    let shoulder = foot - PIN_POINT;
-    let top = foot - PIN.y;
+    // Its top and shoulders on a pixel's middle, as its sides are, so the
+    // halo round it is one sharp pixel and not two faint ones.
+    let shoulder = painter.round_to_pixel_center(foot - PIN_POINT);
+    let top = painter.round_to_pixel_center(foot - PIN.y);
     shapes.push(egui::Shape::convex_polygon(
         vec![
             pos2(x - half, top),
@@ -1220,7 +1224,9 @@ fn tool_strip(
             actions.push(Action::AddText);
         }
         ui.add_space(TOOL_GAP);
+        let surface = ui.painter().add(egui::Shape::Noop);
         let add = icon_button(ui, p, Icon::Layers, "Add track");
+        open_surface(ui, p, surface, &add);
         egui::Popup::menu(&add).show(|ui| {
             menu_style(ui, 180.0);
             add_track_rows(ui, p, actions);
@@ -1251,11 +1257,19 @@ fn tool_strip(
     // What folded, in a menu after them.
     if fold >= Fold::Insert {
         ui.add_space(GROUP_GAP);
+        let surface = ui.painter().add(egui::Shape::Noop);
         let more = icon_button(ui, p, Icon::Dots, "More timeline actions");
+        open_surface(ui, p, surface, &more);
         egui::Popup::menu(&more).show(|ui| {
             menu_style(ui, 240.0);
             let mut item = |ui: &mut Ui, icon: Icon, text: &str, keys: &str, action: Action| {
-                if menu_item(ui, p, Some(icon), text, &shortcut(keys)).clicked() {
+                // A row that removes is red, as the clip menu's is.
+                let row = if matches!(action, Action::Delete { .. }) {
+                    widgets::menu_item_destructive(ui, p, Some(icon), text, &shortcut(keys))
+                } else {
+                    menu_item(ui, p, Some(icon), text, &shortcut(keys))
+                };
+                if row.clicked() {
                     actions.push(action);
                     ui.close();
                 }
@@ -1333,6 +1347,17 @@ fn tool_strip(
     });
 }
 
+/// Fills the place kept under a strip button whose menu is open, as a
+/// pressed button is filled, so the menu says where it came from.
+fn open_surface(ui: &Ui, p: &Palette, surface: egui::layers::ShapeIdx, button: &Response) {
+    if egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(button)) {
+        ui.painter().set(
+            surface,
+            egui::Shape::rect_filled(button.rect.shrink(1.0), 7, p.pressed),
+        );
+    }
+}
+
 /// The snapping toggle: pressed while snapping is on, named the same either
 /// way, with its state said by its role and its tooltip.
 fn snapping_toggle(ui: &mut Ui, p: &Palette, on: bool) -> Response {
@@ -1364,13 +1389,41 @@ fn zoom_slider(ui: &mut Ui, p: &Palette, level: &mut f32, width: f32) -> Respons
     if let Some(pos) = response.interact_pointer_pos() {
         next = ((pos.x - left) / travel).clamp(0.0, 1.0);
     }
-    if response.has_focus() {
-        let nudge = ui.input(|input| {
+    // The left and right arrows are the slider's while it has the focus,
+    // and do not take the focus on to its neighbours. A screen reader steps
+    // it, or sets it, as it would egui's own.
+    let focused = response.has_focus();
+    if focused {
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                response.id,
+                egui::EventFilter {
+                    horizontal_arrows: true,
+                    ..Default::default()
+                },
+            );
+        });
+    }
+    let nudge = ui.input(|input| {
+        use egui::accesskit::Action;
+        let keys = if focused {
             input.num_presses(egui::Key::ArrowRight) as f32
                 - input.num_presses(egui::Key::ArrowLeft) as f32
-        });
-        next = (next + nudge * 0.05).clamp(0.0, 1.0);
-    }
+        } else {
+            0.0
+        };
+        keys + input.num_accesskit_action_requests(response.id, Action::Increment) as f32
+            - input.num_accesskit_action_requests(response.id, Action::Decrement) as f32
+    });
+    next = (next + nudge * 0.05).clamp(0.0, 1.0);
+    ui.input(|input| {
+        use egui::accesskit::{Action, ActionData};
+        for request in input.accesskit_action_requests(response.id, Action::SetValue) {
+            if let Some(ActionData::NumericValue(value)) = request.data {
+                next = (value as f32).clamp(0.0, 1.0);
+            }
+        }
+    });
     if next != *level {
         *level = next;
         response.mark_changed();
@@ -1378,6 +1431,19 @@ fn zoom_slider(ui: &mut Ui, p: &Palette, level: &mut f32, width: f32) -> Respons
     let current = *level;
     response.widget_info(|| {
         egui::WidgetInfo::slider(ui.is_enabled(), f64::from(current), "Timeline zoom")
+    });
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        use egui::accesskit::Action;
+        node.set_min_numeric_value(0.0);
+        node.set_max_numeric_value(1.0);
+        node.set_numeric_value_step(0.05);
+        node.add_action(Action::SetValue);
+        if current < 1.0 {
+            node.add_action(Action::Increment);
+        }
+        if current > 0.0 {
+            node.add_action(Action::Decrement);
+        }
     });
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
@@ -1387,7 +1453,7 @@ fn zoom_slider(ui: &mut Ui, p: &Palette, level: &mut f32, width: f32) -> Respons
             pos2(rect.right(), rect.center().y + 2.0),
         );
         painter.rect_filled(track, 2, p.pressed);
-        if response.has_focus() {
+        if focused {
             painter.circle_stroke(
                 knob,
                 KNOB + 2.0,
@@ -1396,6 +1462,10 @@ fn zoom_slider(ui: &mut Ui, p: &Palette, level: &mut f32, width: f32) -> Respons
         }
         painter.circle_filled(knob + vec2(0.0, 1.0), KNOB, Color32::from_black_alpha(50));
         painter.circle_filled(knob, KNOB, Color32::WHITE);
+        // On the light strip a white knob needs an edge of its own.
+        if !p.dark {
+            painter.circle_stroke(knob, KNOB - 0.5, Stroke::new(1.0, p.border));
+        }
     }
     icons::hint(
         response.on_hover_cursor(CursorIcon::PointingHand),
@@ -1561,18 +1631,23 @@ fn volume_menu(ui: &mut Ui, p: &Palette, track: &Track, actions: &mut Vec<Action
         |ui| {
             ui.set_min_size(vec2(ui.available_width(), metrics::COMPACT_HEIGHT));
             ui.add_space(10.0);
-            volume_field(ui, p, &mut shown)
+            let field = volume_field(ui, p, &mut shown);
+            // The word is a label, as it is read out.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add_space(32.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("Volume")
+                            .font(theme::regular(13.0))
+                            .color(p.fg),
+                    )
+                    .selectable(false),
+                );
+            });
+            field
         },
     );
     let field = row.inner;
-    let line = row.response.rect;
-    ui.painter().text(
-        pos2(line.left() + 32.0, line.center().y),
-        Align2::LEFT_CENTER,
-        "Volume",
-        theme::regular(13.0),
-        p.fg,
-    );
     // Escape gives a drag up, as it gives up what is typed: egui ends the
     // drag on that frame with the button still down, which is no release.
     let given_up = ui.input(|input| input.key_pressed(egui::Key::Escape));
@@ -1610,11 +1685,18 @@ fn volume_menu(ui: &mut Ui, p: &Palette, track: &Track, actions: &mut Vec<Action
 }
 
 /// The track volume's field: a number in percent, dragged or typed, on the
-/// surface of the editor's other fields. What is typed is the field's until
-/// it is entered.
+/// surface of the editor's other fields and with their quieter unit. What is
+/// typed is the field's until it is entered. It is `kit::number_field`
+/// but for that: the kit's field updates as it is typed in and rounds to
+/// fixed decimals.
 fn volume_field(ui: &mut Ui, p: &Palette, value: &mut f32) -> Response {
-    const FIELD: Vec2 = vec2(72.0, 24.0);
+    const FIELD: Vec2 = vec2(72.0, metrics::INSPECTOR_CONTROL);
+    const UNIT: &str = " %";
     let surface = ui.painter().add(egui::Shape::Noop);
+    let unit_font = theme::regular(12.5);
+    let unit = ui
+        .painter()
+        .layout_no_wrap(UNIT.to_owned(), unit_font.clone(), p.muted);
     let field = ui
         .scope(|ui| {
             // The drag value draws no surface of its own: this one is drawn
@@ -1623,6 +1705,8 @@ fn volume_field(ui: &mut Ui, p: &Palette, value: &mut f32) -> Response {
             style
                 .text_styles
                 .insert(style.drag_value_text_style.clone(), theme::regular(12.5));
+            // The value ends 8 points in from the unit.
+            style.spacing.interact_size = FIELD;
             style.spacing.button_padding = vec2(8.0, 0.0);
             let visuals = &mut style.visuals;
             visuals.text_edit_bg_color = Some(Color32::TRANSPARENT);
@@ -1638,15 +1722,23 @@ fn volume_field(ui: &mut Ui, p: &Palette, value: &mut f32) -> Response {
                 widget.bg_stroke = Stroke::NONE;
                 widget.corner_radius = CornerRadius::same(7);
             }
-            ui.add_sized(
-                FIELD,
-                egui::DragValue::new(value)
-                    .range(0.0..=tracks::MOST)
-                    .speed(1.0)
-                    .suffix(" %")
-                    .max_decimals(2)
-                    .update_while_editing(false),
-            )
+            // The unit is laid out unseen after the value, which keeps the
+            // value clear of it and its text in the value read out; it is
+            // painted over that place below.
+            let drag = egui::DragValue::new(value)
+                .range(0.0..=tracks::MOST)
+                .speed(1.0)
+                .suffix(
+                    egui::RichText::new(UNIT)
+                        .font(unit_font.clone())
+                        .color(Color32::TRANSPARENT),
+                )
+                .max_decimals(2)
+                .update_while_editing(false);
+            let layout = egui::Layout::centered_and_justified(egui::Direction::LeftToRight)
+                .with_main_align(egui::Align::Max);
+            ui.allocate_ui_with_layout(FIELD, layout, |ui| ui.add(drag))
+                .inner
         })
         .inner;
     field.widget_info(|| {
@@ -1674,6 +1766,14 @@ fn volume_field(ui: &mut Ui, p: &Palette, value: &mut f32) -> Response {
         ));
     }
     ui.painter().set(surface, egui::Shape::Vec(shapes));
+    // While it is typed in, the field holds only the number.
+    if !editing && ui.is_rect_visible(rect) {
+        let at = pos2(
+            rect.right() - 8.0 - unit.size().x,
+            rect.center().y - unit.size().y * 0.5,
+        );
+        ui.painter().galley(at, unit, p.muted);
+    }
     field
 }
 
@@ -1957,11 +2057,16 @@ fn track_heads(
     }
 }
 
-/// The tracks edits go to: those that hold a selected clip.
+/// The tracks edits go to: those that hold a selected clip. One pass over
+/// the clips however many are selected, and none with nothing selected.
 fn targets(project: &Project, selection: &Selection) -> Vec<TrackId> {
-    (selection.clips.iter())
-        .filter_map(|id| project.clip(*id))
-        .map(|(track, _)| track.id)
+    if selection.clips.is_empty() {
+        return Vec::new();
+    }
+    let chosen: std::collections::HashSet<ClipId> = selection.clips.iter().copied().collect();
+    (project.tracks.iter())
+        .filter(|track| track.clips.iter().any(|clip| chosen.contains(&clip.id)))
+        .map(|track| track.id)
         .collect()
 }
 
@@ -1979,7 +2084,8 @@ fn draw_ruler(
     let painter = ui.painter_at(ruler);
 
     // Ticks rise from the ruler's foot; the times stand in its upper half,
-    // clear of the playhead's pin in the lower.
+    // their figures ending above its middle, clear of the playhead's pin
+    // and the markers' flags in the lower.
     let (step, parts) = rules::ruler_step(geometry.zoom, rate.fps(), 92.0);
     let first = (f64::from(geometry.scroll) / f64::from(geometry.zoom) / step).floor() as i64;
     let last = (f64::from(geometry.scroll + ruler.width()) / f64::from(geometry.zoom) / step).ceil()
@@ -1990,7 +2096,7 @@ fn draw_ruler(
         let x = sharp(&painter, geometry.x(Time::from_seconds(seconds)));
         painter.vline(x, foot - 6.0..=foot, Stroke::new(1.0, p.border));
         painter.text(
-            pos2(x + 3.0, ruler.top() + 4.0),
+            pos2(x + 3.0, ruler.top() + 1.0),
             Align2::LEFT_TOP,
             timefmt::ruler(seconds, step, rate),
             theme::regular(11.0),
@@ -2061,11 +2167,12 @@ fn draw_marker(
     // ticks, and in ink while the pointer is on it.
     let x = sharp(&painter, x);
     let half = MARKER.x * 0.5;
-    let shoulder = foot - MARKER_POINT;
+    let shoulder = painter.round_to_pixel_center(foot - MARKER_POINT);
+    let top = painter.round_to_pixel_center(foot - MARKER.y);
     painter.add(egui::Shape::convex_polygon(
         vec![
-            pos2(x - half, foot - MARKER.y),
-            pos2(x + half, foot - MARKER.y),
+            pos2(x - half, top),
+            pos2(x + half, top),
             pos2(x + half, shoulder),
             pos2(x, foot),
             pos2(x - half, shoulder),
@@ -2073,6 +2180,10 @@ fn draw_marker(
         color,
         Stroke::new(1.0, if response.hovered() { p.fg } else { p.bg }),
     ));
+    // The keyboard's ring round the whole target, inside the ruler.
+    if response.has_focus() {
+        controls::focus_ring(&painter, rect.shrink(2.0), 2, *p);
+    }
     if response.clicked() {
         actions.push(Action::Seek(marker.time));
     }
@@ -2797,6 +2908,8 @@ fn draw_lanes(
     geometry: &Geometry,
     state: &mut TimelineState,
     selection: &mut Selection,
+    // The tracks edits go to, which are lit.
+    targets: &[TrackId],
     textures: &mut Textures,
     peaks: &mut HeldPeaks,
     input: &TimelineInput,
@@ -2824,7 +2937,6 @@ fn draw_lanes(
     // Lanes: a band for each track, the ground showing between them and
     // under the last. The tracks edits go to are lit, and a locked one is
     // hatched under its tiles.
-    let targets = targets(project, selection);
     for row in rows {
         let lane = Rect::from_min_max(
             pos2(lanes.left(), row.top),
@@ -3447,7 +3559,13 @@ fn draw_lanes(
         _ => None,
     };
     let held_keys = state.keys.overriding(project);
-    let audible = sound::Sounding::of(project);
+    // Whether a sound is heard is asked of the tiles of sound lanes alone,
+    // so the links it reads are gathered only once one of those is drawn.
+    let audible = std::cell::OnceCell::new();
+    let heard = |track: &Track, clip: &Clip| {
+        track.kind == TrackKind::Audio
+            && (audible.get_or_init(|| sound::Sounding::of(project))).sounds(project, track, clip)
+    };
     // The tile under the pointer while nothing is held, and the grip of it
     // the pointer is on.
     let pointed = over
@@ -3458,6 +3576,8 @@ fn draw_lanes(
         });
     // The tile being trimmed, where it is held, and by how much.
     let mut trimmed_tile = None;
+    // The tile the keyboard is on.
+    let mut focused = None;
     for (row, clip) in clips_drawn(rows, geometry) {
         let mut start = clip.start;
         let mut end = clip.end();
@@ -3529,7 +3649,7 @@ fn draw_lanes(
                 .collect(),
             hovered: pointed.is_some_and(|(id, _)| id == clip.id),
             grip,
-            heard: audible.sounds(project, row.track, clip),
+            heard: heard(row.track, clip),
         };
         paint_clip(
             ui,
@@ -3547,8 +3667,13 @@ fn draw_lanes(
             input,
         );
         if state.keyboard == Some(clip.id) {
-            controls::focus_ring(&painter, rect, metrics::CLIP_RADIUS, *p);
+            focused = Some(rect);
         }
+    }
+    // The keyboard's ring goes round its tile after every tile is drawn, so
+    // no neighbour covers it.
+    if let Some(rect) = focused {
+        controls::focus_ring(&painter, rect, metrics::CLIP_RADIUS, *p);
     }
     if response.has_focus() {
         controls::focus_ring(&painter, lanes.shrink(3.0), 4, *p);
@@ -3591,12 +3716,7 @@ fn draw_lanes(
                 )
             });
             if handle.has_focus() {
-                over_lanes.painter().rect_stroke(
-                    rect.shrink2(vec2(2.0, 3.0)),
-                    CornerRadius::same(3),
-                    Stroke::new(1.5, p.accent),
-                    StrokeKind::Inside,
-                );
+                controls::focus_ring(over_lanes.painter(), rect.shrink2(vec2(2.0, 3.0)), 3, *p);
             }
             if handle.clicked() || handle.drag_started() {
                 state.mark(selection, *id, *edge);
@@ -3762,7 +3882,7 @@ fn draw_lanes(
                     .collect(),
                 hovered: false,
                 grip: None,
-                heard: audible.sounds(project, track, clip),
+                heard: heard(track, clip),
             };
             let wave = wave_of(project, track, clip, peaks, geometry, *delta);
             painter.add(p.popup_shadow().as_shape(rect, metrics::CLIP_RADIUS));
@@ -4231,14 +4351,14 @@ fn draw_lanes(
 /// How wide the menu of a clip and its Audio menu are.
 const CLIP_MENU: f32 = 260.0;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one call site; the rows need the clip, the selection and what they ask"
-)]
 /// The rows of a clip's Audio menu, in groups. `offered` is whether the clip
 /// carries sound a detach would take, and whether its media has sound at
 /// all. A key of the volume asked for, and a separation, are said through
 /// `asked`: each opens or starts more than an edit.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site; the rows need the clip, the selection and what they ask"
+)]
 fn audio_rows(
     ui: &mut Ui,
     input: &TimelineInput,
@@ -4389,7 +4509,7 @@ fn audio_rows(
     let refused = (input.separator.refusal().map(str::to_owned))
         .or_else(|| crate::stems::refusal(project, clip));
     ui.add_enabled_ui(refused.is_none(), |ui| {
-        let row = menu_item(ui, p, Some(Icon::Sparkles), crate::stems::LABEL, "");
+        let row = menu_item(ui, p, Some(Icon::Music), crate::stems::LABEL, "");
         if row.clicked() {
             *separated = Some(clip);
             ui.close();
@@ -4571,7 +4691,9 @@ fn paint_clip(
     }
 
     // A transition: a shade over the part of the clip it lasts, with a line
-    // rising from the cut it is at.
+    // rising from the cut it is at and an edge where it ends. It lies over a
+    // picture as often as over the body, so it is drawn in the stage's
+    // inks, light on a dark shade, in either appearance.
     for edge in transitions::EDGES {
         let Some(transition) = transitions::of(clip, edge) else {
             continue;
@@ -4580,20 +4702,38 @@ fn paint_clip(
             .filter(|(held, _)| *held == edge)
             .map_or(transition.duration, |(_, duration)| duration);
         let mark = marking(rect, marks.zoom, edge, duration).intersect(inner);
-        let shade = Color32::from_black_alpha(if p.dark { 64 } else { 20 });
-        clipped.rect_filled(mark, 4, shade.gamma_multiply(opacity));
-        let rising = match edge {
-            TransitionEdge::In => [mark.left_bottom(), mark.right_top()],
-            TransitionEdge::Out => [mark.right_bottom(), mark.left_top()],
+        let shade = Color32::from_black_alpha(90).gamma_multiply(opacity);
+        let (ink, halo) = (
+            Color32::from_white_alpha(170).gamma_multiply(opacity),
+            Color32::from_black_alpha(80).gamma_multiply(opacity),
+        );
+        clipped.rect_filled(mark, 4, shade);
+        let (rising, end) = match edge {
+            TransitionEdge::In => ([mark.left_bottom(), mark.right_top()], mark.right() - 0.5),
+            TransitionEdge::Out => ([mark.right_bottom(), mark.left_top()], mark.left() + 0.5),
         };
-        let line = theme::tint(p.fg, 0.35).gamma_multiply(opacity);
-        clipped.line_segment(rising, Stroke::new(1.0, line));
+        clipped.line_segment(rising, Stroke::new(3.0, halo));
+        clipped.line_segment(rising, Stroke::new(1.0, ink));
+        if mark.width() >= 6.0 {
+            clipped.vline(
+                clipped.round_to_pixel_center(end),
+                (mark.top() + 2.0)..=(mark.bottom() - 2.0),
+                Stroke::new(1.0, ink),
+            );
+        }
         if mark.width() >= 24.0 && mark.height() >= 14.0 {
+            let at = Rect::from_center_size(mark.center(), Vec2::splat(12.0));
             icons::paint(
                 &clipped,
-                Rect::from_center_size(mark.center(), Vec2::splat(12.0)),
+                at.translate(vec2(0.0, 1.0)),
                 Icon::Transition,
-                p.fg.gamma_multiply(opacity),
+                halo,
+            );
+            icons::paint(
+                &clipped,
+                at,
+                Icon::Transition,
+                Color32::WHITE.gamma_multiply(opacity),
             );
         }
         if marks.selected == Some(edge) {
@@ -4601,16 +4741,10 @@ fn paint_clip(
         }
     }
 
-    // A hidden track's tiles are veiled.
-    if track.hidden {
-        painter.rect_filled(body, radius, theme::tint(p.bg, 0.45));
-    }
-    if marks.hovered {
-        painter.rect_filled(body, radius, p.hover);
-    }
-
     // The name's row: a band over a picture, filled with the accent while
-    // the clip is selected.
+    // the clip is selected. In the dark it is a shade under white ink; in
+    // the light a frost under dark ink, which reads over a picture as well
+    // and does not lay a dark slab along every light tile.
     let row = if tall {
         Rect::from_min_size(inner.min, vec2(inner.width(), NAME_ROW))
     } else {
@@ -4624,12 +4758,18 @@ fn paint_clip(
             sw: 0,
             se: 0,
         };
-        let fill = if selected { p.accent } else { p.tile_band() };
+        let fill = if selected {
+            p.accent
+        } else if p.dark {
+            p.tile_band()
+        } else {
+            Color32::from_white_alpha(190)
+        };
         painter.rect_filled(band, top, fill.gamma_multiply(opacity));
     }
     let ink = if selected {
         p.on_accent
-    } else if banded {
+    } else if banded && p.dark {
         Color32::WHITE
     } else {
         p.fg
@@ -4653,7 +4793,10 @@ fn paint_clip(
         icons::paint(&clipped, at, Icon::Link, ink.gamma_multiply(0.8));
         right -= 16.0;
     }
-    let start = rect.left() + 8.0 + indent;
+    // A selected name on its capsule steps in by a bar's width, so the
+    // capsule stands clear of the bars a selected tile shows at its ends.
+    let step_in = if selected && !banded { 4.5 } else { 0.0 };
+    let start = rect.left() + 8.0 + indent + step_in;
     if row.width() > 96.0
         && let Some(badge) = speed::badge(clip)
     {
@@ -4680,7 +4823,7 @@ fn paint_clip(
             said_in_row = true;
         }
     }
-    let named = right - 3.0 - start;
+    let named = right - 3.0 - step_in - start;
     if inner.width() > 22.0 {
         let galley = widgets::truncated(ui, &clip.name, theme::medium(11.5), ink, named);
         let at = pos2(start, middle - galley.size().y * 0.5);
@@ -4713,6 +4856,14 @@ fn paint_clip(
             StrokeKind::Inside,
         );
     }
+    // Over all of that: a hidden track's tiles are veiled, its name and
+    // badges with them, and the tile under the pointer is lit.
+    if track.hidden {
+        painter.rect_filled(body, radius, theme::tint(p.bg, 0.45));
+    }
+    if marks.hovered {
+        painter.rect_filled(body, radius, p.hover);
+    }
     if selected {
         painter.rect_stroke(body, radius, Stroke::new(2.0, p.accent), StrokeKind::Inside);
         painter.rect_stroke(
@@ -4735,9 +4886,11 @@ fn paint_clip(
             let Some(shade) = shade else {
                 continue;
             };
+            // Three points in from the body's edge: inside the selection's
+            // ring and the keyline along it.
             let x = match edge {
-                Edge::Start => rect.left() + 4.5,
-                Edge::End => rect.right() - 4.5,
+                Edge::Start => rect.left() + 5.0,
+                Edge::End => rect.right() - 5.0,
             };
             let bar = Rect::from_center_size(
                 pos2(x, rect.center().y),

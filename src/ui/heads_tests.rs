@@ -37,6 +37,10 @@ struct Bench {
     /// Every rectangle the last frame filled, and with what.
     filled: Vec<(Rect, Color32)>,
     refused: Vec<String>,
+    /// Whether the timeline is told snapping is on.
+    snapping: bool,
+    /// The node that held the keyboard focus after the last frame.
+    focused: Option<egui::accesskit::NodeId>,
 }
 
 const NAMES: [&str; 4] = ["Video 1", "Audio 1", "Audio 2", "Text 1"];
@@ -80,6 +84,8 @@ impl Bench {
             inked: Vec::new(),
             filled: Vec::new(),
             refused: Vec::new(),
+            snapping: false,
+            focused: None,
         };
         bench.frame(Vec::new());
         bench
@@ -142,7 +148,7 @@ impl Bench {
                     p: &self.palette,
                     project: &project,
                     playhead: Time::ZERO,
-                    snapping: false,
+                    snapping: self.snapping,
                     media: None,
                     can_paste: false,
                     freeze_hold: Time(2_000_000),
@@ -160,6 +166,7 @@ impl Bench {
         }
         self.written = written;
         if let Some(update) = &output.platform_output.accesskit_update {
+            self.focused = Some(update.focus);
             self.seen = (update.nodes.iter())
                 .filter_map(|(id, node)| {
                     let bounds = node.bounds()?;
@@ -885,7 +892,7 @@ fn a_soloed_head_shows_its_solo_cell_pressed_with_its_glyph_in_the_accent() {
 #[test]
 fn the_tool_strip_names_its_snapping_toggle_and_its_zoom() {
     use egui::accesskit::Toggled;
-    let bench = Bench::new();
+    let mut bench = Bench::new();
     let snapping = bench.find("Snapping (N)").expect("the snapping toggle");
     assert_eq!(snapping.role, Role::CheckBox);
     assert_eq!(snapping.toggled, Some(Toggled::False));
@@ -893,4 +900,37 @@ fn the_tool_strip_names_its_snapping_toggle_and_its_zoom() {
     let zoom = bench.find("Timeline zoom").expect("the zoom slider");
     assert_eq!(zoom.role, Role::Slider);
     assert!(zoom.rect.bottom() <= STRIP, "{:?}", zoom.rect);
+
+    // Turned on, it keeps its name: only the check box says so.
+    bench.snapping = true;
+    bench.frame(Vec::new());
+    let snapping = bench.find("Snapping (N)").expect("the snapping toggle, on");
+    assert_eq!(snapping.role, Role::CheckBox);
+    assert_eq!(snapping.toggled, Some(Toggled::True));
+    assert!(!bench.has("Snapping is on (N)"));
+    assert!(!bench.has("Snapping is off (N)"));
+}
+
+// §7.3: the arrows are the zoom slider's while it has the keyboard. Each one
+// steps the zoom, and the focus stays on the slider for the next.
+#[test]
+fn the_arrows_step_the_zoom_slider_and_leave_the_focus_on_it() {
+    let mut bench = Bench::new();
+    bench.focus("Timeline zoom");
+    let slider = bench.find("Timeline zoom").expect("the zoom slider").node;
+    assert_eq!(bench.focused, Some(slider));
+    let mut zoom = bench.timeline.zoom;
+    for press in 0..2 {
+        bench.key(Key::ArrowRight);
+        assert!(bench.timeline.zoom > zoom, "press {press}: the zoom rose");
+        assert_eq!(
+            bench.focused,
+            Some(slider),
+            "press {press}: the focus stayed"
+        );
+        zoom = bench.timeline.zoom;
+    }
+    bench.key(Key::ArrowLeft);
+    assert!(bench.timeline.zoom < zoom, "the left arrow lowers it");
+    assert_eq!(bench.focused, Some(slider));
 }
