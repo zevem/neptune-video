@@ -1,14 +1,16 @@
 //! The render queue panel: every export queued, rendering or finished, and
 //! what can be done with each. It reads the queue's snapshot and answers what
 //! the person asked; the application tells the queue. It asks for no repaint
-//! of its own: the queue wakes the window while a job renders.
+//! of its own beyond its scrim's fade as it opens: the queue wakes the window
+//! while a job renders.
 //!
-//! It is drawn on the export sheet's scaffold: a 52-point header with Clear
+//! It is drawn on the export sheet's scaffold, as tall in every state so that
+//! nothing in it moves as jobs come and go: a 52-point header with Clear
 //! finished beside the close control, the jobs as one card of hairline rows,
 //! and a fixed footer.
 use super::{
     controls::{self, ButtonKind},
-    export_sheet::{header, scaffold},
+    export_sheet::{header, said, scaffold, scrolled},
     kit,
 };
 use crate::{
@@ -21,8 +23,7 @@ use editor_core::{
     export::{ExportSettings, RenderJobInfo, RenderState, Resolution},
 };
 use eframe::egui::{
-    self, Align, Align2, Id, Layout, Rect, Sense, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
-    pos2, vec2,
+    self, Align, Align2, Id, Layout, Rect, Sense, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 use std::{
     collections::HashMap,
@@ -113,8 +114,7 @@ pub fn show(
         }
 
         if jobs.is_empty() {
-            let height = (most - HEADER).clamp(120.0, 260.0);
-            let (_, rect) = ui.allocate_space(vec2(width, height));
+            let (_, rect) = ui.allocate_space(vec2(width, most - HEADER));
             if kit::empty_state(
                 ui,
                 p,
@@ -130,17 +130,20 @@ pub fn show(
             return;
         }
 
-        // With nothing under way or waiting there is nothing to count.
+        // With nothing under way or waiting there is nothing to count, and
+        // its line stays, so that the list does not move up.
         let summary = summary(jobs, waiting);
-        let said = if summary.is_empty() { 0.0 } else { SUMMARY };
-        let (_, line) = ui.allocate_space(vec2(width, said));
-        ui.painter().text(
-            pos2(line.left() + PAD, line.top() - 4.0),
-            Align2::LEFT_TOP,
-            summary,
-            theme::regular(12.0),
-            p.secondary,
-        );
+        let (_, line) = ui.allocate_space(vec2(width, SUMMARY));
+        if !summary.is_empty() {
+            let words = ui.painter().text(
+                pos2(line.left() + PAD, line.top() - 4.0),
+                Align2::LEFT_TOP,
+                &summary,
+                theme::regular(12.0),
+                p.secondary,
+            );
+            said(ui, words, &summary);
+        }
 
         let order_id = Id::new("render-queue-order");
         let mut order: Order = ui.data_mut(|data| data.get_temp(order_id).unwrap_or_default());
@@ -154,61 +157,37 @@ pub fn show(
         order.shown_under_way = under_way;
         ui.data_mut(|data| data.insert_temp(order_id, order));
 
-        // Every row's height is known before it is drawn, so the sheet is
-        // as tall as its rows from its first frame and does not creep.
+        // Every row's height is known before it is drawn, so that a row is
+        // as tall as it will be from its first frame and does not creep.
         let card = width - PAD * 2.0;
         let heights: Vec<f32> = (rows.iter())
             .map(|job| row_height(ui, job, waiting, home.as_deref(), card))
             .collect();
-        let content = heights.iter().sum::<f32>() + 16.0;
-        let room = (most - HEADER - said - FOOTER).max(80.0);
-        let shown = content.min(room);
-        let (_, list) = ui.allocate_space(vec2(width, shown));
+        let (_, list) =
+            ui.allocate_space(vec2(width, (most - HEADER - SUMMARY - FOOTER).max(80.0)));
         let area = Rect::from_min_max(
             pos2(list.left() + PAD, list.top()),
             pos2(list.right() - 6.0, list.bottom()),
         );
-        let mut part = ui.new_child(
-            UiBuilder::new()
-                .id_salt("render-queue-jobs")
-                .max_rect(area)
-                .layout(Layout::top_down(Align::Min)),
-        );
-        part.spacing_mut().scroll.floating_allocated_width = 0.0;
-        let output = egui::ScrollArea::vertical()
-            .id_salt("render-queue-jobs")
-            .auto_shrink([false, false])
-            .max_height(shown)
-            .show(&mut part, |ui| {
-                super::export_sheet::column(ui, card, |ui| {
-                    controls::group(ui, *p, |ui, group| {
-                        for (job, height) in rows.iter().zip(&heights) {
-                            let place = waiting
-                                .iter()
-                                .position(|id| *id == job.id)
-                                .map(|at| (at, waiting.len()));
-                            let rect = group.custom(ui, *height);
-                            if let Some(asked) = job_row(ui, p, rect, job, place, home.as_deref()) {
-                                answer = Some(asked);
-                            }
-                            if reveal == Some(job.id) {
-                                ui.scroll_to_rect(rect, Some(Align::Min));
-                            }
-                        }
-                    });
-                    ui.add_space(16.0);
-                });
+        scrolled(ui, p.elevated, area, card, "render-queue-jobs", |ui| {
+            controls::group(ui, *p, |ui, group| {
+                for (job, height) in rows.iter().zip(&heights) {
+                    let place = waiting
+                        .iter()
+                        .position(|id| *id == job.id)
+                        .map(|at| (at, waiting.len()));
+                    let rect = group.custom(ui, *height);
+                    if let Some(asked) = job_row(ui, p, rect, job, place, home.as_deref()) {
+                        answer = Some(asked);
+                    }
+                    if reveal == Some(job.id) {
+                        // With the room over it, so that the first row
+                        // shows the card's top edge as well.
+                        ui.scroll_to_rect(rect.expand2(vec2(0.0, 4.0)), Some(Align::Min));
+                    }
+                }
             });
-        let inner = output.inner_rect;
-        let above = output.state.offset.y;
-        let below = output.content_size.y - above - inner.height();
-        let painter = ui.painter_at(inner);
-        if above > 0.5 {
-            kit::scroll_fade(&painter, inner, kit::Edge::Top, p.elevated);
-        }
-        if below > 0.5 {
-            kit::scroll_fade(&painter, inner, kit::Edge::Bottom, p.elevated);
-        }
+        });
 
         let bar = controls::sheet_footer(ui, *p).shrink2(vec2(PAD - 16.0, 0.0));
         controls::place(
@@ -635,14 +614,14 @@ fn job_row(
         x += 14.0 + 5.0;
     }
     let mut end = right;
+    let mut encoder_shown = None;
     if let Some(encoder) = &job.encoder {
-        let galley = painter.layout_no_wrap(encoder.clone(), theme::mono(11.0), p.muted);
+        let galley = painter.layout_no_wrap(encoder.clone(), theme::mono(11.0), p.secondary);
         end -= galley.size().x;
-        painter.galley(
-            pos2(end, line.center().y - galley.size().y * 0.5),
-            galley,
-            p.muted,
-        );
+        let at = pos2(end, line.center().y - galley.size().y * 0.5);
+        let shown = Rect::from_min_size(at, galley.size());
+        painter.galley(at, galley, p.secondary);
+        encoder_shown = Some((shown, encoder));
         end -= 12.0;
     }
     let ink = if job.state == RenderState::Failed {
@@ -651,13 +630,17 @@ fn job_row(
         p.secondary
     };
     let galley = controls::elided(&painter, &status, theme::regular(12.0), ink, end - x);
-    let said = Rect::from_min_max(
+    let stated = Rect::from_min_max(
         pos2(left, line.center().y - galley.size().y * 0.5),
         pos2(x + galley.size().x, line.center().y + galley.size().y * 0.5),
     );
-    painter.galley(pos2(x, said.top()), galley, ink);
-    ui.interact(said, ui.id().with(("job-status", job.id)), Sense::hover())
+    painter.galley(pos2(x, stated.top()), galley, ink);
+    ui.interact(stated, ui.id().with(("job-status", job.id)), Sense::hover())
         .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &status));
+    // The encoder is read after the status, as it is seen.
+    if let Some((shown, encoder)) = encoder_shown {
+        said(ui, shown, encoder);
+    }
     y += LINE;
 
     // How far it has got.
@@ -714,7 +697,7 @@ fn job_row(
             &painter,
             &folder,
             theme::regular(11.5),
-            p.muted,
+            p.secondary,
             right - left - 19.0,
         );
         let shown = Rect::from_min_max(
@@ -724,7 +707,7 @@ fn job_row(
                 line.center().y + galley.size().y * 0.5,
             ),
         );
-        painter.galley(pos2(left + 19.0, shown.top()), galley, p.muted);
+        painter.galley(pos2(left + 19.0, shown.top()), galley, p.secondary);
         let saved = format!("Saved in {}", job.destination.display());
         let response = ui.interact(shown, ui.id().with(("job-folder", job.id)), Sense::hover());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &saved));

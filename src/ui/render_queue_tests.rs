@@ -428,6 +428,20 @@ fn a_job_says_how_far_it_has_got_and_why_it_failed() {
         bench.says("3 rendering · 1 paused · 2 waiting"),
         "the header counts the work"
     );
+    // Spec §7.1: the count and the encoder are painted, and still said to
+    // those who do not see them.
+    let label =
+        |text: &str| (bench.seen.iter()).any(|seen| seen.role == Role::Label && seen.name == text);
+    assert!(
+        label("3 rendering · 1 paused · 2 waiting"),
+        "the count is a label"
+    );
+    assert!(label("h264_nvenc"), "the encoder is a label");
+    // Spec §3.1: where a job goes is read, not disabled, ink.
+    assert_eq!(
+        bench.painted_in("/home/someone/Exports"),
+        Some(bench.palette.secondary)
+    );
     let red = bench.palette.red;
     let mut bench = bench;
     // The failed job's message is just over the last row, the job done
@@ -461,6 +475,31 @@ fn the_panel_is_in_place_from_its_first_frame() {
         first,
         "it does not creep"
     );
+}
+
+#[test]
+fn the_sheet_keeps_its_place_as_jobs_come_and_go() {
+    // Spec §5.9.4: the sheet is as tall whatever it lists, so that its
+    // header's controls stay where they are as a job starts and finishes.
+    for size in [WIDE, NARROW] {
+        let mut bench = Bench::new(size, Vec::new());
+        let empty = bench.get("Close render queue").rect;
+        let seen = |bench: &mut Bench, jobs: Vec<RenderJobInfo>| {
+            bench.jobs = jobs;
+            for _ in 0..4 {
+                bench.frame(Vec::new());
+            }
+            (
+                bench.get("Close render queue").rect,
+                bench.get("Clear finished").rect,
+            )
+        };
+        let (rendering, clear) = seen(&mut bench, vec![job("first.mp4", RenderState::Rendering)]);
+        let (done, cleared) = seen(&mut bench, vec![job("first.mp4", RenderState::Done)]);
+        assert_eq!(empty, rendering, "at {size:?}");
+        assert_eq!(rendering, done, "at {size:?}");
+        assert_eq!(clear, cleared, "Clear finished stays put at {size:?}");
+    }
 }
 
 #[test]

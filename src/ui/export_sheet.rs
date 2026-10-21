@@ -651,10 +651,16 @@ const PAD: f32 = 20.0;
 const ROW: f32 = 40.0;
 /// A line of the summary.
 const FACT: f32 = 32.0;
+/// The width of the control at the trailing end of a row, a select's as in
+/// Terminal's settings, so that a card's controls start together.
+const TRAIL: f32 = 180.0;
 /// From one card to the label of the next.
 const GAP: f32 = 14.0;
-/// A section's label over its card, with room for a switch beside it.
+/// A section's label over its card.
 const LABEL: f32 = 28.0;
+/// A label with the switch that turns its card on: the 22-point switch 6
+/// clear of the card, as a control is of the edge of its row.
+const SWITCHED: f32 = 34.0;
 
 /// Terminal's sheet (`controls::sheet`) under the id the editor has always
 /// given it, which the tests and the notices find it by: `elevated`, with a
@@ -723,29 +729,6 @@ fn scrim_opacity(ctx: &egui::Context) -> f32 {
     egui::emath::easing::cubic_out(t)
 }
 
-/// Lays `add` out at the cursor in a column exactly `width` wide.
-///
-/// A scroll area rounds its content's room to device pixels where it is on
-/// the screen, so what fills that room can end a fraction of a pixel past
-/// the area. A sheet is centred on the width it had the frame before: that
-/// fraction moves it, the move turns the rounding the other way, and at a
-/// fractional scale the whole sheet shook by a pixel at every repaint. What
-/// is in the column cannot widen the sheet.
-pub(super) fn column<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
-    let room = Rect::from_min_size(ui.cursor().min, vec2(width, ui.available_height()));
-    let mut column = ui.new_child(
-        UiBuilder::new()
-            .max_rect(room)
-            .layout(Layout::top_down(Align::Min)),
-    );
-    let inner = add(&mut column);
-    ui.advance_cursor_after_rect(Rect::from_min_size(
-        room.min,
-        vec2(width, column.min_rect().height()),
-    ));
-    inner
-}
-
 /// A part of a sheet's body that scrolls: `width` of content at the leading
 /// edge of `rect`, whose scroll bar floats in the room beside it, clear of
 /// what it holds. An edge that content runs on past fades into `ground`.
@@ -769,7 +752,7 @@ pub(super) fn scrolled(
         .auto_shrink([false, false])
         .max_height(rect.height())
         .show(&mut part, |ui| {
-            column(ui, width, |ui| {
+            super::sheets::column(ui, width, |ui| {
                 ui.add_space(4.0);
                 add(ui);
                 ui.add_space(PAD);
@@ -837,17 +820,30 @@ pub(super) fn header(
     closed
 }
 
+/// Words that are only painted, named for those who do not see them as the
+/// labels they replaced were: `text` over `rect`, where it is drawn.
+pub(super) fn said(ui: &Ui, rect: Rect, text: &str) {
+    ui.interact(rect, ui.auto_id_with(("said", text)), Sense::hover())
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+}
+
 /// The label over a card, set in 4 from it as Terminal sets it. Returns
 /// its row, for a switch at its trailing end.
 fn section(ui: &mut Ui, p: &Palette, text: &str) -> Rect {
-    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), LABEL));
-    ui.painter().text(
+    section_of(ui, p, text, LABEL)
+}
+
+/// The label over a card in a row `height` tall.
+fn section_of(ui: &mut Ui, p: &Palette, text: &str, height: f32) -> Rect {
+    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), height));
+    let words = ui.painter().text(
         pos2(rect.left() + 4.0, rect.center().y),
         Align2::LEFT_CENTER,
         text,
         theme::medium(11.5),
         p.secondary,
     );
+    said(ui, words, text);
     rect
 }
 
@@ -886,13 +882,38 @@ fn row<R>(
     label: &str,
     add: impl FnOnce(&mut Ui, f32) -> R,
 ) -> R {
-    let words = (ui.painter())
+    let lead = label_width(ui, p, label);
+    row_after(ui, p, group, label, lead, add)
+}
+
+/// How wide a row's label is.
+fn label_width(ui: &Ui, p: &Palette, label: &str) -> f32 {
+    (ui.painter())
         .layout_no_wrap(label.to_owned(), theme::regular(13.0), p.fg)
         .size()
-        .x;
+        .x
+}
+
+/// A row whose control is given the room after `lead`, the widest label of
+/// the rows it lines up with, so that their controls start together.
+fn row_after<R>(
+    ui: &mut Ui,
+    p: &Palette,
+    group: &mut Group,
+    label: &str,
+    lead: f32,
+    add: impl FnOnce(&mut Ui, f32) -> R,
+) -> R {
+    let words = label_width(ui, p, label);
     group.row_with_height(ui, label, ROW, |ui| {
         // The label is 2 in from where the controls' room starts.
-        let room = (ui.available_width() - 2.0 - words - 16.0).max(40.0);
+        let row = ui.max_rect();
+        said(
+            ui,
+            Rect::from_min_size(pos2(row.left() + 2.0, row.top()), vec2(words, row.height())),
+            label,
+        );
+        let room = (ui.available_width() - 2.0 - lead.max(words) - 16.0).max(40.0);
         add(ui, room)
     })
 }
@@ -910,13 +931,14 @@ fn wide<R>(
     let height = if label.is_some() { 68.0 } else { ROW };
     let rect = group.custom(ui, height);
     if let Some(label) = label {
-        ui.painter().text(
+        let words = ui.painter().text(
             pos2(rect.left() + 14.0, rect.top() + 20.0),
             Align2::LEFT_CENTER,
             label,
             theme::regular(13.0),
             p.fg,
         );
+        said(ui, words, label);
     }
     let control = Rect::from_min_max(
         pos2(rect.left() + 12.0, rect.bottom() - 6.0 - 28.0),
@@ -995,11 +1017,8 @@ fn list<T: PartialEq + Copy>(
 /// A row of a select's list, checked when it is the current choice, and
 /// disabled with `reason` on hover. Whether it was taken.
 fn offer(ui: &mut Ui, p: &Palette, text: &str, current: bool, reason: Option<&str>) -> bool {
-    let check = current.then_some(Icon::Check);
     let response = ui
-        .add_enabled_ui(reason.is_none(), |ui| {
-            kit::menu_row(ui, p, check, text, "", false, None)
-        })
+        .add_enabled_ui(reason.is_none(), |ui| choice_row(ui, p, text, current))
         .inner;
     match reason {
         Some(reason) => {
@@ -1008,6 +1027,16 @@ fn offer(ui: &mut Ui, p: &Palette, text: &str, current: bool, reason: Option<&st
         }
         None => response.clicked(),
     }
+}
+
+/// A row of a select's list: a button, checked when it is the current
+/// choice and announced as chosen, as the selectable rows it replaced were.
+fn choice_row(ui: &mut Ui, p: &Palette, text: &str, current: bool) -> egui::Response {
+    let check = current.then_some(Icon::Check);
+    let response = kit::menu_row(ui, p, check, text, "", false, None);
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, current, text));
+    response
 }
 
 /// A field on the control material, `width` wide, its text in a 13-point
@@ -1028,20 +1057,18 @@ fn field(
 ) -> egui::Response {
     let (_, rect) = ui.allocate_space(vec2(width, metrics::CONTROL_HEIGHT));
     controls::field_frame(ui, *p, rect, id, valid);
-    let after = suffix.map_or(0.0, |suffix| {
+    let unit = suffix.map(|suffix| {
         let galley =
             (ui.painter()).layout_no_wrap(suffix.to_owned(), theme::regular(13.0), p.muted);
-        let width = galley.size().x;
-        ui.painter().galley(
-            pos2(
-                rect.right() - 10.0 - width,
-                rect.center().y - galley.size().y * 0.5,
-            ),
-            galley,
-            p.muted,
+        let at = pos2(
+            rect.right() - 10.0 - galley.size().x,
+            rect.center().y - galley.size().y * 0.5,
         );
-        width + 4.0
+        let shown = Rect::from_min_size(at, galley.size());
+        ui.painter().galley(at, galley, p.muted);
+        (suffix, shown)
     });
+    let after = unit.map_or(0.0, |(_, shown)| shown.width() + 4.0);
     let inner = Rect::from_min_max(
         pos2(rect.left() + 10.0, rect.top()),
         pos2(rect.right() - 10.0 - after, rect.bottom()),
@@ -1053,6 +1080,10 @@ fn field(
         ("field", id),
         |ui| controls::bare_text_edit(ui, id, text, hint, 13.0, inner.width()),
     );
+    // Read after what is typed, where it is seen.
+    if let Some((suffix, shown)) = unit {
+        said(ui, shown, suffix);
+    }
     response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, ui.is_enabled(), name));
     response
 }
@@ -1123,8 +1154,8 @@ fn caution(ui: &mut Ui, p: &Palette, text: &str, color: Color32) {
 }
 
 /// Shows the export sheet. Returns what the person asked for, if anything;
-/// Escape and the backdrop close it, and the application keeps `state` to
-/// show again.
+/// Escape and the backdrop close it, an Enter pressed afresh exports, and the
+/// application keeps `state` to show again.
 pub fn show(
     ctx: &egui::Context,
     p: &Palette,
@@ -1167,6 +1198,11 @@ pub fn show(
     // the frame before.
     let typing_id = Id::new("export-sheet-typing");
     let typing = ctx.data(|data| data.get_temp(typing_id).unwrap_or(false));
+    // Enter exports, as the sheet's one Primary, when it is pressed afresh
+    // while nothing has the keyboard: not one carried over from what was
+    // there before the sheet, held down, or meant for a field or a button.
+    let opening = opening(ctx, Id::new("export-sheet"));
+    let enter = fresh_enter(ctx, opening) && ctx.memory(|memory| memory.focused()).is_none();
     let screen = ctx.content_rect();
     let size = vec2(
         WIDTH.min(screen.width() - 24.0).max(240.0),
@@ -1238,7 +1274,67 @@ pub fn show(
     if answer.is_none() && (response.backdrop_response.clicked() || escape) {
         answer = Some(ExportAnswer::Close);
     }
+    if answer.is_none()
+        && enter
+        && blocker.is_none()
+        && state.naming.is_none()
+        && response.is_top_modal
+        && !response.any_popup_open
+    {
+        answer = Some(queued(state, true));
+    }
     answer
+}
+
+/// Whether the sheet `id` is shown in this frame for the first time since it
+/// was last away: the frame whose keys were meant for what was there before.
+fn opening(ctx: &egui::Context, id: Id) -> bool {
+    let frame = ctx.cumulative_frame_nr();
+    let key = id.with("shown");
+    let seen = ctx.data(|data| data.get_temp::<(u64, u64)>(key));
+    let first = match seen {
+        Some((first, last)) if last == frame || last + 1 == frame => first,
+        _ => frame,
+    };
+    ctx.data_mut(|data| data.insert_temp(key, (first, frame)));
+    first == frame
+}
+
+/// An Enter pressed in this frame, and none that was held down or pressed
+/// as the sheet opened.
+fn fresh_enter(ctx: &egui::Context, opening: bool) -> bool {
+    let (fresh, carried) = ctx.input(|input| {
+        (input.events.iter()).fold((false, false), |(fresh, carried), event| match event {
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                pressed: true,
+                repeat,
+                ..
+            } => {
+                let old = *repeat || opening;
+                (fresh || !old, carried || old)
+            }
+            _ => (fresh, carried),
+        })
+    });
+    fresh && !carried
+}
+
+/// The export as it stands, to start now or to wait in the queue; or, with
+/// no folder yet, the question that asks for one, the export kept until it
+/// comes.
+fn queued(state: &mut ExportSheetState, start_now: bool) -> ExportAnswer {
+    match state.destination() {
+        Some(destination) => ExportAnswer::Queue {
+            settings: state.settings.clone(),
+            destination,
+            start_now,
+        },
+        None => {
+            state.pending = Some(start_now);
+            ExportAnswer::ChooseFolder
+        }
+    }
 }
 
 /// What the file will be, in a few words for the footer, whatever the body
@@ -1345,17 +1441,6 @@ fn footer(
             let ok = blocker.is_none();
             // Made from the trailing edge in, the confirming action first,
             // which is also the order Tab takes.
-            let queue = |state: &mut ExportSheetState, start_now: bool| match state.destination() {
-                Some(destination) => Some(ExportAnswer::Queue {
-                    settings: state.settings.clone(),
-                    destination,
-                    start_now,
-                }),
-                None => {
-                    state.pending = Some(start_now);
-                    Some(ExportAnswer::ChooseFolder)
-                }
-            };
             let export = ui
                 .add_enabled_ui(ok, |ui| {
                     controls::button(ui, *p, "Export", ButtonKind::Primary)
@@ -1364,7 +1449,7 @@ fn footer(
                 .on_hover_text("Queue it to render now, and show the render queue")
                 .on_disabled_hover_text(reason);
             if export.clicked() && ok {
-                *answer = queue(state, true);
+                *answer = Some(queued(state, true));
             }
             let add = ui
                 .add_enabled_ui(ok, |ui| {
@@ -1374,7 +1459,7 @@ fn footer(
                 .on_hover_text("Queue it paused, to start from the render queue")
                 .on_disabled_hover_text(reason);
             if add.clicked() && ok {
-                *answer = queue(state, false);
+                *answer = Some(queued(state, false));
             }
             if state.naming.is_some() {
                 naming(ui, p, state, answer);
@@ -1424,16 +1509,18 @@ fn footer(
                     p.secondary,
                     room.width() - 22.0,
                 ));
-                controls::galley_at(
+                let shown = controls::galley_at(
                     ui.painter(),
                     pos2(room.left() + 22.0, room.center().y),
                     words,
                 );
+                said(ui, shown, "Checking encoders…");
             } else if let Some(facts) = facts
                 && state.naming.is_none()
             {
                 let words = (ui.painter()).layout_job(figures(facts, p.secondary, room.width()));
-                controls::galley_at(ui.painter(), room.left_center(), words);
+                let shown = controls::galley_at(ui.painter(), room.left_center(), words);
+                said(ui, shown, facts);
             }
         },
     );
@@ -1538,7 +1625,7 @@ impl Sheet<'_, '_> {
                 pos2(split + PAD - 6.0, body.bottom()),
             );
             scrolled(ui, ground, left, LEFT, "export-summary", |ui| {
-                self.left(ui, state);
+                self.left(ui, body.height(), state);
             });
             let right = Rect::from_min_max(
                 pos2(split + PAD, body.top()),
@@ -1562,14 +1649,13 @@ impl Sheet<'_, '_> {
         }
     }
 
-    /// The column beside the choices: the picture, then what will be made.
-    fn left(&mut self, ui: &mut Ui, state: &ExportSheetState) {
-        // Shorter on a short screen, so that the summary under it is seen.
-        let most = match ui.ctx().content_rect().height() {
-            high if high >= 760.0 => 170.0,
-            high if high >= 600.0 => 130.0,
-            _ => 96.0,
-        };
+    /// The column beside the choices: the picture, then what will be made,
+    /// in a body `height` tall.
+    fn left(&mut self, ui: &mut Ui, height: f32, state: &ExportSheetState) {
+        // Shorter in a short sheet, so that the six lines of the summary
+        // under it, with their label 14 under it, are seen.
+        let under = GAP + LABEL + 6.0 * FACT;
+        let most = (height - 4.0 - under - 4.0).clamp(72.0, 170.0);
         let width = ui.available_width();
         self.poster(ui, state, width, most);
         ui.add_space(GAP);
@@ -1587,22 +1673,25 @@ impl Sheet<'_, '_> {
         ui.horizontal_top(|ui| {
             self.poster(ui, state, poster, 100.0);
             ui.add_space(12.0);
-            column(ui, ui.available_width(), |ui| self.summary(ui, state));
+            super::sheets::column(ui, ui.available_width(), |ui| self.summary(ui, state));
         });
     }
 
     /// The picture as it lands in the output, on the stage: in the output's
-    /// shape, with the bars or the crop the fit makes, in a well `width`
-    /// wide and 16:9 at most `most` tall.
+    /// shape, with the bars or the crop the fit makes, in a 16:9 well at
+    /// most `width` wide and `most` tall, centred in the `width` it has.
     fn poster(&self, ui: &mut Ui, state: &ExportSheetState, width: f32, most: f32) {
         let p = self.p;
         let canvas = self.canvas();
         let video = state.settings.video.as_ref();
         let output = video.map_or(canvas, |video| video.resolution.size(canvas));
-        let (well, response) = ui.allocate_exact_size(
-            vec2(width, (width * 9.0 / 16.0).min(most).round()),
-            Sense::hover(),
-        );
+        // Narrowed rather than shortened, so that the bars it shows are the
+        // fit's and not the well's.
+        let height = (width * 9.0 / 16.0).min(most).round();
+        let (_, room) = ui.allocate_space(vec2(width, height));
+        let well =
+            Rect::from_center_size(room.center(), vec2((height * 16.0 / 9.0).round(), height));
+        let response = ui.interact(well, ui.id().with("export-poster"), Sense::hover());
         let name = match (video, self.input.poster) {
             (Some(_), Some(_)) => format!(
                 "Output frame at the playhead, {} × {}",
@@ -1823,7 +1912,7 @@ impl Sheet<'_, '_> {
             }
             _ => {
                 self.range(ui, state);
-                ui.add_space(32.0);
+                ui.add_space(24.0);
                 ui.vertical_centered(|ui| {
                     let (glyph, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
                     kit::spinner(ui, glyph, p.muted);
@@ -1859,8 +1948,10 @@ impl Sheet<'_, '_> {
             |folder| format!("Saved in {}", folder.display()),
         );
         let mut chose = false;
+        // The field and the folder start together, after the longer label.
+        let lead = label_width(ui, p, "File name").max(label_width(ui, p, "Folder"));
         controls::group(ui, *p, |ui, group| {
-            row(ui, p, group, "File name", |ui, room| {
+            row_after(ui, p, group, "File name", lead, |ui, room| {
                 let valid = name_problem(&state.name).is_none();
                 field(
                     ui,
@@ -1874,7 +1965,7 @@ impl Sheet<'_, '_> {
                     valid,
                 );
             });
-            row(ui, p, group, "Folder", |ui, room| {
+            row_after(ui, p, group, "Folder", lead, |ui, room| {
                 let folder = folder_button(ui, p, &folder_text, state.folder.as_deref(), room);
                 chose = folder.on_hover_text(tip).clicked();
             });
@@ -2058,18 +2149,9 @@ impl Sheet<'_, '_> {
                                     let problem = reason(preset);
                                     let selected =
                                         current_id.as_deref() == Some(preset.id.as_str());
-                                    let check = selected.then_some(Icon::Check);
                                     let response = ui
                                         .add_enabled_ui(problem.is_none(), |ui| {
-                                            kit::menu_row(
-                                                ui,
-                                                p,
-                                                check,
-                                                &preset.name,
-                                                "",
-                                                false,
-                                                None,
-                                            )
+                                            choice_row(ui, p, &preset.name, selected)
                                         })
                                         .inner;
                                     if offered(preset, response, problem.as_deref()) {
@@ -2150,7 +2232,7 @@ impl Sheet<'_, '_> {
         let canvas = self.canvas();
         let mut on = state.settings.video.is_some();
         ui.add_space(GAP);
-        let label = section(ui, p, "Video");
+        let label = section_of(ui, p, "Video", SWITCHED);
         section_switch(ui, p, label, &mut on, "Video", true).on_hover_text(if on {
             "Turn off to export sound only"
         } else {
@@ -2180,7 +2262,7 @@ impl Sheet<'_, '_> {
                     return;
                 }
                 let mut container = state.settings.container;
-                let width = (56.0 * offered.len() as f32).min(room);
+                let width = (56.0 * offered.len() as f32).max(TRAIL).min(room);
                 if choice(ui, p, &mut container, &offered, width) {
                     state.settings.container = container;
                     settle(&mut state.settings, caps);
@@ -2293,7 +2375,7 @@ impl Sheet<'_, '_> {
                         p,
                         &mut video.fit,
                         &[(Fit::Letterbox, "Letterbox"), (Fit::Fill, "Fill")],
-                        room.min(170.0),
+                        room.min(TRAIL),
                     );
                 });
             }
@@ -2320,7 +2402,7 @@ impl Sheet<'_, '_> {
                     "export-frame-rate",
                     "Frame rate",
                     &shown,
-                    room.min(180.0),
+                    room.min(TRAIL),
                     video.frame_rate,
                     &options,
                 ) {
@@ -2343,7 +2425,7 @@ impl Sheet<'_, '_> {
                     "export-codec",
                     "Codec",
                     video.codec.label(),
-                    room.min(180.0),
+                    room.min(TRAIL),
                     video.codec,
                     &options,
                 ) && codec != video.codec
@@ -2391,7 +2473,7 @@ impl Sheet<'_, '_> {
                         p,
                         &mut target,
                         &[(Target::Quality, "Quality"), (Target::Bitrate, "Bitrate")],
-                        room.min(170.0),
+                        room.min(TRAIL),
                     );
                 });
                 match (target, video.rate_control) {
@@ -2423,7 +2505,7 @@ impl Sheet<'_, '_> {
                                 p,
                                 Id::new("export-kbps"),
                                 &mut state.kbps_text,
-                                room.min(132.0),
+                                room.min(TRAIL),
                                 &hint.to_string(),
                                 "Bitrate in kbit/s",
                                 Some("kbit/s"),
@@ -2452,7 +2534,7 @@ impl Sheet<'_, '_> {
         let video = state.settings.video.is_some();
         let mut on = state.settings.audio.is_some();
         ui.add_space(GAP);
-        let label = section(ui, p, "Audio");
+        let label = section_of(ui, p, "Audio", SWITCHED);
         section_switch(ui, p, label, &mut on, "Audio", video)
             .on_disabled_hover_text("A sound-only file needs its sound");
         if on != state.settings.audio.is_some() {
@@ -2478,7 +2560,7 @@ impl Sheet<'_, '_> {
                     "export-audio-codec",
                     "Audio codec",
                     audio.codec.label(),
-                    room.min(180.0),
+                    room.min(TRAIL),
                     audio.codec,
                     &options,
                 ) && codec != audio.codec
@@ -2513,7 +2595,7 @@ impl Sheet<'_, '_> {
                         "export-audio-kbps",
                         "Audio bitrate",
                         &format!("{} kbit/s", audio.kbps),
-                        room.min(180.0),
+                        room.min(TRAIL),
                         audio.kbps,
                         &options,
                     ) {
@@ -2527,7 +2609,7 @@ impl Sheet<'_, '_> {
                 .collect();
             let rates: Vec<(u32, &str)> = rates.iter().map(|(r, l)| (*r, l.as_str())).collect();
             row(ui, p, group, "Sample rate", |ui, room| {
-                let width = (72.0 * rates.len() as f32).min(room);
+                let width = (60.0 * rates.len() as f32).max(TRAIL).min(room);
                 choice(ui, p, &mut audio.sample_rate, &rates, width);
             });
             row(ui, p, group, "Channels", |ui, room| {
@@ -2536,7 +2618,7 @@ impl Sheet<'_, '_> {
                     p,
                     &mut audio.channels,
                     &[(1, "Mono"), (2, "Stereo")],
-                    room.min(150.0),
+                    room.min(TRAIL),
                 ) && audio.codec.has_bitrate()
                 {
                     audio.kbps = audio.kbps.min(audio.codec.max_kbps(audio.channels));
@@ -2581,7 +2663,7 @@ impl Sheet<'_, '_> {
                         (Some(SidecarFormat::Srt), "SRT"),
                         (Some(SidecarFormat::Vtt), "VTT"),
                     ],
-                    room.min(170.0),
+                    room.min(TRAIL),
                 );
             });
             let refusal = if !video {
@@ -2618,7 +2700,7 @@ impl Sheet<'_, '_> {
                         "export-caption-track",
                         "Caption track",
                         shown,
-                        room.min(180.0),
+                        room.min(TRAIL),
                         chosen,
                         &options,
                     ) && pick != chosen
@@ -2713,7 +2795,7 @@ fn encoder_rows(
             "export-encoder",
             "Encoder",
             &label(video.encoder),
-            room.min(200.0),
+            room.min(TRAIL),
             video.encoder,
             &options,
         ) {
@@ -2807,7 +2889,6 @@ fn folder_button(
 const _: () = {
     let _ = widgets::chip;
     let _ = widgets::progress;
-    let _: fn(&mut Ui, f32, fn(&mut Ui)) = super::sheets::column;
 };
 
 #[cfg(test)]
