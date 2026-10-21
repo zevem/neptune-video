@@ -13,17 +13,18 @@ inside the window.
 
 ## Projects and recovery
 
-The project menu creates, opens, saves and duplicates `.nvp` documents.
+The Project menu, which the project's name in the toolbar opens, creates,
+opens, saves and duplicates `.nvp` documents.
 Duplicate writes a new file with a fresh project identity and keeps the original
 file unchanged; a duplicate cannot replace its own source path. Preferences
 persist the window's library/inspector layout, appearance, interface size,
 recent projects, snapping, autosave and library sort mode.
 
-Interface size (Settings, or Command/Ctrl+Plus / Minus / 0) scales the whole
-window from 50% to 300% in 10% steps. A size larger than leaves the editor its
-720 × 520 point layout is held to the largest the window has room for: about
-150% at 1280 × 800 and 200% at 1920 × 1080. The chosen size returns as the
-window grows.
+Interface size (Preferences › Appearance, or Command/Ctrl+Plus / Minus / 0)
+scales the whole window from 50% to 300% in 10% steps. A size larger than
+leaves the editor its 720 × 520 point layout is held to the largest the window
+has room for: about 150% at 1280 × 800 and 200% at 1920 × 1080. The chosen
+size returns as the window grows.
 
 Autosave retains recoverable editing state. The ordinary `.nvp` file stores
 the current project; its `.nvp.recovery` sidecar preserves undo/redo chains.
@@ -57,9 +58,11 @@ successful save to that new file, normal protected saves resume there.
 
 ## Media and timeline
 
-Import source files or a directory from the library controls, drop sources into
-the window, or pass paths at launch. Images/GIFs decode natively; video/audio
-require the [media executables](installation.md#media-executables). Directory
+Import source files or a directory with **Import…** at the foot of the
+library (in the toolbar while the library is hidden) or from the Project menu,
+drop sources into the window, or pass paths at launch. Images/GIFs decode
+natively; video/audio require the
+[media executables](installation.md#media-executables). Directory
 import retains virtual folder organization and caps one batch at 10,000 entries.
 Native drops are bounded to 4,096 paths. The Wayland listener supports ordinary
 local file URI lists on the root window's first seat; sandboxed portal-only
@@ -71,15 +74,16 @@ Sources remain file references, rather than media embedded in the project.
 Unavailable sources keep their assets/clips and report preview errors; an asset
 relinking interface or portable media bundle is not part of this first build.
 
-The library offers thumbnails, grid/list views, search and name/duration/kind/
-file-size sorting in either direction. Create virtual folders from its add
-menu; move an asset through its context menu or drop it onto a folder. These
-folders organize the project, independently of source directories on disk.
-A row under the search lists All, Video, Sound or Images only, in whatever
-folder and order are in view; a GIF is with the images and a LUT is under All
-alone. The folders stay listed to be walked into, a search looks through
-every folder within the kind, and a list left empty says there is nothing of
-that kind there. The choice lasts for the session and is kept in no file.
+The library offers thumbnails, search, and grid/list views with name/duration/
+kind/file-size sorting in either direction under **View options** beside the
+search. Create virtual folders with **New folder** in the **Import…** menu;
+move an asset through its context menu or drop it onto a folder. These folders
+organize the project, independently of source directories on disk. A row under
+the search lists All, Video, Sound or Images only, in whatever folder and
+order are in view; a GIF is with the images and a LUT is under All alone. The
+folders stay listed to be walked into, a search looks through every folder
+within the kind, and a list left empty says there is nothing of that kind
+there. The choice lasts for the session and is kept in no file.
 
 Add as background music, in the context menu of a sound file in the library,
 lays that sound under the whole project as one step of the history: a new
@@ -551,7 +555,7 @@ lines; leaving the field makes the change one undo step. Under it:
 Lengths such as an outline's width are shown in pixels at the title's size and
 grow with it. Emoji are drawn in colour when the system has a colour emoji
 font. Import font files (`.ttf`, `.otf`, `.ttc`, `.otc`) with **Import fonts**
-in the Text tab's header; each becomes a font asset named for its family and
+on the Text tab's search row; each becomes a font asset named for its family and
 travels with the project as a file reference, like media.
 
 Effects, masks and blend modes cannot be put on titles.
@@ -638,10 +642,11 @@ WebVTT; VTT keeps the language and word times.
 
 ### Captions from speech
 
-The microphone in the Captions tab's header (or **Generate from speech** when
-there are no captions, or `generate captions` in the command panel) opens the
-speech panel. Captions are made on this computer from the timeline's own
-sound, so cuts, volume and mutes are what is heard; nothing is uploaded.
+**Captions from speech**, the microphone on the Captions tab's search row (or
+**Generate from speech** when there are no captions, or `generate captions` in
+the command panel) opens the speech panel. Captions are made on this computer
+from the timeline's own sound, so cuts, volume and mutes are what is heard;
+nothing is uploaded.
 
 - **Model**: Tiny (33 MB), Base (60 MB, the default), Small (191 MB), Medium
   (540 MB) or Large v3 Turbo (575 MB), each with the speech detector. Larger
@@ -742,10 +747,10 @@ measurements are in [performance](performance.md#export-and-proxy-budgets).
 
 ### The export dialog
 
-Open it with **Export** at the right end of the toolbar, **Export…** in the
-Project menu, Command/Ctrl+E, or `export` in the command panel. Over the
-render queue, Command/Ctrl+E opens it too. In a narrow window its two columns
-become one.
+Open it with **Export** in the toolbar, beside the inspector's toggle,
+**Export…** in the Project menu, Command/Ctrl+E, or `export` in the command
+panel. Over the render queue, Command/Ctrl+E opens it too. In a narrow window
+its two columns become one.
 
 The left column shows what will be made:
 
@@ -993,7 +998,7 @@ not be checked; install or fix FFmpeg and press **Try again**.
 
 ## Preview quality and proxies
 
-**Settings → Preview** holds two choices that change only what the viewer
+**Preferences › Preview** holds two choices that change only what the viewer
 shows, never an export.
 
 **Quality** sets how much detail the viewer decodes and composites: **Full**
@@ -1342,22 +1347,27 @@ Linux only; the Alt chords are untested as Option on macOS.
 | Command/Ctrl+K | Open local command panel |
 | Command/Ctrl+Shift+K | Open native AI Ask panel |
 | Command/Ctrl+Comma | Preferences |
+| Ctrl+Shift+B (⌘B on macOS) | Show or hide the library |
+| Ctrl+Shift+O (⌥⌘O on macOS) | Show or hide the inspector and agent panel |
 
 ## The Agent panel
 
-The Agent panel has two modes. **Command** interprets supported editing phrases
-or raw command JSON locally; no model is asked. **Ask** sends your request to
-the Claude Code or Codex command line installed on this computer, using its own
-sign-in. Select the provider, model, effort or executable override in the panel
-menu or **Settings › Agent**; credentials are not stored in Neptune Video preferences
-or projects. On Windows, Neptune Video refuses a Claude `.cmd` or `.bat` launcher and
-needs the native `claude.exe`.
+The Agent panel has two modes. **Command** interprets supported editing
+phrases or raw command JSON locally; no model is asked. **Ask** sends your
+request to the Claude Code or Codex command line installed on this computer,
+using its own sign-in. Choose the provider and effort in the model menu
+(**Model: …** at the composer's foot), or these and the model's name in
+**Preferences › Agent**; a provider's executable, when it is not on the search
+path, is kept in the settings file. Credentials are not stored in Neptune
+Video preferences or projects. On Windows, Neptune Video refuses a Claude
+`.cmd` or `.bat` launcher and needs the native `claude.exe`.
 
-Ask edits in one of two ways, chosen under **Edits** in **Settings › Agent**
-(**As it works** or **For review**) or in the **Edits** section of the Ask menu
-(**Made as it works** or **Proposed for review**). Made as it works is the
-default. [Caption translation](#translating-captions) is always proposed for
-review, whichever is chosen. [ADR 0011](adr/0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md)
+Ask edits in one of two ways, chosen under **Edits** in **Preferences ›
+Agent** (**As it works** or **For review**) or in the **Edits** section of the
+model menu (**Made as it works** or **Proposed for review**). Made as it works
+is the default. [Caption translation](#translating-captions) is always
+proposed for review, whichever is chosen.
+[ADR 0011](adr/0011-the-agent-tab-edits-through-neptune-video-mcp-started-in-its-window.md)
 records why.
 
 ### Made as it works
@@ -1376,15 +1386,15 @@ undo history as your own edits, and appears in the window at once.
   follow-up continues the same conversation, so "undo the colour you just
   picked" refers to the last request. Each request also tells the agent where
   the playhead is and which clips are selected.
-- **Stop.** While a request runs, the Ask button becomes **Stop the request**;
-  it and **Cancel** both stop the provider at once. Stop is not a graceful
-  interrupt: it ends the conversation, and the next request starts a new one.
-  Changes already made stay.
-- **New conversation**, in the Ask menu, ends the conversation; the panel says
-  "New conversation. The agent remembers nothing of the last one." A
-  conversation also ends when you open or create another project in the
-  window, on a failure, after 12 hours, or after a request goes 10 minutes
-  without a word from the provider.
+- **Stop.** While a request runs, the round send button becomes **Stop the
+  request**; it and **Cancel** both stop the provider at once. Stop is not a
+  graceful interrupt: it ends the conversation, and the next request starts a
+  new one. Changes already made stay.
+- **New conversation**, in the agent panel's More menu (⋯ in the session row),
+  ends the conversation; the panel says "New conversation. The agent remembers
+  nothing of the last one." A conversation also ends when you open or create
+  another project in the window, on a failure, after 12 hours, or after a
+  request goes 10 minutes without a word from the provider.
 - **Restart note.** If the provider, executable, model or effort changed since
   the last request, the next request starts a new conversation and the panel
   says "A new conversation started, because the agent's provider, model or
@@ -1411,7 +1421,7 @@ this project, or save a copy as a new file.
 It can read and import files, and save projects, exports and pictures, inside
 these folders: the project file's folder, the folder of each imported file,
 your Videos (Movies on macOS), Desktop, Documents, Downloads, Music and
-Pictures folders, and the folders you add in **Settings › Agent**. Folders
+Pictures folders, and the folders you add in **Preferences › Agent**. Folders
 that are too wide, such as your home folder, a drive or a system folder, are
 left out. A file elsewhere is refused until you import it yourself or add its
 folder. The folders follow the project while the conversation goes on:
@@ -1419,10 +1429,10 @@ importing a file from a new folder, or adding or removing a folder, takes
 effect for the agent's later tool calls, without a new conversation.
 
 To add a folder, choose **Add folder…** in the **Folders** row of
-**Settings › Agent** and pick it in the folder dialog. Each added folder gets
-a row with its name; hover shows the full path, and **Remove** takes it out.
-A folder that is too wide is not added, and Neptune Video says "… is too wide for the
-agent; choose a folder inside it".
+**Preferences › Agent** and pick it in the folder dialog. Each added folder
+gets a row with its name; hover shows the full path, and **Remove** takes it
+out. A folder that is too wide is not added, and Neptune Video says "… is too
+wide for the agent; choose a folder inside it".
 
 The agent cannot run shell commands, browse the web or use other MCP servers
 or tools.

@@ -16,20 +16,19 @@ Sources:
 - [Pinned upstream license](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/LICENSE)
 
 Go-to-start/end use the filled player-skip glyphs, whose vertical bar marks
-the boundary. Previous/next frame use a single chevron. The graph editor
-uses `ease-in-out-control-points`, its value-axis fit uses `viewport-tall`,
-and transitions use `transition-right`. A keyframe at the playhead uses the
-official filled `keyframe` variant. `Music` retains an audio-wave metaphor
-with `wave-sine`, track solo uses `headphones`, and the graph legend's solo,
-which shows one curve alone, uses `focus-2`. "Open recent" uses
-`clock`, apart from the checkpoints' `history`. Canvas layout controls use
-`aspect-ratio` and the corresponding `align-box` corner or side glyphs. The
-record disc and status dots use the filled `circle`, frame steps the filled
-`caret-left` and `caret-right`, looks `color-swatch`, effects `wand`, freeze
-frame `snowflake`, view options `adjustments-horizontal` and the appearance
-choices `sun`, `moon` and `device-desktop`. The busy spinner turns
-`loader-2`. These are all upstream glyphs, with no bespoke paths; the ones
-Neptune Terminal also uses are copied from its set unchanged.
+the boundary. The graph editor uses `ease-in-out-control-points`, its
+value-axis fit uses `viewport-tall`, and transitions use `transition-right`. A
+keyframe at the playhead uses the official filled `keyframe` variant. `Music`
+retains an audio-wave metaphor with `wave-sine`, track solo uses `headphones`,
+and the graph legend's solo, which shows one curve alone, uses `focus-2`.
+"Open recent" uses `clock`, apart from the checkpoints' `history`. Canvas
+layout controls use `aspect-ratio` and the corresponding `align-box` corner or
+side glyphs. The record disc and status dots use the filled `circle`, frame
+steps the filled `caret-left` and `caret-right`, looks `color-swatch`, effects
+`wand`, freeze frame `snowflake`, view options `adjustments-horizontal` and
+the appearance choices `sun`, `moon` and `device-desktop`. The busy spinner
+turns `loader-2`. These are all upstream glyphs, with no bespoke paths; the
+ones Neptune Terminal also uses are copied from its set unchanged.
 
 The native UI embeds `outline.ttf` and `filled.ttf`, containing only the 99
 glyphs used by Neptune Video's 101 `Icon` variants. They are generated from the official

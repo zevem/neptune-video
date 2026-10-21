@@ -59,7 +59,7 @@ belonging to another project identity.
 ## Native AI boundary
 
 The Agent panel's Ask mode sends a request to the Claude Code or Codex CLI the
-person has signed in to. Settings › Agent ("Edits") and the panel's menu
+person has signed in to. Preferences › Agent ("Edits") and the model menu
 choose how it is answered. **Made as it works**, the default, is a
 conversation in which the provider edits through Neptune Video's MCP server.
 **Proposed for review** is the planner, which returns one proposal and changes
@@ -118,7 +118,7 @@ agent session file with the extension `.roots`, a JSON object
 part file renamed over it). A thread of its own, `neptune-video-agent-roots`, writes
 it, and the file is removed when the window closes. The wanted folders are the
 project file's folder, the folder of every asset, the folders the person added
-in Settings › Agent › Folders (`AiSettings.folders`) and the person's Videos
+in Preferences › Agent › Folders (`AiSettings.folders`) and the person's Videos
 (Movies), Desktop, Documents, Downloads, Music and Pictures folders, looked up
 once. While the agent talks the window checks each frame whether the
 revision, the project path or the person's folders changed, and only then
